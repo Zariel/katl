@@ -10,6 +10,10 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 }
 
+type OutputCommandRunner interface {
+	Output(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
 type ExecCommandRunner struct{}
 
 func NewExecCommandRunner() ExecCommandRunner {
@@ -19,6 +23,11 @@ func NewExecCommandRunner() ExecCommandRunner {
 func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.Run()
+}
+
+func (ExecCommandRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.Output()
 }
 
 type NoopCommandRunner struct {
