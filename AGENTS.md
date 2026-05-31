@@ -5,10 +5,21 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 ## Project Direction
 
 - Treat `katlc` as the user-facing compiler for configuration, install assets, and update artifacts.
-- Prefer Go for the main compiler, installer agent, node agent, and testable decision logic.
-- Keep shell limited to small mkosi hooks and glue where a shell script is the clearest tool.
+- Use Go for Katl product logic: `katlc`, installer state machines, node/update agents, config validation, disk/update planners, and reusable libraries that need unit tests.
+- Do not write Go just to wrap `mkosi`, `podman`, `qemu-system-*`, or `virsh` during early scaffolding. Start with thin scripts for build/boot orchestration and promote to Go only when the wrapper has meaningful parsing, state, or testable behavior.
+- Keep shell limited to small mkosi hooks and glue where a shell script is the clearest tool. Shell may orchestrate tools; it must not contain installer policy, disk layout decisions, or update state machines.
+- Keep mkosi as the image builder. Do not turn mkosi hooks or build scripts into the installer engine.
 - Do not turn Katl into a Kubernetes distribution. Katl prepares kubeadm-ready nodes; kubeadm and user-managed GitOps take over from there.
 - Do not hide native systemd configuration behind a lossy abstraction. Convenience config must compile to native artifacts and allow passthrough.
+- Do not bake host-specific paths into committed project config. In particular, avoid `/run/current-system`, `/nix/store`, `/etc/profiles`, and user home paths. Use `PATH`, repo-relative paths, containerized builders, or explicit environment variables for local overrides.
+
+## M1 Implementation Boundary
+
+- M1 proves a minimal installer OS can be built with mkosi and booted locally.
+- The build path should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
+- The boot path should use a thin direct QEMU script or `mkosi vm` when adequate. Do not add a Go VM runner for M1 unless the user explicitly asks for it.
+- The first smoke check may be a simple timeout plus serial-log match for `Katl hello`.
+- Keep libvirt, multi-node orchestration, GitHub Actions, real disk installation, and `katlc` implementation out of M1 unless the user explicitly changes the scope.
 
 ## Runtime Model
 
@@ -29,7 +40,8 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Use Beads through the `bd` CLI for project task tracking.
 - Check `bd ready` or `bd list` before starting new work.
 - Create tasks with concrete acceptance criteria when adding non-trivial implementation work.
-- Close or update Beads when the related code/docs change is completed.
+- Keep the active Bead updated while working, especially when scope changes or a gate is skipped.
+- Do not close a Bead just because code or docs were edited. Closing a Bead means the completion workflow below is done.
 - Keep Beads operational data local unless the project explicitly decides to publish or sync the database.
 
 ## Git Workflow
@@ -43,10 +55,16 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 ## Completion Gates
 
-- Before closing a Bead, run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, QEMU/libvirt smoke tests, or docs review as applicable.
-- For broad, risky, security-sensitive, boot/update, disk-layout, or kubeadm-state changes, request or run a subagent/code review before closing the Bead.
+- Closing a Bead has a required order:
+  1. Finish the scoped code/docs change.
+  2. Run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, QEMU/libvirt smoke tests, or docs review as applicable.
+  3. Run or request review when the change is broad, risky, security-sensitive, boot/update-related, disk-layout-related, or kubeadm-state-related.
+  4. Review `git status --short` and stage only the files for the completed Bead with explicit paths.
+  5. Commit those files with `git commit-wrapped`.
+  6. Close the Bead with a reason that names the commit, gates, and review outcome.
+- Do not close the Bead before committing the completed task. If the user explicitly asks for no commit, or the task intentionally produces no file changes, record that exception in the Bead close reason.
 - Use Beads gates when work depends on external review, long-running validation, or serialized merge coordination.
-- Record skipped gates in the Bead or final handoff with the reason.
+- Record skipped gates or skipped reviews in the Bead and final handoff with the reason.
 
 ## Documentation
 
