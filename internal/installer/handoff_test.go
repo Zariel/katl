@@ -47,7 +47,7 @@ func TestHandoffServerRequiresTokenAndAcceptsOneManifest(t *testing.T) {
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
-	manifest := []byte(`{"apiVersion":"katl.install/v1alpha1","kind":"InstallManifest"}`)
+	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
 	resp := postManifest(t, ts.URL, "", manifest)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("POST without token status = %d, want 401", resp.StatusCode)

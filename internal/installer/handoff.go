@@ -151,8 +151,8 @@ func ValidateInstallManifestEnvelope(data []byte) error {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return err
 	}
-	if envelope.APIVersion != "katl.install/v1alpha1" {
-		return fmt.Errorf("apiVersion must be katl.install/v1alpha1")
+	if envelope.APIVersion != "install.katl.dev/v1alpha1" {
+		return fmt.Errorf("apiVersion must be install.katl.dev/v1alpha1")
 	}
 	if envelope.Kind != "InstallManifest" {
 		return fmt.Errorf("kind must be InstallManifest")
