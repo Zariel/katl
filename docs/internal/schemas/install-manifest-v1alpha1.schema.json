@@ -1,0 +1,617 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://katl.dev/schemas/install-manifest-v1alpha1.schema.json",
+  "title": "Katl install manifest v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "node",
+    "install",
+    "artifacts",
+    "trust",
+    "boot"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "katl.install/v1alpha1"
+    },
+    "kind": {
+      "const": "InstallManifest"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "generation": {
+          "$ref": "#/$defs/generationID"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "selector": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "macAddresses": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/macAddress"
+              }
+            },
+            "dmiProductUUID": {
+              "$ref": "#/$defs/uuid"
+            },
+            "serialNumber": {
+              "type": "string",
+              "minLength": 1
+            },
+            "labels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hostname",
+            "machineIDPolicy",
+            "ssh"
+          ],
+          "properties": {
+            "hostname": {
+              "$ref": "#/$defs/dnsLabel"
+            },
+            "machineIDPolicy": {
+              "enum": [
+                "generated",
+                "provided"
+              ]
+            },
+            "machineID": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "ssh": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "authorizedKeys"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    },
+                    "authorizedKeys": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "$ref": "#/$defs/sshAuthorizedKey"
+                      }
+                    },
+                    "installerAuthorizedKeys": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "$ref": "#/$defs/sshAuthorizedKey"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "machineIDPolicy": {
+                    "const": "provided"
+                  }
+                },
+                "required": [
+                  "machineIDPolicy"
+                ]
+              },
+              "then": {
+                "required": [
+                  "machineID"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "machineIDPolicy": {
+                    "const": "generated"
+                  }
+                },
+                "required": [
+                  "machineIDPolicy"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "machineID"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "selector"
+          ]
+        }
+      ]
+    },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowDestructiveInstall",
+        "targetDisk",
+        "rootSlots",
+        "statePartition"
+      ],
+      "properties": {
+        "allowDestructiveInstall": {
+          "description": "Must be explicitly true before katlos-install may wipe or repartition the target root disk.",
+          "const": true
+        },
+        "targetDisk": {
+          "$ref": "#/$defs/diskSelector"
+        },
+        "rootSlots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rootA",
+            "rootB"
+          ],
+          "properties": {
+            "rootA": {
+              "$ref": "#/$defs/rootSlot"
+            },
+            "rootB": {
+              "$ref": "#/$defs/rootSlot"
+            }
+          }
+        },
+        "statePartition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filesystem",
+            "sizePolicy"
+          ],
+          "properties": {
+            "filesystem": {
+              "enum": [
+                "ext4",
+                "xfs"
+              ]
+            },
+            "sizePolicy": {
+              "const": "remaining"
+            },
+            "minSizeMiB": {
+              "type": "integer",
+              "minimum": 1024
+            }
+          }
+        },
+        "etcdPartition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "filesystem": {
+              "enum": [
+                "ext4",
+                "xfs"
+              ]
+            },
+            "sizeMiB": {
+              "type": "integer",
+              "minimum": 1024
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              },
+              "then": {
+                "required": [
+                  "filesystem",
+                  "sizeMiB"
+                ]
+              }
+            }
+          ]
+        },
+        "extraDisks": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/extraDisk"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtimeRoot"
+      ],
+      "properties": {
+        "runtimeRoot": {
+          "$ref": "#/$defs/artifact"
+        },
+        "uki": {
+          "$ref": "#/$defs/artifact"
+        },
+        "sysexts": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/namedArtifact"
+          }
+        },
+        "confexts": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/namedArtifact"
+          }
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roots"
+      ],
+      "properties": {
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/dnsLabel"
+              },
+              "type": {
+                "enum": [
+                  "ca-certificate-pem",
+                  "minisign-public-key",
+                  "cosign-public-key"
+                ]
+              },
+              "inline": {
+                "type": "string",
+                "minLength": 1
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "inline"
+                ]
+              },
+              {
+                "required": [
+                  "url",
+                  "sha256"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "boot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "efi",
+        "installBootloader",
+        "loaderEntryName"
+      ],
+      "properties": {
+        "efi": {
+          "const": true
+        },
+        "installBootloader": {
+          "type": "boolean"
+        },
+        "loaderEntryName": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "kernelArgs": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+(=\\S+)?$"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "diskSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "byID": {
+          "type": "string",
+          "pattern": "^/dev/disk/by-id/[^/]+$"
+        },
+        "wwn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serial": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minSizeMiB": {
+          "type": "integer",
+          "minimum": 8192
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "byID"
+          ]
+        },
+        {
+          "required": [
+            "wwn"
+          ]
+        },
+        {
+          "required": [
+            "serial"
+          ]
+        }
+      ]
+    },
+    "dnsLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "extraDisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "selector",
+        "filesystem",
+        "mount"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "selector": {
+          "$ref": "#/$defs/diskSelector"
+        },
+        "filesystem": {
+          "enum": [
+            "ext4",
+            "xfs"
+          ]
+        },
+        "mount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/(srv|var/lib/katl/extra)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+            },
+            "options": {
+              "type": "array",
+              "default": [],
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.=-]+$"
+              }
+            }
+          }
+        },
+        "wipe": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "generationID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "macAddress": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"
+    },
+    "namedArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "rootSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sizeMiB"
+      ],
+      "properties": {
+        "sizeMiB": {
+          "type": "integer",
+          "minimum": 1024
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sshAuthorizedKey": {
+      "type": "string",
+      "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) [A-Za-z0-9+/=]+( .*)?$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}

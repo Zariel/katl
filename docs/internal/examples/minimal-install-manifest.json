@@ -1,0 +1,71 @@
+{
+  "apiVersion": "katl.install/v1alpha1",
+  "kind": "InstallManifest",
+  "metadata": {
+    "name": "lab-node-01",
+    "generation": "2026.05.31-001"
+  },
+  "node": {
+    "name": "lab-node-01",
+    "identity": {
+      "hostname": "lab-node-01",
+      "machineIDPolicy": "generated",
+      "ssh": {
+        "enabled": true,
+        "authorizedKeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+        ]
+      }
+    }
+  },
+  "install": {
+    "allowDestructiveInstall": true,
+    "targetDisk": {
+      "byID": "/dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK",
+      "minSizeMiB": 32768
+    },
+    "rootSlots": {
+      "rootA": {
+        "sizeMiB": 4096
+      },
+      "rootB": {
+        "sizeMiB": 4096
+      }
+    },
+    "statePartition": {
+      "filesystem": "ext4",
+      "sizePolicy": "remaining",
+      "minSizeMiB": 8192
+    },
+    "extraDisks": []
+  },
+  "artifacts": {
+    "runtimeRoot": {
+      "url": "https://artifacts.example.invalid/katl/runtime-root.squashfs",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "uki": {
+      "url": "https://artifacts.example.invalid/katl/katl.efi",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "sysexts": [],
+    "confexts": []
+  },
+  "trust": {
+    "roots": [
+      {
+        "name": "lab-ca",
+        "type": "ca-certificate-pem",
+        "inline": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUKATLExampleOnlyReplaceMe000000000000000wCgYIKoZIzj0EAwIwEjEQMA4GA1UEAwwHa2F0bC1jYTAeFw0yNjA1MzEwMDAwMDBaFw0yNzA1MzEwMDAwMDBaMBIxEDAOBgNVBAMMB2thdGwtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARKATLExampleOnlyReplaceMe000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000o0IwQDAOBgNVHQ8BAf8EBAMCAqQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUKATLExampleOnlyReplaceMe000000000000000wCgYIKoZIzj0EAwIDSAAwRQIgKATLExampleOnlyReplaceMe000000000000000000000000000000000CIQDKATLExampleOnlyReplaceMe0000000000000000000000000000000\n-----END CERTIFICATE-----"
+      }
+    ]
+  },
+  "boot": {
+    "efi": true,
+    "installBootloader": true,
+    "loaderEntryName": "katl",
+    "kernelArgs": [
+      "console=ttyS0"
+    ]
+  }
+}

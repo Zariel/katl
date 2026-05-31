@@ -1,0 +1,950 @@
+# Installer Image, katlos-install, and Runtime OS Design
+
+Status: working design.
+
+This document defines the first concrete split between the temporary installer
+environment, the installer application, and the installed runtime OS.
+
+## Naming
+
+Use these names consistently:
+
+```text
+Katl
+  The project.
+
+katlc
+  The user-facing compiler. It turns Katl config into install assets, update
+  artifacts, manifests, and build inputs.
+
+installer-image
+  The temporary boot environment built with mkosi. It bootstraps a target node
+  and runs katlos-install.
+
+katlos-install
+  The Go installer application that runs inside installer-image.
+
+runtime OS
+  The installed, persistent OS composition that boots from the target disk.
+  It is a pared down, tightly configured Linux system for kubeadm/kubelet, not
+  a bespoke distribution.
+```
+
+`installer-image` is built by mkosi. It should not normally contain mkosi. mkosi
+is a build-time tool used by developers, CI, or a build container. The installer
+consumes prebuilt runtime artifacts instead of building the OS on the target
+node.
+
+The runtime OS is not an upstream distribution, a separate package universe, a
+Talos-style custom appliance, or a custom userspace from scratch. It is a
+Fedora-derived system image that Katl trims and configures: kernel and initramfs,
+systemd userspace, basic networking and storage tools, SSH, a container runtime,
+Katl-owned units/agents, and the components needed for kubelet and kubeadm.
+
+The runtime OS exists only after Katl builds a generation. The initial
+implementation should think of it as a generated, Fedora-derived runtime image
+assembled from artifacts, not as a new distribution with its own package
+repository.
+
+## Component Boundaries
+
+```text
+katlc
+  renders manifests, native systemd artifacts, Ignition, mkosi inputs, and
+  artifact metadata
+
+mkosi
+  builds installer-image, runtime root artifacts, UKIs, sysexts, and confexts
+
+installer-image
+  boots the target node into a controlled live environment
+
+katlos-install
+  applies the install manifest to the target disk and writes the runtime OS
+
+runtime OS
+  runs the node after install and reaches the kubeadm-ready handoff point
+```
+
+The installer path must not become a whole-disk image clone. `katlos-install`
+owns the target disk layout, formats filesystems on the real device, writes
+bounded immutable artifacts into root slots, and creates boot metadata.
+
+## installer-image
+
+`installer-image` is a minimal live OS. For the initial implementation it should
+be Fedora-derived because Fedora packages modern systemd, mkosi already supports
+it well, and keeping the installer and runtime OS on the same base reduces early
+compatibility problems.
+
+The image is allowed to be more convenient than the runtime OS, but it should
+still be purpose-built. Its default job is to boot, configure enough network and
+storage, start SSH for debugging when configured, and run `katlos-install`.
+
+The default installer should include:
+
+```text
+kernel and initramfs
+systemd, udev, journald
+systemd-networkd and systemd-resolved
+Ignition or an Ignition-compatible first-boot apply path
+openssh-server
+ca-certificates
+curl
+util-linux, lsblk, blkid, wipefs, findmnt, mount, umount
+systemd-repart
+dosfstools
+e2fsprogs
+squashfs-tools, only if needed for validation/debugging
+bootctl and systemd-boot assets
+katlos-install
+artifact verification tool or embedded verifier support
+small debugging tools useful during bring-up
+```
+
+The default installer should not include:
+
+```text
+mkosi
+dnf as an operational install dependency
+Kubernetes components
+container runtime
+large debug suites
+build toolchains
+project logic in shell hooks
+```
+
+Extra debug packages can be added to a debug installer profile later. They
+should not be required for the normal install path.
+
+## Installer Materials
+
+The installer can receive materials in three ways:
+
+```text
+network install
+  user-managed PXE/iPXE or another network boot path boots installer-image and
+  passes URLs for Ignition and install manifest data.
+
+offline install
+  ISO/USB boots installer-image with a bundled material set.
+
+local handoff install
+  ISO/USB or VM boots installer-image without a preseeded manifest; katlos-install
+  starts a small HTTP server and waits for the initial install manifest to be
+  supplied by an operator or local test harness.
+```
+
+The material set contains:
+
+```text
+install manifest
+node selection metadata
+installer Ignition config
+runtime root artifact
+runtime UKI or kernel/initramfs assets
+systemd-boot entry templates or generation metadata
+sysext artifacts
+confext artifacts
+checksums and signatures
+trust roots needed to verify the above
+optional recovery SSH authorized keys
+```
+
+For network installs, the material set may be fetched from any user-managed
+HTTP source. For ISO installs, the material set should be embedded in the image
+or adjacent on the boot media.
+
+## Local Config Handoff
+
+Local testing and hands-on bare-metal installs need a path that does not depend
+on PXE, matchbox, or pre-rendered kernel parameters. This also supports workflows
+where a remote KVM device boots a mounted installer ISO and the operator applies
+machine configuration afterwards.
+
+If no install manifest is supplied by kernel command line, installer Ignition,
+embedded media, or a known local path, `katlos-install` should enter a waiting
+mode instead of failing immediately or mutating disks.
+
+In waiting mode, `katlos-install` should:
+
+```text
+bring up installer networking
+start a small HTTP server
+print the installer IP address, URL, and one-time token to console and journal
+serve a read-only status endpoint
+accept exactly one install manifest submission
+validate the submitted manifest before any destructive action
+stop accepting config once installation starts
+```
+
+Initial HTTP API shape:
+
+```text
+GET  /healthz
+GET  /v1/status
+POST /v1/install
+```
+
+`POST /v1/install` should accept the same install manifest used by preseeded
+network installs. The API must not introduce a separate configuration model.
+
+The handoff mode should require a one-time token by default. For local QEMU
+tests, the token can be captured from the serial log. A deliberately insecure
+test-only mode may exist, but it must be explicit.
+
+This mode is only for supplying initial installer input. It is not a long-lived
+runtime management API and it must not continue running after install begins.
+
+## Network Boot Input Contract
+
+Katl should not own how a machine is provisioned into the installer. Users may
+use matchbox, hand-written iPXE, DHCP/TFTP tooling, a USB stick that chainloads
+network assets, or another local boot process.
+
+Katl owns:
+
+```text
+installer-image artifacts
+installer Ignition input contract
+install manifest schema
+runtime artifacts
+artifact metadata and verification inputs
+```
+
+Katl does not own:
+
+```text
+DHCP configuration
+TFTP services
+iPXE hosting
+matchbox groups or profiles
+firmware boot order management
+site provisioning workflow
+```
+
+The first network boot flow should therefore be generic:
+
+```text
+1. User-managed boot infrastructure boots installer-image.
+2. Boot configuration passes an Ignition URL or embeds equivalent Ignition input.
+3. installer-image boots and applies installer Ignition.
+4. Ignition configures the live installer environment and leaves install input
+   for katlos-install.
+5. katlos-install downloads/verifies artifacts, prepares the target disk, lays
+   out the runtime OS, installs boot metadata, and reboots.
+6. The machine boots from the installed disk, assuming firmware boot order is
+   already correct or katlos-install successfully creates an EFI boot entry.
+```
+
+Any PXE/iPXE/matchbox examples should stay documentation-only unless the project
+explicitly expands scope. Examples should show the boot input contract, not make
+Katl responsible for provisioning. A boot configuration may pass:
+
+```text
+ignition.config.url=<installer ignition URL>
+katl.node=<optional explicit node name>
+katl.install.mode=auto
+console=...
+```
+
+The durable install policy should be in the install manifest consumed by
+`katlos-install`, not embedded in PXE/iPXE/matchbox logic.
+
+## Ignition Role
+
+Ignition remains useful, but it should be scoped.
+
+Installer Ignition may configure:
+
+```text
+hostname for the live installer environment
+networking needed to fetch install materials, including static networkd config
+DNS, NTP, proxy, and CA trust needed during install
+SSH authorized keys for installer access
+installer manifest URL or embedded install manifest
+artifact base URLs or mirror hints, if not already in the manifest
+artifact verification trust roots
+node selectors or explicit node name
+autoinstall, hold-for-debug, or wait-for-config flags
+temporary files consumed by katlos-install under /etc/katl or /run/katl
+non-target device discovery or site-specific installer environment setup
+```
+
+Installer Ignition must not own:
+
+```text
+root disk partitioning policy
+formatting or mounting persistent node disks as an action
+runtime artifact installation
+bootloader installation
+steady-state runtime configuration
+```
+
+Disk formatting and mount locations for the installed node belong in the install
+manifest. Ignition may deliver that manifest or write it to disk for
+`katlos-install`, but `katlos-install` is the component that validates and
+applies it. This includes:
+
+```text
+target root disk selector
+destructive install permission
+root-a/root-b sizes
+state partition policy
+extra data disk selectors
+extra data disk filesystems
+extra data disk mount points
+runtime systemd mount units or generated fstab-equivalent artifacts
+```
+
+## Install Manifest
+
+The install manifest is the durable user input consumed by `katlos-install`.
+Installer Ignition, kernel arguments, embedded media, and local handoff mode may
+all deliver the manifest, but they must not define a separate install policy
+model.
+
+The initial schema is versioned as:
+
+```text
+apiVersion: katl.install/v1alpha1
+kind: InstallManifest
+```
+
+The schema lives at:
+
+```text
+docs/internal/schemas/install-manifest-v1alpha1.schema.json
+```
+
+A minimal manifest example lives at:
+
+```text
+docs/internal/examples/minimal-install-manifest.json
+```
+
+The v1alpha1 manifest contains these top-level sections:
+
+```text
+metadata
+  manifest name, generation identifier, and optional labels
+
+node
+  explicit node name or hardware selector, plus hostname, machine-id policy,
+  and runtime or installer SSH authorized keys
+
+install
+  destructive install guard, target root disk selector, root-a/root-b sizes,
+  state partition policy, optional etcd partition, and extra data disks
+
+artifacts
+  runtime root artifact, optional UKI, sysexts, confexts, and required digests
+
+trust
+  CA certificates or artifact verification public keys used before fetching or
+  trusting install materials
+
+boot
+  EFI-only boot settings, bootloader install policy, loader entry name, and
+  additional kernel arguments
+```
+
+The manifest is intentionally explicit about destructive installation:
+
+```text
+install.allowDestructiveInstall: true
+```
+
+Missing, false, or null values must fail validation before disk mutation. This
+guard is separate from any `katl.install.mode=auto` boot hint; autoinstall may
+start the state machine, but the manifest must still authorize destructive disk
+changes.
+
+Target disk selectors must prefer stable hardware identity such as
+`/dev/disk/by-id`, WWN, or serial number. Short kernel device names such as
+`/dev/sda` are not valid manifest selectors because they are not stable enough
+for destructive operations.
+
+The schema can validate required fields, value shape, safe enum values, exact
+duplicate arrays, and reserved mount path syntax. `katlos-install` must add
+semantic validation for facts that need hardware discovery or normalized path
+comparison:
+
+```text
+target disk
+  selector must resolve to exactly one whole disk, must not be read-only, and
+  must satisfy install.targetDisk.minSizeMiB when set
+
+destructive guard
+  install.allowDestructiveInstall must be true before wipefs, repartitioning,
+  formatting, or root slot writes
+
+root slots
+  root-a and root-b sizes must both fit the runtime root artifact, must be large
+  enough for update headroom, and must leave enough room for ESP, optional
+  XBOOTLDR, optional etcd, and minimum state partition size
+
+state partition
+  sizePolicy=remaining means the state partition consumes remaining disk after
+  fixed partitions; minSizeMiB must be satisfied after planning
+
+artifacts
+  every install artifact must have a URL and SHA-256 digest; digest mismatches
+  fail before mutation where possible and before boot metadata is installed
+
+trust roots
+  each remote trust root must itself be pinned by digest; trust material must be
+  loaded before artifact verification
+
+SSH and identity
+  SSH enabled requires at least one authorized key; machineIDPolicy=provided
+  requires a 32-character lowercase hex machine ID; generated machine IDs must
+  be recorded in install metadata and boot settings
+
+extra disks
+  selectors must not resolve to the target root disk or its partitions; mount
+  paths must normalize under /srv or /var/lib/katl/extra; duplicate normalized
+  mount paths, parent/child mount conflicts, and reserved paths such as /,
+  /boot, /efi, /usr, /etc, /run, /tmp, /var, /var/lib/kubelet,
+  /var/lib/containerd, and /var/lib/etcd must be rejected
+```
+
+Runtime first-boot Ignition or seed material may configure:
+
+```text
+node identity seed
+initial hostname
+initial SSH access
+activation pointers for confext and sysext artifacts
+first-boot marker files
+```
+
+Long-lived `/etc` configuration should come from generated confext artifacts.
+Ignition is bootstrap material, not the steady-state configuration manager.
+
+## katlos-install
+
+`katlos-install` is a Go application because the installer needs typed plans,
+idempotent state transitions, testable validation, and clear command
+boundaries.
+
+It is responsible for:
+
+```text
+reading kernel command line and installer environment
+starting local config handoff when no manifest is preseeded
+loading the install manifest
+selecting the node config
+collecting hardware facts
+validating target disk identity and size
+validating extra disk identity, filesystem, and mount requests
+verifying artifact signatures and digests
+building an install plan
+persisting install progress when the state partition exists
+wiping signatures when explicitly allowed
+creating the GPT partition table
+creating or validating partitions
+formatting writable filesystems
+writing immutable runtime artifacts into root slots
+installing systemd-boot
+installing UKIs and loader entries
+installing sysext and confext artifacts
+generating runtime mount units for /var, /etc/kubernetes, and extra disks
+writing runtime seed data
+writing install records under /var/lib/katl
+verifying the final mounted layout
+rebooting into the runtime OS
+```
+
+It is not responsible for:
+
+```text
+building the runtime OS with mkosi
+running Kubernetes
+running kubeadm
+joining the cluster
+long-term node updates
+general configuration management
+```
+
+### State Machine
+
+The installer should be structured as idempotent states:
+
+```text
+DiscoverInstallerInput
+WaitForLocalConfig, when no manifest is preseeded
+LoadManifest
+SelectNode
+CollectHardwareFacts
+VerifyTrust
+PlanInstall
+PrepareDisk
+CreatePartitions
+FormatFilesystems
+MountTarget
+InstallRootSlot
+InstallBootArtifacts
+InstallExtensions
+InstallSeed
+InstallMountUnits
+WriteInstallRecord
+VerifyTarget
+Reboot
+```
+
+Each state should have typed inputs and outputs. Command execution should sit at
+explicit boundaries so unit tests can cover planning and validation without
+booting a VM.
+
+Before the state partition exists, progress is recoverable by inspecting the
+target disk. After it exists, `katlos-install` should persist checkpoints under:
+
+```text
+/mnt/target/var/lib/katl/install/state.json
+/mnt/target/var/lib/katl/install/manifest.json
+/mnt/target/var/lib/katl/install/logs/
+```
+
+The installer should be safe to re-run against a partially installed target. It
+may continue, repair, or refuse, but it must not silently destroy data unless
+the manifest explicitly allows destructive install.
+
+## Does katlos-install Use mkosi?
+
+No. mkosi builds the artifacts before install time:
+
+```text
+runtime root artifact
+runtime UKI
+sysext artifacts
+confext artifacts
+installer-image
+```
+
+`katlos-install` consumes those artifacts. It may call system tools such as
+`systemd-repart`, `mkfs.*`, `mount`, `bootctl`, and `sfdisk` where appropriate,
+but the installer logic and decisions live in Go.
+
+The normal install flow is:
+
+```text
+build runtime artifact with mkosi
+boot installer-image
+verify runtime artifact
+partition and format the real target disk
+write the runtime artifact into a root slot
+write boot and state metadata
+reboot into the runtime OS
+```
+
+The installer should not install packages onto the target with `dnf`, and it
+should not build a root filesystem on the target and then squash it.
+
+## Runtime OS Composition
+
+The runtime OS should also be Fedora-derived initially. The goal is not to
+expose Fedora as the product surface, but Fedora gives Katl a practical package
+source for a modern systemd-native runtime image.
+
+The runtime should contain the smallest practical set of packages and generated
+units needed to become a kubeadm-ready node:
+
+```text
+kernel and initramfs tooling needed for the target boot model
+systemd
+systemd-udev
+systemd-networkd
+systemd-resolved
+systemd-timesyncd
+systemd-sysext
+systemd-confext
+systemd-tmpfiles
+systemd-sysctl
+systemd-modules-load
+ca-certificates
+util-linux
+iproute
+kmod
+nftables or other required packet filtering base
+openssh-server
+containerd
+runc or crun
+katl node/update agent, when it exists
+katlctl, when it exists
+```
+
+This is the core of the runtime OS: kernel, systemd, SSH access, and enough host
+OS to run kubelet/kubeadm correctly and repeatably. It is not expected to look
+like a general-purpose Fedora Server install, but it should remain recognizable
+and debuggable as a normal Linux system.
+
+SSH should be available on the installed runtime for this project audience. This
+is an intentional part of the operating model, not just a recovery escape hatch.
+The default policy should be key-only access, no password login, and generated
+systemd/sshd configuration rather than an ad-hoc mutable setup.
+
+A booted generation is assembled from these layers:
+
+```text
+runtime root artifact
+  read-only base root containing systemd, host plumbing, container runtime,
+  Katl-owned units, SSH configuration, and mount/update scaffolding
+
+UKI and boot metadata
+  kernel, initramfs, command line, systemd-boot entry, and boot attempt policy
+
+Kubernetes sysext
+  kubelet, kubeadm, kubectl, and closely related binaries
+
+generated confext
+  node and role configuration under /etc
+
+writable state
+  one writable state partition mounted at /var, plus explicit systemd bind
+  mounts only for persistent paths that need to appear outside /var
+```
+
+Kubelet service ownership needs to stay test-driven. The likely starting point
+is that the base root carries the unit skeleton and ordering that Katl controls,
+the Kubernetes sysext carries binaries, and confext carries node-specific
+configuration and drop-ins.
+
+The runtime image should not include:
+
+```text
+mkosi
+dnf as a runtime management interface
+build toolchain
+Kubernetes add-ons
+Helm
+Flux
+Cilium
+CoreDNS
+Rook
+large debug tools
+application workloads
+```
+
+Kubernetes binaries should initially be delivered as a sysext unless boot tests
+show that kubelet ordering or operational simplicity is better with them in the
+base root artifact.
+
+## Disk Format
+
+The default installed OS disk uses GPT and EFI-only boot.
+
+Recommended initial layout:
+
+```text
+esp
+  type: esp
+  filesystem: vfat
+  mount: /efi
+  mutable by Katl install/update tooling only
+
+xbootldr
+  type: xbootldr, optional
+  filesystem: vfat initially
+  mount: /boot
+  contains UKIs and systemd-boot entry metadata
+  mutable by Katl install/update tooling only
+
+root-a
+  type: root-x86-64 or root for the target architecture
+  filesystem: squashfs image written directly into the partition
+  mount: /
+  size: fixed by profile
+  immutable
+
+root-b
+  type: root-x86-64 or root for the target architecture
+  filesystem: squashfs image written directly into the partition
+  size: fixed by profile
+  inactive root slot
+  immutable
+
+state
+  type: var
+  filesystem: ext4 initially
+  mount: /var
+  size: remaining disk after boot and root slots
+  mutable persistent node state
+
+etcd, optional
+  type: linux-generic
+  filesystem: ext4 initially
+  mount: /var/lib/etcd
+  mutable persistent control-plane state
+```
+
+The default storage model is intentionally simple:
+
+```text
+root-a and root-b
+  fixed-size, read-only runtime slots
+
+state
+  the rest of the disk, formatted writable and mounted at /var
+```
+
+Applications that already write under `/var` should use the state partition
+directly. This includes the expected defaults for kubelet, containerd, journald,
+Katl state, and most host services. Katl should avoid inventing bind mounts for
+normal `/var` paths unless a separate partition or special projection is needed.
+
+Systemd mount units and tmpfiles rules should provide the stable storage view:
+
+```text
+var.mount
+  mounts KATL_STATE at /var
+
+optional var-lib-etcd.mount
+  mounts a dedicated control-plane etcd partition at /var/lib/etcd
+
+etc-kubernetes.mount
+  bind mounts persistent kubeadm-owned state from /var/lib/katl/kubernetes
+  into /etc/kubernetes
+```
+
+This keeps the immutable runtime root small while making writable application
+state normal and predictable.
+
+For the first implementation, placing UKIs and loader entries on the ESP is
+acceptable and may be simpler. If Katl uses XBOOTLDR, it should use a firmware
+and `systemd-boot` readable filesystem by default. Use vfat initially rather
+than ext4 unless Katl explicitly ships and validates the required UEFI
+filesystem driver path.
+
+Use labels and partition UUIDs to disambiguate slots:
+
+```text
+KATL_ESP
+KATL_XBOOTLDR
+KATL_ROOT_A
+KATL_ROOT_B
+KATL_STATE
+KATL_ETCD
+```
+
+Because there are two root slots, boot entries should point at the selected root
+partition explicitly with its partition UUID. Do not rely on generic root
+auto-discovery to choose between `root-a` and `root-b`.
+
+The generated kernel command line for a generation should be explicit:
+
+```text
+root=PARTUUID=<selected-root-slot-partuuid> rootfstype=squashfs ro
+```
+
+Katl should also mark inactive root slots with GPT attributes or boot metadata
+that prevent accidental auto-selection. This needs to be tested with
+`systemd-gpt-auto-generator`; agents should not depend on default root discovery
+while two root partitions exist.
+
+The initial root artifact should be a SquashFS filesystem image written into
+the selected root partition. This keeps the root naturally read-only and makes
+updates a bounded partition write instead of a whole-disk rewrite. Later designs
+can evaluate EROFS, dm-verity, or a root image with separate verity partitions.
+
+## Mutability Model
+
+Immutable by default:
+
+```text
+/
+/usr
+runtime root slots
+sysext artifacts
+confext artifacts
+booted UKI
+systemd-boot entries outside Katl update operations
+```
+
+Mutable persistent state:
+
+```text
+/var
+/var/lib/katl
+/var/lib/kubelet
+/var/lib/containerd
+/var/lib/etcd
+/var/log/journal, if persistent journald is enabled
+```
+
+The writable state partition is the default home for application and node state.
+Prefer native paths under `/var` over bind mounts when the application already
+uses `/var`. Use bind mounts for paths outside `/var` that must be persistent,
+most notably kubeadm-owned files under `/etc/kubernetes`.
+
+Mutable projected state:
+
+```text
+/etc/machine-id
+/etc/kubernetes
+```
+
+`/etc/machine-id` needs special handling because it is persistent identity but
+the root and steady-state `/etc` are otherwise immutable. The base root should
+ship an empty `/etc/machine-id` placeholder, and Katl must establish a stable
+machine ID before normal services depend on it.
+
+Candidate mechanisms:
+
+```text
+installer writes a per-node boot entry with systemd.machine_id=
+initrd establishes /etc/machine-id from persistent state before systemd proper
+an early mount path binds /var/lib/katl/identity/machine-id onto /etc/machine-id
+```
+
+Initial recommendation: `katlos-install` generates the stable machine ID during
+install, records it under `/var/lib/katl/identity/machine-id`, and renders
+`systemd.machine_id=<id>` into the installed generation's boot entry. That gives
+PID 1 the identity before normal mounts or services run. Later work can move
+this into the initrd if kernel command line exposure becomes unacceptable.
+
+This must be proven in QEMU. A late normal service is not sufficient because
+systemd and D-Bus consumers read machine identity early in boot.
+
+Kubeadm-owned state under `/etc/kubernetes` must be persistent and writable,
+but it must not make all of `/etc` mutable. Confext should not own this
+subtree. Project it from:
+
+```text
+/var/lib/katl/kubernetes/etc-kubernetes
+```
+
+onto:
+
+```text
+/etc/kubernetes
+```
+
+with a systemd bind mount unit ordered before kubelet and kubeadm automation.
+If confext overlays `/etc`, this bind mount should be validated after confext is
+active so the overlay does not hide the persistent Kubernetes subtree.
+
+Ephemeral state:
+
+```text
+/run
+/tmp
+installer runtime state before target /var exists
+recovery overlays unless explicitly committed by repair tooling
+```
+
+Do not store persistent node identity or Kubernetes identity in `/run`.
+
+## Boot And Update Metadata
+
+Katl should store generation metadata under:
+
+```text
+/var/lib/katl/generations/
+/var/lib/katl/boot/
+/var/lib/katl/artifacts/
+```
+
+Do not place every installed sysext or confext directly in the global systemd
+search paths. `systemd-sysext` and `systemd-confext` activate all unmasked
+extensions they find in their default directories, which would mix generations
+and break rollback.
+
+Katl should store artifacts generation-scoped, for example:
+
+```text
+/var/lib/katl/generations/<generation-id>/sysext/
+/var/lib/katl/generations/<generation-id>/confext/
+```
+
+At boot, Katl should expose only the selected generation's extensions to systemd,
+for example by creating symlinks under:
+
+```text
+/run/extensions/
+/run/confexts/
+```
+
+or another explicit activation mechanism that is proven in QEMU. Rollback must
+switch the active root slot, active sysext set, and active confext set together.
+A small Katl generation selector unit or systemd generator should recreate these
+`/run` links each boot after persistent state is available and before
+`systemd-sysext.service` and `systemd-confext.service` run.
+
+Each generation record should include:
+
+```text
+generation id
+runtime version
+root slot
+root partition UUID
+root artifact digest
+UKI path
+sysext set, activation paths, and digests
+confext set, activation paths, and digests
+kernel command line
+created timestamp
+boot attempt state
+health state
+```
+
+The first install writes `root-a` and marks it pending. Runtime health
+completion marks it good. Updates later write `root-b`, set it as the next boot
+candidate, and rely on systemd-boot boot counting plus Katl health state to
+decide whether to keep or roll back.
+
+`katlos-install` must render final loader entries on the target node because the
+entries need final partition UUIDs, generated machine identity policy, boot
+attempt naming, and generation metadata. Build-time assets may provide templates,
+but not final installed entries.
+
+## Runtime Mount Ordering
+
+The runtime OS should reach local filesystem and extension activation in this
+shape:
+
+```text
+root slot mounted read-only
+/var mounted from KATL_STATE
+optional /var/lib/etcd mounted
+stable machine-id established by the chosen early-boot mechanism
+systemd-sysext activated
+systemd-confext activated
+/etc/kubernetes bind mounted from /var/lib/katl/kubernetes/etc-kubernetes
+network online
+time synchronized
+containerd running
+kubelet available
+katl-kubeadm-ready.target reached
+```
+
+Generated mount units and service ordering must be tested in QEMU because this
+is where immutable root, confext, kubeadm, and systemd boot ordering intersect.
+
+## Open Questions
+
+1. Should Kubernetes binaries start in the base image or in a sysext?
+
+   Initial recommendation: sysext, unless kubelet ordering makes this painful.
+
+2. Should `systemd-repart` be the only partitioning backend?
+
+   Initial recommendation: compile to repart definitions where possible, but let
+   `katlos-install` fall back to explicit partitioning commands for cases where
+   repart is not expressive enough.
+
+3. Should `etcd` always get a separate partition on control-plane nodes?
+
+   Initial recommendation: support it as a profile option early, but keep the
+   default VM layout simple until install tests are reliable.
+
+4. Should the runtime root use SquashFS long-term?
+
+   Initial recommendation: use SquashFS root slots first. Revisit EROFS and
+   dm-verity after the install and update loop works.
+
+5. Should installer and recovery SSH be enabled by default?
+
+   Initial recommendation: key-only SSH should be enabled for installer,
+   runtime, and recovery profiles because the target users need practical
+   debugging access.
