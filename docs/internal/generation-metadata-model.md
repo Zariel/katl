@@ -85,6 +85,9 @@ sysext activation set
 confext activation set
 ```
 
+Rollback selection rules are defined in
+`docs/internal/rollback-selection-rules.md`.
+
 ## Deferred Fields
 
 The first model intentionally defers:

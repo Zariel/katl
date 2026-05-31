@@ -83,6 +83,8 @@ previous known-good generation on the next boot.
 
 Later work may use systemd-boot boot counting for multiple attempts, but the
 first policy should keep rollback behavior easy to validate in QEMU.
+Rollback selection is defined in
+`docs/internal/rollback-selection-rules.md`.
 
 ## First Install
 
