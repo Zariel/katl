@@ -114,33 +114,6 @@ The system produces two separate operating environments:
 2. **Runtime environment**
    The installed node OS that boots from disk and prepares the node for kubeadm.
 
-## 4.1 Tool boundaries
-
-Katl should keep a clear boundary between product logic and orchestration glue.
-
-`mkosi` is the image construction backend. It should build installer images,
-runtime images, sysexts, confexts, initrds, UKIs, and related artifacts from
-explicit inputs. It should not become the installer state machine.
-
-Thin scripts are acceptable for build and local boot orchestration. Examples
-include invoking a containerized mkosi builder, calling `qemu-system-x86_64`,
-capturing serial logs, and cleaning generated artifacts. These scripts should
-stay boring: argument forwarding, environment setup, path setup, and tool
-execution.
-
-Go should be used for Katl product behavior that benefits from types and unit
-tests: `katlc`, config validation, install plans, disk layout decisions,
-boot-entry generation, update/rollback state, node agents, and reusable test
-libraries. Go should not be introduced merely to wrap `mkosi`, `podman`, QEMU,
-or `virsh` during early scaffolding.
-
-Committed project configuration must not depend on a developer's host layout.
-Do not bake in NixOS-specific paths such as `/run/current-system`, `/nix/store`,
-or `/etc/profiles`. Nix shells, direnv, and host-specific firmware locations
-are development conveniences; the committed build and boot contracts should use
-repo-relative paths, `PATH`, containerized tools, and explicit environment
-variables for local overrides.
-
 ## 5. Key design choice: installer is not `dd`
 
 The installer must not simply write a full raw disk image to a disk.
@@ -1490,26 +1463,18 @@ The GitHub Actions path for end users should not require privileged virtualizati
 
 ## 23. Milestones
 
-## Milestone 1: minimal installer OS boots
+## Milestone 1: mkosi runtime boots
 
 Deliverables:
 
 ```text
-minimal installer OS image built by mkosi
-thin containerized mkosi build wrapper
+minimal runtime image
 systemd boot
-deterministic Katl hello unit
-direct QEMU or mkosi vm boot path
-serial log capture
-bounded smoke check for the hello signal
-developer docs for build, boot, test, and cleanup
+networkd config
+SSH access
+read-only root
+writable /var
 ```
-
-Milestone 1 intentionally avoids real installer behavior. It should not
-partition disks, format filesystems, install a runtime root, implement `katlc`,
-require libvirt, or introduce a Go VM runner merely to invoke QEMU. A thin
-script is enough for build and boot orchestration until the smoke harness has
-state or parsing logic that clearly benefits from Go.
 
 ## Milestone 2: installer installs runtime
 

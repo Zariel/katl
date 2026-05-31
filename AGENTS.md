@@ -13,13 +13,13 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Do not hide native systemd configuration behind a lossy abstraction. Convenience config must compile to native artifacts and allow passthrough.
 - Do not bake host-specific paths into committed project config. In particular, avoid `/run/current-system`, `/nix/store`, `/etc/profiles`, and user home paths. Use `PATH`, repo-relative paths, containerized builders, or explicit environment variables for local overrides.
 
-## M1 Implementation Boundary
+## Scaffolding Boundary
 
-- M1 proves a minimal installer OS can be built with mkosi and booted locally.
-- The build path should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
-- The boot path should use a thin direct QEMU script or `mkosi vm` when adequate. Do not add a Go VM runner for M1 unless the user explicitly asks for it.
+- Early milestones should prove one small build, boot, or test loop at a time before expanding scope.
+- Build paths should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
+- Boot paths should use a thin direct QEMU script or `mkosi vm` when adequate. Do not add a Go VM runner unless the user explicitly asks for it or the wrapper has meaningful state/parsing that needs tests.
 - The first smoke check may be a simple timeout plus serial-log match for `Katl hello`.
-- Keep libvirt, multi-node orchestration, GitHub Actions, real disk installation, and `katlc` implementation out of M1 unless the user explicitly changes the scope.
+- Keep libvirt, multi-node orchestration, CI/end-user publishing, real disk installation, and `katlc` implementation out of first-boot scaffolding unless the user explicitly changes the scope.
 
 ## Runtime Model
 
@@ -69,5 +69,8 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 ## Documentation
 
 - Keep examples using Katl naming: `katl`, `katlc`, `katlctl`, `/etc/katl`, `/var/lib/katl`, and `katl.*` kernel arguments.
-- Update `docs/internal/initial-design.md` when architectural decisions change.
+- During early scaffolding, do not spend time maintaining broad project docs unless the user explicitly asks. These docs are expected to change quickly.
+- Prefer Bead notes for transient findings, command results, and implementation discoveries.
+- Update `docs/internal/initial-design.md` only for durable architecture decisions or explicit user requests.
+- Update focused operational docs only when commands or prerequisites are stable enough that another developer can run them.
 - Record unresolved design choices as open questions instead of burying uncertainty in examples.
