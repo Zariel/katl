@@ -81,6 +81,13 @@ The image is allowed to be more convenient than the runtime OS, but it should
 still be purpose-built. Its default job is to boot, configure enough network and
 storage, start SSH for debugging when configured, and run `katlos-install`.
 
+For v0, the shipped installer boot artifact should be a single installer UKI.
+That UKI should contain the installer kernel, initrd, embedded command line, and
+the installer userspace needed to run `katlos-install`. Local QEMU tests, PXE
+chains, and later ISO/USB wrappers should all be able to consume that same UKI
+artifact. Signing and additional wrapper artifacts can come later; the first
+milestone should prove one bootable UKI with the installer inside it.
+
 The default installer should include:
 
 ```text
@@ -540,6 +547,138 @@ reboot into the runtime OS
 
 The installer should not install packages onto the target with `dnf`, and it
 should not build a root filesystem on the target and then squash it.
+
+## Runtime Root Artifact Contract
+
+For v0, the runtime root artifact is produced on the build side, before the
+machine boots the installer:
+
+```text
+katlc renders build inputs and manifests
+mkosi builds the Fedora-derived runtime root tree
+the build packages that tree as a SquashFS filesystem image
+the build emits metadata next to the image
+installer-image receives or fetches the image and metadata
+katlos-install verifies and writes the image into root-a or root-b
+```
+
+The build-side mkosi profile should produce the runtime root from declared
+packages, generated Katl units, and rendered configuration inputs. The final
+SquashFS packaging step is also a build-side operation. `katlc` may render the
+metadata and manifest references, but the artifact bytes and their digest must
+be fixed before a target node begins installation.
+
+The target machine must not assemble the Fedora runtime from packages during
+install. It consumes a prebuilt, hashed artifact.
+
+The first artifact format should be a SquashFS filesystem image. The root slot
+partition contains the SquashFS image bytes directly, starting at byte offset 0.
+It is not an ext4 filesystem containing a SquashFS file, and it is not an
+extracted tree that gets squashed on the target.
+
+Artifact metadata should record at least:
+
+```text
+format: squashfs
+path or URL
+size in bytes
+sha256 digest of exactly the SquashFS artifact bytes
+compression
+generation id
+target architecture
+runtime version or build id
+root filesystem feature requirements, if any
+compatible boot artifact or UKI digest and command-line metadata
+compatible sysext and confext artifact digests
+minimum root slot size
+created timestamp
+```
+
+The install manifest should copy or reference this metadata. `katlos-install`
+must treat manifest artifact metadata and fetched artifact metadata as the same
+contract: mismatched URL, digest, size, generation id, architecture, or
+compatible boot artifact metadata is a manifest/artifact mismatch and fails
+before boot metadata changes.
+
+`katlos-install` should write a root slot as a byte-for-byte artifact install:
+
+```text
+verify artifact digest before destructive actions
+select root-a for first install, or the inactive slot for updates
+verify the artifact size fits the selected partition
+stream artifact bytes to the selected block device
+flush the block device
+verify the first artifact-size bytes on disk, or mount the slot read-only and
+  validate filesystem metadata
+render boot metadata only after the slot is verified
+```
+
+Verification must hash the artifact byte range, not the whole partition. Root
+slot partitions are intentionally larger than many artifacts, and trailing bytes
+after the SquashFS image are ignored. The preferred verification is:
+
+```text
+hash the fetched artifact while downloading or before mutation
+write exactly size-bytes to the selected root slot
+flush and reopen the block device
+read exactly size-bytes from offset 0
+hash that byte range and compare with metadata.sha256
+optionally mount the slot read-only with rootfstype=squashfs and inspect
+  filesystem metadata as an additional validation, not as a replacement for the
+  byte-range digest check
+```
+
+Trailing partition bytes are not part of the artifact digest. `katlos-install`
+may leave old trailing bytes in place after writing a smaller artifact, but boot
+metadata and verification must never depend on those bytes. A later hardening
+step can zero the remainder of the partition if tests show that it is useful for
+forensics or reproducibility.
+
+This layout works across 512e and 4Kn disks as long as Katl creates aligned GPT
+partitions, for example on 1 MiB boundaries. SquashFS is a filesystem image at
+the start of the partition, and the kernel block layer handles the device
+logical sector size. The installer should use normal buffered file IO or
+otherwise respect block-device alignment; it should not make correctness depend
+on fragile `O_DIRECT` assumptions.
+
+The boot entry for a generation should point at the selected slot explicitly:
+
+```text
+root=PARTUUID=<selected-root-slot-partuuid> rootfstype=squashfs ro
+```
+
+The boot metadata points at the root slot partition, not at an artifact URL or
+file path. Generation metadata under `/var/lib/katl/generations/` records the
+artifact URL, digest, selected slot, selected slot PARTUUID, UKI path, kernel
+command line, and extension set that were verified together.
+
+The target node explicitly does not:
+
+```text
+run mkosi
+install Fedora packages with dnf
+assemble a runtime root tree from packages
+create the SquashFS runtime image
+modify the SquashFS contents after verification
+derive boot metadata from an unverified artifact
+```
+
+Open questions before implementation proceeds:
+
+```text
+Should the build emit artifact metadata as a standalone JSON document, as part
+  of the install manifest, or both?
+
+Should slot write verification always perform both byte-range hashing and a
+  read-only SquashFS mount, or should the mount check be a debug/integration
+  gate only?
+
+Should the installer zero unused trailing bytes in root slots for
+  reproducibility, or leave them alone to keep writes bounded to artifact size?
+
+Should UKI compatibility be represented as a direct UKI digest, a boot metadata
+  digest, or a generation record digest once update signing is introduced?
+```
 
 ## Runtime OS Composition
 
