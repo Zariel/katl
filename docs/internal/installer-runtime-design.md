@@ -1087,6 +1087,8 @@ The first install writes `root-a` and marks it pending. Runtime health
 completion marks it good. Updates later write `root-b`, set it as the next boot
 candidate, and rely on systemd-boot boot counting plus Katl health state to
 decide whether to keep or roll back.
+The focused boot health decision is recorded in
+`docs/internal/boot-health-semantics.md`.
 
 `katlos-install` must render final loader entries on the target node because the
 entries need final partition UUIDs, generated machine identity policy, boot

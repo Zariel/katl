@@ -65,6 +65,9 @@ Runtime health completion later marks the same generation good. The first
 install path does not need inactive-slot rollback because there is no previous
 installed generation.
 
+Boot attempt and health state transitions are defined in
+`docs/internal/boot-health-semantics.md`.
+
 ## Updates
 
 Updates create a new generation directory before switching boot selection. The
