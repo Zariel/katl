@@ -1,4 +1,4 @@
-package installer
+package disk
 
 import (
 	"context"
@@ -39,8 +39,14 @@ func TestDiskExecutorRefusesDestructiveActionsWithoutPermission(t *testing.T) {
 
 func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	commands := &NoopCommandRunner{}
-	store := &MemoryStateStore{}
-	_, err := (DiskExecutor{Commands: commands, Store: store}).Execute(context.Background(), DiskExecutionRequest{
+	recorded := 0
+	_, err := (DiskExecutor{
+		Commands: commands,
+		RecordStateMounted: func(context.Context) error {
+			recorded++
+			return nil
+		},
+	}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             executorPlan(),
 		AllowDestructive: true,
 	})
@@ -50,11 +56,8 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	if len(commands.Calls) == 0 {
 		t.Fatalf("expected command calls")
 	}
-	if len(store.Checkpoints) != 1 {
-		t.Fatalf("checkpoint count = %d, want 1", len(store.Checkpoints))
-	}
-	if store.Checkpoints[0].CurrentStep != FormatFilesystems {
-		t.Fatalf("checkpoint step = %s, want %s", store.Checkpoints[0].CurrentStep, FormatFilesystems)
+	if recorded != 1 {
+		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
 	}
 }
 
@@ -102,4 +105,18 @@ func executorPlan() DiskLayoutPlan {
 		},
 		Boot: BootTargetMetadata{RootSlot: RootSlotA, RootPartitionLabel: GPTLabelRootA},
 	}
+}
+
+type NoopCommandRunner struct {
+	Calls []CommandCall
+}
+
+type CommandCall struct {
+	Name string
+	Args []string
+}
+
+func (r *NoopCommandRunner) Run(_ context.Context, name string, args ...string) error {
+	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	return nil
 }

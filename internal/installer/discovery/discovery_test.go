@@ -1,4 +1,4 @@
-package installer
+package discovery
 
 import (
 	"context"

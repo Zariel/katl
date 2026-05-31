@@ -1,9 +1,11 @@
-package installer
+package disk
 
 import (
 	"fmt"
 	"path"
 	"strings"
+
+	"git.cbannister.xyz/chris/katl/internal/installer/discovery"
 )
 
 const (
@@ -16,6 +18,17 @@ const (
 	GPTLabelRootB    = "KATL_ROOT_B"
 	GPTLabelState    = "KATL_STATE"
 	GPTLabelEtcd     = "KATL_ETCD"
+)
+
+type TargetDiskSelector = discovery.TargetDiskSelector
+type HardwareFacts = discovery.HardwareFacts
+type BlockDevice = discovery.BlockDevice
+type SignatureReport = discovery.SignatureReport
+type MountFact = discovery.MountFact
+
+const (
+	DeviceDisk      = discovery.DeviceDisk
+	DevicePartition = discovery.DevicePartition
 )
 
 type DiskLayoutRequest struct {
@@ -100,7 +113,7 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 		return DiskLayoutPlan{}, err
 	}
 
-	target, err := MatchTargetDisk(facts, normalized.TargetDisk)
+	target, err := discovery.MatchTargetDisk(facts, normalized.TargetDisk)
 	if err != nil {
 		return DiskLayoutPlan{}, fmt.Errorf("match target disk: %w", err)
 	}
@@ -211,7 +224,7 @@ func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDis
 		}
 		seenMounts[mountPath] = request.Name
 
-		match, err := MatchTargetDisk(facts, request.Selector)
+		match, err := discovery.MatchTargetDisk(facts, request.Selector)
 		if err != nil {
 			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
 		}

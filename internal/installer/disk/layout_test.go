@@ -1,4 +1,4 @@
-package installer
+package disk
 
 import (
 	"strings"

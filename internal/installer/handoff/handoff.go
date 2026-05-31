@@ -1,4 +1,4 @@
-package installer
+package handoff
 
 import (
 	"crypto/rand"
@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"git.cbannister.xyz/chris/katl/internal/installer/confext"
 )
 
 type HandoffState string
@@ -147,6 +149,9 @@ func ValidateInstallManifestEnvelope(data []byte) error {
 	var envelope struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
+		Etc        *struct {
+			Files map[string]string `json:"files"`
+		} `json:"etc"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return err
@@ -156,6 +161,11 @@ func ValidateInstallManifestEnvelope(data []byte) error {
 	}
 	if envelope.Kind != "InstallManifest" {
 		return fmt.Errorf("kind must be InstallManifest")
+	}
+	if envelope.Etc != nil && envelope.Etc.Files != nil {
+		if _, err := confext.ValidateNativeEtcBundle("", confext.NativeEtcFilesFromManifest(envelope.Etc.Files)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

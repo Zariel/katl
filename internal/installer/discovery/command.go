@@ -1,4 +1,4 @@
-package installer
+package discovery
 
 import (
 	"context"
@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"strings"
 )
+
+type OutputCommandRunner interface {
+	Output(ctx context.Context, name string, args ...string) ([]byte, error)
+}
 
 type CommandDiscoverySource struct {
 	Commands OutputCommandRunner

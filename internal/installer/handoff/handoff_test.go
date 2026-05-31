@@ -1,4 +1,4 @@
-package installer
+package handoff
 
 import (
 	"bytes"
@@ -82,6 +82,40 @@ func TestHandoffServerValidatesBeforeAccepting(t *testing.T) {
 	}
 	if server.Status().State != HandoffWaiting {
 		t.Fatalf("state = %s, want waiting after invalid manifest", server.Status().State)
+	}
+}
+
+func TestValidateInstallManifestEnvelopeValidatesEtcFiles(t *testing.T) {
+	manifest := []byte(`{
+		"apiVersion": "install.katl.dev/v1alpha1",
+		"kind": "InstallManifest",
+		"etc": {
+			"files": {
+				"/etc/systemd/network/10-lan.network": "[Match]\nName=enp1s0\n",
+				"/etc/ssh/sshd_config.d/10-katl.conf": "PasswordAuthentication no\n",
+				"/etc/katl/node.yaml": "node: lab-node-01\n"
+			}
+		}
+	}`)
+	if err := ValidateInstallManifestEnvelope(manifest); err != nil {
+		t.Fatalf("ValidateInstallManifestEnvelope() error = %v", err)
+	}
+
+	unsafeManifest := []byte(`{
+		"apiVersion": "install.katl.dev/v1alpha1",
+		"kind": "InstallManifest",
+		"etc": {
+			"files": {
+				"/etc/kubernetes/admin.conf": "unsafe\n"
+			}
+		}
+	}`)
+	err := ValidateInstallManifestEnvelope(unsafeManifest)
+	if err == nil {
+		t.Fatal("ValidateInstallManifestEnvelope() error = nil, want /etc/kubernetes rejection")
+	}
+	if !strings.Contains(err.Error(), "cannot own kubeadm-managed") {
+		t.Fatalf("error = %q, want kubeadm ownership rejection", err)
 	}
 }
 

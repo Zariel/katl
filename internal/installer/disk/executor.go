@@ -1,4 +1,4 @@
-package installer
+package disk
 
 import (
 	"context"
@@ -6,9 +6,13 @@ import (
 	"fmt"
 )
 
+type CommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) error
+}
+
 type DiskExecutor struct {
-	Commands CommandRunner
-	Store    StateStore
+	Commands           CommandRunner
+	RecordStateMounted func(context.Context) error
 }
 
 type DiskExecutionRequest struct {
@@ -50,8 +54,8 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 		if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
 			return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 		}
-		if operation.Name == "mount-state" && e.Store != nil {
-			if err := e.Store.SaveCheckpoint(ctx, Checkpoint{CurrentStep: FormatFilesystems}); err != nil {
+		if operation.Name == "mount-state" && e.RecordStateMounted != nil {
+			if err := e.RecordStateMounted(ctx); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("record state checkpoint: %w", err)
 			}
 		}
