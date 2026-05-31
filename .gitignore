@@ -1,0 +1,57 @@
+# Codex local state
+.codex/
+.agents/
+
+# Beads / Dolt local state
+.beads/
+.dolt/
+*.db
+.beads-credential-key
+
+# Go
+/bin/
+/build/
+/out/
+/coverage/
+coverage.out
+*.cover
+*.prof
+*.test
+
+# Katl build outputs
+/dist/
+/artifacts/
+
+# mkosi
+mkosi.output/
+mkosi.cache/
+mkosi.builddir/
+mkosi.workspace/
+.mkosi-*/
+*.cache/
+
+# libvirt / QEMU / VM artifacts
+*.qcow2
+*.qed
+*.raw
+*.img
+*.iso
+*.vmdk
+*.vdi
+*.ova
+*.ovf
+*.squashfs
+*.uki
+*.efi
+*.fd
+*.nvram
+*.pid
+*.sock
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
