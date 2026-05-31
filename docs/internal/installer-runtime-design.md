@@ -956,6 +956,9 @@ Mutable persistent state:
 /var/log/journal, if persistent journald is enabled
 ```
 
+The detailed path inventory is recorded in
+`docs/internal/persistent-state-inventory.md`.
+
 The writable state partition is the default home for application and node state.
 Prefer native paths under `/var` over bind mounts when the application already
 uses `/var`. Use bind mounts for paths outside `/var` that must be persistent,

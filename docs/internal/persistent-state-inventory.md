@@ -1,0 +1,72 @@
+# Persistent Kubernetes and Node State Inventory
+
+This decision records which node state must survive immutable root updates.
+Katl keeps the runtime root read-only and versioned; persistent state belongs
+under the writable state partition, normally mounted at `/var`. Paths outside
+`/var` that must remain mutable are projected from state with explicit mount or
+early-boot identity mechanisms.
+
+## Decision
+
+The writable state partition is the source of truth for persistent node state.
+Native `/var` paths stay native. Mutable state under `/etc` is limited to
+explicit projections for machine identity, Kubernetes PKI/kubeconfigs/static
+pod manifests, and SSH host identity.
+
+Generated confext owns steady-state configuration under `/etc`, but it must not
+own kubeadm output, SSH host keys, or machine identity.
+
+## Inventory
+
+| Path | Owner | Mutability | Placement |
+| --- | --- | --- | --- |
+| `/var/lib/katl` | Katl installer/runtime agent | Mutable generation metadata, staged artifacts, activation records, repair state | Native `/var`; primary Katl state root |
+| `/var/lib/katl/generations/<id>/metadata.json` | Katl installer/runtime agent | Immutable after generation creation except explicit repair tooling | Native `/var`; selected with boot metadata |
+| `/var/lib/katl/generations/<id>/confext` | Katl installer/runtime agent | Immutable generated configuration for that generation | Native `/var`; exposed at boot through selected `/run/confexts` activation path |
+| `/var/lib/katl/generations/<id>/sysext` | Katl installer/runtime agent | Immutable extension artifacts for that generation | Native `/var`; exposed at boot through selected `/run/extensions` activation path |
+| `/var/lib/katl/identity/machine-id` | Katl installer, systemd | Stable node identity | Native `/var`; passed early with `systemd.machine_id=` or projected before PID 1 consumers need it |
+| `/etc/machine-id` | systemd and D-Bus consumers | Stable identity, read very early | Project from `/var/lib/katl/identity/machine-id`; a late service is not sufficient |
+| `/var/lib/katl/ssh/host-keys` | sshd, Katl installer | Stable SSH host identity | Native `/var`; projected into `/etc/ssh` before sshd starts |
+| `/etc/ssh/ssh_host_*` | sshd | Stable host keys | Project from `/var/lib/katl/ssh/host-keys`; generated confext may own sshd config snippets but not host keys |
+| `/etc/ssh/sshd_config.d/*.conf` | Katl config/confext | Generated steady-state SSH policy | Generated confext; not mutable node state |
+| `/etc/hostname` | Katl config/confext | Generated node config | Generated confext; change through a new configuration generation |
+| `/etc/systemd/network/*.network` | Katl config/confext, systemd-networkd | Generated network config | Generated confext; change through a new configuration generation |
+| `/etc/katl/*` | Katl config/confext | Generated Katl and kubeadm input config | Generated confext; kubeadm output stays elsewhere |
+| `/etc/kubernetes` | kubeadm, kubelet, Kubernetes static pods | Mutable PKI, kubeconfigs, manifests, bootstrap output | Project from `/var/lib/katl/kubernetes/etc-kubernetes` |
+| `/var/lib/katl/kubernetes/etc-kubernetes` | kubeadm, kubelet | Persistent backing store for `/etc/kubernetes` | Native `/var`; bind-mounted to `/etc/kubernetes` before kubelet/kubeadm automation |
+| `/var/lib/kubelet` | kubelet | Mutable pod state, plugin state, checkpoints, local node state | Native `/var`; persistent across root updates |
+| `/var/lib/containerd` | containerd, kubelet | Mutable image/content/snapshot/container state | Native `/var`; persistent across root updates |
+| `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native `/var` by default or optional dedicated partition mounted at `/var/lib/etcd` |
+| `/var/log/journal` | systemd-journald | Optional persistent logs | Native `/var`; may be absent when persistent journald is disabled |
+| `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; regenerate selected extension activation links each boot |
+| `/tmp` | applications | Ephemeral | Never persistent |
+
+## Service Ordering Implications
+
+Katl must establish persistent identity and projected state before dependent
+services read it:
+
+```text
+state partition mounted at /var
+machine identity available to systemd
+selected sysext/confext activation paths created under /run
+systemd-sysext.service
+systemd-confext.service
+/etc/kubernetes bind mount active
+/etc/ssh host key projection active
+systemd-networkd.service
+sshd.service
+containerd.service
+kubelet.service
+kubeadm automation units
+```
+
+The `/etc/kubernetes` bind must be validated after confext activation so a
+confext overlay cannot hide the persistent Kubernetes subtree.
+
+## Deferred Details
+
+The exact unit names and ordering constraints belong in the follow-up mount
+unit tasks. QEMU validation must prove that `/etc/machine-id`,
+`/etc/kubernetes`, SSH host keys, and selected extension activation paths are
+present before their consumers start.
