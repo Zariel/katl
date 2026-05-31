@@ -23,6 +23,8 @@ coverage.out
 /artifacts/
 
 # mkosi
+mkosi.local.conf
+mkosi.local/
 mkosi.output/
 mkosi.cache/
 mkosi.builddir/
