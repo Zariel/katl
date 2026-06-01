@@ -50,6 +50,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Only stage and commit files that are part of the current task. Do not sweep unrelated local changes into a commit.
 - Prefer explicit path staging, for example `git add AGENTS.md docs/internal/initial-design.md`.
 - Use `git commit-wrapped` for commits so commit messages go through the project wrapper.
+- Write commit messages with a concise subject and a body. The body should briefly describe what changed and, when it is not obvious, why the change was made.
 - Do not rewrite history, reset, or discard user changes unless the user explicitly asks for that operation.
 - If unrelated work is present in the tree, leave it alone and mention it in the handoff if it affects verification.
 
