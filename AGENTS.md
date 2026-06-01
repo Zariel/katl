@@ -53,6 +53,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Commit titles must use the `area: summary` shape expected by `git commit-wrapped`; the summary phrase after `area:` must complete the sentence "When merged, this change will ...".
 - Commit bodies must be self-contained and concise. Describe what changed in plain English, and include the reason or context when it is not obvious from the diff. Follow the Linux kernel commit-log style: make the body useful to a future reader of permanent project history, not just to the current reviewer.
 - Do not create subject-only commits. If a change is too small to explain in one short body paragraph, say exactly what changed and why it is intentionally small.
+- Example: `git commit-wrapped "runtime: select sysext by interface" "Record the Katl runtime interface in sysext metadata and validate it before activation. This keeps Kubernetes sysext updates decoupled from KatlOS root updates while preserving generation rollback as one unit."`
 - Do not rewrite history, reset, or discard user changes unless the user explicitly asks for that operation.
 - If unrelated work is present in the tree, leave it alone and mention it in the handoff if it affects verification.
 
