@@ -8,6 +8,7 @@ Usage: scripts/katl-vm [options]
 Boot the M1 installer image with direct QEMU and optional serial smoke matching.
 
 Options:
+  --uki PATH              Installer UKI to boot as EFI/BOOT/BOOTX64.EFI
   --image PATH            Raw disk image to boot (default: build/mkosi/katl-installer.raw)
   --serial-log PATH       Serial log path (default: build/qemu/katl-serial.log)
   --state-dir PATH        QEMU scratch directory (default: build/qemu)
@@ -24,6 +25,7 @@ USAGE
 
 repo_root="$(git rev-parse --show-toplevel)"
 image="$repo_root/build/mkosi/katl-installer.raw"
+uki=
 serial_log="$repo_root/build/qemu/katl-serial.log"
 state_dir="$repo_root/build/qemu"
 firmware_code="${KATL_OVMF_CODE:-}"
@@ -34,45 +36,69 @@ expect=
 ram=2048
 cpus=2
 
+require_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo "error: $option requires a value" >&2
+        exit 2
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --uki|-uki)
+            require_value "$1" "${2:-}"
+            uki="$2"
+            shift 2
+            ;;
         --image|-image)
+            require_value "$1" "${2:-}"
             image="$2"
             shift 2
             ;;
         --serial-log|-serial-log)
+            require_value "$1" "${2:-}"
             serial_log="$2"
             shift 2
             ;;
         --state-dir|-state-dir)
+            require_value "$1" "${2:-}"
             state_dir="$2"
             shift 2
             ;;
         --firmware-code|-firmware-code)
+            require_value "$1" "${2:-}"
             firmware_code="$2"
             shift 2
             ;;
         --firmware-vars|-firmware-vars)
+            require_value "$1" "${2:-}"
             firmware_vars="$2"
             shift 2
             ;;
         --kvm|-kvm)
+            require_value "$1" "${2:-}"
             kvm="$2"
             shift 2
             ;;
         --timeout|-timeout)
+            require_value "$1" "${2:-}"
             timeout_duration="$2"
             shift 2
             ;;
         --expect|-expect)
+            require_value "$1" "${2:-}"
             expect="$2"
             shift 2
             ;;
         --ram|-ram)
+            require_value "$1" "${2:-}"
             ram="$2"
             shift 2
             ;;
         --cpus|-cpus)
+            require_value "$1" "${2:-}"
             cpus="$2"
             shift 2
             ;;
@@ -96,9 +122,19 @@ case "$kvm" in
         ;;
 esac
 
-if [[ ! -e "$image" ]]; then
+if [[ -n "$uki" && ! -f "$uki" ]]; then
+    echo "error: installer UKI not found: $uki" >&2
+    exit 1
+fi
+
+if [[ -z "$uki" ]]; then
+    if [[ ! -f "$image" ]]; then
+        echo "error: image not found: $image" >&2
+        echo "run scripts/mkosi -f build first, or pass --uki PATH" >&2
+        exit 1
+    fi
+elif [[ -n "$image" && "$image" != "$repo_root/build/mkosi/katl-installer.raw" && ! -f "$image" ]]; then
     echo "error: image not found: $image" >&2
-    echo "run scripts/mkosi -f build first" >&2
     exit 1
 fi
 
@@ -136,6 +172,7 @@ if [[ -z "$firmware_vars" && -n "$firmware_code" ]]; then
         "$firmware_dir/OVMF_VARS.fd" \
         "$firmware_dir/OVMF_VARS_4M.fd" \
         "$firmware_dir/OVMF_VARS.ms.fd" \
+        "$firmware_dir/edk2-i386-vars.fd" \
         "$firmware_dir/../OVMF_VARS.fd" || true)"
 fi
 
@@ -145,6 +182,7 @@ if [[ -z "$firmware_vars" ]]; then
         /usr/share/OVMF/OVMF_VARS_4M.fd \
         /usr/share/edk2/ovmf/OVMF_VARS.fd \
         /usr/share/qemu/OVMF_VARS.fd \
+        /usr/share/qemu/edk2-i386-vars.fd \
         /nix/store/*-OVMF-*-fd/FV/OVMF_VARS.fd || true)"
 fi
 
@@ -153,12 +191,29 @@ if [[ -z "$firmware_code" || -z "$firmware_vars" ]]; then
     echo "set KATL_OVMF_CODE/KATL_OVMF_VARS or pass --firmware-code/--firmware-vars" >&2
     exit 1
 fi
+if [[ ! -f "$firmware_code" ]]; then
+    echo "error: OVMF code image not found: $firmware_code" >&2
+    exit 1
+fi
+if [[ ! -r "$firmware_code" ]]; then
+    echo "error: OVMF code image is not readable: $firmware_code" >&2
+    exit 1
+fi
+if [[ ! -f "$firmware_vars" ]]; then
+    echo "error: OVMF vars template not found: $firmware_vars" >&2
+    exit 1
+fi
+if [[ ! -r "$firmware_vars" ]]; then
+    echo "error: OVMF vars template is not readable: $firmware_vars" >&2
+    exit 1
+fi
 
 mkdir -p "$state_dir/tmp" "$(dirname "$serial_log")"
 : >"$serial_log"
 
 vars_copy="$state_dir/OVMF_VARS.fd"
 cp "$firmware_vars" "$vars_copy"
+chmod u+w "$vars_copy"
 
 accel=tcg
 if [[ "$kvm" == on || "$kvm" == auto ]]; then
@@ -172,10 +227,29 @@ if [[ "$kvm" == on || "$kvm" == auto ]]; then
     fi
 fi
 
-echo "serial log: ${serial_log#$repo_root/}" >&2
+echo "serial log: ${serial_log#"$repo_root"/}" >&2
 echo "firmware: $firmware_code" >&2
 echo "acceleration: $accel" >&2
 
+boot_drives=()
+if [[ -n "$uki" ]]; then
+    efi_tree="$state_dir/efi"
+    rm -rf "$efi_tree"
+    mkdir -p "$efi_tree/EFI/BOOT"
+    cp "$uki" "$efi_tree/EFI/BOOT/BOOTX64.EFI"
+    boot_drives+=(-drive "if=virtio,format=raw,file=fat:rw:$efi_tree")
+    echo "installer UKI: $uki" >&2
+    echo "EFI boot tree: ${efi_tree#"$repo_root"/}" >&2
+    if [[ -f "$image" ]]; then
+        boot_drives+=(-drive "if=virtio,format=raw,file=$image,snapshot=on")
+        echo "root image: $image" >&2
+    fi
+else
+    boot_drives+=(-drive "if=virtio,format=raw,file=$image,snapshot=on")
+    echo "image: $image" >&2
+fi
+
+# shellcheck disable=SC2054
 qemu_args=(
     -machine "q35,accel=$accel"
     -cpu max
@@ -186,7 +260,7 @@ qemu_args=(
     -serial "file:$serial_log"
     -drive "if=pflash,format=raw,readonly=on,file=$firmware_code"
     -drive "if=pflash,format=raw,file=$vars_copy"
-    -drive "if=virtio,format=raw,file=$image,snapshot=on"
+    "${boot_drives[@]}"
     -device virtio-rng-pci
     -netdev user,id=net0
     -device virtio-net-pci,netdev=net0
@@ -195,6 +269,7 @@ qemu_args=(
 TMPDIR="$state_dir/tmp" "$qemu" "${qemu_args[@]}" &
 qemu_pid=$!
 
+# shellcheck disable=SC2329
 cleanup() {
     if kill -0 "$qemu_pid" >/dev/null 2>&1; then
         kill "$qemu_pid" >/dev/null 2>&1 || true
@@ -212,7 +287,9 @@ if [[ -z "$timeout_duration" ]]; then
     timeout_duration=90s
 fi
 
-if timeout "$timeout_duration" bash -c '
+set +e
+# shellcheck disable=SC2016
+timeout "$timeout_duration" bash -c '
     set -euo pipefail
     expect="$1"
     serial_log="$2"
@@ -226,12 +303,15 @@ if timeout "$timeout_duration" bash -c '
         fi
         sleep 0.25
     done
-' bash "$expect" "$serial_log" "$qemu_pid"; then
-    echo "matched serial signal \"$expect\" in ${serial_log#$repo_root/}" >&2
+' bash "$expect" "$serial_log" "$qemu_pid"
+status=$?
+set -e
+
+if [[ "$status" -eq 0 ]]; then
+    echo "matched serial signal \"$expect\" in ${serial_log#"$repo_root"/}" >&2
     exit 0
 fi
 
-status=$?
 if [[ "$status" -eq 124 ]]; then
     echo "error: timed out after $timeout_duration waiting for \"$expect\"" >&2
 else
