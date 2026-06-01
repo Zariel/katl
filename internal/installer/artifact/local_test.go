@@ -53,3 +53,39 @@ func TestReadLocalBad(t *testing.T) {
 		t.Fatalf("ReadLocal() error = %v, want ErrInvalidArtifactSpec", err)
 	}
 }
+
+func TestReadSysext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "katl-kubernetes.raw.json")
+	data := `{
+  "name": "kubernetes",
+  "kind": "sysext",
+  "format": "sysext",
+  "path": "katl-kubernetes.raw",
+  "sizeBytes": 8192,
+  "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+  "version": "abc123",
+  "payloadVersion": "v1.34",
+  "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-v0",
+  "compatibleRuntime": {
+    "interface": "katl-runtime-v0",
+    "artifactPath": "katl-runtime-root.squashfs",
+    "artifactSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "created": "2026-06-01T00:00:00Z"
+}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := ReadLocal(path)
+	if err != nil {
+		t.Fatalf("ReadLocal() error = %v", err)
+	}
+	if meta.Kind != ArtifactSysext || meta.PayloadVersion != "v1.34" {
+		t.Fatalf("meta = %#v", meta)
+	}
+	if meta.CompatibleRuntime == nil || meta.CompatibleRuntime.Interface != "katl-runtime-v0" {
+		t.Fatalf("compatible runtime = %#v", meta.CompatibleRuntime)
+	}
+}
