@@ -13,16 +13,24 @@ func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
 	record, err := NewFirstInstallRecord(FirstInstallRequest{
 		GenerationID:          "2026.05.31-001",
 		RuntimeVersion:        "0.1.0",
+		RuntimeInterface:      "katl-runtime-v0",
+		RuntimeArchitecture:   "x86_64",
 		RootSlot:              "root-a",
 		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
 		RuntimeArtifactSHA256: strings.Repeat("a", 64),
 		UKIPath:               "/efi/EFI/Linux/katl-2026.05.31-001.efi",
 		Sysexts: []ExtensionRef{
 			{
-				Name:           "kubernetes",
-				Path:           "/var/lib/katl/generations/2026.05.31-001/sysext/kubernetes.raw",
-				ActivationPath: "/run/extensions/kubernetes.raw",
-				SHA256:         strings.Repeat("b", 64),
+				Name:            "kubernetes",
+				Path:            "/var/lib/katl/generations/2026.05.31-001/sysext/kubernetes.raw",
+				ActivationPath:  "/run/extensions/kubernetes.raw",
+				SHA256:          strings.Repeat("b", 64),
+				ArtifactVersion: "k8s-sysext-001",
+				PayloadVersion:  "v1.34.8",
+				Architecture:    "x86_64",
+				Compatibility: ExtensionCompatibility{
+					RuntimeInterfaces: []string{"katl-runtime-v0"},
+				},
 			},
 		},
 		GeneratedConfext: GeneratedConfext{
@@ -55,6 +63,9 @@ func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
   "root": {
     "slot": "root-a",
     "partitionUUID": "11111111-2222-3333-4444-555555555555",
+    "runtimeVersion": "0.1.0",
+    "runtimeInterface": "katl-runtime-v0",
+    "architecture": "x86_64",
     "runtimeArtifactSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "boot": {
@@ -65,7 +76,15 @@ func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
       "name": "kubernetes",
       "path": "/var/lib/katl/generations/2026.05.31-001/sysext/kubernetes.raw",
       "activationPath": "/run/extensions/kubernetes.raw",
-      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "artifactVersion": "k8s-sysext-001",
+      "payloadVersion": "v1.34.8",
+      "architecture": "x86_64",
+      "compatibility": {
+        "runtimeInterfaces": [
+          "katl-runtime-v0"
+        ]
+      }
     }
   ],
   "confexts": [
@@ -165,10 +184,61 @@ func TestFirstInstallRecordRequiresConfextMetadata(t *testing.T) {
 	}
 }
 
+func TestCompatOK(t *testing.T) {
+	current := validRecord(t, "0.1.0", "katl-runtime-v0", "v1.34.8")
+
+	tests := []struct {
+		name string
+		next Record
+	}{
+		{name: "katlos only", next: validRecord(t, "0.2.0", "katl-runtime-v0", "v1.34.8")},
+		{name: "kubernetes only", next: validRecord(t, "0.1.0", "katl-runtime-v0", "v1.35.1")},
+		{name: "combined", next: validRecord(t, "0.2.0", "katl-runtime-v0", "v1.35.1")},
+	}
+	if err := ValidateRecord(current); err != nil {
+		t.Fatalf("ValidateRecord(current) error = %v", err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateRecord(tt.next); err != nil {
+				t.Fatalf("ValidateRecord() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCompatReject(t *testing.T) {
+	request := validFirstInstallRequest(t.TempDir())
+	request.RuntimeVersion = "0.2.0"
+	request.RuntimeInterface = "katl-runtime-v1"
+	request.Sysexts = []ExtensionRef{{
+		Name:            "kubernetes",
+		Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "kubernetes.raw"),
+		ActivationPath:  "/run/extensions/kubernetes.raw",
+		SHA256:          strings.Repeat("b", 64),
+		ArtifactVersion: "k8s-v1.34.8",
+		PayloadVersion:  "v1.34.8",
+		Architecture:    "x86_64",
+		Compatibility: ExtensionCompatibility{
+			RuntimeInterfaces: []string{"katl-runtime-v0"},
+		},
+	}}
+
+	_, err := NewFirstInstallRecord(request)
+	if err == nil {
+		t.Fatal("NewFirstInstallRecord() error = nil, want incompatible pair")
+	}
+	if !strings.Contains(err.Error(), "does not support runtime interface") {
+		t.Fatalf("error = %q, want runtime interface failure", err)
+	}
+}
+
 func validFirstInstallRequest(root string) FirstInstallRequest {
 	return FirstInstallRequest{
 		GenerationID:          "2026.05.31-001",
 		RuntimeVersion:        "0.1.0",
+		RuntimeInterface:      "katl-runtime-v0",
+		RuntimeArchitecture:   "x86_64",
 		RootSlot:              "root-a",
 		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
 		RuntimeArtifactSHA256: strings.Repeat("a", 64),
@@ -186,6 +256,30 @@ func validFirstInstallRequest(root string) FirstInstallRequest {
 		},
 		CreatedAt: time.Date(2026, 5, 31, 22, 30, 0, 0, time.UTC),
 	}
+}
+
+func validRecord(t *testing.T, runtimeVersion string, runtimeInterface string, kubeVersion string) Record {
+	t.Helper()
+	request := validFirstInstallRequest(t.TempDir())
+	request.RuntimeVersion = runtimeVersion
+	request.RuntimeInterface = runtimeInterface
+	request.Sysexts = []ExtensionRef{{
+		Name:            "kubernetes",
+		Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "kubernetes.raw"),
+		ActivationPath:  "/run/extensions/kubernetes.raw",
+		SHA256:          strings.Repeat("b", 64),
+		ArtifactVersion: "k8s-" + kubeVersion,
+		PayloadVersion:  kubeVersion,
+		Architecture:    "x86_64",
+		Compatibility: ExtensionCompatibility{
+			RuntimeInterfaces: []string{"katl-runtime-v0"},
+		},
+	}}
+	record, err := NewFirstInstallRecord(request)
+	if err != nil {
+		t.Fatalf("NewFirstInstallRecord() error = %v", err)
+	}
+	return record
 }
 
 func mustWrite(t *testing.T, path string, content string, mode os.FileMode) {

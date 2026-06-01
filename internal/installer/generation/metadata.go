@@ -37,6 +37,9 @@ type Record struct {
 type RootSelection struct {
 	Slot                  string `json:"slot"`
 	PartitionUUID         string `json:"partitionUUID"`
+	RuntimeVersion        string `json:"runtimeVersion"`
+	RuntimeInterface      string `json:"runtimeInterface"`
+	Architecture          string `json:"architecture"`
 	RuntimeArtifactSHA256 string `json:"runtimeArtifactSHA256"`
 }
 
@@ -45,10 +48,18 @@ type BootSelection struct {
 }
 
 type ExtensionRef struct {
-	Name           string `json:"name"`
-	Path           string `json:"path"`
-	ActivationPath string `json:"activationPath"`
-	SHA256         string `json:"sha256"`
+	Name            string                 `json:"name"`
+	Path            string                 `json:"path"`
+	ActivationPath  string                 `json:"activationPath"`
+	SHA256          string                 `json:"sha256"`
+	ArtifactVersion string                 `json:"artifactVersion"`
+	PayloadVersion  string                 `json:"payloadVersion"`
+	Architecture    string                 `json:"architecture"`
+	Compatibility   ExtensionCompatibility `json:"compatibility"`
+}
+
+type ExtensionCompatibility struct {
+	RuntimeInterfaces []string `json:"runtimeInterfaces"`
 }
 
 type GeneratedConfext struct {
@@ -68,6 +79,8 @@ type ConfextCompatibility struct {
 type FirstInstallRequest struct {
 	GenerationID          string
 	RuntimeVersion        string
+	RuntimeInterface      string
+	RuntimeArchitecture   string
 	RootSlot              string
 	RootPartitionUUID     string
 	RuntimeArtifactSHA256 string
@@ -85,6 +98,12 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if strings.TrimSpace(request.RuntimeVersion) == "" {
 		return Record{}, fmt.Errorf("runtime version is required")
 	}
+	if strings.TrimSpace(request.RuntimeInterface) == "" {
+		return Record{}, fmt.Errorf("runtime interface is required")
+	}
+	if strings.TrimSpace(request.RuntimeArchitecture) == "" {
+		return Record{}, fmt.Errorf("runtime architecture is required")
+	}
 	if strings.TrimSpace(request.RootSlot) == "" {
 		return Record{}, fmt.Errorf("root slot is required")
 	}
@@ -97,7 +116,8 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if strings.TrimSpace(request.UKIPath) == "" {
 		return Record{}, fmt.Errorf("UKI path is required")
 	}
-	if err := validateExtensionRefs(request.Sysexts); err != nil {
+	sysexts, err := cleanExts(request.Sysexts)
+	if err != nil {
 		return Record{}, err
 	}
 	confext, err := normalizeGeneratedConfext(request.GeneratedConfext)
@@ -110,7 +130,7 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 		createdAt = time.Now().UTC()
 	}
 
-	return Record{
+	record := Record{
 		APIVersion:     APIVersion,
 		Kind:           Kind,
 		GenerationID:   request.GenerationID,
@@ -118,16 +138,23 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 		Root: RootSelection{
 			Slot:                  request.RootSlot,
 			PartitionUUID:         request.RootPartitionUUID,
+			RuntimeVersion:        request.RuntimeVersion,
+			RuntimeInterface:      request.RuntimeInterface,
+			Architecture:          request.RuntimeArchitecture,
 			RuntimeArtifactSHA256: strings.ToLower(request.RuntimeArtifactSHA256),
 		},
 		Boot:              BootSelection{UKIPath: request.UKIPath},
-		Sysexts:           append([]ExtensionRef(nil), request.Sysexts...),
+		Sysexts:           sysexts,
 		Confexts:          []GeneratedConfext{confext},
 		KernelCommandLine: append([]string(nil), request.KernelCommandLine...),
 		CreatedAt:         createdAt.UTC(),
 		BootState:         "pending",
 		HealthState:       "unknown",
-	}, nil
+	}
+	if err := ValidateRecord(record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
 }
 
 func MarshalRecord(record Record) ([]byte, error) {
@@ -227,21 +254,60 @@ func normalizeGeneratedConfext(confext GeneratedConfext) (GeneratedConfext, erro
 	return confext, nil
 }
 
-func validateExtensionRefs(refs []ExtensionRef) error {
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Path) == "" || strings.TrimSpace(ref.ActivationPath) == "" {
-			return fmt.Errorf("sysext name, path, and activation path are required")
+func ValidatePair(root RootSelection, sysext ExtensionRef) error {
+	if strings.TrimSpace(root.RuntimeInterface) == "" {
+		return fmt.Errorf("runtime interface is required")
+	}
+	if strings.TrimSpace(root.Architecture) == "" {
+		return fmt.Errorf("runtime architecture is required")
+	}
+	if strings.TrimSpace(sysext.Name) == "" {
+		return fmt.Errorf("sysext name is required")
+	}
+	if sysext.Architecture != root.Architecture {
+		return fmt.Errorf("sysext %q architecture %q is incompatible with runtime architecture %q", sysext.Name, sysext.Architecture, root.Architecture)
+	}
+	for _, candidate := range sysext.Compatibility.RuntimeInterfaces {
+		if candidate == root.RuntimeInterface {
+			return nil
 		}
-		if _, ok := seen[ref.Name]; ok {
-			return fmt.Errorf("duplicate sysext %q", ref.Name)
-		}
-		seen[ref.Name] = struct{}{}
-		if err := validateSHA256("sysext "+ref.Name, ref.SHA256); err != nil {
+	}
+	return fmt.Errorf("sysext %q does not support runtime interface %q", sysext.Name, root.RuntimeInterface)
+}
+
+func ValidateRecord(record Record) error {
+	for _, sysext := range record.Sysexts {
+		if err := ValidatePair(record.Root, sysext); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func cleanExts(refs []ExtensionRef) ([]ExtensionRef, error) {
+	cleaned := make([]ExtensionRef, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Path) == "" || strings.TrimSpace(ref.ActivationPath) == "" {
+			return nil, fmt.Errorf("sysext name, path, and activation path are required")
+		}
+		if _, ok := seen[ref.Name]; ok {
+			return nil, fmt.Errorf("duplicate sysext %q", ref.Name)
+		}
+		seen[ref.Name] = struct{}{}
+		if err := validateSHA256("sysext "+ref.Name, ref.SHA256); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(ref.ArtifactVersion) == "" || strings.TrimSpace(ref.PayloadVersion) == "" || strings.TrimSpace(ref.Architecture) == "" {
+			return nil, fmt.Errorf("sysext %q version and architecture metadata is required", ref.Name)
+		}
+		if len(ref.Compatibility.RuntimeInterfaces) == 0 {
+			return nil, fmt.Errorf("sysext %q runtime compatibility metadata is required", ref.Name)
+		}
+		ref.SHA256 = strings.ToLower(ref.SHA256)
+		cleaned = append(cleaned, ref)
+	}
+	return cleaned, nil
 }
 
 func validateSHA256(name string, value string) error {

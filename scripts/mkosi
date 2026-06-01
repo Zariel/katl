@@ -143,6 +143,7 @@ fi
   "compression": "zstd",
   "generation": "${KATL_BUILD_COMMIT:-unknown}",
   "architecture": "$arch",
+  "runtimeInterface": "katl-runtime-v0",
   "created": "$created"
 }
 EOF
