@@ -855,6 +855,56 @@ Kubernetes binaries should initially be delivered as a sysext unless boot tests
 show that kubelet ordering or operational simplicity is better with them in the
 base root artifact.
 
+## Kubeadm-Ready Runtime
+
+The first runtime milestone after the installer UKI can install and boot from
+disk is kubeadm readiness, not a complete Kubernetes cluster. Katl should prove
+that an installed node has the host OS, writable state, generated config, and
+Kubernetes binaries required for an operator or later automation to run
+`kubeadm init`.
+
+For the first implementation, kubeadm readiness means:
+
+```text
+runtime root provides systemd, networking, time sync, SSH, containerd, OCI runtime,
+  sysctl/modules-load/tmpfiles scaffolding, and Katl-controlled units
+Kubernetes sysext provides kubeadm, kubelet, kubectl, and closely related CLI
+  or helper binaries needed for preflight and node bootstrap
+selected generation metadata records the Kubernetes sysext artifact, digest,
+  activation path, and compatibility metadata
+systemd-sysext activates only the selected generation's Kubernetes sysext
+generated confext renders kubeadm input under /etc/katl
+/etc/kubernetes is a writable bind mount backed by
+  /var/lib/katl/kubernetes/etc-kubernetes
+containerd is running before the kubeadm-ready target
+kubelet binary and service wiring are present, with final start/enable policy
+  kept test-driven
+katl-kubeadm-ready.target is reached only after the required local prerequisites
+  are active
+```
+
+The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
+inputs. In early development it can be built locally. Later CI can publish the
+same artifact shape for users to download, but CI publishing is not part of the
+first local milestone.
+
+Tests should be layered rather than waiting for a full VM flow:
+
+```text
+package or artifact tests inspect the sysext for expected binaries,
+  extension-release metadata, and excluded add-ons
+unit or golden tests cover generated service ordering, mount units, and
+  generation metadata for sysext selection
+systemd-analyze verify checks generated units where practical
+QEMU install-to-runtime tests prove sysext activation, writable /etc/kubernetes,
+  containerd readiness, katl-kubeadm-ready.target, and kubeadm preflight or
+  dry-run evidence
+```
+
+The readiness check should avoid implying that Katl owns cluster lifecycle. Katl
+prepares the node for kubeadm; kubeadm and user-managed GitOps own the cluster
+from that point.
+
 ## Disk Format
 
 The default installed OS disk uses GPT and EFI-only boot.
@@ -1161,6 +1211,8 @@ katl-kubeadm-ready.target reached
 
 Generated mount units and service ordering must be tested in QEMU because this
 is where immutable root, confext, kubeadm, and systemd boot ordering intersect.
+The target should be treated as a local preflight boundary. It must not require
+Kubernetes API availability, add-ons, workload scheduling, or GitOps convergence.
 
 ## Open Questions
 

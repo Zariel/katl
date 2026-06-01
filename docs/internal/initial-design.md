@@ -205,6 +205,19 @@ show that kubelet ordering is simpler with them in the base root. Kubernetes
 add-ons, Helm, Flux, Cilium, CoreDNS, Rook, and application workloads are outside
 the runtime base.
 
+After the installer UKI and installed runtime boot path works, the next local
+milestone is a kubeadm-ready installed runtime. That means the base runtime has
+containerd and the host plumbing kubeadm expects, a Kubernetes sysext supplies
+`kubeadm`, `kubelet`, `kubectl`, and tightly related binaries, generated config
+places kubeadm input under `/etc/katl`, and writable kubeadm output is projected
+at `/etc/kubernetes`.
+
+The first proof should stay local: build or inspect the sysext artifact, install
+it with the selected generation, boot the installed runtime in QEMU, reach
+`katl-kubeadm-ready.target`, and run a bounded kubeadm preflight or dry-run check
+that proves the node is prepared for `kubeadm init`. CI-built downloadable
+artifacts are a later publishing concern, not a blocker for this local loop.
+
 ## Host Users And SSH
 
 Katl defines host identities. Users do not define Linux users or host account
@@ -360,6 +373,18 @@ verify deterministic serial/journal signals
 End-user publishing workflows, provisioning examples, signed update envelopes,
 runtime update agents, and full kubeadm automation come after the local
 boot/install loop works.
+
+The next milestone after that loop is still local and test-driven:
+
+```text
+build a Kubernetes sysext with kubeadm, kubelet, kubectl, and related binaries
+install and activate the sysext as part of the selected generation
+render kubeadm input under /etc/katl from known Katl config domains
+project writable /etc/kubernetes from /var
+start containerd and expose kubelet with Katl-controlled ordering
+reach katl-kubeadm-ready.target in QEMU
+run a bounded kubeadm preflight or dry-run check for kubeadm init readiness
+```
 
 ## Focused Design Documents
 
