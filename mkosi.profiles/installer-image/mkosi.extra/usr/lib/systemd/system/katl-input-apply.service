@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply Katl installer preseed input
+DefaultDependencies=no
+Before=initrd.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/katlos-install --apply-input
+StandardOutput=journal+console
+StandardError=journal+console

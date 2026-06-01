@@ -32,6 +32,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	stateDir := flags.String("state-dir", "/var/lib/katl/install", "installer state directory")
 	listStates := flags.Bool("list-states", false, "print the installer state order and exit")
 	showVersion := flags.Bool("version", false, "print build metadata and exit")
+	applyInput := flags.Bool("apply-input", false, "copy preseeded installer input and exit")
+	preseedDir := flags.String("preseed-dir", "", "additional installer preseed directory")
+	runDir := flags.String("run-dir", "/run/katl", "runtime installer input directory")
+	etcDir := flags.String("etc-dir", "/etc/katl", "persistent installer input directory")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -40,6 +44,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if *showVersion {
 		fmt.Fprintf(stdout, "katlos-install version=%s commit=%s date=%s\n", version, commit, date)
 		return nil
+	}
+
+	if *applyInput {
+		preseedDirs := installer.DefaultPreseedDirs()
+		if strings.TrimSpace(*preseedDir) != "" {
+			preseedDirs = append([]string{strings.TrimSpace(*preseedDir)}, preseedDirs...)
+		}
+		return installer.ApplyInput(installer.InputApplyRequest{
+			PreseedDirs: preseedDirs,
+			RunDir:      *runDir,
+			EtcDir:      *etcDir,
+			Stdout:      stdout,
+		})
 	}
 
 	plan := installer.DefaultPlan()

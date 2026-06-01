@@ -1,0 +1,119 @@
+package installer
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+)
+
+type InputApplyRequest struct {
+	PreseedDirs []string
+	RunDir      string
+	EtcDir      string
+	Stdout      io.Writer
+}
+
+func DefaultPreseedDirs() []string {
+	return []string{
+		"/usr/lib/katl/preseed",
+		"/run/katl/preseed",
+		"/etc/katl/preseed",
+	}
+}
+
+func ApplyInput(request InputApplyRequest) error {
+	runDir := request.RunDir
+	if runDir == "" {
+		runDir = "/run/katl"
+	}
+	etcDir := request.EtcDir
+	if etcDir == "" {
+		etcDir = "/etc/katl"
+	}
+	stdout := request.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+
+	applied := 0
+	for _, dir := range request.PreseedDirs {
+		n, err := applyDir(dir, runDir, etcDir, stdout)
+		if err != nil {
+			return err
+		}
+		applied += n
+	}
+	if applied == 0 {
+		fmt.Fprintln(stdout, "katl input: no preseed files found")
+	}
+	return nil
+}
+
+func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat preseed dir %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("preseed path %s is not a directory", dir)
+	}
+
+	applied := 0
+	for _, item := range preseedItems(dir, runDir, etcDir) {
+		ok, err := copyInput(item.src, item.dst)
+		if err != nil {
+			return applied, err
+		}
+		if ok {
+			applied++
+			fmt.Fprintf(stdout, "katl input: copied %s to %s\n", item.src, item.dst)
+		}
+	}
+	return applied, nil
+}
+
+type preseedItem struct {
+	src string
+	dst string
+}
+
+func preseedItems(dir, runDir, etcDir string) []preseedItem {
+	return []preseedItem{
+		{filepath.Join(dir, "install-input.json"), filepath.Join(runDir, "install-input.json")},
+		{filepath.Join(dir, "install-manifest.json"), filepath.Join(runDir, "install-manifest.json")},
+		{filepath.Join(dir, "run/katl/install-input.json"), filepath.Join(runDir, "install-input.json")},
+		{filepath.Join(dir, "run/katl/install-manifest.json"), filepath.Join(runDir, "install-manifest.json")},
+		{filepath.Join(dir, "etc/katl/install-input.json"), filepath.Join(etcDir, "install-input.json")},
+		{filepath.Join(dir, "etc/katl/install-manifest.json"), filepath.Join(etcDir, "install-manifest.json")},
+	}
+}
+
+func copyInput(src, dst string) (bool, error) {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read preseed file %s: %w", src, err)
+	}
+	if !json.Valid(data) {
+		return false, fmt.Errorf("preseed file %s is not valid JSON", src)
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("stat destination %s: %w", dst, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return false, fmt.Errorf("create destination dir %s: %w", filepath.Dir(dst), err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return false, fmt.Errorf("write destination %s: %w", dst, err)
+	}
+	return true, nil
+}
