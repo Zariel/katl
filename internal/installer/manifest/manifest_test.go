@@ -1,11 +1,50 @@
 package manifest
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"git.cbannister.xyz/chris/katl/internal/installer/disk"
 )
+
+func TestDecodeAcceptsMinimal(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(validManifest()))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if manifest.Metadata.Name != "lab-node-01" {
+		t.Fatalf("metadata name = %q", manifest.Metadata.Name)
+	}
+	if manifest.Node.Identity.Hostname != "lab-node-01" {
+		t.Fatalf("hostname = %q", manifest.Node.Identity.Hostname)
+	}
+	if len(manifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
+		t.Fatalf("authorized keys = %#v", manifest.Node.Identity.SSH.AuthorizedKeys)
+	}
+	if manifest.Artifacts.RuntimeRoot.URL == "" || manifest.Artifacts.UKI == nil {
+		t.Fatalf("artifacts = %#v", manifest.Artifacts)
+	}
+}
+
+func TestDecodeAcceptsExtraDisks(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(manifestWithInstall(`,
+			"extraDisks": [
+				{
+					"name": "data",
+					"selector": {"byID": "/dev/disk/by-id/ata-data"},
+					"filesystem": "xfs",
+					"mount": {"path": "/srv/data"},
+					"wipe": true
+				}
+			]`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Mount.Path != "/srv/data" {
+		t.Fatalf("extra disks = %#v", manifest.Install.ExtraDisks)
+	}
+}
 
 func TestDecodeRejectsRootDiskLayoutFields(t *testing.T) {
 	tests := []struct {
@@ -20,15 +59,7 @@ func TestDecodeRejectsRootDiskLayoutFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manifest := `{
-				"apiVersion": "install.katl.dev/v1alpha1",
-				"kind": "InstallManifest",
-				"install": {
-					"allowDestructiveInstall": true,
-					"targetDisk": {"byID": "/dev/disk/by-id/ata-root"},
-					` + tt.field + `
-				}
-			}`
+			manifest := manifestWithInstall(`,` + tt.field)
 			_, err := Decode(strings.NewReader(manifest))
 			if err == nil {
 				t.Fatalf("Decode() error = nil, want unknown root layout field rejection")
@@ -40,15 +71,48 @@ func TestDecodeRejectsRootDiskLayoutFields(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsDeferredFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{name: "metadata generation", manifest: manifestWithMeta(`, "generation": "1"`), want: "generation"},
+		{name: "metadata labels", manifest: manifestWithMeta(`, "labels": {"env": "lab"}`), want: "labels"},
+		{name: "node name", manifest: manifestWithNode(`, "name": "lab-node-01"`), want: "name"},
+		{name: "node selectors", manifest: manifestWithNode(`, "selectors": {"rack": "a"}`), want: "selectors"},
+		{name: "ssh enabled", manifest: manifestWithSSH(`, "enabled": true`), want: "enabled"},
+		{name: "installer authorized keys", manifest: manifestWithSSH(`, "installerAuthorizedKeys": []`), want: "installerAuthorizedKeys"},
+		{name: "top-level etc files", manifest: manifestWithTop(`, "etc": {"files": {"/etc/hostname": "lab-node-01\n"}}`), want: "etc"},
+		{name: "trust", manifest: manifestWithTop(`, "trust": {"roots": []}`), want: "trust"},
+		{name: "boot", manifest: manifestWithTop(`, "boot": {"efi": true}`), want: "boot"},
+		{name: "kernel args", manifest: manifestWithTop(`, "kernelArgs": ["quiet"]`), want: "kernelArgs"},
+		{name: "extra disk mount options", manifest: manifestWithInstall(`,
+			"extraDisks": [
+				{
+					"name": "data",
+					"selector": {"byID": "/dev/disk/by-id/ata-data"},
+					"filesystem": "xfs",
+					"mount": {"path": "/srv/data", "options": ["noatime"]}
+				}
+			]`), want: "options"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.manifest))
+			if err == nil {
+				t.Fatal("Decode() error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
-	manifest, err := Decode(strings.NewReader(`{
-		"apiVersion": "install.katl.dev/v1alpha1",
-		"kind": "InstallManifest",
-		"metadata": {"name": "lab-node-01"},
-		"node": {"name": "lab-node-01"},
-		"install": {
-			"allowDestructiveInstall": true,
-			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768},
+	manifest, err := Decode(strings.NewReader(manifestWithInstall(`,
 			"extraDisks": [
 				{
 					"name": "data",
@@ -57,13 +121,7 @@ func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 					"mount": {"path": "/srv/data"},
 					"wipe": true
 				}
-			]
-		},
-		"artifacts": {"runtimeRoot": {"url": "https://example.invalid/root.squashfs", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
-		"etc": {"files": {"/etc/hostname": "lab-node-01\n"}},
-		"trust": {"roots": []},
-		"boot": {"efi": true}
-	}`))
+			]`)))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
@@ -98,14 +156,7 @@ func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 }
 
 func TestDefaultRootDiskProfileBuildsUsableLayoutRequest(t *testing.T) {
-	manifest, err := Decode(strings.NewReader(`{
-		"apiVersion": "install.katl.dev/v1alpha1",
-		"kind": "InstallManifest",
-		"install": {
-			"allowDestructiveInstall": true,
-			"targetDisk": {"serial": "root-serial"}
-		}
-	}`))
+	manifest, err := Decode(strings.NewReader(manifestWithTarget(`{"serial": "root-serial"}`)))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
@@ -120,4 +171,72 @@ func TestDefaultRootDiskProfileBuildsUsableLayoutRequest(t *testing.T) {
 	if request.ESPSizeMiB != disk.DefaultESPSizeMiB || request.RootA.SizeMiB == 0 || request.RootB.SizeMiB == 0 || request.State.Filesystem == "" {
 		t.Fatalf("default layout request = %#v", request)
 	}
+}
+
+func validManifest() string {
+	return manifestWithTop("")
+}
+
+func manifestWithTop(extra string) string {
+	return fmt.Sprintf(`{
+		"apiVersion": "install.katl.dev/v1alpha1",
+		"kind": "InstallManifest",
+		"metadata": {"name": "lab-node-01"},
+		"node": {
+			"identity": {
+				"hostname": "lab-node-01",
+				"ssh": {
+					"authorizedKeys": [
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+					]
+				}
+			}
+		},
+		"install": {
+			"allowDestructiveInstall": true,
+			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
+		},
+		"artifacts": {
+			"runtimeRoot": {
+				"url": "https://example.invalid/root.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			},
+			"uki": {
+				"url": "https://example.invalid/katl.efi",
+				"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			},
+			"sysexts": [
+				{
+					"name": "kubelet",
+					"url": "https://example.invalid/kubelet.sysext.raw",
+					"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+				}
+			]
+		}%s
+	}`, extra)
+}
+
+func manifestWithMeta(extra string) string {
+	return strings.Replace(validManifest(), `"metadata": {"name": "lab-node-01"}`, `"metadata": {"name": "lab-node-01"`+extra+`}`, 1)
+}
+
+func manifestWithNode(extra string) string {
+	return strings.Replace(validManifest(), `"node": {`, `"node": {`+objectField(extra), 1)
+}
+
+func manifestWithSSH(extra string) string {
+	return strings.Replace(validManifest(), `"ssh": {`, `"ssh": {`+objectField(extra), 1)
+}
+
+func manifestWithInstall(extra string) string {
+	return strings.Replace(validManifest(), `"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}`, `"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}`+extra, 1)
+}
+
+func manifestWithTarget(targetDisk string) string {
+	return strings.Replace(validManifest(), `{"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}`, targetDisk, 1)
+}
+
+func objectField(extra string) string {
+	extra = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(extra), ","))
+	return "\n\t\t\t" + extra + ","
 }

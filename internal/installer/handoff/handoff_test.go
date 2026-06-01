@@ -47,7 +47,7 @@ func TestHandoffServerRequiresTokenAndAcceptsOneManifest(t *testing.T) {
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
-	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	manifest := validManifestJSON()
 	resp := postManifest(t, ts.URL, "", manifest)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("POST without token status = %d, want 401", resp.StatusCode)
@@ -85,25 +85,31 @@ func TestHandoffServerValidatesBeforeAccepting(t *testing.T) {
 	}
 }
 
-func TestValidateInstallManifestEnvelopeValidatesEtcFiles(t *testing.T) {
-	manifest := []byte(`{
-		"apiVersion": "install.katl.dev/v1alpha1",
-		"kind": "InstallManifest",
-		"etc": {
-			"files": {
-				"/etc/systemd/network/10-lan.network": "[Match]\nName=enp1s0\n",
-				"/etc/ssh/sshd_config.d/10-katl.conf": "PasswordAuthentication no\n",
-				"/etc/katl/node.yaml": "node: lab-node-01\n"
-			}
-		}
-	}`)
-	if err := ValidateInstallManifestEnvelope(manifest); err != nil {
-		t.Fatalf("ValidateInstallManifestEnvelope() error = %v", err)
+func TestValidateManifestEnvelope(t *testing.T) {
+	if err := ValidateInstallManifestEnvelope(validManifestJSON()); err != nil {
+		t.Fatalf("ValidateInstallManifestEnvelope(valid) error = %v", err)
 	}
 
 	unsafeManifest := []byte(`{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind": "InstallManifest",
+		"metadata": {"name": "lab-node-01"},
+		"node": {
+			"identity": {
+				"hostname": "lab-node-01",
+				"ssh": {"authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"]}
+			}
+		},
+		"install": {
+			"allowDestructiveInstall": true,
+			"targetDisk": {"byID": "/dev/disk/by-id/ata-root"}
+		},
+		"artifacts": {
+			"runtimeRoot": {
+				"url": "https://example.invalid/root.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			}
+		},
 		"etc": {
 			"files": {
 				"/etc/kubernetes/admin.conf": "unsafe\n"
@@ -112,10 +118,10 @@ func TestValidateInstallManifestEnvelopeValidatesEtcFiles(t *testing.T) {
 	}`)
 	err := ValidateInstallManifestEnvelope(unsafeManifest)
 	if err == nil {
-		t.Fatal("ValidateInstallManifestEnvelope() error = nil, want /etc/kubernetes rejection")
+		t.Fatal("ValidateInstallManifestEnvelope() error = nil, want top-level etc rejection")
 	}
-	if !strings.Contains(err.Error(), "cannot own kubeadm-managed") {
-		t.Fatalf("error = %q, want kubeadm ownership rejection", err)
+	if !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "etc") {
+		t.Fatalf("error = %q, want top-level etc rejection", err)
 	}
 }
 
@@ -142,4 +148,32 @@ func postManifest(t *testing.T, baseURL, token string, manifest []byte) *http.Re
 		t.Fatalf("POST /v1/install error = %v", err)
 	}
 	return resp
+}
+
+func validManifestJSON() []byte {
+	return []byte(`{
+		"apiVersion": "install.katl.dev/v1alpha1",
+		"kind": "InstallManifest",
+		"metadata": {"name": "lab-node-01"},
+		"node": {
+			"identity": {
+				"hostname": "lab-node-01",
+				"ssh": {
+					"authorizedKeys": [
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+					]
+				}
+			}
+		},
+		"install": {
+			"allowDestructiveInstall": true,
+			"targetDisk": {"byID": "/dev/disk/by-id/ata-root"}
+		},
+		"artifacts": {
+			"runtimeRoot": {
+				"url": "https://example.invalid/root.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			}
+		}
+	}`)
 }
