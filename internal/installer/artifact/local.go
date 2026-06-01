@@ -22,8 +22,16 @@ type LocalMeta struct {
 	SourceRepo        *SourceRepo       `json:"sourceRepo,omitempty"`
 	PackageVersions   map[string]string `json:"packageVersions,omitempty"`
 	RuntimeInterface  string            `json:"runtimeInterface,omitempty"`
+	CompatibleBoot    *BootCompat       `json:"compatibleBoot,omitempty"`
 	CompatibleRuntime *Compat           `json:"compatibleRuntime,omitempty"`
 	Created           string            `json:"created"`
+}
+
+type BootCompat struct {
+	Kind              ArtifactKind `json:"kind"`
+	RuntimeInterface  string       `json:"runtimeInterface"`
+	ArtifactSHA256    string       `json:"artifactSHA256,omitempty"`
+	KernelCommandLine []string     `json:"kernelCommandLine,omitempty"`
 }
 
 type SourceRepo struct {

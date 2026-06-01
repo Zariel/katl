@@ -7,6 +7,7 @@ runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
 kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
 # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+# shellcheck disable=SC1091
 source "$kube_manifest"
 mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
@@ -186,6 +187,14 @@ fi
   "generation": "${KATL_BUILD_COMMIT:-unknown}",
   "architecture": "$arch",
   "runtimeInterface": "katl-runtime-1",
+  "compatibleBoot": {
+    "kind": "uki",
+    "runtimeInterface": "katl-runtime-1",
+    "kernelCommandLine": [
+      "rootfstype=squashfs",
+      "ro"
+    ]
+  },
   "created": "$created"
 }
 EOF

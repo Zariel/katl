@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact="${1:-build/mkosi/katl-runtime-root.squashfs}"
+metadata="${artifact}.json"
+checksum="${artifact}.sha256"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+json_has() {
+    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
+}
+
+has_path() {
+    local path="${1#/}"
+    local output
+    output="$(unsquashfs -ll "$artifact" "$path")" || fail "inspect /$path failed"
+    grep -Eq "squashfs-root/$path($| ->|[[:space:]])" <<<"$output" || fail "missing runtime path: /$path"
+}
+
+misses_path() {
+    local path="${1#/}"
+    local output
+    output="$(unsquashfs -ll "$artifact" "$path")" || fail "inspect /$path failed"
+    if grep -Eq "squashfs-root/$path($| ->|[[:space:]])" <<<"$output"; then
+        fail "unexpected runtime path: /$path"
+    fi
+}
+
+need awk
+need grep
+need sha256sum
+need stat
+need unsquashfs
+
+[[ -f "$artifact" ]] || fail "artifact not found: $artifact"
+[[ -f "$metadata" ]] || fail "metadata not found: $metadata"
+[[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+
+(cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
+
+size="$(stat -c %s "$artifact")"
+sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+json_has '"name": "runtime-root"'
+json_has '"kind": "runtime-root"'
+json_has '"format": "squashfs"'
+json_has '"compression": "zstd"'
+json_has '"runtimeInterface": "katl-runtime-1"'
+json_has '"compatibleBoot"'
+json_has '"kind": "uki"'
+json_has '"rootfstype=squashfs"'
+json_has '"ro"'
+json_has "\"sizeBytes\": $size"
+json_has "\"sha256\": \"$sha256\""
+
+superblock="$(unsquashfs -s "$artifact")"
+grep -Fq "Compression zstd" <<<"$superblock" || fail "runtime root is not zstd-compressed SquashFS"
+
+for path in \
+    /usr/lib/os-release \
+    /usr/bin/systemctl \
+    /usr/bin/networkctl \
+    /usr/bin/resolvectl \
+    /usr/bin/sshd \
+    /usr/bin/containerd \
+    /usr/bin/crun
+do
+    has_path "$path"
+done
+
+for path in \
+    /usr/bin/mkosi \
+    /usr/bin/dnf \
+    /usr/bin/dnf5 \
+    /usr/bin/gcc \
+    /usr/bin/curl \
+    /usr/bin/kubeadm \
+    /usr/bin/kubelet \
+    /usr/bin/kubectl \
+    /usr/bin/katlos-install
+do
+    misses_path "$path"
+done
+
+echo "ok: $artifact"

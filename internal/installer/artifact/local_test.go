@@ -19,6 +19,15 @@ func TestReadLocal(t *testing.T) {
   "compression": "zstd",
   "generation": "abc123",
   "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-1",
+  "compatibleBoot": {
+    "kind": "uki",
+    "runtimeInterface": "katl-runtime-1",
+    "kernelCommandLine": [
+      "rootfstype=squashfs",
+      "ro"
+    ]
+  },
   "created": "2026-06-01T00:00:00Z"
 }`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -31,6 +40,9 @@ func TestReadLocal(t *testing.T) {
 	}
 	if meta.Format != "squashfs" || meta.Compression != "zstd" {
 		t.Fatalf("meta = %#v", meta)
+	}
+	if meta.CompatibleBoot == nil || meta.CompatibleBoot.Kind != ArtifactUKI {
+		t.Fatalf("compatible boot = %#v", meta.CompatibleBoot)
 	}
 
 	spec := meta.Spec("https://artifacts.example/katl")
