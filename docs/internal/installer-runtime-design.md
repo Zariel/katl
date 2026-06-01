@@ -249,7 +249,6 @@ Katl responsible for provisioning. A boot configuration may pass:
 
 ```text
 katl.manifest.url=<install manifest URL>
-katl.node=<optional explicit node name>
 katl.install.mode=auto
 console=...
 ```
@@ -332,9 +331,6 @@ docs/internal/examples/minimal-install-manifest.json
 The v1alpha1 manifest contains these top-level sections:
 
 ```text
-metadata
-  manifest name
-
 node
   hostname and `katl` runtime SSH authorized keys
 
@@ -346,11 +342,13 @@ artifacts
   runtime root artifact, optional UKI, sysexts, and required digests
 ```
 
-The v0 manifest deliberately does not expose metadata labels, user-chosen
-generation IDs, node matching selectors, SSH enable/disable policy, installer
-SSH overrides, artifact trust roots, bootloader policy, loader entry names,
-kernel arguments, or extra disk mount options. Those can be added later through
-explicit design and Beads when there is a concrete implementation need.
+The v0 manifest deliberately does not expose a separate manifest name, metadata
+labels, user-chosen generation IDs, node matching selectors, SSH enable/disable
+policy, installer SSH overrides, artifact trust roots, bootloader policy,
+loader entry names, kernel arguments, or extra disk mount options. The hostname
+under `node.identity.hostname` is the only per-node identity field. Those can be
+added later through explicit design and Beads when there is a concrete
+implementation need.
 
 The manifest is intentionally explicit about destructive installation:
 

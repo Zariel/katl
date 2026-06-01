@@ -130,16 +130,16 @@ artifact references and digests
 extra non-root data disk requests
 ```
 
-The v0 install manifest should stay minimal: metadata name, hostname, `katl`
-SSH authorized keys, target root disk, destructive install guard, runtime
-artifacts, optional sysext artifacts, and extra non-root data disks. Extra disks
-remain in scope because they exercise real install/runtime disk handling.
+The v0 install manifest should stay minimal: hostname, `katl` SSH authorized
+keys, target root disk, destructive install guard, runtime artifacts, optional
+sysext artifacts, and extra non-root data disks. Extra disks remain in scope
+because they exercise real install/runtime disk handling.
 
 Users do not supply:
 
 ```text
 node matching selectors or hardware inventory policy
-metadata labels or user-chosen generation IDs
+manifest names, metadata labels, or user-chosen generation IDs
 root disk partition table
 root slot sizes
 root or state filesystem choices

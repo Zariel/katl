@@ -1,9 +1,6 @@
 {
   "apiVersion": "install.katl.dev/v1alpha1",
   "kind": "InstallManifest",
-  "metadata": {
-    "name": "lab-node-01"
-  },
   "node": {
     "identity": {
       "hostname": "lab-node-01",

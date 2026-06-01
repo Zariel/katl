@@ -7,7 +7,6 @@
   "required": [
     "apiVersion",
     "kind",
-    "metadata",
     "node",
     "install",
     "artifacts"
@@ -18,18 +17,6 @@
     },
     "kind": {
       "const": "InstallManifest"
-    },
-    "metadata": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name"
-      ],
-      "properties": {
-        "name": {
-          "$ref": "#/$defs/dnsLabel"
-        }
-      }
     },
     "node": {
       "type": "object",

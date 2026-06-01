@@ -17,14 +17,9 @@ const (
 type Manifest struct {
 	APIVersion string        `json:"apiVersion"`
 	Kind       string        `json:"kind"`
-	Metadata   Metadata      `json:"metadata"`
 	Node       NodeConfig    `json:"node"`
 	Install    InstallConfig `json:"install"`
 	Artifacts  Artifacts     `json:"artifacts"`
-}
-
-type Metadata struct {
-	Name string `json:"name"`
 }
 
 type NodeConfig struct {
@@ -112,9 +107,6 @@ func Decode(reader io.Reader) (Manifest, error) {
 	}
 	if !manifest.Install.AllowDestructiveInstall {
 		return Manifest{}, fmt.Errorf("install.allowDestructiveInstall must be true")
-	}
-	if strings.TrimSpace(manifest.Metadata.Name) == "" {
-		return Manifest{}, fmt.Errorf("metadata.name is required")
 	}
 	if strings.TrimSpace(manifest.Node.Identity.Hostname) == "" {
 		return Manifest{}, fmt.Errorf("node.identity.hostname is required")

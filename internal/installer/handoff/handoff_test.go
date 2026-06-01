@@ -90,10 +90,18 @@ func TestValidateManifestEnvelope(t *testing.T) {
 		t.Fatalf("ValidateInstallManifestEnvelope(valid) error = %v", err)
 	}
 
+	namedManifest := bytes.Replace(validManifestJSON(), []byte(`"node": {`), []byte(`"metadata": {"name": "lab-node-01"}, "node": {`), 1)
+	err := ValidateInstallManifestEnvelope(namedManifest)
+	if err == nil {
+		t.Fatal("ValidateInstallManifestEnvelope() error = nil, want metadata rejection")
+	}
+	if !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "metadata") {
+		t.Fatalf("error = %q, want metadata rejection", err)
+	}
+
 	unsafeManifest := []byte(`{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind": "InstallManifest",
-		"metadata": {"name": "lab-node-01"},
 		"node": {
 			"identity": {
 				"hostname": "lab-node-01",
@@ -116,7 +124,7 @@ func TestValidateManifestEnvelope(t *testing.T) {
 			}
 		}
 	}`)
-	err := ValidateInstallManifestEnvelope(unsafeManifest)
+	err = ValidateInstallManifestEnvelope(unsafeManifest)
 	if err == nil {
 		t.Fatal("ValidateInstallManifestEnvelope() error = nil, want top-level etc rejection")
 	}
@@ -154,7 +162,6 @@ func validManifestJSON() []byte {
 	return []byte(`{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind": "InstallManifest",
-		"metadata": {"name": "lab-node-01"},
 		"node": {
 			"identity": {
 				"hostname": "lab-node-01",

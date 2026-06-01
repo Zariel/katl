@@ -15,8 +15,7 @@ func TestDiscoverBootInputPrecedence(t *testing.T) {
 			inputFile(InputSourceRunKatl, `{"manifestURL":"https://run.example/manifest.json","nodeName":"run-node"}`),
 		},
 		Manifest: []byte(`{
-  "metadata": {"name": "manifest-name"},
-  "node": {"name": "manifest-node"},
+  "node": {"identity": {"hostname": "manifest-node"}},
   "artifacts": {
     "runtimeRoot": {
       "url": "https://manifest.example/artifacts/runtime-root.squashfs"
@@ -57,7 +56,7 @@ func TestDiscoverBootInputRunOverridesEtcAndManifest(t *testing.T) {
 			inputFile(InputSourceEtcKatl, `{"manifestPath":"/etc/katl/install.json","nodeName":"etc-node"}`),
 			inputFile(InputSourceRunKatl, `{"manifestPath":"/run/katl/install.json","nodeName":"run-node"}`),
 		},
-		Manifest: []byte(`{"node":{"name":"manifest-node"}}`),
+		Manifest: []byte(`{"node":{"identity":{"hostname":"manifest-node"}}}`),
 	})
 	if err != nil {
 		t.Fatalf("DiscoverBootInput() error = %v", err)

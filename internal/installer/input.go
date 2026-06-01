@@ -108,11 +108,10 @@ func newInputResolver() *inputResolver {
 func (r *inputResolver) applyManifest(data []byte) error {
 	var manifest struct {
 		Node struct {
-			Name string `json:"name"`
+			Identity struct {
+				Hostname string `json:"hostname"`
+			} `json:"identity"`
 		} `json:"node"`
-		Metadata struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
 		Artifacts struct {
 			RuntimeRoot struct {
 				URL string `json:"url"`
@@ -123,11 +122,7 @@ func (r *inputResolver) applyManifest(data []byte) error {
 		return fmt.Errorf("decode manifest-derived input: %w", err)
 	}
 
-	nodeName := manifest.Node.Name
-	if nodeName == "" {
-		nodeName = manifest.Metadata.Name
-	}
-	r.setString("nodeName", InputSourceManifest, nodeName)
+	r.setString("nodeName", InputSourceManifest, manifest.Node.Identity.Hostname)
 	if manifest.Artifacts.RuntimeRoot.URL != "" {
 		baseURL, err := artifactBaseURL(manifest.Artifacts.RuntimeRoot.URL)
 		if err != nil {

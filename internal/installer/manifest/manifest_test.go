@@ -13,9 +13,6 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if manifest.Metadata.Name != "lab-node-01" {
-		t.Fatalf("metadata name = %q", manifest.Metadata.Name)
-	}
 	if manifest.Node.Identity.Hostname != "lab-node-01" {
 		t.Fatalf("hostname = %q", manifest.Node.Identity.Hostname)
 	}
@@ -77,8 +74,9 @@ func TestDecodeRejectsDeferredFields(t *testing.T) {
 		manifest string
 		want     string
 	}{
-		{name: "metadata generation", manifest: manifestWithMeta(`, "generation": "1"`), want: "generation"},
-		{name: "metadata labels", manifest: manifestWithMeta(`, "labels": {"env": "lab"}`), want: "labels"},
+		{name: "metadata name", manifest: manifestWithTop(`, "metadata": {"name": "lab-node-01"}`), want: "metadata"},
+		{name: "metadata generation", manifest: manifestWithTop(`, "metadata": {"generation": "1"}`), want: "metadata"},
+		{name: "metadata labels", manifest: manifestWithTop(`, "metadata": {"labels": {"env": "lab"}}`), want: "metadata"},
 		{name: "node name", manifest: manifestWithNode(`, "name": "lab-node-01"`), want: "name"},
 		{name: "node selectors", manifest: manifestWithNode(`, "selectors": {"rack": "a"}`), want: "selectors"},
 		{name: "ssh enabled", manifest: manifestWithSSH(`, "enabled": true`), want: "enabled"},
@@ -181,7 +179,6 @@ func manifestWithTop(extra string) string {
 	return fmt.Sprintf(`{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind": "InstallManifest",
-		"metadata": {"name": "lab-node-01"},
 		"node": {
 			"identity": {
 				"hostname": "lab-node-01",
@@ -214,10 +211,6 @@ func manifestWithTop(extra string) string {
 			]
 		}%s
 	}`, extra)
-}
-
-func manifestWithMeta(extra string) string {
-	return strings.Replace(validManifest(), `"metadata": {"name": "lab-node-01"}`, `"metadata": {"name": "lab-node-01"`+extra+`}`, 1)
 }
 
 func manifestWithNode(extra string) string {
