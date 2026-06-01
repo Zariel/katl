@@ -15,7 +15,7 @@ import (
 
 func TestVersion(t *testing.T) {
 	oldVersion, oldCommit, oldDate := version, commit, date
-	version, commit, date = "v0", "abc123", "2026-06-01T00:00:00Z"
+	version, commit, date = "dev", "abc123", "2026-06-01T00:00:00Z"
 	t.Cleanup(func() {
 		version, commit, date = oldVersion, oldCommit, oldDate
 	})
@@ -24,7 +24,7 @@ func TestVersion(t *testing.T) {
 	if err := run(context.Background(), []string{"--version"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if got, want := stdout.String(), "katlos-install version=v0 commit=abc123 date=2026-06-01T00:00:00Z\n"; got != want {
+	if got, want := stdout.String(), "katlos-install version=dev commit=abc123 date=2026-06-01T00:00:00Z\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {

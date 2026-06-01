@@ -5,7 +5,7 @@ usage() {
     cat <<'USAGE'
 Usage: scripts/katl-vm [options]
 
-Boot the M1 installer image with direct QEMU and optional serial smoke matching.
+Boot the installer image with direct QEMU and optional serial smoke matching.
 
 Options:
   --uki PATH              Installer UKI to boot as EFI/BOOT/BOOTX64.EFI
