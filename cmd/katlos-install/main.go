@@ -5,10 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"git.cbannister.xyz/chris/katl/internal/installer"
+	"git.cbannister.xyz/chris/katl/internal/installer/handoff"
 )
 
 var (
@@ -24,6 +29,143 @@ func main() {
 	}
 }
 
+func runManifest(ctx context.Context, manifestPath, stateDir string) error {
+	if manifestPath == "" {
+		return fmt.Errorf("--manifest is required unless --list-states, --version, --apply-input, or --boot is set")
+	}
+
+	runner := installer.NewRunner(installer.PreseededManifestPlan(), &installer.Context{
+		ManifestPath: manifestPath,
+		StateDir:     stateDir,
+		Commands:     installer.NewExecCommandRunner(),
+		Store:        installer.NewFileStateStore(stateDir),
+	})
+
+	return runner.Run(ctx)
+}
+
+func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer) error {
+	input, err := bootInput(runDir, etcDir)
+	if err != nil {
+		return err
+	}
+	for _, log := range input.Logs {
+		fmt.Fprintf(stdout, "katlos-install input: %s\n", log)
+	}
+	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s\n", input.Action, input.InstallMode, input.ManifestPath, input.ManifestURL)
+
+	switch input.Action {
+	case installer.InstallActionHoldForDebug:
+		fmt.Fprintln(stdout, "katlos-install debug hold active")
+		<-ctx.Done()
+		return ctx.Err()
+	case installer.InstallActionWaitForConfig:
+		return runHandoff(ctx, runDir, handoffAddr, stdout)
+	case installer.InstallActionRun:
+		if input.ManifestURL != "" && input.ManifestPath == "" {
+			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)
+		}
+		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"))
+	default:
+		return fmt.Errorf("unsupported install action %q", input.Action)
+	}
+}
+
+func bootInput(runDir, etcDir string) (installer.BootInput, error) {
+	var request installer.BootInputRequest
+	request.KernelCmdline = readText("/proc/cmdline")
+	addInputFile(&request, installer.InputSourceEtcKatl, filepath.Join(etcDir, "install-input.json"))
+	addManifestFile(&request, installer.InputSourceEtcKatl, filepath.Join(etcDir, "install-manifest.json"))
+	addInputFile(&request, installer.InputSourceRunKatl, filepath.Join(runDir, "install-input.json"))
+	addManifestFile(&request, installer.InputSourceRunKatl, filepath.Join(runDir, "install-manifest.json"))
+	return installer.DiscoverBootInput(request)
+}
+
+func addInputFile(request *installer.BootInputRequest, source installer.InputSource, path string) {
+	data, ok := readFile(path)
+	if !ok {
+		return
+	}
+	request.Files = append(request.Files, installer.BootInputFile{
+		Source:  source,
+		Path:    path,
+		Content: data,
+	})
+}
+
+func addManifestFile(request *installer.BootInputRequest, source installer.InputSource, path string) {
+	data, ok := readFile(path)
+	if !ok {
+		return
+	}
+	request.Manifest = data
+	request.Files = append(request.Files, installer.BootInputFile{
+		Source:  source,
+		Path:    path + ".input",
+		Content: []byte(fmt.Sprintf(`{"manifestPath":%q}`, path)),
+	})
+}
+
+func readText(path string) string {
+	data, ok := readFile(path)
+	if !ok {
+		return ""
+	}
+	return string(data)
+}
+
+func readFile(path string) ([]byte, bool) {
+	data, err := os.ReadFile(path)
+	return data, err == nil
+}
+
+func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) error {
+	server, err := handoff.NewHandoffServer("", nil)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen for handoff: %w", err)
+	}
+	defer listener.Close()
+
+	httpServer := &http.Server{Handler: server.Handler()}
+	errc := make(chan error, 1)
+	go func() {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errc <- err
+			return
+		}
+		errc <- nil
+	}()
+	defer httpServer.Shutdown(context.Background())
+
+	fmt.Fprintln(stdout, server.Announcement("http://"+listener.Addr().String()))
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if len(server.Manifest()) > 0 {
+			manifestPath := filepath.Join(runDir, "install-manifest.json")
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				return fmt.Errorf("create handoff dir: %w", err)
+			}
+			if err := os.WriteFile(manifestPath, server.Manifest(), 0o600); err != nil {
+				return fmt.Errorf("write handoff manifest: %w", err)
+			}
+			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
+			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errc:
+			return err
+		case <-ticker.C:
+		}
+	}
+}
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katlos-install", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -33,9 +175,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	listStates := flags.Bool("list-states", false, "print the installer state order and exit")
 	showVersion := flags.Bool("version", false, "print build metadata and exit")
 	applyInput := flags.Bool("apply-input", false, "copy preseeded installer input and exit")
+	boot := flags.Bool("boot", false, "run installer boot entrypoint")
 	preseedDir := flags.String("preseed-dir", "", "additional installer preseed directory")
 	runDir := flags.String("run-dir", "/run/katl", "runtime installer input directory")
 	etcDir := flags.String("etc-dir", "/etc/katl", "persistent installer input directory")
+	handoffAddr := flags.String("handoff-addr", "0.0.0.0:8080", "installer handoff listen address")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -59,6 +203,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		})
 	}
 
+	if *boot {
+		return runBoot(ctx, *runDir, *etcDir, *handoffAddr, stdout)
+	}
+
 	plan := installer.DefaultPlan()
 	if *listStates {
 		for _, id := range plan.IDs() {
@@ -67,16 +215,5 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if strings.TrimSpace(*manifestPath) == "" {
-		return fmt.Errorf("--manifest is required unless --list-states is set")
-	}
-
-	runner := installer.NewRunner(installer.PreseededManifestPlan(), &installer.Context{
-		ManifestPath: strings.TrimSpace(*manifestPath),
-		StateDir:     *stateDir,
-		Commands:     installer.NewExecCommandRunner(),
-		Store:        installer.NewFileStateStore(*stateDir),
-	})
-
-	return runner.Run(ctx)
+	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir)
 }
