@@ -10,6 +10,10 @@ Boot the M1 installer image with direct QEMU and optional serial smoke matching.
 Options:
   --uki PATH              Installer UKI to boot as EFI/BOOT/BOOTX64.EFI
   --image PATH            Raw disk image to boot (default: build/mkosi/katl-installer.raw)
+  --target-disk PATH      Writable installer target disk to attach; created if missing
+  --target-disk-size SIZE Size for a created target disk (default: 20G)
+  --target-disk-format F  Target disk format: qcow2 or raw (default: qcow2)
+  --target-disk-cleanup   Remove a target disk created by this run after successful exit
   --serial-log PATH       Serial log path (default: build/qemu/katl-serial.log)
   --state-dir PATH        QEMU scratch directory (default: build/qemu)
   --firmware-code PATH    OVMF code image, or KATL_OVMF_CODE
@@ -26,6 +30,11 @@ USAGE
 repo_root="$(git rev-parse --show-toplevel)"
 image="$repo_root/build/mkosi/katl-installer.raw"
 uki=
+target_disk=
+target_disk_size=20G
+target_disk_format=qcow2
+target_disk_cleanup=0
+target_disk_created=0
 serial_log="$repo_root/build/qemu/katl-serial.log"
 state_dir="$repo_root/build/qemu"
 firmware_code="${KATL_OVMF_CODE:-}"
@@ -56,6 +65,25 @@ while [[ $# -gt 0 ]]; do
             require_value "$1" "${2:-}"
             image="$2"
             shift 2
+            ;;
+        --target-disk|-target-disk)
+            require_value "$1" "${2:-}"
+            target_disk="$2"
+            shift 2
+            ;;
+        --target-disk-size|-target-disk-size)
+            require_value "$1" "${2:-}"
+            target_disk_size="$2"
+            shift 2
+            ;;
+        --target-disk-format|-target-disk-format)
+            require_value "$1" "${2:-}"
+            target_disk_format="$2"
+            shift 2
+            ;;
+        --target-disk-cleanup|-target-disk-cleanup)
+            target_disk_cleanup=1
+            shift
             ;;
         --serial-log|-serial-log)
             require_value "$1" "${2:-}"
@@ -122,6 +150,14 @@ case "$kvm" in
         ;;
 esac
 
+case "$target_disk_format" in
+    qcow2|raw) ;;
+    *)
+        echo "error: --target-disk-format must be qcow2 or raw" >&2
+        exit 2
+        ;;
+esac
+
 if [[ -n "$uki" && ! -f "$uki" ]]; then
     echo "error: installer UKI not found: $uki" >&2
     exit 1
@@ -143,6 +179,7 @@ if [[ -z "$qemu" ]]; then
     echo "error: qemu-system-x86_64 not found in PATH" >&2
     exit 1
 fi
+qemu_img="$(command -v qemu-img || true)"
 
 pick_first_file() {
     local path
@@ -208,6 +245,20 @@ if [[ ! -r "$firmware_vars" ]]; then
     exit 1
 fi
 
+if [[ -n "$target_disk" && ! -e "$target_disk" ]]; then
+    if [[ -z "$qemu_img" ]]; then
+        echo "error: qemu-img not found in PATH; cannot create target disk: $target_disk" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$target_disk")"
+    "$qemu_img" create -f "$target_disk_format" "$target_disk" "$target_disk_size" >/dev/null
+    target_disk_created=1
+fi
+if [[ -n "$target_disk" && ! -f "$target_disk" ]]; then
+    echo "error: target disk is not a regular file: $target_disk" >&2
+    exit 1
+fi
+
 mkdir -p "$state_dir/tmp" "$(dirname "$serial_log")"
 : >"$serial_log"
 
@@ -232,21 +283,32 @@ echo "firmware: $firmware_code" >&2
 echo "acceleration: $accel" >&2
 
 boot_drives=()
+drive_index=0
+add_virtio_drive() {
+    local spec="$1"
+    boot_drives+=(-drive "if=virtio,index=$drive_index,$spec")
+    drive_index=$((drive_index + 1))
+}
+
 if [[ -n "$uki" ]]; then
     efi_tree="$state_dir/efi"
     rm -rf "$efi_tree"
     mkdir -p "$efi_tree/EFI/BOOT"
     cp "$uki" "$efi_tree/EFI/BOOT/BOOTX64.EFI"
-    boot_drives+=(-drive "if=virtio,format=raw,file=fat:rw:$efi_tree")
+    add_virtio_drive "format=raw,file=fat:rw:$efi_tree"
     echo "installer UKI: $uki" >&2
     echo "EFI boot tree: ${efi_tree#"$repo_root"/}" >&2
     if [[ -f "$image" ]]; then
-        boot_drives+=(-drive "if=virtio,format=raw,file=$image,snapshot=on")
+        add_virtio_drive "format=raw,file=$image,snapshot=on"
         echo "root image: $image" >&2
     fi
 else
-    boot_drives+=(-drive "if=virtio,format=raw,file=$image,snapshot=on")
+    add_virtio_drive "format=raw,file=$image,snapshot=on"
     echo "image: $image" >&2
+fi
+if [[ -n "$target_disk" ]]; then
+    add_virtio_drive "format=$target_disk_format,file=$target_disk"
+    echo "target disk: $target_disk ($target_disk_format, created=$target_disk_created)" >&2
 fi
 
 # shellcheck disable=SC2054
@@ -271,9 +333,13 @@ qemu_pid=$!
 
 # shellcheck disable=SC2329
 cleanup() {
+    local status=$?
     if kill -0 "$qemu_pid" >/dev/null 2>&1; then
         kill "$qemu_pid" >/dev/null 2>&1 || true
         wait "$qemu_pid" >/dev/null 2>&1 || true
+    fi
+    if [[ "$status" -eq 0 && "$target_disk_cleanup" -eq 1 && "$target_disk_created" -eq 1 ]]; then
+        rm -f "$target_disk"
     fi
 }
 trap cleanup EXIT INT TERM
