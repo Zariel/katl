@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,21 +39,21 @@ const (
 )
 
 type Scenario struct {
-	Name      string
-	RunID     string
-	StateRoot string
-	Keep      KeepPolicy
-	KVM       KVMPolicy
-	Host      HostRequirements
+	Name      string           `json:"name"`
+	RunID     string           `json:"runId,omitempty"`
+	StateRoot string           `json:"stateRoot,omitempty"`
+	Keep      KeepPolicy       `json:"keep,omitempty"`
+	KVM       KVMPolicy        `json:"kvm,omitempty"`
+	Host      HostRequirements `json:"host,omitempty"`
 }
 
 type HostRequirements struct {
-	QEMU     bool
-	QEMUImg  bool
-	OVMF     bool
-	KVM      KVMPolicy
-	OVMFCode string
-	OVMFVars string
+	QEMU     bool      `json:"qemu,omitempty"`
+	QEMUImg  bool      `json:"qemuImg,omitempty"`
+	OVMF     bool      `json:"ovmf,omitempty"`
+	KVM      KVMPolicy `json:"kvm,omitempty"`
+	OVMFCode string    `json:"ovmfCode,omitempty"`
+	OVMFVars string    `json:"ovmfVars,omitempty"`
 }
 
 type Options struct {
@@ -67,32 +68,59 @@ type Options struct {
 type Runner struct {
 	Options Options
 	probe   probe
+	now     func() time.Time
 }
 
 type Result struct {
-	ScenarioName string
-	Status       Status
-	RunID        string
-	RunDir       string
-	QEMUDir      string
-	DiskDir      string
-	ManifestDir  string
-	Keep         KeepPolicy
-	KVM          KVMPolicy
-	Missing      []MissingPrerequisite
+	ScenarioName   string                `json:"scenarioName"`
+	Status         Status                `json:"status"`
+	RunID          string                `json:"runId"`
+	RunDir         string                `json:"runDir"`
+	QEMUDir        string                `json:"qemuDir"`
+	DiskDir        string                `json:"diskDir"`
+	ManifestDir    string                `json:"manifestDir"`
+	Keep           KeepPolicy            `json:"keep"`
+	KVM            KVMPolicy             `json:"kvm"`
+	Started        time.Time             `json:"started,omitempty"`
+	Finished       time.Time             `json:"finished,omitempty"`
+	DurationMS     int64                 `json:"durationMs,omitempty"`
+	FailureSummary string                `json:"failureSummary,omitempty"`
+	Artifacts      ArtifactPaths         `json:"artifacts"`
+	Phases         []PhaseResult         `json:"phases,omitempty"`
+	Missing        []MissingPrerequisite `json:"missing,omitempty"`
 }
 
 type Status string
 
 const (
 	StatusPlanned Status = "planned"
+	StatusPassed  Status = "passed"
 	StatusSkipped Status = "skipped"
 	StatusFailed  Status = "failed"
 )
 
+type ArtifactPaths struct {
+	Scenario        string `json:"scenario"`
+	Result          string `json:"result"`
+	QEMUCommand     string `json:"qemuCommand"`
+	InstallerSerial string `json:"installerSerial"`
+	RuntimeSerial   string `json:"runtimeSerial"`
+	ManifestsDir    string `json:"manifestsDir"`
+	DisksDir        string `json:"disksDir"`
+}
+
+type PhaseResult struct {
+	Name           string    `json:"name"`
+	Status         Status    `json:"status"`
+	Started        time.Time `json:"started,omitempty"`
+	Finished       time.Time `json:"finished,omitempty"`
+	DurationMS     int64     `json:"durationMs,omitempty"`
+	FailureSummary string    `json:"failureSummary,omitempty"`
+}
+
 type MissingPrerequisite struct {
-	Name   string
-	Detail string
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
 }
 
 type PrereqError struct {
@@ -162,22 +190,36 @@ func (r Runner) Run(t testTB, scenario Scenario) Result {
 	}
 	if !r.options().Enabled {
 		result.Status = StatusSkipped
+		result.FailureSummary = "VM scenario is not enabled"
 		t.Skipf("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run VM scenario %q", scenario.Name)
 		return result
 	}
+	result.start(r.time())
 	if err := r.check(scenario.Host); err != nil {
-		result.Status = StatusFailed
+		status := StatusFailed
+		if r.options().Missing == MissingSkips {
+			status = StatusSkipped
+		}
+		result.finish(status, err.Error(), r.time())
 		var prereq PrereqError
 		if errors.As(err, &prereq) {
 			result.Missing = prereq.Missing
+		}
+		if writeErr := r.Write(scenario, result); writeErr != nil {
+			t.Fatalf("write vmtest result for %q failed: %v\nvmtest run dir: %s", scenario.Name, writeErr, result.RunDir)
+			return result
 		}
 		if r.options().Missing == MissingSkips {
 			result.Status = StatusSkipped
 			t.Skipf("%v", err)
 			return result
 		}
-		t.Fatalf("%v", err)
+		t.Fatalf("%v\nvmtest run dir: %s", err, result.RunDir)
 		return result
+	}
+	result.finish(StatusPassed, "", r.time())
+	if err := r.Write(scenario, result); err != nil {
+		t.Fatalf("write vmtest result for %q failed: %v\nvmtest run dir: %s", scenario.Name, err, result.RunDir)
 	}
 	return result
 }
@@ -208,6 +250,7 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 		runID = fmt.Sprintf("%s-%d", clean(scenario.Name), time.Now().UTC().Unix())
 	}
 	runDir := filepath.Join(scenario.StateRoot, runID)
+	paths := pathsFor(runDir)
 	return Result{
 		ScenarioName: scenario.Name,
 		Status:       StatusPlanned,
@@ -218,7 +261,28 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 		ManifestDir:  filepath.Join(runDir, "manifests"),
 		Keep:         scenario.Keep,
 		KVM:          scenario.KVM,
+		Artifacts:    paths,
 	}, nil
+}
+
+func (r Runner) Write(scenario Scenario, result Result) error {
+	if err := os.MkdirAll(result.QEMUDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.ManifestDir, 0o755); err != nil {
+		return err
+	}
+	record := scenarioRecord{
+		Scenario: scenario,
+		Result:   result,
+	}
+	if err := writeJSON(result.Artifacts.Scenario, record); err != nil {
+		return err
+	}
+	return writeJSON(result.Artifacts.Result, result)
 }
 
 func (r Runner) check(requirements HostRequirements) error {
@@ -227,6 +291,41 @@ func (r Runner) check(requirements HostRequirements) error {
 
 func (r Runner) options() Options {
 	return normalizeOptions(r.Options)
+}
+
+func (r Runner) time() time.Time {
+	if r.now != nil {
+		return r.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (r *Result) start(now time.Time) {
+	r.Started = now
+}
+
+func (r *Result) finish(status Status, failure string, now time.Time) {
+	r.Status = status
+	r.Finished = now
+	if !r.Started.IsZero() {
+		r.DurationMS = r.Finished.Sub(r.Started).Milliseconds()
+	}
+	r.FailureSummary = failure
+	r.addPhase("host-prerequisites", status, failure, r.Started, now)
+}
+
+func (r *Result) addPhase(name string, status Status, failure string, started, finished time.Time) {
+	phase := PhaseResult{
+		Name:           name,
+		Status:         status,
+		Started:        started,
+		Finished:       finished,
+		FailureSummary: failure,
+	}
+	if !started.IsZero() && !finished.IsZero() {
+		phase.DurationMS = finished.Sub(started).Milliseconds()
+	}
+	r.Phases = append(r.Phases, phase)
 }
 
 func normalizeOptions(options Options) Options {
@@ -386,4 +485,30 @@ func clean(name string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+func pathsFor(runDir string) ArtifactPaths {
+	return ArtifactPaths{
+		Scenario:        filepath.Join(runDir, "scenario.json"),
+		Result:          filepath.Join(runDir, "result.json"),
+		QEMUCommand:     filepath.Join(runDir, "qemu", "qemu-command.txt"),
+		InstallerSerial: filepath.Join(runDir, "qemu", "installer-serial.log"),
+		RuntimeSerial:   filepath.Join(runDir, "qemu", "runtime-serial.log"),
+		ManifestsDir:    filepath.Join(runDir, "manifests"),
+		DisksDir:        filepath.Join(runDir, "disks"),
+	}
+}
+
+type scenarioRecord struct {
+	Scenario Scenario `json:"scenario"`
+	Result   Result   `json:"result"`
+}
+
+func writeJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
 }

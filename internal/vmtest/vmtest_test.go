@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalize(t *testing.T) {
@@ -80,6 +82,7 @@ func TestOptIn(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tb := &fakeTB{}
+			tt.options.StateRoot = t.TempDir()
 			runner := Runner{
 				Options: tt.options,
 				probe: probe{
@@ -97,6 +100,9 @@ func TestOptIn(t *testing.T) {
 			}
 			if tb.skipped != tt.skip || tb.failed != tt.fail {
 				t.Fatalf("skipped=%v failed=%v", tb.skipped, tb.failed)
+			}
+			if tt.options.Enabled && !strings.Contains(tb.message, "qemu-system-x86_64") {
+				t.Fatalf("message %q missing tool name", tb.message)
 			}
 		})
 	}
@@ -175,19 +181,160 @@ func TestPlanPaths(t *testing.T) {
 	if result.Keep != KeepAlways || result.KVM != KVMOff {
 		t.Fatalf("result policy = %#v", result)
 	}
+	if result.Artifacts.Scenario != "/tmp/katl-vmtest/run-1/scenario.json" {
+		t.Fatalf("scenario artifact = %q", result.Artifacts.Scenario)
+	}
+	if result.Artifacts.QEMUCommand != "/tmp/katl-vmtest/run-1/qemu/qemu-command.txt" {
+		t.Fatalf("qemu command artifact = %q", result.Artifacts.QEMUCommand)
+	}
+}
+
+func TestPersistPass(t *testing.T) {
+	root := t.TempDir()
+	now := fixedClock()
+	runner := Runner{
+		Options: Options{
+			Enabled:   true,
+			StateRoot: root,
+			RunID:     "run-1",
+		},
+		probe: probe{
+			lookPath: func(name string) (string, error) {
+				return "/usr/bin/" + name, nil
+			},
+		},
+		now: now,
+	}
+	tb := &fakeTB{}
+	result := runner.Run(tb, Scenario{
+		Name: "installer boot",
+		Host: HostRequirements{QEMU: true},
+	})
+	if tb.failed || tb.skipped {
+		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	loaded := readResult(t, result.Artifacts.Result)
+	if loaded.Status != StatusPassed {
+		t.Fatalf("persisted Status = %q", loaded.Status)
+	}
+	if loaded.DurationMS != 1000 {
+		t.Fatalf("DurationMS = %d", loaded.DurationMS)
+	}
+	if loaded.Artifacts.InstallerSerial != filepath.Join(root, "run-1", "qemu", "installer-serial.log") {
+		t.Fatalf("installer serial = %q", loaded.Artifacts.InstallerSerial)
+	}
+	if len(loaded.Phases) != 1 || loaded.Phases[0].Status != StatusPassed {
+		t.Fatalf("phases = %#v", loaded.Phases)
+	}
+	if _, err := os.Stat(result.Artifacts.Scenario); err != nil {
+		t.Fatalf("scenario.json missing: %v", err)
+	}
+	record := readRecord(t, result.Artifacts.Scenario)
+	if record.Scenario.Name != "installer boot" || record.Result.Status != StatusPassed {
+		t.Fatalf("scenario record = %#v", record)
+	}
+}
+
+func TestPersistFail(t *testing.T) {
+	root := t.TempDir()
+	runner := Runner{
+		Options: Options{
+			Enabled:   true,
+			StateRoot: root,
+			RunID:     "run-1",
+			Missing:   MissingFails,
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) {
+				return "", errors.New("not found")
+			},
+		},
+		now: fixedClock(),
+	}
+	tb := &fakeTB{}
+	result := runner.Run(tb, Scenario{
+		Name: "installer boot",
+		Host: HostRequirements{QEMU: true},
+	})
+	if !tb.failed {
+		t.Fatalf("failed = false")
+	}
+	if !strings.Contains(tb.message, result.RunDir) {
+		t.Fatalf("message %q missing run dir %q", tb.message, result.RunDir)
+	}
+	loaded := readResult(t, result.Artifacts.Result)
+	if loaded.Status != StatusFailed {
+		t.Fatalf("persisted Status = %q", loaded.Status)
+	}
+	if !strings.Contains(loaded.FailureSummary, "qemu-system-x86_64") {
+		t.Fatalf("failure = %q", loaded.FailureSummary)
+	}
+	if loaded.DurationMS != 1000 {
+		t.Fatalf("DurationMS = %d", loaded.DurationMS)
+	}
+	if len(loaded.Missing) != 1 {
+		t.Fatalf("missing = %#v", loaded.Missing)
+	}
 }
 
 type fakeTB struct {
 	skipped bool
 	failed  bool
+	message string
 }
 
 func (t *fakeTB) Helper() {}
 
-func (t *fakeTB) Skipf(string, ...any) {
+func (t *fakeTB) Skipf(format string, args ...any) {
 	t.skipped = true
+	t.message = fmt.Sprintf(format, args...)
 }
 
-func (t *fakeTB) Fatalf(string, ...any) {
+func (t *fakeTB) Fatalf(format string, args ...any) {
 	t.failed = true
+	t.message = fmt.Sprintf(format, args...)
+}
+
+func readResult(t *testing.T, path string) Result {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var result Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	return result
+}
+
+func readRecord(t *testing.T, path string) scenarioRecord {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read scenario: %v", err)
+	}
+	var record scenarioRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode scenario: %v", err)
+	}
+	return record
+}
+
+func fixedClock() func() time.Time {
+	values := []time.Time{
+		time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 3, 12, 0, 1, 0, time.UTC),
+	}
+	return func() time.Time {
+		if len(values) == 0 {
+			return time.Date(2026, 6, 3, 12, 0, 1, 0, time.UTC)
+		}
+		value := values[0]
+		values = values[1:]
+		return value
+	}
 }
