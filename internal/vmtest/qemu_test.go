@@ -1,0 +1,235 @@
+package vmtest
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestVMPlan(t *testing.T) {
+	result, config := vmFixture(t)
+	result.Disks = []DiskPlan{{
+		Name:            "root",
+		Format:          DiskQCOW2,
+		HostPath:        filepath.Join(result.DiskDir, "00-root.qcow2"),
+		AttachmentOrder: 0,
+	}}
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if plan.Accel != "kvm" {
+		t.Fatalf("Accel = %q", plan.Accel)
+	}
+	want := []string{
+		"-machine", "q35,accel=kvm",
+		"-cpu", "max",
+		"-smp", "2",
+		"-m", "2048",
+		"-display", "none",
+		"-monitor", "none",
+		"-serial", "file:" + result.Artifacts.InstallerSerial,
+		"-drive", "if=pflash,format=raw,readonly=on,file=" + config.OVMFCode,
+		"-drive", "if=pflash,format=raw,file=" + filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
+		"-drive", "if=virtio,index=0,format=raw,file=fat:rw:" + filepath.Join(result.QEMUDir, "efi"),
+		"-drive", "if=virtio,index=1,format=qcow2,file=" + config.Boot.Image + ",snapshot=on",
+		"-drive", "if=virtio,index=2,format=qcow2,file=" + filepath.Join(result.DiskDir, "00-root.qcow2") + ",serial=katl-root",
+		"-device", "virtio-rng-pci",
+		"-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:18080-:8080",
+		"-device", "virtio-net-pci,netdev=net0",
+	}
+	if !reflect.DeepEqual(plan.Args, want) {
+		t.Fatalf("Args = %#v", plan.Args)
+	}
+}
+
+func TestVMPrepare(t *testing.T) {
+	result, config := vmFixture(t)
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access: func(string) error {
+			return os.ErrNotExist
+		},
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if plan.Accel != "tcg" {
+		t.Fatalf("Accel = %q", plan.Accel)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+	vars, err := os.ReadFile(plan.OVMFVars)
+	if err != nil {
+		t.Fatalf("read vars copy: %v", err)
+	}
+	if string(vars) != "vars" {
+		t.Fatalf("vars copy = %q", vars)
+	}
+	if _, err := os.Stat(filepath.Join(plan.EFITree, "EFI", "BOOT", "BOOTX64.EFI")); err != nil {
+		t.Fatalf("EFI copy missing: %v", err)
+	}
+	command, err := os.ReadFile(plan.CommandFile)
+	if err != nil {
+		t.Fatalf("read command: %v", err)
+	}
+	if !strings.Contains(string(command), "q35,accel=tcg") {
+		t.Fatalf("command = %q", command)
+	}
+}
+
+func TestVMDiskBoot(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Boot.UKI = ""
+	config.Boot.ImageSnapshot = false
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	for _, arg := range plan.Args {
+		if strings.Contains(arg, "fat:rw:") {
+			t.Fatalf("disk boot args contain EFI tree: %#v", plan.Args)
+		}
+	}
+	if !hasArg(plan.Args, "if=virtio,index=0,format=qcow2,file="+config.Boot.Image) {
+		t.Fatalf("disk boot args = %#v", plan.Args)
+	}
+}
+
+func TestVMRun(t *testing.T) {
+	result, config := vmFixture(t)
+	runner := VMRunner{
+		Executor: vmExec{write: "serial ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	serial, err := os.ReadFile(result.Artifacts.InstallerSerial)
+	if err != nil {
+		t.Fatalf("read serial: %v", err)
+	}
+	if string(serial) != "serial ready" {
+		t.Fatalf("serial = %q", serial)
+	}
+}
+
+func TestVMFailure(t *testing.T) {
+	result, config := vmFixture(t)
+	runner := VMRunner{
+		Executor: vmExec{err: errors.New("exit status 1")},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	if !strings.Contains(result.FailureSummary, "exit status 1") {
+		t.Fatalf("FailureSummary = %q", result.FailureSummary)
+	}
+}
+
+func TestVMTimeout(t *testing.T) {
+	result, config := vmFixture(t)
+	runner := VMRunner{
+		Executor: vmExec{err: context.DeadlineExceeded},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	if result.FailureSummary != "qemu timed out" {
+		t.Fatalf("FailureSummary = %q", result.FailureSummary)
+	}
+}
+
+type vmExec struct {
+	write string
+	err   error
+}
+
+func (e vmExec) Run(_ context.Context, _ string, _ []string, serial io.Writer) error {
+	if e.write != "" {
+		_, _ = io.WriteString(serial, e.write)
+	}
+	return e.err
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func vmFixture(t *testing.T) (Result, VMConfig) {
+	t.Helper()
+	root := t.TempDir()
+	code := filepath.Join(root, "OVMF_CODE.fd")
+	vars := filepath.Join(root, "OVMF_VARS.fd")
+	uki := filepath.Join(root, "installer.efi")
+	image := filepath.Join(root, "root.raw")
+	for path, content := range map[string]string{
+		code:  "code",
+		vars:  "vars",
+		uki:   "uki",
+		image: "image",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}).Plan(Scenario{Name: "boot"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	return result, VMConfig{
+		Boot: VMBoot{
+			UKI:           uki,
+			Image:         image,
+			ImageFormat:   DiskQCOW2,
+			ImageSnapshot: true,
+		},
+		OVMFCode: code,
+		OVMFVars: vars,
+		KVM:      KVMAuto,
+		HostForwards: []HostForward{{
+			HostPort:  18080,
+			GuestPort: 8080,
+		}},
+	}
+}
