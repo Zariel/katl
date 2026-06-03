@@ -25,6 +25,7 @@ type KubernetesProjectionRequest struct {
 type StateAssets struct {
 	VarMount           string
 	EtcKubernetesMount string
+	StateCheckService  string
 	Tmpfiles           string
 	Dirs               []StateDir
 	MountPoints        []StateDir
@@ -66,6 +67,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"",
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
+		StateCheckService:  renderStateCheckService(),
 		Tmpfiles:           renderTmpfiles(dirs),
 		Dirs:               dirs,
 		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
@@ -98,6 +100,26 @@ func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, er
 	}, "\n"), nil
 }
 
+func renderStateCheckService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Check Katl writable state projections",
+		"Requires=var.mount etc-kubernetes.mount",
+		"After=var.mount etc-kubernetes.mount",
+		"Before=katl-kubeadm-ready.target",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-state-projection",
+		"ExecStart=/usr/bin/printf 'Katl state projection ready\\n'",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
 func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if strings.TrimSpace(root) == "" {
 		return StateAssets{}, fmt.Errorf("target root is required")
@@ -110,6 +132,9 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-state-projection-check.service", assets.StateCheckService, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/tmpfiles.d/katl-state.conf", assets.Tmpfiles, 0o644); err != nil {

@@ -10,7 +10,7 @@ index="$state_dir/artifacts.env"
 disk="${KATL_INSTALLED_DISK:-}"
 esp_artifacts="${KATL_INSTALLED_ESP_ARTIFACTS:-}"
 image_format="${KATL_INSTALLED_DISK_FORMAT:-raw}"
-expect="${KATL_INSTALLED_SMOKE_EXPECT:-Katl runtime reached systemd userspace}"
+expect="${KATL_INSTALLED_SMOKE_EXPECT:-Katl state projection ready}"
 timeout_duration="${KATL_INSTALLED_SMOKE_TIMEOUT:-180s}"
 kvm="${KATL_INSTALLED_SMOKE_KVM:-auto}"
 ram="${KATL_INSTALLED_SMOKE_RAM:-2048}"
@@ -22,8 +22,8 @@ usage() {
     cat <<'USAGE'
 Usage: scripts/check-installed-disk-smoke --disk PATH --esp-artifacts DIR [options]
 
-Boot a prepared Katl installed disk with OVMF and wait for the runtime serial
-boot signal. The ESP artifact tree is copied into the run directory before boot
+Boot a prepared Katl installed disk with OVMF and wait for the generated state
+projection serial signal. The ESP artifact tree is copied into the run directory before boot
 so loader entries are preserved when QEMU fails.
 
 Options:

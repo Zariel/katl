@@ -2,6 +2,7 @@ package generation
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,6 +79,31 @@ WantedBy=local-fs.target
 	}
 }
 
+func TestStateCheckService(t *testing.T) {
+	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	want := `[Unit]
+Description=Check Katl writable state projections
+Requires=var.mount etc-kubernetes.mount
+After=var.mount etc-kubernetes.mount
+Before=katl-kubeadm-ready.target
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-state-projection
+ExecStart=/usr/bin/printf 'Katl state projection ready\n'
+
+[Install]
+WantedBy=multi-user.target
+`
+	if assets.StateCheckService != want {
+		t.Fatalf("katl-state-projection-check.service:\n%s\nwant:\n%s", assets.StateCheckService, want)
+	}
+}
+
 func TestWriteState(t *testing.T) {
 	root := t.TempDir()
 	assets, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID})
@@ -86,6 +112,7 @@ func TestWriteState(t *testing.T) {
 	}
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-state-projection-check.service"), assets.StateCheckService)
 	assertFile(t, filepath.Join(root, "etc/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 	assertDir(t, filepath.Join(root, "var/lib/katl"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/generations"), 0o755)
@@ -125,6 +152,42 @@ func TestKubernetesProjectionRejectsPath(t *testing.T) {
 	}
 }
 
+func TestStateUnitsVerify(t *testing.T) {
+	if os.Getenv("KATL_VERIFY_SYSTEMD_UNITS") != "1" {
+		t.Skip("set KATL_VERIFY_SYSTEMD_UNITS=1 to run systemd-analyze verify")
+	}
+	if _, err := exec.LookPath("systemd-analyze"); err != nil {
+		t.Skip("systemd-analyze not available")
+	}
+	root := t.TempDir()
+	if _, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID}); err != nil {
+		t.Fatalf("WriteState() error = %v", err)
+	}
+	writeUnit(t, root, "usr/lib/systemd/system/local-fs.target", "[Unit]\nDescription=Local File Systems\n")
+	writeUnit(t, root, "usr/lib/systemd/system/multi-user.target", "[Unit]\nDescription=Multi-User System\n")
+	writeUnit(t, root, "usr/lib/systemd/system/umount.target", "[Unit]\nDescription=Unmount All Filesystems\n")
+	writeUnit(t, root, "usr/lib/systemd/system/sysinit.target", "[Unit]\nDescription=System Initialization\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/katl-kubeadm-ready.target", "[Unit]\nDescription=Katl kubeadm-ready\n")
+	writeUnit(t, root, "usr/bin/printf", "#!/bin/sh\nexit 0\n")
+	writeUnit(t, root, "usr/bin/true", "#!/bin/sh\nexit 0\n")
+	for _, fixture := range []string{"usr/bin/printf", "usr/bin/true"} {
+		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(fixture)), 0o755); err != nil {
+			t.Fatalf("chmod %s fixture: %v", fixture, err)
+		}
+	}
+
+	cmd := exec.Command("systemd-analyze", "verify", "--root="+root,
+		"/etc/systemd/system/var.mount",
+		"/etc/systemd/system/etc-kubernetes.mount",
+		"/etc/systemd/system/katl-state-projection-check.service")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)
+	}
+}
+
 func assertFile(t *testing.T, path string, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -147,5 +210,16 @@ func assertDir(t *testing.T, path string, mode os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != mode {
 		t.Fatalf("%s mode = %04o, want %04o", path, got, mode)
+	}
+}
+
+func writeUnit(t *testing.T, root string, rel string, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", rel, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
 	}
 }
