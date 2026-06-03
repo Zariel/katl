@@ -435,6 +435,13 @@ docs/internal/writable-state-layout.md
 docs/internal/etc-kubernetes-projection.md
   Persistent /etc/kubernetes projection.
 
+docs/internal/go-vm-test-harness-design.md
+  Go-authored VM scenario harness for install, update, rollback, and
+  Kubernetes integration tests.
+
+docs/internal/kubeadm-api-smoke-design.md
+  Single-node kubeadm init proof that reaches a kubectl-responsive API server.
+
 docs/internal/adrs/adr-001-generated-confext-configuration.md
   Accepted decision for Katl-native configuration and generated confext. The file
   includes the rejected bootstrap option note.
