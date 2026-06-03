@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+run_id="${KATL_SMOKE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+state_root="${KATL_SMOKE_STATE_ROOT:-$repo_root/build/mkosi-smoke}"
+state_dir="${KATL_SMOKE_STATE_DIR:-$state_root/$run_id}"
+vm_dir="$state_dir/vm"
+index="$state_dir/artifacts.env"
+installer_uki="${KATL_INSTALLER_UKI:-$repo_root/build/mkosi/katl-installer.efi}"
+runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/build/mkosi/katl-runtime-root}"
+runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
+runtime_metadata="${KATL_RUNTIME_METADATA:-$runtime_artifact.json}"
+runtime_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_artifact.sha256}"
+expect="${KATL_SMOKE_EXPECT:-Katl installer ready}"
+timeout_duration="${KATL_SMOKE_TIMEOUT:-120s}"
+kvm="${KATL_SMOKE_KVM:-auto}"
+ram="${KATL_SMOKE_RAM:-2048}"
+cpus="${KATL_SMOKE_CPUS:-2}"
+status=starting
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+need_file() {
+    local label="$1"
+    local path="$2"
+    if [[ ! -f "$path" ]]; then
+        echo "error: $label not found: $(rel "$path")" >&2
+        exit 1
+    fi
+}
+
+need_dir() {
+    local label="$1"
+    local path="$2"
+    if [[ ! -d "$path" ]]; then
+        echo "error: $label not found: $(rel "$path")" >&2
+        exit 1
+    fi
+}
+
+save_index() {
+    mkdir -p "$state_dir"
+    {
+        printf 'STATUS=%q\n' "$status"
+        printf 'RUN_DIR=%q\n' "$state_dir"
+        printf 'INSTALLER_UKI=%q\n' "$installer_uki"
+        printf 'RUNTIME_ROOT=%q\n' "$runtime_root"
+        printf 'RUNTIME_SQUASHFS=%q\n' "$runtime_artifact"
+        printf 'RUNTIME_METADATA=%q\n' "$runtime_metadata"
+        printf 'RUNTIME_CHECKSUM=%q\n' "$runtime_checksum"
+        printf 'VM_STATE_DIR=%q\n' "$vm_dir"
+        printf 'SERIAL_LOG=%q\n' "$vm_dir/serial.log"
+        printf 'QEMU_COMMAND=%q\n' "$vm_dir/qemu-command.txt"
+        printf 'FIRMWARE_VARS=%q\n' "$vm_dir/OVMF_VARS.fd"
+        printf 'EXPECT=%q\n' "$expect"
+    } >"$index"
+}
+
+finish() {
+    local code=$?
+    if [[ "$code" -ne 0 ]]; then
+        status=failed
+        save_index || true
+        echo "error: mkosi smoke failed" >&2
+        echo "artifact index: $(rel "$index")" >&2
+        echo "serial log: $(rel "$vm_dir/serial.log")" >&2
+    fi
+}
+trap finish EXIT
+
+status=building
+save_index
+
+echo "building installer-image profile"
+"$repo_root/scripts/mkosi" build-installer
+need_file "installer UKI" "$installer_uki"
+
+echo "building runtime profile"
+"$repo_root/scripts/mkosi" build-runtime
+need_dir "runtime root" "$runtime_root"
+need_file "runtime SquashFS" "$runtime_artifact"
+need_file "runtime metadata" "$runtime_metadata"
+need_file "runtime checksum" "$runtime_checksum"
+
+status=booting
+save_index
+
+echo "booting installer-image profile"
+"$repo_root/scripts/katl-vm" \
+    --uki "$installer_uki" \
+    --state-dir "$vm_dir" \
+    --expect "$expect" \
+    --timeout "$timeout_duration" \
+    --kvm "$kvm" \
+    --ram "$ram" \
+    --cpus "$cpus"
+
+need_file "serial log" "$vm_dir/serial.log"
+need_file "QEMU command" "$vm_dir/qemu-command.txt"
+need_file "firmware vars copy" "$vm_dir/OVMF_VARS.fd"
+
+status=passed
+save_index
+trap - EXIT
+
+echo "artifact index: $(rel "$index")"
+echo "serial log: $(rel "$vm_dir/serial.log")"
+echo "ok: mkosi smoke passed"
