@@ -18,6 +18,53 @@ systemd-gpt-auto type var only when the target disk is unambiguous
 Persistent identity must not be stored in `/run`. `/run` is only for boot-local
 activation links and service handoff state that can be regenerated from `/var`.
 
+## Etcd Data Placement
+
+The first supported path keeps etcd data at `/var/lib/etcd` on the `KATL_STATE`
+partition mounted at `/var`. Kubeadm or the etcd static pod owns the directory
+contents. Katl only guarantees that `/var` is mounted before kubeadm-managed
+control-plane services need the path. This keeps worker nodes, single-node
+experiments, and control-plane nodes on the same base install layout until the
+installer has role-aware storage policy.
+
+A dedicated etcd data partition is a future Katl-owned root-disk partition, not
+an `extraDisks` mount. When exposed in the install manifest, it should be a
+first-class field under install storage, for example:
+
+```json
+{
+  "install": {
+    "storage": {
+      "etcd": {
+        "dedicatedPartition": {
+          "sizeMiB": 16384,
+          "filesystem": "ext4"
+        }
+      }
+    }
+  }
+}
+```
+
+That request means: carve a `KATL_ETCD` partition from the selected target root
+disk, format it with the requested filesystem, and mount it at `/var/lib/etcd`.
+It must reduce the remaining `KATL_STATE` size and fail planning if the target
+disk cannot still satisfy both root slots and the minimum state partition size.
+The initial filesystem should be `ext4`; adding `xfs` support needs explicit
+validation and mount-unit coverage.
+
+Unsafe cases must be rejected rather than interpreted as etcd storage:
+
+- `install.extraDisks[].mount.path` equal to `/var/lib/etcd` or any parent or
+  child path that would shadow it.
+- Extra-disk selectors that resolve to the selected target root disk or one of
+  its partitions.
+- Dedicated etcd partition requests without a positive size, with a filesystem
+  outside the supported allowlist, or that leave less than the minimum state
+  partition size.
+- Any attempt to store etcd under `/run`, `/etc`, `/usr`, `/tmp`, kubelet state,
+  containerd state, or Katl generation metadata.
+
 ## Required Directories
 
 `katlos-install` or first-boot tmpfiles rules must ensure these directories
