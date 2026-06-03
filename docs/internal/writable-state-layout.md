@@ -65,6 +65,51 @@ Unsafe cases must be rejected rather than interpreted as etcd storage:
 - Any attempt to store etcd under `/run`, `/etc`, `/usr`, `/tmp`, kubelet state,
   containerd state, or Katl generation metadata.
 
+## Mount And Service Ordering Rules
+
+Katl should generate the smallest mount surface that preserves normal Linux
+paths for services:
+
+| Unit | What | Where | Rule |
+| --- | --- | --- | --- |
+| `var.mount` | installed `KATL_STATE` partition by PARTUUID | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
+| `etc-kubernetes.mount` | `/var/lib/katl/kubernetes/etc-kubernetes` bind source | `/etc/kubernetes` | Only writable `/etc` projection in the first implementation; active after confext and before kubelet or kubeadm automation |
+| `var-lib-etcd.mount` | optional installed `KATL_ETCD` partition by PARTUUID | `/var/lib/etcd` | Generated only when a dedicated etcd partition was planned; active before kubelet, kubeadm automation, and the kubeadm-ready target |
+
+No mount units are generated for `/var/lib/kubelet` or
+`/var/lib/containerd` in the default model. They are native directories on the
+`KATL_STATE` filesystem mounted at `/var`. Katl-owned service drop-ins should
+express that dependency with `RequiresMountsFor=` rather than bind mounting
+those paths:
+
+```text
+containerd.service
+  After=var.mount
+  RequiresMountsFor=/var/lib/containerd
+
+kubelet.service
+  After=var.mount containerd.service etc-kubernetes.mount
+  RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
+
+katl kubeadm init/join units, when present
+  After=var.mount containerd.service etc-kubernetes.mount
+  RequiresMountsFor=/etc/kubernetes /etc/katl
+
+katl-kubeadm-ready.target
+  After=containerd.service etc-kubernetes.mount
+```
+
+When `var-lib-etcd.mount` exists, kubelet, kubeadm automation units, and
+`katl-kubeadm-ready.target` must also order after it and require
+`/var/lib/etcd` with `RequiresMountsFor=`. When it does not exist,
+`/var/lib/etcd` is just a native directory on `/var`, and the `/var` dependency
+is sufficient.
+
+The ordering rule is intentionally about local prerequisites only. Katl may
+require containerd and projected Kubernetes state before declaring the runtime
+kubeadm-ready, but kubeadm and user-managed cluster tooling still own control
+plane convergence.
+
 ## Required Directories
 
 `katlos-install` or first-boot tmpfiles rules must ensure these directories

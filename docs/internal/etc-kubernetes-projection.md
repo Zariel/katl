@@ -44,7 +44,10 @@ RequiresMountsFor=/var/lib/katl/kubernetes/etc-kubernetes
 ```
 
 If kubeadm automation is represented by separate units, those units must also
-order after `etc-kubernetes.mount`.
+order after `etc-kubernetes.mount` and use
+`RequiresMountsFor=/etc/kubernetes`. Kubelet should also order after
+`containerd.service`, but the `/etc/kubernetes` projection is independent of
+containerd startup.
 
 ## Validation
 
