@@ -88,6 +88,11 @@ for path in \
     /usr/bin/ssh-keygen \
     /usr/bin/containerd \
     /usr/bin/crun \
+    /usr/lib/systemd/system/systemd-networkd.service \
+    /usr/lib/systemd/system/systemd-resolved.service \
+    /usr/lib/systemd/system/systemd-timesyncd.service \
+    /usr/lib/systemd/system/sshd.service \
+    /usr/lib/systemd/system/containerd.service \
     /usr/lib/systemd/system/katl-runtime-boot-signal.service \
     /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
