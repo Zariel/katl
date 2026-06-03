@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+installer_artifact="${KATL_INSTALLER_ARTIFACT:-$repo_root/build/mkosi/katl-installer.efi}"
+runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
+runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/build/mkosi/katl-runtime-root}"
+installer_max_mib="${KATL_INSTALLER_MAX_MIB:-450}"
+runtime_max_mib="${KATL_RUNTIME_MAX_MIB:-375}"
+runtime_tree_max_mib="${KATL_RUNTIME_TREE_MAX_MIB:-650}"
+report_count="${KATL_SIZE_REPORT_COUNT:-12}"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+mib() {
+    awk -v bytes="$1" 'BEGIN { printf "%.1f MiB", bytes / 1024 / 1024 }'
+}
+
+max_file() {
+    local label="$1"
+    local path="$2"
+    local limit_mib="$3"
+    local actual limit
+    [[ -f "$path" ]] || fail "$label not found: $(rel "$path")"
+    actual="$(stat -c %s "$path")"
+    limit=$((limit_mib * 1024 * 1024))
+    printf "%s: %s (limit %s MiB)\n" "$label" "$(mib "$actual")" "$limit_mib"
+    (( actual <= limit )) || fail "$label is $(mib "$actual"), limit $(mib "$limit")"
+}
+
+max_dir() {
+    local label="$1"
+    local path="$2"
+    local limit_mib="$3"
+    local actual limit
+    [[ -d "$path" ]] || fail "$label not found: $(rel "$path")"
+    actual="$(du -s -B1 -x "$path" | awk '{print $1}')"
+    limit=$((limit_mib * 1024 * 1024))
+    printf "%s: %s (limit %s MiB)\n" "$label" "$(mib "$actual")" "$limit_mib"
+    (( actual <= limit )) || fail "$label is $(mib "$actual"), limit $(mib "$limit")"
+}
+
+need_line() {
+    local file="$1"
+    local line="$2"
+    grep -Fxq "$line" "$file" || fail "$(rel "$file") missing: $line"
+}
+
+pkgs() {
+    local profile="$1"
+    awk '
+        /^Packages=/ { in_packages = 1; next }
+        in_packages && /^[[:space:]]+[A-Za-z0-9_.+-]+$/ { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; next }
+        in_packages && /^[[:space:]]*(#|$)/ { next }
+        in_packages { exit }
+    ' "$profile"
+}
+
+deny() {
+    local profile="$1"
+    local label="$2"
+    shift 2
+    local package
+    for package in "$@"; do
+        if pkgs "$profile" | grep -Fxq "$package"; then
+            fail "$label profile must not include $package"
+        fi
+    done
+}
+
+check_profiles() {
+    local installer_profile="$repo_root/mkosi.profiles/installer-image/mkosi.conf"
+    local runtime_profile="$repo_root/mkosi.profiles/runtime/mkosi.conf"
+    need_line "$repo_root/mkosi.conf" "WithDocs=no"
+    need_line "$repo_root/mkosi.conf" "WithRecommends=no"
+    need_line "$repo_root/mkosi.conf" "CacheDirectory=build/mkosi/cache"
+    need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=build/mkosi/package-cache"
+    deny "$installer_profile" installer mkosi dnf dnf5 gcc kubeadm kubelet kubectl containerd crun
+    deny "$runtime_profile" runtime mkosi dnf dnf5 gcc curl kubeadm kubelet kubectl
+    echo "mkosi profile controls: docs/recommends disabled, caches external, denied packages absent"
+}
+
+sections() {
+    if ! command -v objdump >/dev/null 2>&1; then
+        echo "installer UKI sections: skipped (objdump unavailable)"
+        return
+    fi
+    echo "largest installer UKI sections:"
+    objdump -h "$installer_artifact" |
+        awk '/^[[:space:]]+[0-9]+[[:space:]]+\./ { print $3 "\t" $2 }' |
+        while IFS=$'\t' read -r hex name; do
+            printf "%d\t%s\n" "$((16#$hex))" "$name"
+        done |
+        sort -rn |
+        head -n "$report_count" |
+        awk '{ printf "  %7.1f MiB  %s\n", $1 / 1024 / 1024, $2 }'
+}
+
+rpms() {
+    if ! command -v rpm >/dev/null 2>&1; then
+        echo "largest runtime RPM payloads: skipped (rpm unavailable)"
+        return
+    fi
+    if [[ ! -d "$runtime_root/usr/lib/sysimage/rpm" ]]; then
+        echo "largest runtime RPM payloads: skipped (runtime rpmdb unavailable)"
+        return
+    fi
+    local output
+    output="$(rpm --root "$runtime_root" --dbpath /usr/lib/sysimage/rpm -qa --queryformat '%{SIZE}\t%{NAME}\n' | sort -rn | head -n "$report_count")" || fail "runtime rpmdb query failed"
+    [[ -n "$output" ]] || fail "runtime rpmdb query returned no packages"
+    echo "largest runtime RPM payloads:"
+    awk '{ printf "  %7.1f MiB  %s\n", $1 / 1024 / 1024, $2 }' <<<"$output"
+}
+
+max_file "installer UKI" "$installer_artifact" "$installer_max_mib"
+max_file "runtime SquashFS" "$runtime_artifact" "$runtime_max_mib"
+max_dir "runtime root tree" "$runtime_root" "$runtime_tree_max_mib"
+check_profiles
+sections
+rpms
