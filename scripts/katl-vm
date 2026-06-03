@@ -19,8 +19,8 @@ Options:
   --handoff-post-url URL  Host-reachable POST /v1/install URL override
   --handoff-host-port N   Forward host 127.0.0.1:N to guest handoff port
   --handoff-guest-port N  Guest handoff port for host forwarding (default: 8080)
-  --serial-log PATH       Serial log path (default: build/qemu/katl-serial.log)
-  --state-dir PATH        QEMU scratch directory (default: build/qemu)
+  --serial-log PATH       Serial log path (default: <state-dir>/serial.log)
+  --state-dir PATH        QEMU scratch directory (default: build/qemu/<run-id>)
   --firmware-code PATH    OVMF code image, or KATL_OVMF_CODE
   --firmware-vars PATH    OVMF vars template, or KATL_OVMF_VARS
   --kvm auto|on|off       Acceleration policy (default: auto)
@@ -45,8 +45,9 @@ handoff_timeout=90s
 handoff_post_url=
 handoff_host_port=
 handoff_guest_port=8080
-serial_log="$repo_root/build/qemu/katl-serial.log"
-state_dir="$repo_root/build/qemu"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+serial_log=
+state_dir=
 firmware_code="${KATL_OVMF_CODE:-}"
 firmware_vars="${KATL_OVMF_VARS:-}"
 kvm=auto
@@ -192,6 +193,12 @@ case "$target_disk_format" in
         exit 2
         ;;
 esac
+if [[ -z "$state_dir" ]]; then
+    state_dir="$repo_root/build/qemu/$run_id"
+fi
+if [[ -z "$serial_log" ]]; then
+    serial_log="$state_dir/serial.log"
+fi
 
 if [[ -n "$uki" && ! -f "$uki" ]]; then
     echo "error: installer UKI not found: $uki" >&2
@@ -309,9 +316,43 @@ fi
 mkdir -p "$state_dir/tmp" "$(dirname "$serial_log")"
 : >"$serial_log"
 
+manifest_record="$state_dir/manifest.path"
+target_disk_record="$state_dir/target-disk.path"
+qemu_command="$state_dir/qemu-command.txt"
+manifest_copy=
+if [[ -n "$handoff_manifest" ]]; then
+    manifest_copy="$state_dir/handoff-manifest.json"
+    cp "$handoff_manifest" "$manifest_copy"
+    printf "source=%s\ncopy=%s\n" "$handoff_manifest" "$manifest_copy" >"$manifest_record"
+else
+    printf "none\n" >"$manifest_record"
+fi
+if [[ -n "$target_disk" ]]; then
+    {
+        printf "path=%s\n" "$target_disk"
+        printf "format=%s\n" "$target_disk_format"
+        printf "created=%s\n" "$target_disk_created"
+        printf "cleanup=%s\n" "$target_disk_cleanup"
+    } >"$target_disk_record"
+else
+    printf "none\n" >"$target_disk_record"
+fi
+
 vars_copy="$state_dir/OVMF_VARS.fd"
 cp "$firmware_vars" "$vars_copy"
 chmod u+w "$vars_copy"
+
+artifact_paths() {
+    echo "artifacts: ${state_dir#"$repo_root"/}" >&2
+    echo "serial log: ${serial_log#"$repo_root"/}" >&2
+    echo "qemu command: ${qemu_command#"$repo_root"/}" >&2
+    echo "firmware vars: ${vars_copy#"$repo_root"/}" >&2
+    echo "manifest record: ${manifest_record#"$repo_root"/}" >&2
+    echo "target disk record: ${target_disk_record#"$repo_root"/}" >&2
+    if [[ -n "$manifest_copy" ]]; then
+        echo "manifest copy: ${manifest_copy#"$repo_root"/}" >&2
+    fi
+}
 
 accel=tcg
 if [[ "$kvm" == on || "$kvm" == auto ]]; then
@@ -386,6 +427,15 @@ qemu_args=(
     -device virtio-net-pci,netdev=net0
 )
 
+{
+    printf '%q' "$qemu"
+    for arg in "${qemu_args[@]}"; do
+        printf ' %q' "$arg"
+    done
+    printf '\n'
+} >"$qemu_command"
+artifact_paths
+
 TMPDIR="$state_dir/tmp" "$qemu" "${qemu_args[@]}" &
 qemu_pid=$!
 
@@ -432,10 +482,12 @@ submit_handoff() (
 
     if [[ "$curl_status" -eq 124 ]]; then
         echo "error: timed out after $handoff_timeout waiting for handoff announcement" >&2
+        artifact_paths
         return 124
     fi
     if [[ "$curl_status" -ne 0 ]]; then
         echo "error: QEMU exited before handoff announcement appeared" >&2
+        artifact_paths
         return "$curl_status"
     fi
 
@@ -447,6 +499,7 @@ submit_handoff() (
 
     if [[ -z "$url" || "$url" == "$announcement" || -z "$token" || "$token" == "$announcement" ]]; then
         echo "error: could not parse handoff URL/token from serial announcement: $announcement" >&2
+        artifact_paths
         return 1
     fi
 
@@ -474,6 +527,7 @@ submit_handoff() (
 
     if [[ "$curl_status" -ne 0 ]]; then
         echo "error: handoff POST failed with curl status $curl_status; response follows" >&2
+        artifact_paths
         cat "$response_file" >&2 || true
         return "$curl_status"
     fi
@@ -491,8 +545,14 @@ if [[ -z "$expect" ]]; then
     if [[ -n "$handoff_pid" ]]; then
         wait "$handoff_pid"
     fi
+    set +e
     wait "$qemu_pid"
-    exit $?
+    status=$?
+    set -e
+    if [[ "$status" -ne 0 ]]; then
+        artifact_paths
+    fi
+    exit "$status"
 fi
 
 if [[ -z "$timeout_duration" ]]; then
@@ -533,5 +593,6 @@ else
     echo "error: QEMU exited before serial signal \"$expect\" appeared" >&2
 fi
 
+artifact_paths
 tail -n 80 "$serial_log" >&2 || true
 exit "$status"
