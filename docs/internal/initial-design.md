@@ -25,9 +25,9 @@ Katl config repo
 ```
 
 GitHub Actions is a useful north-star publishing environment, but it is not an
-early implementation target. The first project milestone is local: build an
-installer UKI, boot it in QEMU, install a Fedora-derived runtime root artifact to
-a target disk, and boot that installed runtime.
+early implementation target. The current local focus is to build an installer
+UKI, boot it in QEMU, install a Fedora-derived runtime root artifact to a target
+disk, and boot that installed runtime.
 
 ## Active Product Boundary
 
@@ -49,7 +49,7 @@ Katl does not own:
 
 ```text
 DHCP, TFTP, PXE, iPXE, matchbox, or firmware boot order management
-GitHub Actions workflows for v0
+end-user GitHub Actions workflows
 Kubernetes add-ons or cluster lifecycle after kubeadm handoff
 Kubernetes distribution packaging
 user-defined host accounts
@@ -75,9 +75,9 @@ mkosi
   dependency inside installer-image or the runtime OS.
 
 installer-image
-  Temporary boot environment built with mkosi. For v0 it is shipped as a single
-  installer UKI containing the installer kernel, initrd, userspace, and
-  katlos-install.
+  Temporary boot environment built with mkosi. The current shipped boot artifact
+  is a single installer UKI containing the installer kernel, initrd, userspace,
+  and katlos-install.
 
 katlos-install
   Go installer application. It discovers installer input, validates the manifest,
@@ -130,10 +130,10 @@ artifact references and digests
 extra non-root data disk requests
 ```
 
-The v0 install manifest should stay minimal: hostname, `katl` SSH authorized
-keys, target root disk, destructive install guard, runtime artifacts, optional
-sysext artifacts, and extra non-root data disks. Extra disks remain in scope
-because they exercise real install/runtime disk handling.
+The current install manifest should stay minimal: hostname, `katl` SSH
+authorized keys, target root disk, destructive install guard, runtime artifacts,
+optional sysext artifacts, and extra non-root data disks. Extra disks remain in
+scope because they exercise real install/runtime disk handling.
 
 Users do not supply:
 
@@ -147,7 +147,7 @@ host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
 machine-id values or machine-id policy
 installer SSH override policy
-artifact trust-root or signing policy in v0
+artifact trust-root or signing policy
 bootloader, loader entry, or kernel argument policy
 extra disk mount options
 prebuilt confext artifacts in the default path
@@ -214,10 +214,13 @@ Katl-owned units and agents when they exist
 Kubernetes binaries should initially be delivered as a sysext unless boot tests
 show that kubelet ordering is simpler with them in the base root. Kubernetes
 add-ons, Helm, Flux, Cilium, CoreDNS, Rook, and application workloads are outside
-the runtime base.
+the runtime base. The Kubernetes sysext is versioned independently from the
+KatlOS runtime root. KatlOS upgrades should be able to keep the current
+Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
+KatlOS root, when the selected artifacts are compatible.
 
 After the installer UKI and installed runtime boot path works, the next local
-milestone is a kubeadm-ready installed runtime. That means the base runtime has
+step is a kubeadm-ready installed runtime. That means the base runtime has
 containerd and the host plumbing kubeadm expects, a Kubernetes sysext supplies
 `kubeadm`, `kubelet`, `kubectl`, and tightly related binaries, generated config
 places kubeadm input under `/etc/katl`, and writable kubeadm output is projected
@@ -228,6 +231,8 @@ it with the selected generation, boot the installed runtime in QEMU, reach
 `katl-kubeadm-ready.target`, and run a bounded kubeadm preflight or dry-run check
 that proves the node is prepared for `kubeadm init`. CI-built downloadable
 artifacts are a later publishing concern, not a blocker for this local loop.
+Artifact compatibility metadata, not matching product versions, decides whether
+a runtime root and Kubernetes sysext can be selected together.
 
 ## Host Users And SSH
 
@@ -349,6 +354,7 @@ root artifact digest
 UKI path
 kernel command line
 sysext set
+independent runtime and sysext artifact versions
 generated confext set
 boot/health status
 ```
@@ -371,13 +377,13 @@ state, activated selected extensions, established identity, and started required
 local services. It does not need to prove full Kubernetes control-plane
 convergence.
 
-## Current Local Milestone
+## Current Local Step
 
-The immediate milestone is intentionally narrow:
+The immediate step is intentionally narrow:
 
 ```text
 split mkosi profiles for installer and runtime
-build a v0 installer UKI
+build an installer UKI
 build a prebuilt runtime SquashFS artifact
 boot installer-image in QEMU/OVMF
 deliver install config without PXE
@@ -391,7 +397,7 @@ End-user publishing workflows, provisioning examples, signed update envelopes,
 runtime update agents, and full kubeadm automation come after the local
 boot/install loop works.
 
-The next milestone after that loop is still local and test-driven:
+The next step after that loop is still local and test-driven:
 
 ```text
 build a Kubernetes sysext with kubeadm, kubelet, kubectl, and related binaries

@@ -12,9 +12,12 @@ Katl stores generation records under:
 ```
 
 Each record selects one complete bootable generation: root slot, root artifact,
-UKI, sysext set, generated confext set, and kernel command line. Rollback must
-switch the whole record rather than independently switching root, sysext, and
-confext state.
+UKI, sysext set, generated confext set, and kernel command line. The selected
+artifacts are activated and rolled back together, but they do not have to share
+one product version. A generation can combine a KatlOS runtime root version with
+an independently versioned Kubernetes sysext as long as the compatibility
+metadata says that pair is supported. Rollback must switch the whole record
+rather than independently switching root, sysext, and confext state.
 
 The first implementation stores mutable boot and health status fields in the
 same `metadata.json` file as the generation selection. The selection fields are
@@ -37,7 +40,7 @@ Required fields:
 | `root.partitionUUID` | PARTUUID used by boot entries for the selected root partition |
 | `root.runtimeArtifactSHA256` | Digest of the runtime root artifact written into the slot |
 | `boot.ukiPath` | Installed UKI path selected with this generation |
-| `sysexts[]` | Sysext name, generation-scoped path, activation path, and digest |
+| `sysexts[]` | Sysext name, generation-scoped path, activation path, digest, artifact version, payload version such as Kubernetes version, architecture, and compatibility metadata |
 | `confexts[]` | Generated confext name, path, activation path, digest, and compatibility metadata |
 | `kernelCommandLine[]` | Kernel arguments selected for this generation |
 | `createdAt` | Generation creation timestamp |
@@ -90,10 +93,19 @@ update. A new desired runtime state gets a new generation directory.
 
 ## Updates
 
-Updates create a new generation directory before switching boot selection. The
-runtime agent writes the inactive root slot, stages matching sysext/confext
-sets, writes a new metadata record, and then asks the boot selector to try that
-record.
+Updates create a new generation directory before switching boot selection. A new
+generation may change the runtime root, the Kubernetes sysext, the generated
+confext, or any supported combination of those artifacts. Runtime-root updates
+write the inactive root slot. Sysext-only or confext-only updates may reuse the
+current root slot and root artifact digest while selecting new extension content.
+KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
+compatible with the new runtime root. Kubernetes-only updates may keep the
+existing KatlOS runtime root when the new sysext is compatible with it.
+
+Before a candidate generation is made bootable, Katl must validate the selected
+runtime root, UKI, sysexts, and confexts as one compatibility set. The generation
+record stores the exact artifact digests and versions that were validated, then
+asks the boot selector to try that record.
 
 Rollback returns to the previous generation record and therefore restores:
 

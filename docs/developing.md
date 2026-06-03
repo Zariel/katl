@@ -1,8 +1,10 @@
 # Developing Katl
 
 This document describes the local tooling expected for early Katl development.
-The immediate goal is M1: build a minimal installer OS with mkosi, boot it in a
-local VM, and prove the boot by matching deterministic serial output.
+The immediate goal is to build a minimal installer OS with mkosi, boot it in a
+local VM, and prove the boot by matching deterministic serial output. Katl should
+move toward a usable system one working step at a time instead of carrying named
+phase labels in docs.
 
 ## Current VM Stance
 
@@ -17,9 +19,10 @@ Use the simplest layer that proves the OS boots:
 `virt-manager` is useful for interactive debugging, but it is not a project
 dependency and should not be required by automated tests.
 
-## M1 Boot Contract
+## Local Boot Contract
 
-M1 proves only the local installer OS build/boot/test loop.
+The current local boot contract proves only the installer OS
+build/boot/test loop.
 
 - Build tool: `mkosi 26`.
 - Base distribution: Fedora, chosen for current systemd and mkosi support.
@@ -44,11 +47,12 @@ console output on the developer machine. KVM should be used when available, but
 the runner must detect missing `/dev/kvm` and either explain the missing
 acceleration or use QEMU TCG for the first functional smoke test.
 
-M1 is explicitly not a real installer. It must not partition, format, or mutate
-host disks. It also excludes `katlc`, kubeadm/etcd persistence, A/B root
-updates, libvirt as a requirement, GUI tools, and end-user asset publishing.
+The current local boot loop is explicitly not a real installer. It must not
+partition, format, or mutate host disks. It also excludes `katlc`, kubeadm/etcd
+persistence, A/B root updates, libvirt as a requirement, GUI tools, and end-user
+asset publishing.
 
-## Required For M1
+## Required For The Current Loop
 
 - `scripts/mkosi`: builds the installer OS image.
 - `qemu-system-x86_64`: boots the image locally.
@@ -104,7 +108,7 @@ The VM shell adds QEMU/KVM and OVMF firmware packages. It does not configure
 host libvirt, `/dev/kvm`, `/dev/net/tun`, bridges, or polkit access; keep those
 in the NixOS host configuration.
 
-## Optional During M1
+## Optional During The Current Loop
 
 - `libvirt` and `virsh`: useful for later persistent VM definitions, networks,
   multi-node tests, and longer integration tests.

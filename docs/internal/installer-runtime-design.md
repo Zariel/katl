@@ -81,12 +81,13 @@ The image is allowed to be more convenient than the runtime OS, but it should
 still be purpose-built. Its default job is to boot, configure enough network and
 storage, start SSH for debugging when configured, and run `katlos-install`.
 
-For v0, the shipped installer boot artifact should be a single installer UKI.
-That UKI should contain the installer kernel, initrd, embedded command line, and
-the installer userspace needed to run `katlos-install`. Local QEMU tests, PXE
-chains, and later ISO/USB wrappers should all be able to consume that same UKI
-artifact. Signing and additional wrapper artifacts can come later; the first
-milestone should prove one bootable UKI with the installer inside it.
+For the current installer path, the shipped installer boot artifact should be a
+single installer UKI. That UKI should contain the installer kernel, initrd,
+embedded command line, and the installer userspace needed to run
+`katlos-install`. Local QEMU tests, PXE chains, and later ISO/USB wrappers should
+all be able to consume that same UKI artifact. Signing and additional wrapper
+artifacts can come later; the current step should prove one bootable UKI with the
+installer inside it.
 
 The default installer should include:
 
@@ -342,13 +343,13 @@ artifacts
   runtime root artifact, optional UKI, sysexts, and required digests
 ```
 
-The v0 manifest deliberately does not expose a separate manifest name, metadata
-labels, user-chosen generation IDs, node matching selectors, SSH enable/disable
-policy, installer SSH overrides, artifact trust roots, bootloader policy,
-loader entry names, kernel arguments, or extra disk mount options. The hostname
-under `node.identity.hostname` is the only per-node identity field. Those can be
-added later through explicit design and Beads when there is a concrete
-implementation need.
+The current manifest deliberately does not expose a separate manifest name,
+metadata labels, user-chosen generation IDs, node matching selectors, SSH
+enable/disable policy, installer SSH overrides, artifact trust roots, bootloader
+policy, loader entry names, kernel arguments, or extra disk mount options. The
+hostname under `node.identity.hostname` is the only per-node identity field.
+Those can be added later through explicit design and Beads when there is a
+concrete implementation need.
 
 The manifest is intentionally explicit about destructive installation:
 
@@ -396,7 +397,8 @@ artifacts
 
 SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
-  SSH overrides are deferred; machine-id is not user supplied in v0;
+  SSH overrides are deferred; machine-id is not user supplied in the current
+  manifest;
   katlos-install generates a random machine-id during install and records it in
   persistent state and boot settings
 
@@ -544,8 +546,8 @@ should not build a root filesystem on the target and then squash it.
 
 ## Runtime Root Artifact Contract
 
-For v0, the runtime root artifact is produced on the build side, before the
-machine boots the installer:
+For the current install path, the runtime root artifact is produced on the build
+side, before the machine boots the installer:
 
 ```text
 katlc renders build inputs and manifests
@@ -714,7 +716,7 @@ set.
 
 A future runtime Katl agent will perform the same logical operation for later
 configuration changes on an already installed node. The agent can come after the
-first installer milestones, but the install-time layout must leave room for it:
+initial installer work, but the install-time layout must leave room for it:
 
 ```text
 receive desired Katl configuration
@@ -808,7 +810,8 @@ UKI and boot metadata
   kernel, initramfs, command line, systemd-boot entry, and boot attempt policy
 
 Kubernetes sysext
-  kubelet, kubeadm, kubectl, and closely related binaries
+  kubelet, kubeadm, kubectl, and closely related binaries; versioned
+  independently from the KatlOS runtime root
 
 generated confext
   node and role configuration under /etc
@@ -845,11 +848,10 @@ base root artifact.
 
 ## Kubeadm-Ready Runtime
 
-The first runtime milestone after the installer UKI can install and boot from
-disk is kubeadm readiness, not a complete Kubernetes cluster. Katl should prove
-that an installed node has the host OS, writable state, generated config, and
-Kubernetes binaries required for an operator or later automation to run
-`kubeadm init`.
+The next runtime step after the installer UKI can install and boot from disk is
+kubeadm readiness, not a complete Kubernetes cluster. Katl should prove that an
+installed node has the host OS, writable state, generated config, and Kubernetes
+binaries required for an operator or later automation to run `kubeadm init`.
 
 For the first implementation, kubeadm readiness means:
 
@@ -874,7 +876,50 @@ katl-kubeadm-ready.target is reached only after the required local prerequisites
 The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
 inputs. In early development it can be built locally. Later CI can publish the
 same artifact shape for users to download, but CI publishing is not part of the
-first local milestone.
+current local loop.
+
+Kubernetes sysext versioning must stay decoupled from the installed KatlOS
+runtime root version. Users should be able to keep their current Kubernetes
+minor version while upgrading KatlOS, or upgrade Kubernetes while keeping the
+same KatlOS runtime root, when the selected artifact pair is supported. A booted
+generation still activates one exact runtime root plus one exact Kubernetes
+sysext set so boot health and rollback remain atomic.
+
+The Kubernetes sysext artifact metadata should include:
+
+```text
+sysext name
+sysext artifact version or build id
+Kubernetes version carried by the artifact
+architecture
+digest and size
+runtime compatibility metadata
+```
+
+The runtime root artifact metadata should expose enough compatibility identity
+for sysext validation, such as a KatlOS version and a runtime interface or
+extension ABI version. The compatibility check should happen before
+`katlos-install` or the runtime update agent writes a candidate generation as
+bootable. Unsupported runtime/sysext pairs fail validation rather than relying
+on boot-time discovery.
+
+Valid update shapes include:
+
+```text
+KatlOS-only update
+  new runtime root and UKI, existing Kubernetes sysext if compatible
+
+Kubernetes-only update
+  existing runtime root and UKI, new Kubernetes sysext if compatible
+
+combined update
+  new runtime root, UKI, and Kubernetes sysext validated as one set
+```
+
+The current install manifest may provide concrete sysext artifact URLs and
+digests. Later `katlc` can resolve a user-requested Kubernetes version to a
+concrete sysext artifact, but artifact publishing and catalog resolution should
+remain outside the current local boot/install loop.
 
 Tests should be layered rather than waiting for a full VM flow:
 
@@ -1158,6 +1203,7 @@ root partition UUID
 root artifact digest
 UKI path
 sysext set, activation paths, and digests
+sysext artifact versions, payload versions, architecture, and compatibility metadata
 confext set, activation paths, and digests
 kernel command line
 created timestamp
