@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"git.cbannister.xyz/chris/katl/internal/installer/generation"
 )
 
 func TestESPCheck(t *testing.T) {
@@ -13,12 +16,12 @@ func TestESPCheck(t *testing.T) {
 	if err := CheckESP(esp); err != nil {
 		t.Fatalf("CheckESP() error = %v", err)
 	}
-	entry := filepath.Join(esp, "loader", "entries", "katl.conf")
+	entry := loaderEntry(t, esp)
 	data, err := os.ReadFile(entry)
 	if err != nil {
 		t.Fatalf("read entry: %v", err)
 	}
-	data = []byte(strings.ReplaceAll(string(data), "root=PARTUUID=1111 ", "root=UUID=1111 "))
+	data = []byte(strings.ReplaceAll(string(data), "root=PARTUUID=11111111-2222-3333-4444-555555555555 ", "root=UUID=11111111-2222-3333-4444-555555555555 "))
 	if err := os.WriteFile(entry, data, 0o644); err != nil {
 		t.Fatalf("write entry: %v", err)
 	}
@@ -60,7 +63,7 @@ func TestInstalledRuntime(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	if _, err := os.Stat(filepath.Join(result.RunDir, "esp", "loader", "entries", "katl.conf")); err != nil {
+	if _, err := os.Stat(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp)))); err != nil {
 		t.Fatalf("ESP copy missing: %v", err)
 	}
 	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), "Katl state projection ready") {
@@ -71,16 +74,48 @@ func TestInstalledRuntime(t *testing.T) {
 func espFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	entries := filepath.Join(root, "loader", "entries")
-	if err := os.MkdirAll(entries, 0o755); err != nil {
-		t.Fatalf("mkdir entries: %v", err)
+	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
+		GenerationID:          "2026.06.03-001",
+		RuntimeVersion:        "0.1.0",
+		RuntimeInterface:      "katl-runtime-1",
+		RuntimeArchitecture:   "x86_64",
+		RootSlot:              "root-a",
+		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
+		RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		UKIPath:               "/efi/EFI/Linux/katl-2026.06.03-001.efi",
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/2026.06.03-001/confext/katl-node.raw",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("b", 64),
+			Compatibility: generation.ConfextCompatibility{
+				ID:           "katl",
+				VersionID:    "44",
+				ConfextLevel: 1,
+			},
+		},
+		CreatedAt: time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NewFirstInstallRecord() error = %v", err)
 	}
-	entry := `title Katl
-linux /EFI/Linux/katl.efi
-options root=PARTUUID=1111 rootfstype=squashfs ro katl.generation=2026.06.03 systemd.machine_id=0123456789abcdef0123456789abcdef
-`
-	if err := os.WriteFile(filepath.Join(entries, "katl.conf"), []byte(entry), 0o644); err != nil {
-		t.Fatalf("write entry: %v", err)
+	if _, err := generation.WriteEntry(root, generation.LoaderRequest{
+		Record:    record,
+		MachineID: "0123456789abcdef0123456789abcdef",
+	}); err != nil {
+		t.Fatalf("WriteEntry() error = %v", err)
 	}
 	return root
+}
+
+func loaderEntry(t *testing.T, esp string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(esp, "loader", "entries", "*.conf"))
+	if err != nil {
+		t.Fatalf("glob loader entry: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("loader entries = %#v", matches)
+	}
+	return matches[0]
 }
