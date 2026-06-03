@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+default_index="$repo_root/build/mkosi/artifacts.json"
+installer_uki="${KATL_INSTALLER_UKI:-$repo_root/build/mkosi/katl-installer.efi}"
+runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
+runtime_metadata="${KATL_RUNTIME_METADATA:-$runtime_artifact.json}"
+runtime_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_artifact.sha256}"
+generation="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/mkosi-artifacts [write [INDEX]]
+       scripts/mkosi-artifacts path KIND [INDEX]
+
+Write or query the local mkosi artifact index.
+
+Kinds:
+  installer-uki
+  runtime-root
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+abs() {
+    local path="$1"
+    if [[ "$path" == /* ]]; then
+        printf "%s" "$path"
+    else
+        printf "%s/%s" "$repo_root" "$path"
+    fi
+}
+
+json() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf "%s" "$value"
+}
+
+need_file() {
+    local label="$1"
+    local path="$2"
+    [[ -f "$path" ]] || fail "$label not found: $(rel "$path")"
+}
+
+sha() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+entry() {
+    local kind="$1"
+    local format="$2"
+    local path="$3"
+    local comma="$4"
+    local metadata="$5"
+    local checksum="$6"
+    local size digest rel_path
+    size="$(stat -c %s "$path")"
+    digest="$(sha "$path")"
+    rel_path="$(rel "$path")"
+
+    printf '    {\n'
+    printf '      "kind": "%s",\n' "$(json "$kind")"
+    printf '      "path": "%s",\n' "$(json "$rel_path")"
+    printf '      "format": "%s",\n' "$(json "$format")"
+    printf '      "sizeBytes": %s,\n' "$size"
+    printf '      "sha256": "%s"' "$digest"
+    if [[ -n "$metadata" ]]; then
+        printf ',\n      "metadataPath": "%s"' "$(json "$(rel "$metadata")")"
+    fi
+    if [[ -n "$checksum" ]]; then
+        printf ',\n      "checksumPath": "%s"' "$(json "$(rel "$checksum")")"
+    fi
+    printf '\n    }%s\n' "$comma"
+}
+
+write_index() {
+    local index="$1"
+    local created
+    need awk
+    need date
+    need sha256sum
+    need stat
+    need_file "installer UKI" "$installer_uki"
+    need_file "runtime SquashFS" "$runtime_artifact"
+    need_file "runtime metadata" "$runtime_metadata"
+    need_file "runtime checksum" "$runtime_checksum"
+
+    created="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    mkdir -p "$(dirname "$index")"
+    {
+        printf '{\n'
+        printf '  "schemaVersion": 1,\n'
+        printf '  "generatedAt": "%s",\n' "$(json "$created")"
+        printf '  "generation": "%s",\n' "$(json "$generation")"
+        printf '  "artifacts": [\n'
+        entry installer-uki uki "$installer_uki" , "" ""
+        entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
+        printf '  ]\n'
+        printf '}\n'
+    } >"$index"
+    echo "artifact index: $(rel "$index")"
+}
+
+path_for() {
+    local kind="$1"
+    local index="$2"
+    local path
+    [[ -f "$index" ]] || fail "artifact index not found: $(rel "$index")"
+    path="$(awk -v want="$kind" '
+        /"kind":/ {
+            kind = $0
+            sub(/^[^"]*"kind": "?/, "", kind)
+            sub(/"?,?$/, "", kind)
+        }
+        /"path":/ {
+            path = $0
+            sub(/^[^"]*"path": "?/, "", path)
+            sub(/"?,?$/, "", path)
+            if (kind == want) {
+                print path
+                exit
+            }
+        }
+    ' "$index")"
+    [[ -n "$path" ]] || fail "artifact kind not found in $(rel "$index"): $kind"
+    abs "$path"
+}
+
+command="${1:-write}"
+case "$command" in
+    write)
+        shift || true
+        write_index "${1:-$default_index}"
+        ;;
+    path)
+        shift || true
+        [[ $# -ge 1 ]] || fail "path requires KIND"
+        kind="$1"
+        shift
+        path_for "$kind" "${1:-$default_index}"
+        ;;
+    -h|--help)
+        usage
+        ;;
+    *)
+        usage >&2
+        fail "unknown command: $command"
+        ;;
+esac

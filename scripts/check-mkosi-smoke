@@ -7,11 +7,9 @@ state_root="${KATL_SMOKE_STATE_ROOT:-$repo_root/build/mkosi-smoke}"
 state_dir="${KATL_SMOKE_STATE_DIR:-$state_root/$run_id}"
 vm_dir="$state_dir/vm"
 index="$state_dir/artifacts.env"
-installer_uki="${KATL_INSTALLER_UKI:-$repo_root/build/mkosi/katl-installer.efi}"
-runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/build/mkosi/katl-runtime-root}"
-runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
-runtime_metadata="${KATL_RUNTIME_METADATA:-$runtime_artifact.json}"
-runtime_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_artifact.sha256}"
+build_index="${KATL_BUILD_ARTIFACT_INDEX:-$repo_root/build/mkosi/artifacts.json}"
+installer_uki=
+runtime_artifact=
 expect="${KATL_SMOKE_EXPECT:-Katl installer ready}"
 timeout_duration="${KATL_SMOKE_TIMEOUT:-120s}"
 kvm="${KATL_SMOKE_KVM:-auto}"
@@ -33,25 +31,14 @@ need_file() {
     fi
 }
 
-need_dir() {
-    local label="$1"
-    local path="$2"
-    if [[ ! -d "$path" ]]; then
-        echo "error: $label not found: $(rel "$path")" >&2
-        exit 1
-    fi
-}
-
 save_index() {
     mkdir -p "$state_dir"
     {
         printf 'STATUS=%q\n' "$status"
         printf 'RUN_DIR=%q\n' "$state_dir"
+        printf 'BUILD_ARTIFACT_INDEX=%q\n' "$build_index"
         printf 'INSTALLER_UKI=%q\n' "$installer_uki"
-        printf 'RUNTIME_ROOT=%q\n' "$runtime_root"
         printf 'RUNTIME_SQUASHFS=%q\n' "$runtime_artifact"
-        printf 'RUNTIME_METADATA=%q\n' "$runtime_metadata"
-        printf 'RUNTIME_CHECKSUM=%q\n' "$runtime_checksum"
         printf 'VM_STATE_DIR=%q\n' "$vm_dir"
         printf 'SERIAL_LOG=%q\n' "$vm_dir/serial.log"
         printf 'QEMU_COMMAND=%q\n' "$vm_dir/qemu-command.txt"
@@ -67,6 +54,7 @@ finish() {
         save_index || true
         echo "error: mkosi smoke failed" >&2
         echo "artifact index: $(rel "$index")" >&2
+        echo "build artifact index: $(rel "$build_index")" >&2
         echo "serial log: $(rel "$vm_dir/serial.log")" >&2
     fi
 }
@@ -77,14 +65,15 @@ save_index
 
 echo "building installer-image profile"
 "$repo_root/scripts/mkosi" build-installer
-need_file "installer UKI" "$installer_uki"
 
 echo "building runtime profile"
 "$repo_root/scripts/mkosi" build-runtime
-need_dir "runtime root" "$runtime_root"
+
+"$repo_root/scripts/mkosi-artifacts" write "$build_index"
+installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$build_index")"
+runtime_artifact="$("$repo_root/scripts/mkosi-artifacts" path runtime-root "$build_index")"
+need_file "installer UKI" "$installer_uki"
 need_file "runtime SquashFS" "$runtime_artifact"
-need_file "runtime metadata" "$runtime_metadata"
-need_file "runtime checksum" "$runtime_checksum"
 
 status=booting
 save_index
@@ -108,5 +97,6 @@ save_index
 trap - EXIT
 
 echo "artifact index: $(rel "$index")"
+echo "build artifact index: $(rel "$build_index")"
 echo "serial log: $(rel "$vm_dir/serial.log")"
 echo "ok: mkosi smoke passed"
