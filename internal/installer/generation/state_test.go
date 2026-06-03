@@ -38,6 +38,7 @@ WantedBy=local-fs.target
 		"d /var/lib/katl 0755 root root -",
 		"d /var/lib/katl/generations 0755 root root -",
 		"d /var/lib/katl/install/logs 0755 root root -",
+		"d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -",
 		"d /var/lib/containerd 0755 root root -",
 		"d /var/lib/kubelet 0755 root root -",
 		"d /var/log/journal 2755 root systemd-journal -",
@@ -45,6 +46,35 @@ WantedBy=local-fs.target
 		if !strings.Contains(assets.Tmpfiles, want) {
 			t.Fatalf("tmpfiles missing %q:\n%s", want, assets.Tmpfiles)
 		}
+	}
+	if strings.Contains(assets.Tmpfiles, "/etc/kubernetes") {
+		t.Fatalf("tmpfiles must not create mutable /etc projection target:\n%s", assets.Tmpfiles)
+	}
+}
+
+func TestRenderKubernetesProjection(t *testing.T) {
+	unit, err := RenderKubernetesProjection(KubernetesProjectionRequest{})
+	if err != nil {
+		t.Fatalf("RenderKubernetesProjection() error = %v", err)
+	}
+	want := `[Unit]
+Description=Project persistent Kubernetes configuration
+Documentation=man:systemd.mount(5)
+After=var.mount systemd-confext.service
+Before=kubelet.service katl-kubeadm-ready.target
+RequiresMountsFor=/var/lib/katl/kubernetes/etc-kubernetes
+
+[Mount]
+What=/var/lib/katl/kubernetes/etc-kubernetes
+Where=/etc/kubernetes
+Type=none
+Options=bind,rw
+
+[Install]
+WantedBy=local-fs.target
+`
+	if unit != want {
+		t.Fatalf("etc-kubernetes.mount:\n%s\nwant:\n%s", unit, want)
 	}
 }
 
@@ -55,6 +85,7 @@ func TestWriteState(t *testing.T) {
 		t.Fatalf("WriteState() error = %v", err)
 	}
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 	assertDir(t, filepath.Join(root, "var/lib/katl"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/generations"), 0o755)
@@ -64,12 +95,33 @@ func TestWriteState(t *testing.T) {
 	assertDir(t, filepath.Join(root, "var/lib/containerd"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/kubelet"), 0o755)
 	assertDir(t, filepath.Join(root, "var/log/journal"), 0o755)
+	assertDir(t, filepath.Join(root, "etc/kubernetes"), 0o755)
 }
 
 func TestRenderStateRejectsUUID(t *testing.T) {
 	_, err := RenderState(StateRequest{PartitionUUID: "abc rw"})
 	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
 		t.Fatalf("RenderState() error = %v, want UUID validation failure", err)
+	}
+}
+
+func TestKubernetesProjectionRejectsPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		request KubernetesProjectionRequest
+		want    string
+	}{
+		{name: "run source", request: KubernetesProjectionRequest{Source: "/run/katl/kubernetes", Target: KubernetesTarget}, want: "source"},
+		{name: "broad etc target", request: KubernetesProjectionRequest{Source: KubernetesSource, Target: "/etc"}, want: "target"},
+		{name: "sibling etc target", request: KubernetesProjectionRequest{Source: KubernetesSource, Target: "/etc/ssh"}, want: "target"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := RenderKubernetesProjection(tt.request)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("RenderKubernetesProjection() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

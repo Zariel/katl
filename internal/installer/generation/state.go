@@ -3,18 +3,31 @@ package generation
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+)
+
+const (
+	KubernetesSource = "/var/lib/katl/kubernetes/etc-kubernetes"
+	KubernetesTarget = "/etc/kubernetes"
 )
 
 type StateRequest struct {
 	PartitionUUID string
 }
 
+type KubernetesProjectionRequest struct {
+	Source string
+	Target string
+}
+
 type StateAssets struct {
-	VarMount string
-	Tmpfiles string
-	Dirs     []StateDir
+	VarMount           string
+	EtcKubernetesMount string
+	Tmpfiles           string
+	Dirs               []StateDir
+	MountPoints        []StateDir
 }
 
 type StateDir struct {
@@ -24,6 +37,10 @@ type StateDir struct {
 
 func RenderState(request StateRequest) (StateAssets, error) {
 	uuid, err := stateUUID(request.PartitionUUID)
+	if err != nil {
+		return StateAssets{}, err
+	}
+	kubernetesMount, err := RenderKubernetesProjection(KubernetesProjectionRequest{})
 	if err != nil {
 		return StateAssets{}, err
 	}
@@ -48,10 +65,37 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"WantedBy=local-fs.target",
 			"",
 		}, "\n"),
-		Tmpfiles: renderTmpfiles(dirs),
-		Dirs:     dirs,
+		EtcKubernetesMount: kubernetesMount,
+		Tmpfiles:           renderTmpfiles(dirs),
+		Dirs:               dirs,
+		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
 	}
 	return assets, nil
+}
+
+func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, error) {
+	source, target, err := kubernetesProjectionPaths(request)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Project persistent Kubernetes configuration",
+		"Documentation=man:systemd.mount(5)",
+		"After=var.mount systemd-confext.service",
+		"Before=kubelet.service katl-kubeadm-ready.target",
+		"RequiresMountsFor=" + source,
+		"",
+		"[Mount]",
+		"What=" + source,
+		"Where=" + target,
+		"Type=none",
+		"Options=bind,rw",
+		"",
+		"[Install]",
+		"WantedBy=local-fs.target",
+		"",
+	}, "\n"), nil
 }
 
 func WriteState(root string, request StateRequest) (StateAssets, error) {
@@ -65,10 +109,13 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/var.mount", assets.VarMount, 0o644); err != nil {
 		return StateAssets{}, err
 	}
+	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {
+		return StateAssets{}, err
+	}
 	if err := writeFile(root, "etc/tmpfiles.d/katl-state.conf", assets.Tmpfiles, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	for _, dir := range assets.Dirs {
+	for _, dir := range append(append([]StateDir{}, assets.Dirs...), assets.MountPoints...) {
 		path := filepath.Join(root, strings.TrimPrefix(dir.Path, "/"))
 		if err := os.MkdirAll(path, dir.Mode); err != nil {
 			return StateAssets{}, fmt.Errorf("create %s: %w", dir.Path, err)
@@ -88,7 +135,7 @@ func stateDirs() []StateDir {
 		{Path: "/var/lib/katl/install/logs", Mode: 0o755},
 		{Path: "/var/lib/katl/identity", Mode: 0o755},
 		{Path: "/var/lib/katl/kubernetes", Mode: 0o755},
-		{Path: "/var/lib/katl/kubernetes/etc-kubernetes", Mode: 0o755},
+		{Path: KubernetesSource, Mode: 0o755},
 		{Path: "/var/lib/katl/ssh", Mode: 0o755},
 		{Path: "/var/lib/katl/ssh/host-keys", Mode: 0o700},
 		{Path: "/var/lib/containerd", Mode: 0o755},
@@ -119,6 +166,26 @@ func stateUUID(value string) (string, error) {
 		return "", fmt.Errorf("state partition UUID must not contain whitespace")
 	}
 	return value, nil
+}
+
+func kubernetesProjectionPaths(request KubernetesProjectionRequest) (string, string, error) {
+	source := cleanProjectionPath(request.Source, KubernetesSource)
+	target := cleanProjectionPath(request.Target, KubernetesTarget)
+	if source != KubernetesSource {
+		return "", "", fmt.Errorf("kubernetes source must be %s", KubernetesSource)
+	}
+	if target != KubernetesTarget {
+		return "", "", fmt.Errorf("kubernetes target must be %s", KubernetesTarget)
+	}
+	return source, target, nil
+}
+
+func cleanProjectionPath(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	return path.Clean("/" + strings.TrimPrefix(value, "/"))
 }
 
 func writeFile(root string, rel string, content string, mode os.FileMode) error {
