@@ -209,6 +209,9 @@ func TestPersistPass(t *testing.T) {
 	result := runner.Run(tb, Scenario{
 		Name: "installer boot",
 		Host: HostRequirements{QEMU: true},
+		Disks: []DiskFixture{
+			TargetDisk("root", "qcow2", "20G"),
+		},
 	})
 	if tb.failed || tb.skipped {
 		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
@@ -228,6 +231,9 @@ func TestPersistPass(t *testing.T) {
 	}
 	if len(loaded.Phases) != 1 || loaded.Phases[0].Status != StatusPassed {
 		t.Fatalf("phases = %#v", loaded.Phases)
+	}
+	if len(loaded.Disks) != 1 || loaded.Disks[0].GuestSelector != "/dev/disk/by-id/virtio-katl-root" {
+		t.Fatalf("disks = %#v", loaded.Disks)
 	}
 	if _, err := os.Stat(result.Artifacts.Scenario); err != nil {
 		t.Fatalf("scenario.json missing: %v", err)

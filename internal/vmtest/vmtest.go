@@ -45,6 +45,7 @@ type Scenario struct {
 	Keep      KeepPolicy       `json:"keep,omitempty"`
 	KVM       KVMPolicy        `json:"kvm,omitempty"`
 	Host      HostRequirements `json:"host,omitempty"`
+	Disks     []DiskFixture    `json:"disks,omitempty"`
 }
 
 type HostRequirements struct {
@@ -86,6 +87,7 @@ type Result struct {
 	DurationMS     int64                 `json:"durationMs,omitempty"`
 	FailureSummary string                `json:"failureSummary,omitempty"`
 	Artifacts      ArtifactPaths         `json:"artifacts"`
+	Disks          []DiskPlan            `json:"disks,omitempty"`
 	Phases         []PhaseResult         `json:"phases,omitempty"`
 	Missing        []MissingPrerequisite `json:"missing,omitempty"`
 }
@@ -251,6 +253,10 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 	}
 	runDir := filepath.Join(scenario.StateRoot, runID)
 	paths := pathsFor(runDir)
+	disks, err := planDisks(filepath.Join(runDir, "disks"), scenario.Disks)
+	if err != nil {
+		return Result{}, err
+	}
 	return Result{
 		ScenarioName: scenario.Name,
 		Status:       StatusPlanned,
@@ -262,6 +268,7 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 		Keep:         scenario.Keep,
 		KVM:          scenario.KVM,
 		Artifacts:    paths,
+		Disks:        disks,
 	}, nil
 }
 
