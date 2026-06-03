@@ -15,12 +15,14 @@ type RootSlotInstaller func(context.Context, RootSlotInstallRequest) (RootSlotIn
 type DiskExecutor struct {
 	Commands           CommandRunner
 	InstallRootSlot    RootSlotInstaller
+	RootSlotState      SlotStore
 	RecordStateMounted func(context.Context) error
 }
 
 type DiskExecutionRequest struct {
 	Plan              DiskLayoutPlan
 	RootSlotInstall   *RootSlotInstallRequest
+	RetryRootSlot     bool
 	AllowDestructive  bool
 	DryRun            bool
 	TargetMountPrefix string
@@ -62,11 +64,14 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 	}
 
 	for _, operation := range operations {
-		if isRootWrite(operation) && request.RootSlotInstall != nil {
+		if isRootWrite(operation) {
+			if request.RootSlotInstall == nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: root slot install request is required", operation.Name)
+			}
 			if err := validateRootWrite(operation, request.RootSlotInstall.Plan); err != nil {
 				return DiskExecutionResult{}, err
 			}
-			if _, err := installRootSlot(ctx, *request.RootSlotInstall); err != nil {
+			if _, err := runRootSlot(ctx, e.RootSlotState, *request.RootSlotInstall, request.RetryRootSlot, installRootSlot); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
 			continue

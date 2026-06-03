@@ -14,6 +14,7 @@ type RootSlotWriteRequest struct {
 
 type RootSlotWritePlan struct {
 	Slot              RootSlot
+	ActiveSlotGuard   RootSlot
 	TargetPartition   RootSlotTarget
 	ArtifactDigest    string
 	ExpectedSizeBytes int64
@@ -57,6 +58,7 @@ func PlanRootSlotWrite(layout DiskLayoutPlan, request RootSlotWriteRequest) (Roo
 
 	return RootSlotWritePlan{
 		Slot:              slot,
+		ActiveSlotGuard:   request.CurrentSlot,
 		TargetPartition:   target,
 		ArtifactDigest:    strings.ToLower(request.RuntimeArtifact.SHA256),
 		ExpectedSizeBytes: request.RuntimeArtifact.SizeBytes,

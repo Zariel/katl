@@ -43,6 +43,7 @@ func TestDiskExecutorRefusesDestructiveActionsWithoutPermission(t *testing.T) {
 }
 
 func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
+	artifact := []byte("runtime-root")
 	commands := &NoopCommandRunner{}
 	recorded := 0
 	_, err := (DiskExecutor{
@@ -53,6 +54,7 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 		},
 	}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             executorPlan(),
+		RootSlotInstall:  rootInstall(artifact, newMemSlot(len(artifact))),
 		AllowDestructive: true,
 	})
 	if err != nil {
@@ -63,6 +65,21 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
+	}
+}
+
+func TestDiskExecutorRequiresRootSlotInstall(t *testing.T) {
+	commands := &NoopCommandRunner{}
+
+	_, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             executorPlan(),
+		AllowDestructive: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "root slot install request is required") {
+		t.Fatalf("Execute() error = %v, want missing root slot install request", err)
+	}
+	if countCalls(commands.Calls, "katlos-write-root-slot") != 0 {
+		t.Fatalf("root slot external command calls = %#v", commands.Calls)
 	}
 }
 
