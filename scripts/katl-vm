@@ -5,11 +5,13 @@ usage() {
     cat <<'USAGE'
 Usage: scripts/katl-vm [options]
 
-Boot the installer image with direct QEMU and optional serial smoke matching.
+Boot an installer image or installed disk with direct QEMU and optional serial smoke matching.
 
 Options:
   --uki PATH              Installer UKI to boot as EFI/BOOT/BOOTX64.EFI
-  --image PATH            Raw disk image to boot (default: build/mkosi/katl-installer.raw)
+  --image PATH            Disk image to boot (default: build/mkosi/katl-installer.raw)
+  --image-format F        Image format: raw or qcow2 (default: raw)
+  --image-snapshot on|off Use a QEMU snapshot for --image (default: on)
   --target-disk PATH      Writable installer target disk to attach; created if missing
   --target-disk-size SIZE Size for a created target disk (default: 20G)
   --target-disk-format F  Target disk format: qcow2 or raw (default: qcow2)
@@ -34,6 +36,8 @@ USAGE
 
 repo_root="$(git rev-parse --show-toplevel)"
 image="$repo_root/build/mkosi/katl-installer.raw"
+image_format=raw
+image_snapshot=on
 uki=
 target_disk=
 target_disk_size=20G
@@ -75,6 +79,16 @@ while [[ $# -gt 0 ]]; do
         --image|-image)
             require_value "$1" "${2:-}"
             image="$2"
+            shift 2
+            ;;
+        --image-format|-image-format)
+            require_value "$1" "${2:-}"
+            image_format="$2"
+            shift 2
+            ;;
+        --image-snapshot|-image-snapshot)
+            require_value "$1" "${2:-}"
+            image_snapshot="$2"
             shift 2
             ;;
         --target-disk|-target-disk)
@@ -186,6 +200,20 @@ case "$kvm" in
         ;;
 esac
 
+case "$image_format" in
+    qcow2|raw) ;;
+    *)
+        echo "error: --image-format must be qcow2 or raw" >&2
+        exit 2
+        ;;
+esac
+case "$image_snapshot" in
+    on|off) ;;
+    *)
+        echo "error: --image-snapshot must be on or off" >&2
+        exit 2
+        ;;
+esac
 case "$target_disk_format" in
     qcow2|raw) ;;
     *)
@@ -370,6 +398,14 @@ echo "serial log: ${serial_log#"$repo_root"/}" >&2
 echo "firmware: $firmware_code" >&2
 echo "acceleration: $accel" >&2
 
+image_drive_spec() {
+    local spec="format=$image_format,file=$image"
+    if [[ "$image_snapshot" == on ]]; then
+        spec+=",snapshot=on"
+    fi
+    printf "%s\n" "$spec"
+}
+
 boot_drives=()
 drive_index=0
 add_virtio_drive() {
@@ -387,11 +423,11 @@ if [[ -n "$uki" ]]; then
     echo "installer UKI: $uki" >&2
     echo "EFI boot tree: ${efi_tree#"$repo_root"/}" >&2
     if [[ -f "$image" ]]; then
-        add_virtio_drive "format=raw,file=$image,snapshot=on"
+        add_virtio_drive "$(image_drive_spec)"
         echo "root image: $image" >&2
     fi
 else
-    add_virtio_drive "format=raw,file=$image,snapshot=on"
+    add_virtio_drive "$(image_drive_spec)"
     echo "image: $image" >&2
 fi
 if [[ -n "$target_disk" ]]; then

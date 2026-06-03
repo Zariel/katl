@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+run_id="${KATL_INSTALLED_SMOKE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+state_root="${KATL_INSTALLED_SMOKE_STATE_ROOT:-$repo_root/build/installed-disk-smoke}"
+state_dir="${KATL_INSTALLED_SMOKE_STATE_DIR:-$state_root/$run_id}"
+vm_dir="$state_dir/vm"
+index="$state_dir/artifacts.env"
+disk="${KATL_INSTALLED_DISK:-}"
+esp_artifacts="${KATL_INSTALLED_ESP_ARTIFACTS:-}"
+image_format="${KATL_INSTALLED_DISK_FORMAT:-raw}"
+expect="${KATL_INSTALLED_SMOKE_EXPECT:-Katl runtime reached systemd userspace}"
+timeout_duration="${KATL_INSTALLED_SMOKE_TIMEOUT:-180s}"
+kvm="${KATL_INSTALLED_SMOKE_KVM:-auto}"
+ram="${KATL_INSTALLED_SMOKE_RAM:-2048}"
+cpus="${KATL_INSTALLED_SMOKE_CPUS:-2}"
+preflight_only=0
+status=starting
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/check-installed-disk-smoke --disk PATH --esp-artifacts DIR [options]
+
+Boot a prepared Katl installed disk with OVMF and wait for the runtime serial
+boot signal. The ESP artifact tree is copied into the run directory before boot
+so loader entries are preserved when QEMU fails.
+
+Options:
+  --disk PATH          Installed disk image to boot, or KATL_INSTALLED_DISK
+  --esp-artifacts DIR  Directory containing rendered ESP files to preserve
+  --format F           Disk image format: raw or qcow2 (default: raw)
+  --state-dir DIR      Smoke run directory
+  --expect TEXT        Serial text to wait for
+  --timeout DUR        Timeout passed to timeout(1) (default: 180s)
+  --kvm auto|on|off    Acceleration policy (default: auto)
+  --ram SIZE           Guest RAM in MiB (default: 2048)
+  --cpus N             Guest CPU count (default: 2)
+  --preflight-only    Validate and preserve ESP artifacts without booting QEMU
+  -h, --help           Show this help
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --disk|-disk)
+            need_value "$1" "${2:-}"
+            disk="$2"
+            shift 2
+            ;;
+        --esp-artifacts|-esp-artifacts)
+            need_value "$1" "${2:-}"
+            esp_artifacts="$2"
+            shift 2
+            ;;
+        --format|-format)
+            need_value "$1" "${2:-}"
+            image_format="$2"
+            shift 2
+            ;;
+        --state-dir|-state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            vm_dir="$state_dir/vm"
+            index="$state_dir/artifacts.env"
+            shift 2
+            ;;
+        --expect|-expect)
+            need_value "$1" "${2:-}"
+            expect="$2"
+            shift 2
+            ;;
+        --timeout|-timeout)
+            need_value "$1" "${2:-}"
+            timeout_duration="$2"
+            shift 2
+            ;;
+        --kvm|-kvm)
+            need_value "$1" "${2:-}"
+            kvm="$2"
+            shift 2
+            ;;
+        --ram|-ram)
+            need_value "$1" "${2:-}"
+            ram="$2"
+            shift 2
+            ;;
+        --cpus|-cpus)
+            need_value "$1" "${2:-}"
+            cpus="$2"
+            shift 2
+            ;;
+        --preflight-only|-preflight-only)
+            preflight_only=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+case "$image_format" in
+    qcow2|raw) ;;
+    *) fail "--format must be raw or qcow2" ;;
+esac
+case "$kvm" in
+    auto|on|off) ;;
+    *) fail "--kvm must be auto, on, or off" ;;
+esac
+
+[[ -n "$disk" ]] || fail "--disk is required"
+[[ -f "$disk" ]] || fail "installed disk not found: $(rel "$disk")"
+[[ -n "$esp_artifacts" ]] || fail "--esp-artifacts is required"
+[[ -d "$esp_artifacts" ]] || fail "ESP artifacts directory not found: $(rel "$esp_artifacts")"
+
+save_index() {
+    mkdir -p "$state_dir"
+    {
+        printf 'STATUS=%q\n' "$status"
+        printf 'RUN_DIR=%q\n' "$state_dir"
+        printf 'INSTALLED_DISK=%q\n' "$disk"
+        printf 'INSTALLED_DISK_FORMAT=%q\n' "$image_format"
+        printf 'ESP_ARTIFACTS=%q\n' "$esp_artifacts"
+        printf 'ESP_COPY=%q\n' "$state_dir/esp"
+        printf 'VM_STATE_DIR=%q\n' "$vm_dir"
+        printf 'SERIAL_LOG=%q\n' "$vm_dir/serial.log"
+        printf 'QEMU_COMMAND=%q\n' "$vm_dir/qemu-command.txt"
+        printf 'FIRMWARE_VARS=%q\n' "$vm_dir/OVMF_VARS.fd"
+        printf 'EXPECT=%q\n' "$expect"
+    } >"$index"
+}
+
+finish() {
+    local code=$?
+    if [[ "$code" -ne 0 ]]; then
+        status=failed
+        save_index || true
+        echo "error: installed-disk smoke failed" >&2
+        echo "artifact index: $(rel "$index")" >&2
+        echo "ESP copy: $(rel "$state_dir/esp")" >&2
+        echo "serial log: $(rel "$vm_dir/serial.log")" >&2
+    fi
+}
+trap finish EXIT
+
+check_loader_entries() {
+    local entries_dir="$state_dir/esp/loader/entries"
+    local first
+    [[ -d "$entries_dir" ]] || fail "ESP artifacts missing loader/entries"
+    first="$(find "$entries_dir" -maxdepth 1 -type f -name '*.conf' -print -quit)"
+    [[ -n "$first" ]] || fail "ESP artifacts contain no loader entries"
+    grep -R -Fq 'root=PARTUUID=' "$entries_dir" || fail "loader entries missing root=PARTUUID"
+    grep -R -Fq 'rootfstype=squashfs' "$entries_dir" || fail "loader entries missing rootfstype=squashfs"
+    grep -R -Eq '(^|[[:space:]])ro([[:space:]]|$)' "$entries_dir" || fail "loader entries missing ro option"
+    grep -R -Fq 'katl.generation=' "$entries_dir" || fail "loader entries missing katl.generation"
+    grep -R -Fq 'systemd.machine_id=' "$entries_dir" || fail "loader entries missing systemd.machine_id"
+    if grep -R -Eq 'root=(gpt-auto|LABEL=|UUID=)' "$entries_dir"; then
+        fail "loader entries rely on root auto-discovery"
+    fi
+}
+
+status=preparing
+save_index
+rm -rf "$state_dir/esp"
+mkdir -p "$state_dir"
+cp -a "$esp_artifacts" "$state_dir/esp"
+check_loader_entries
+
+if [[ "$preflight_only" -eq 1 ]]; then
+    status=passed
+    save_index
+    trap - EXIT
+    echo "artifact index: $(rel "$index")"
+    echo "ESP copy: $(rel "$state_dir/esp")"
+    echo "ok: installed-disk smoke preflight passed"
+    exit 0
+fi
+
+status=booting
+save_index
+"$repo_root/scripts/katl-vm" \
+    --image "$disk" \
+    --image-format "$image_format" \
+    --image-snapshot on \
+    --state-dir "$vm_dir" \
+    --expect "$expect" \
+    --timeout "$timeout_duration" \
+    --kvm "$kvm" \
+    --ram "$ram" \
+    --cpus "$cpus"
+
+status=passed
+save_index
+trap - EXIT
+
+echo "artifact index: $(rel "$index")"
+echo "ESP copy: $(rel "$state_dir/esp")"
+echo "serial log: $(rel "$vm_dir/serial.log")"
+echo "ok: installed-disk smoke passed"
