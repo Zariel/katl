@@ -134,6 +134,23 @@ func TestVMRun(t *testing.T) {
 	}
 }
 
+func TestVMExpect(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Expect = "runtime ready"
+	runner := VMRunner{
+		Executor: vmExec{write: "runtime ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+}
+
 func TestVMFailure(t *testing.T) {
 	result, config := vmFixture(t)
 	runner := VMRunner{

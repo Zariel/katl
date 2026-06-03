@@ -179,6 +179,15 @@ func RequireHost(t testing.TB, requirements HostRequirements) {
 	NewRunner(DefaultOptions()).RequireHost(t, requirements)
 }
 
+func RequireEnv(t testing.TB, name string) string {
+	t.Helper()
+	value := os.Getenv(name)
+	if value == "" {
+		t.Skipf("set %s to run this VM scenario", name)
+	}
+	return value
+}
+
 func CheckHost(requirements HostRequirements) error {
 	return checkHost(requirements, systemProbe())
 }

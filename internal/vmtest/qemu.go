@@ -29,7 +29,9 @@ type VMConfig struct {
 	RAMMiB       int
 	CPUs         int
 	Phase        string
+	Expect       string
 	Timeout      time.Duration
+	PollInterval time.Duration
 	HostForwards []HostForward
 }
 
@@ -89,6 +91,8 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		ctx, cancel = context.WithTimeout(ctx, config.Timeout)
 		defer cancel()
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
@@ -98,7 +102,14 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	if executor == nil {
 		executor = ExecVMExecutor{}
 	}
-	if err := executor.Run(ctx, plan.QEMUPath, plan.Args, file); err != nil {
+	done := make(chan error, 1)
+	go func() {
+		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, file)
+	}()
+	if config.Expect != "" {
+		return r.waitSerial(ctx, cancel, done, result, config, plan.SerialLog, started)
+	}
+	if err := <-done; err != nil {
 		summary := fmt.Sprintf("qemu exited: %v", err)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			summary = "qemu timed out"
@@ -106,6 +117,37 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		return finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC())
 	}
 	return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
+}
+
+func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, serialLog string, started time.Time) Result {
+	interval := config.PollInterval
+	if interval == 0 {
+		interval = 250 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if serialHas(serialLog, config.Expect) {
+			cancel()
+			<-done
+			return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
+		}
+		select {
+		case err := <-done:
+			if serialHas(serialLog, config.Expect) {
+				return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
+			}
+			if err == nil {
+				err = errors.New("qemu exited before serial signal appeared")
+			}
+			return finishVM(result, phaseName(config), StatusFailed, fmt.Sprintf("qemu exited before serial signal %q appeared: %v", config.Expect, err), started, time.Now().UTC())
+		case <-ctx.Done():
+			cancel()
+			<-done
+			return finishVM(result, phaseName(config), StatusFailed, "qemu timed out", started, time.Now().UTC())
+		case <-ticker.C:
+		}
+	}
 }
 
 func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
@@ -211,6 +253,11 @@ func normalizeVM(config VMConfig) VMConfig {
 		config.Boot.ImageFormat = DiskRaw
 	}
 	return config
+}
+
+func serialHas(path, text string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), text)
 }
 
 func qemuAccel(policy KVMPolicy, probe probe) (string, error) {
