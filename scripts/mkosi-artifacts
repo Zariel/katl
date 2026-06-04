@@ -4,10 +4,15 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 default_index="$repo_root/build/mkosi/artifacts.json"
 installer_uki="${KATL_INSTALLER_UKI:-$repo_root/build/mkosi/katl-installer.efi}"
+installer_kernel="${KATL_INSTALLER_KERNEL:-$repo_root/build/mkosi/katl-installer.vmlinuz}"
+installer_initrd="${KATL_INSTALLER_INITRD:-$repo_root/build/mkosi/katl-installer.initrd}"
 runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
 runtime_metadata="${KATL_RUNTIME_METADATA:-$runtime_artifact.json}"
 runtime_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_artifact.sha256}"
 generation="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+version="${KATL_VERSION:-0.0.0-dev}"
+architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+installer_interface="${KATL_INSTALLER_INTERFACE:-katl-installer-boot-1}"
 
 usage() {
     cat <<'USAGE'
@@ -18,6 +23,8 @@ Write or query the local mkosi artifact index.
 
 Kinds:
   installer-uki
+  installer-kernel
+  installer-initrd
   runtime-root
 USAGE
 }
@@ -34,6 +41,14 @@ need() {
 rel() {
     local path="$1"
     printf "%s" "${path#"$repo_root"/}"
+}
+
+artifact_rel() {
+    local path="$1"
+    if [[ "$path" != "$repo_root"/* ]]; then
+        fail "artifact path must be under repository root for local index: $path"
+    fi
+    rel "$path"
 }
 
 abs() {
@@ -62,6 +77,62 @@ sha() {
     sha256sum "$1" | awk '{print $1}'
 }
 
+checksum_path() {
+    local path="$1"
+    printf "%s.sha256" "$path"
+}
+
+metadata_path() {
+    local path="$1"
+    printf "%s.json" "$path"
+}
+
+write_checksum() {
+    local path="$1"
+    local checksum
+    checksum="$(checksum_path "$path")"
+    printf "%s  %s\n" "$(sha "$path")" "$(basename "$path")" >"$checksum"
+}
+
+write_boot_metadata() {
+    local role="$1"
+    local format="$2"
+    local path="$3"
+    local created="$4"
+    local metadata size digest rel_path
+    metadata="$(metadata_path "$path")"
+    size="$(stat -c %s "$path")"
+    digest="$(sha "$path")"
+    rel_path="$(artifact_rel "$path")"
+
+    cat >"$metadata" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "InstallerBootArtifact",
+  "artifactRole": "$(json "$role")",
+  "format": "$(json "$format")",
+  "version": "$(json "$version")",
+  "buildID": "$(json "$generation")",
+  "architecture": "$(json "$architecture")",
+  "path": "$(json "$rel_path")",
+  "sizeBytes": $size,
+  "sha256": "$digest",
+  "createdAt": "$(json "$created")",
+  "installerInterface": "$(json "$installer_interface")",
+  "defaultKernelCommandLine": [
+    "console=ttyS0,115200n8",
+    "systemd.log_target=console",
+    "loglevel=6"
+  ],
+  "supportedInputModes": [
+    "pxe-preseed",
+    "local-handoff",
+    "offline-media"
+  ]
+}
+EOF
+}
+
 entry() {
     local kind="$1"
     local format="$2"
@@ -72,7 +143,7 @@ entry() {
     local size digest rel_path
     size="$(stat -c %s "$path")"
     digest="$(sha "$path")"
-    rel_path="$(rel "$path")"
+    rel_path="$(artifact_rel "$path")"
 
     printf '    {\n'
     printf '      "kind": "%s",\n' "$(json "$kind")"
@@ -97,11 +168,19 @@ write_index() {
     need sha256sum
     need stat
     need_file "installer UKI" "$installer_uki"
+    need_file "installer kernel" "$installer_kernel"
+    need_file "installer initrd" "$installer_initrd"
     need_file "runtime SquashFS" "$runtime_artifact"
     need_file "runtime metadata" "$runtime_metadata"
     need_file "runtime checksum" "$runtime_checksum"
 
     created="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    write_checksum "$installer_uki"
+    write_boot_metadata installer-uki uki "$installer_uki" "$created"
+    write_checksum "$installer_kernel"
+    write_boot_metadata installer-kernel linux-kernel "$installer_kernel" "$created"
+    write_checksum "$installer_initrd"
+    write_boot_metadata installer-initrd initrd "$installer_initrd" "$created"
     mkdir -p "$(dirname "$index")"
     {
         printf '{\n'
@@ -109,7 +188,9 @@ write_index() {
         printf '  "generatedAt": "%s",\n' "$(json "$created")"
         printf '  "generation": "%s",\n' "$(json "$generation")"
         printf '  "artifacts": [\n'
-        entry installer-uki uki "$installer_uki" , "" ""
+        entry installer-uki uki "$installer_uki" , "$(metadata_path "$installer_uki")" "$(checksum_path "$installer_uki")"
+        entry installer-kernel linux-kernel "$installer_kernel" , "$(metadata_path "$installer_kernel")" "$(checksum_path "$installer_kernel")"
+        entry installer-initrd initrd "$installer_initrd" , "$(metadata_path "$installer_initrd")" "$(checksum_path "$installer_initrd")"
         entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
         printf '  ]\n'
         printf '}\n'
