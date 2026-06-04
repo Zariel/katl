@@ -313,6 +313,7 @@ OVMF pflash code image
 per-run writable OVMF vars copy
 virtio block devices
 virtio network on QEMU user-mode NAT for single-node tests
+virtio-vsock device for post-boot structured guest control
 hostfwd ports for installer handoff, SSH, and later kube-apiserver checks
 serial written to a stable file and streamed to assertions
 display disabled by default
@@ -348,10 +349,33 @@ sends a graceful termination signal, waits briefly, then kills the process. The
 result should distinguish assertion failure, timeout, QEMU early exit,
 prerequisite failure, build failure, and cleanup failure.
 
+Vsock device setup should be explicit in the QEMU command when a scenario uses
+guest control operations:
+
+```text
+-device vhost-vsock-pci,id=vsock0,guest-cid=<cid>
+```
+
+Guest CIDs must be allocated per run and must not be hard-coded into committed
+fixtures. The allocator should reserve from a high local range derived from the
+run id plus a process-local collision check, and it should record the selected
+CID in `scenario.json` and `result.json`. Parallel tests that cannot reserve a
+CID must fail during planning before QEMU starts, not after guest boot. The
+well-known guest service port is `10240`; tests should treat it as a Katl
+vmtest agent port, not as product runtime API.
+
 ## Guest Interaction
 
 Serial log matching is the first assertion transport because it works before
 networking, SSH, or the Kubernetes API exists.
+
+Serial remains the readiness and failure channel. A VM must first emit the
+phase-specific serial signal, such as installer-ready or runtime-ready, before
+the harness attempts structured guest control. Vsock is the post-boot control
+channel for bounded operations that need request/response semantics after the
+guest agent is running. If the agent never starts, the scenario fails with the
+serial log, QEMU command, firmware vars copy, and any disk/ESP artifacts already
+preserved; it must not silently fall back to SSH or HTTP for the same assertion.
 
 The next transports should be added in this order:
 
@@ -375,6 +399,57 @@ guest artifact collector
 SSH should not be required for installer-image first boot. It becomes the
 practical command transport after the installed runtime has the generated `katl`
 account and authorized keys.
+
+## Vsock Control Channel
+
+The vmtest guest agent should listen on vsock port `10240` and expose a small
+protobuf API with explicit stream framing. The protobuf package should be
+`katl.vmtest.v1`, generated into `internal/vmtest/proto`, and kept private while
+the harness API is still volatile. The first service surface should cover:
+
+```text
+Health
+  prove the guest agent is responsive and return agent/runtime metadata
+
+RunCommand
+  run a bounded argv with explicit timeout, working directory, environment
+  allowlist, exit status, stdout, stderr, and truncation markers
+
+ReadFile
+  read bounded files needed by assertions, with size limits and redaction hints
+
+ExportJournal
+  return bounded journal text or export records for selected units and boot ids
+```
+
+The wire format is length-prefixed protobuf messages over the vsock byte stream:
+
+```text
+uint32 big-endian frame length
+VmtestRequest protobuf bytes
+uint32 big-endian frame length
+VmtestResponse protobuf bytes
+```
+
+Each request carries a request id, operation timeout, and operation-specific
+payload. Each response echoes the request id and returns exactly one of success
+payload or structured error. Error responses include a stable code, human
+message, retryable flag, and optional operation details. Transport errors,
+malformed frames, unknown methods, protobuf decode failures, request timeouts,
+and guest command failures must be distinguishable in `result.json`.
+
+The host runner owns scenario and phase timeouts. The guest agent owns
+per-operation deadlines after it accepts a request. When either side times out,
+the host closes the vsock stream, records the partial artifact if one exists,
+and fails the current assertion with enough context to debug from preserved run
+artifacts. Large responses must be bounded by request limits; output over the
+limit is truncated with explicit byte counts rather than streamed without
+limits.
+
+The guest agent is test infrastructure. It may run from a test-only systemd unit
+or sysext/confext fixture, but it must not become a required Katl runtime
+service. Scenarios that need vsock must declare the agent prerequisite so
+ordinary boot smoke tests can keep using serial only.
 
 ## Assertions
 
@@ -427,6 +502,7 @@ build/vmtest/<run-id>/
     runtime-command.txt
     installer-serial.log
     runtime-serial.log
+    vsock-transcript.jsonl
     OVMF_VARS.fd
   manifests/
     install-manifest.json
@@ -453,6 +529,13 @@ Journal collection should prefer structured export when available. Plain text
 is acceptable for the first implementation if it is bounded and clearly tied to
 the failing phase.
 
+Vsock requests and responses should be recorded as JSONL summaries in the run
+directory. Summaries should include request ids, method names, timing, byte
+counts, exit status, and error codes. They must not record secrets by default:
+authorization tokens, kubeconfigs, private keys, and command output marked
+sensitive are redacted in transcripts while full sensitive payloads are omitted
+unless a scenario explicitly opts into preserving them for a local debug run.
+
 ## Host Prerequisites
 
 The harness should check prerequisites before building or booting:
@@ -463,10 +546,12 @@ qemu-system-x86_64 is in PATH
 qemu-img is in PATH when creating disk fixtures
 OVMF code and vars images are readable
 /dev/kvm exists and is accessible when KVM is required
+host kernel supports AF_VSOCK and QEMU exposes vhost-vsock when vsock is used
 curl or Go HTTP client can reach host-forwarded handoff endpoints
 mkosi and supporting build tools exist when the scenario requests builds
 SSH client support exists when the scenario uses SSH assertions
 kubectl exists in the guest or selected artifact when Kubernetes assertions use it
+guest image includes and enables the vmtest agent when vsock assertions are used
 ```
 
 Prerequisite failures should skip tests only when the test is explicitly marked
