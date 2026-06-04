@@ -32,14 +32,13 @@ ValidatedInstallRequest
   requestDigest
   node identity and node configuration
   install policy, including destructive install guard and target disk selector
-  systemRole and capability selections
+  systemRole
   kubeadm config refs, not kubeadm actions
   one katlosImage reference with digest and expected metadata
 ```
 
-`systemRole` and capabilities are installed as node intent for later cluster
-bootstrap. They do not cause `kubeadm init` or `kubeadm join` during node
-install.
+`systemRole` is installed as node intent for later cluster bootstrap. It does
+not cause `kubeadm init` or `kubeadm join` during node install.
 
 ## Installer States
 
@@ -112,7 +111,7 @@ ActivateGeneration
 
 PrepareKubeadmPrereqs
   project /etc/kubernetes from writable state, ensure containerd prerequisites,
-  kubelet service wiring, kubeadm config refs, and role/capability metadata
+  kubelet service wiring, kubeadm config refs, and systemRole metadata
 
 KubeadmReady
   reach katl-kubeadm-ready.target after local prerequisites are active
@@ -128,14 +127,15 @@ cluster lifecycle actions. Those are explicit operator actions after
 
 ## Durable Checkpoints
 
-Before the state partition exists, progress is volatile and recoverable only
-from installer logs, input files, and target disk inspection.
+Before installation begins, no node state is persisted. Discovery, local
+handoff, validation, image verification, and install planning may expose
+transient status through CLI/API responses or installer logs, but refusal before
+mutation must not create durable node state.
 
-Initial checkpoints may be written under:
-
-```text
-/run/katl/install/state.json
-```
+Before the target state partition exists, any progress is volatile and
+recoverable only from installer logs, input files, and target disk inspection.
+Transient diagnostics may use `/run`, but `/run` content is not install state
+and is not a checkpoint contract.
 
 After the target state partition is mounted, durable installer state is written
 under:
@@ -326,7 +326,7 @@ katl-dty.11.15
   persist install-to-bootstrap status checkpoints
 
 katl-dty.11.2
-  compile system roles and capabilities into per-node install materials
+  compile system roles into per-node install materials
 
 katl-dty.11.9
   bootstrap node inventory and readiness checks

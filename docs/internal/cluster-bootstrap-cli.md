@@ -57,7 +57,6 @@ node entry includes:
 name
 address
 systemRole
-optional capabilities metadata
 access method and credentials reference, not inline secret values
 kubeadm configRef or rendered config path
 selected Kubernetes payload version
@@ -78,7 +77,8 @@ worker
   eligible only for kubeadm worker join
 ```
 
-Capabilities never decide init versus join behavior.
+Capability overlays are a day-2 design item and are not part of the first
+bootstrap inventory contract.
 
 ## Init Node Selection
 

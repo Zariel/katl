@@ -127,8 +127,9 @@ katl.install.mode=auto
 
 The referenced install manifest contains node-specific configuration and one
 `katlosImage` reference. This keeps target disk policy, node identity, network
-configuration, systemRole, capabilities, kubeadm config references, and KatlOS
-payload selection in one typed document.
+configuration, systemRole, kubeadm config references, and KatlOS payload
+selection in one typed document. Capability overlays are deferred to day-2
+design.
 
 Split reference input is allowed only as a convenience when a provisioning
 system stores node config and payload refs separately:

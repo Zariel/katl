@@ -167,7 +167,8 @@ component digests and compatibility metadata
 Node-specific configuration remains outside the image. The install manifest,
 PXE/preseed input, USB/local handoff, or VM harness supplies identity, disk
 selection, network configuration, kubeadm config references, systemRole, and
-capabilities. Reusing the same install image for multiple nodes must not require
+other supported day-one node configuration. Capability overlays are a day-2
+design item. Reusing the same install image for multiple nodes must not require
 rebuilding the image.
 
 The installer material model therefore changes from:
