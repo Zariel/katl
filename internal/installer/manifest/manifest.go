@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/zariel/katl/internal/installer/disk"
@@ -23,7 +24,8 @@ type Manifest struct {
 }
 
 type NodeConfig struct {
-	Identity NodeIdentity `json:"identity"`
+	Identity   NodeIdentity     `json:"identity"`
+	Kubernetes KubernetesConfig `json:"kubernetes,omitempty"`
 }
 
 type NodeIdentity struct {
@@ -33,6 +35,14 @@ type NodeIdentity struct {
 
 type SSHIdentity struct {
 	AuthorizedKeys []string `json:"authorizedKeys"`
+}
+
+type KubernetesConfig struct {
+	Kubeadm KubeadmReference `json:"kubeadm,omitempty"`
+}
+
+type KubeadmReference struct {
+	ConfigRef string `json:"configRef,omitempty"`
 }
 
 type InstallConfig struct {
@@ -114,6 +124,9 @@ func Decode(reader io.Reader) (Manifest, error) {
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
 		return Manifest{}, fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
 	}
+	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
+		return Manifest{}, err
+	}
 	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
 		return Manifest{}, err
 	}
@@ -152,6 +165,22 @@ func Decode(reader io.Reader) (Manifest, error) {
 		}
 	}
 	return manifest, nil
+}
+
+func validateNameRef(field string, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if value != filepath.Base(value) || value == "." || value == ".." {
+		return fmt.Errorf("%s %q must be a single path segment", field, value)
+	}
+	for _, r := range value {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
+		if !ok {
+			return fmt.Errorf("%s %q must contain only lowercase letters, digits, and dashes", field, value)
+		}
+	}
+	return nil
 }
 
 func validateDiskSelector(field string, selector DiskSelector) error {

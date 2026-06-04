@@ -43,6 +43,45 @@ func TestDecodeAcceptsExtraDisks(t *testing.T) {
 	}
 }
 
+func TestDecodeAcceptsKubeadmConfigRef(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(manifestWithNode(`,
+			"kubernetes": {
+				"kubeadm": {
+					"configRef": "control-plane"
+				}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
+		t.Fatalf("configRef = %q", manifest.Node.Kubernetes.Kubeadm.ConfigRef)
+	}
+}
+
+func TestDecodeRejectsUnsafeKubeadmConfigRef(t *testing.T) {
+	tests := []string{
+		"../control-plane",
+		"ControlPlane",
+		"control_plane",
+	}
+	for _, configRef := range tests {
+		t.Run(configRef, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(manifestWithNode(fmt.Sprintf(`,
+			"kubernetes": {
+				"kubeadm": {
+					"configRef": %q
+				}
+			}`, configRef))))
+			if err == nil {
+				t.Fatal("Decode() error = nil, want configRef rejection")
+			}
+			if !strings.Contains(err.Error(), "node.kubernetes.kubeadm.configRef") {
+				t.Fatalf("Decode() error = %q, want configRef field", err)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsRootDiskLayoutFields(t *testing.T) {
 	tests := []struct {
 		name  string
