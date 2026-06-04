@@ -12,14 +12,13 @@ import (
 func TestValidateNativeEtcBundleAcceptsKnownConfigPaths(t *testing.T) {
 	plans, err := ValidateNativeEtcBundle("/target/var/lib/katl/generations/2026.05.31-001/confext", []NativeEtcFile{
 		{Path: "/etc/systemd/network/10-lan.network", Mode: 0o644},
-		{Path: "/etc/ssh/sshd_config.d/10-katl.conf", Mode: 0o600},
 		{Path: "/etc/katl/kubeadm-init.yaml", Mode: 0o640},
 	})
 	if err != nil {
 		t.Fatalf("ValidateNativeEtcBundle() error = %v", err)
 	}
-	if len(plans) != 3 {
-		t.Fatalf("len(plans) = %d, want 3", len(plans))
+	if len(plans) != 2 {
+		t.Fatalf("len(plans) = %d, want 2", len(plans))
 	}
 	for _, plan := range plans {
 		if !strings.HasPrefix(plan.ConfextPath, "/target/var/lib/katl/generations/2026.05.31-001/confext/etc/") {
@@ -61,6 +60,71 @@ func TestValidateNativeEtcBundleRejectsUnsafeEntries(t *testing.T) {
 			name: "extension metadata ownership",
 			file: NativeEtcFile{Path: "/etc/extension-release.d/extension-release.katl-node"},
 			want: "cannot own generated confext extension-release metadata",
+		},
+		{
+			name: "passwd",
+			file: NativeEtcFile{Path: "/etc/passwd"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "shadow",
+			file: NativeEtcFile{Path: "/etc/shadow"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "group",
+			file: NativeEtcFile{Path: "/etc/group"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "gshadow",
+			file: NativeEtcFile{Path: "/etc/gshadow"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "sudoers",
+			file: NativeEtcFile{Path: "/etc/sudoers"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "sudoers dropin",
+			file: NativeEtcFile{Path: "/etc/sudoers.d/10-katl"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "pam",
+			file: NativeEtcFile{Path: "/etc/pam.d/sshd"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "security",
+			file: NativeEtcFile{Path: "/etc/security/limits.conf"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "subuid",
+			file: NativeEtcFile{Path: "/etc/subuid"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "subgid",
+			file: NativeEtcFile{Path: "/etc/subgid"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "sysusers",
+			file: NativeEtcFile{Path: "/etc/sysusers.d/10-katl.conf"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "sshd config",
+			file: NativeEtcFile{Path: "/etc/ssh/sshd_config"},
+			want: "cannot own Katl-managed host account",
+		},
+		{
+			name: "sshd dropin",
+			file: NativeEtcFile{Path: "/etc/ssh/sshd_config.d/10-katl.conf"},
+			want: "cannot own Katl-managed host account",
 		},
 		{
 			name: "symlink",
@@ -136,7 +200,6 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 		GenerationsRoot: t.TempDir(),
 		GenerationID:    "2026.05.31-001",
 		Files: []NativeEtcFile{
-			{Path: "/etc/ssh/sshd_config.d/10-katl.conf", Content: "PasswordAuthentication no\n", Mode: 0o600},
 			{Path: "/etc/systemd/network/10-lan.network", Content: "[Match]\nName=enp1s0\n", Mode: 0o644},
 			{Path: "/etc/katl/node.yaml", Content: "node: lab-node-01\n", Mode: 0o640},
 		},
@@ -160,7 +223,6 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 
 	wantFiles := []string{
 		"/etc/katl/node.yaml",
-		"/etc/ssh/sshd_config.d/10-katl.conf",
 		"/etc/systemd/network/10-lan.network",
 	}
 	var gotFiles []string
@@ -175,13 +237,11 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 	}
 
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "katl", "node.yaml"), "node: lab-node-01\n", 0o640)
-	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "ssh", "sshd_config.d", "10-katl.conf"), "PasswordAuthentication no\n", 0o600)
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "systemd", "network", "10-lan.network"), "[Match]\nName=enp1s0\n", 0o644)
 	assertFile(t, tree.ExtensionReleasePath, "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n", 0o644)
 
 	wantChowns := []string{
 		"node.yaml:0:0",
-		"10-katl.conf:0:0",
 		"10-lan.network:0:0",
 		"extension-release.katl-node:0:0",
 	}

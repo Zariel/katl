@@ -214,8 +214,37 @@ func normalizeNativeEtcPath(path string) (string, error) {
 	if normalized == "/etc/extension-release.d" || strings.HasPrefix(normalized, "/etc/extension-release.d/") {
 		return "", fmt.Errorf("native /etc file path %q cannot own generated confext extension-release metadata", path)
 	}
+	if isHostPolicyPath(normalized) {
+		return "", fmt.Errorf("native /etc file path %q cannot own Katl-managed host account, authentication, or sshd policy", path)
+	}
 
 	return normalized, nil
+}
+
+func isHostPolicyPath(path string) bool {
+	switch path {
+	case "/etc/passwd",
+		"/etc/shadow",
+		"/etc/group",
+		"/etc/gshadow",
+		"/etc/sudoers",
+		"/etc/subuid",
+		"/etc/subgid",
+		"/etc/ssh/sshd_config":
+		return true
+	}
+	for _, prefix := range []string{
+		"/etc/sudoers.d",
+		"/etc/pam.d",
+		"/etc/security",
+		"/etc/sysusers.d",
+		"/etc/ssh/sshd_config.d",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func validateNativeEtcMode(path string, mode fs.FileMode) error {
