@@ -18,15 +18,13 @@
       "minSizeMiB": 32768
     }
   },
-  "artifacts": {
-    "runtimeRoot": {
-      "url": "https://artifacts.example.invalid/katl/runtime-root.squashfs",
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    "uki": {
-      "url": "https://artifacts.example.invalid/katl/katl.efi",
-      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    },
-    "sysexts": []
+  "katlosImage": {
+    "url": "https://artifacts.example.invalid/katl/katlos-install-2026.06.04-x86_64.squashfs",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 1073741824,
+    "version": "2026.06.04",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1",
+    "role": "install"
   }
 }

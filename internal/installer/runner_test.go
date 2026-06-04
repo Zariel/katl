@@ -308,22 +308,14 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 			"allowDestructiveInstall": true,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
-		"artifacts": {
-			"runtimeRoot": {
-				"url": "https://example.invalid/root.squashfs",
-				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			"uki": {
-				"url": "https://example.invalid/katl.efi",
-				"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-			},
-			"sysexts": [
-				{
-					"name": "kubelet",
-					"url": "https://example.invalid/kubelet.sysext.raw",
-					"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-				}
-			]
+		"katlosImage": {
+			"url": "https://example.invalid/katlos-install.squashfs",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sizeBytes": 1073741824,
+			"version": "2026.06.04",
+			"architecture": "x86_64",
+			"runtimeInterface": "katl-runtime-1",
+			"role": "install"
 		}
 	}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {

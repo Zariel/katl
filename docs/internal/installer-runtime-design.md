@@ -339,8 +339,9 @@ install
   destructive install guard, target root disk selector, and optional extra data
   disks
 
-artifacts
-  runtime root artifact, optional UKI, sysexts, and required digests
+katlosImage
+  one KatlOS install image reference with required digest, size, version,
+  architecture, and role metadata
 ```
 
 The current manifest deliberately does not expose a separate manifest name,
@@ -390,8 +391,10 @@ state partition
   Katl's state partition policy consumes remaining disk after fixed partitions;
   minimum state size must be satisfied after planning
 
-artifacts
-  every install artifact must have a URL and SHA-256 digest; digest mismatches
+katlosImage
+  the manifest references one KatlOS install image rather than loose runtime
+  root, UKI, or sysext artifacts; the image reference must have a URL or local
+  ref, SHA-256 digest, size, version, architecture, and role; digest mismatches
   fail before mutation where possible and before boot metadata is installed;
   signing and external trust-root policy are deferred
 

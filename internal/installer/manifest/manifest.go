@@ -1,10 +1,14 @@
 package manifest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/zariel/katl/internal/installer/disk"
@@ -15,12 +19,14 @@ const (
 	Kind       = "InstallManifest"
 )
 
+var localRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
+
 type Manifest struct {
-	APIVersion string        `json:"apiVersion"`
-	Kind       string        `json:"kind"`
-	Node       NodeConfig    `json:"node"`
-	Install    InstallConfig `json:"install"`
-	Artifacts  Artifacts     `json:"artifacts"`
+	APIVersion  string        `json:"apiVersion"`
+	Kind        string        `json:"kind"`
+	Node        NodeConfig    `json:"node"`
+	Install     InstallConfig `json:"install"`
+	KatlosImage KatlosImage   `json:"katlosImage"`
 }
 
 type NodeConfig struct {
@@ -80,23 +86,15 @@ type ExtraMount struct {
 	Path string `json:"path"`
 }
 
-type Artifacts struct {
-	RuntimeRoot Artifact        `json:"runtimeRoot"`
-	UKI         *Artifact       `json:"uki,omitempty"`
-	Sysexts     []NamedArtifact `json:"sysexts,omitempty"`
-}
-
-type Artifact struct {
-	URL       string `json:"url"`
-	SHA256    string `json:"sha256"`
-	SizeBytes uint64 `json:"sizeBytes,omitempty"`
-}
-
-type NamedArtifact struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	SHA256    string `json:"sha256"`
-	SizeBytes uint64 `json:"sizeBytes,omitempty"`
+type KatlosImage struct {
+	URL              string `json:"url,omitempty"`
+	LocalRef         string `json:"localRef,omitempty"`
+	SHA256           string `json:"sha256"`
+	SizeBytes        uint64 `json:"sizeBytes"`
+	Version          string `json:"version"`
+	Architecture     string `json:"architecture"`
+	RuntimeInterface string `json:"runtimeInterface,omitempty"`
+	Role             string `json:"role"`
 }
 
 type RootDiskProfile struct {
@@ -143,25 +141,8 @@ func Decode(reader io.Reader) (Manifest, error) {
 	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
 		return Manifest{}, err
 	}
-	if err := validateArtifact("artifacts.runtimeRoot", manifest.Artifacts.RuntimeRoot); err != nil {
+	if err := validateKatlosImage(manifest.KatlosImage); err != nil {
 		return Manifest{}, err
-	}
-	if manifest.Artifacts.UKI != nil {
-		if err := validateArtifact("artifacts.uki", *manifest.Artifacts.UKI); err != nil {
-			return Manifest{}, err
-		}
-	}
-	for i, sysext := range manifest.Artifacts.Sysexts {
-		if strings.TrimSpace(sysext.Name) == "" {
-			return Manifest{}, fmt.Errorf("artifacts.sysexts[%d].name is required", i)
-		}
-		if err := validateArtifact(fmt.Sprintf("artifacts.sysexts[%d]", i), Artifact{
-			URL:       sysext.URL,
-			SHA256:    sysext.SHA256,
-			SizeBytes: sysext.SizeBytes,
-		}); err != nil {
-			return Manifest{}, err
-		}
 	}
 	for i, extra := range manifest.Install.ExtraDisks {
 		if strings.TrimSpace(extra.Name) == "" {
@@ -253,12 +234,71 @@ func validateDiskSelector(field string, selector DiskSelector) error {
 	return nil
 }
 
-func validateArtifact(field string, artifact Artifact) error {
-	if strings.TrimSpace(artifact.URL) == "" {
-		return fmt.Errorf("%s.url is required", field)
+func validateKatlosImage(image KatlosImage) error {
+	const field = "katlosImage"
+	urlValue := strings.TrimSpace(image.URL)
+	localRef := strings.TrimSpace(image.LocalRef)
+	if image.URL != urlValue {
+		return fmt.Errorf("%s.url must not contain leading or trailing whitespace", field)
 	}
-	if strings.TrimSpace(artifact.SHA256) == "" {
+	if image.LocalRef != localRef {
+		return fmt.Errorf("%s.localRef must not contain leading or trailing whitespace", field)
+	}
+	switch {
+	case urlValue == "" && localRef == "":
+		return fmt.Errorf("%s must set url or localRef", field)
+	case urlValue != "" && localRef != "":
+		return fmt.Errorf("%s must not set both url and localRef", field)
+	}
+	if urlValue != "" {
+		parsed, err := url.Parse(urlValue)
+		if err != nil {
+			return fmt.Errorf("%s.url is invalid: %w", field, err)
+		}
+		if parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("%s.url must be absolute", field)
+		}
+	}
+	if localRef != "" {
+		if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || !localRefRE.MatchString(localRef) {
+			return fmt.Errorf("%s.localRef %q must be a clean relative path", field, localRef)
+		}
+		for _, segment := range strings.Split(localRef, "/") {
+			if segment == "." || segment == ".." {
+				return fmt.Errorf("%s.localRef %q must not contain dot segments", field, localRef)
+			}
+		}
+	}
+	if strings.TrimSpace(image.SHA256) == "" {
 		return fmt.Errorf("%s.sha256 is required", field)
+	}
+	if err := validateSHA256(image.SHA256); err != nil {
+		return fmt.Errorf("%s.sha256 is invalid: %w", field, err)
+	}
+	if image.SizeBytes == 0 {
+		return fmt.Errorf("%s.sizeBytes is required", field)
+	}
+	if strings.TrimSpace(image.Version) == "" {
+		return fmt.Errorf("%s.version is required", field)
+	}
+	if strings.TrimSpace(image.Architecture) == "" {
+		return fmt.Errorf("%s.architecture is required", field)
+	}
+	if image.Role != "install" {
+		return fmt.Errorf("%s.role must be install", field)
+	}
+	return nil
+}
+
+func validateSHA256(value string) error {
+	if len(value) != sha256.Size*2 {
+		return fmt.Errorf("must be %d lowercase hex characters", sha256.Size*2)
+	}
+	if value != strings.ToLower(value) {
+		return fmt.Errorf("must be lowercase hex")
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return err
 	}
 	return nil
 }

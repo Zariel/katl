@@ -9,7 +9,7 @@
     "kind",
     "node",
     "install",
-    "artifacts"
+    "katlosImage"
   ],
   "properties": {
     "apiVersion": {
@@ -88,42 +88,24 @@
         }
       }
     },
-    "artifacts": {
+    "katlosImage": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "runtimeRoot"
-      ],
-      "properties": {
-        "runtimeRoot": {
-          "$ref": "#/$defs/artifact"
-        },
-        "uki": {
-          "$ref": "#/$defs/artifact"
-        },
-        "sysexts": {
-          "type": "array",
-          "default": [],
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/namedArtifact"
-          }
-        }
-      }
-    }
-  },
-  "$defs": {
-    "artifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "url",
-        "sha256"
+        "sha256",
+        "sizeBytes",
+        "version",
+        "architecture",
+        "role"
       ],
       "properties": {
         "url": {
           "type": "string",
-          "format": "uri"
+          "format": "uri",
+          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*://[^/\\s]+.*$"
+        },
+        "localRef": {
+          "$ref": "#/$defs/relativePath"
         },
         "sha256": {
           "$ref": "#/$defs/sha256"
@@ -131,9 +113,45 @@
         "sizeBytes": {
           "type": "integer",
           "minimum": 1
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "architecture": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "runtimeInterface": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "role": {
+          "const": "install"
         }
-      }
-    },
+      },
+      "oneOf": [
+        {
+          "required": [
+            "url"
+          ],
+          "not": {
+            "required": [
+              "localRef"
+            ]
+          }
+        },
+        {
+          "required": [
+            "localRef"
+          ],
+          "not": {
+            "required": [
+              "url"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
     "diskSelector": {
       "type": "object",
       "additionalProperties": false,
@@ -238,30 +256,13 @@
         }
       }
     },
-    "namedArtifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "url",
-        "sha256"
-      ],
-      "properties": {
-        "name": {
-          "$ref": "#/$defs/dnsLabel"
-        },
-        "url": {
-          "type": "string",
-          "format": "uri"
-        },
-        "sha256": {
-          "$ref": "#/$defs/sha256"
-        },
-        "sizeBytes": {
-          "type": "integer",
-          "minimum": 1
-        }
-      }
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?!.*(^|/)\\.\\.?($|/))[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$"
     },
     "networkdConfig": {
       "type": "object",

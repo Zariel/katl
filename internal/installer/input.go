@@ -112,19 +112,17 @@ func (r *inputResolver) applyManifest(data []byte) error {
 				Hostname string `json:"hostname"`
 			} `json:"identity"`
 		} `json:"node"`
-		Artifacts struct {
-			RuntimeRoot struct {
-				URL string `json:"url"`
-			} `json:"runtimeRoot"`
-		} `json:"artifacts"`
+		KatlosImage struct {
+			URL string `json:"url"`
+		} `json:"katlosImage"`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return fmt.Errorf("decode manifest-derived input: %w", err)
 	}
 
 	r.setString("nodeName", InputSourceManifest, manifest.Node.Identity.Hostname)
-	if manifest.Artifacts.RuntimeRoot.URL != "" {
-		baseURL, err := artifactBaseURL(manifest.Artifacts.RuntimeRoot.URL)
+	if manifest.KatlosImage.URL != "" {
+		baseURL, err := artifactBaseURL(manifest.KatlosImage.URL)
 		if err != nil {
 			return err
 		}

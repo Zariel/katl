@@ -16,10 +16,8 @@ func TestDiscoverBootInputPrecedence(t *testing.T) {
 		},
 		Manifest: []byte(`{
   "node": {"identity": {"hostname": "manifest-node"}},
-  "artifacts": {
-    "runtimeRoot": {
-      "url": "https://manifest.example/artifacts/runtime-root.squashfs"
-    }
+  "katlosImage": {
+    "url": "https://manifest.example/artifacts/katlos-install.squashfs"
   }
 }`),
 	})

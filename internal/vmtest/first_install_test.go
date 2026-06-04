@@ -144,11 +144,14 @@ func firstManifest() string {
 			"allowDestructiveInstall": true,
 			"targetDisk": {"byID": "/dev/disk/by-id/virtio-katl-root", "minSizeMiB": 32}
 		},
-		"artifacts": {
-			"runtimeRoot": {
-				"url": "https://example.invalid/root.squashfs",
-				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			}
+		"katlosImage": {
+			"url": "https://example.invalid/katlos-install.squashfs",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sizeBytes": 1073741824,
+			"version": "2026.06.04",
+			"architecture": "x86_64",
+			"runtimeInterface": "katl-runtime-1",
+			"role": "install"
 		}
 	}`
 }

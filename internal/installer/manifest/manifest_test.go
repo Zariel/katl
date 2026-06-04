@@ -19,8 +19,8 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("authorized keys = %#v", manifest.Node.Identity.SSH.AuthorizedKeys)
 	}
-	if manifest.Artifacts.RuntimeRoot.URL == "" || manifest.Artifacts.UKI == nil {
-		t.Fatalf("artifacts = %#v", manifest.Artifacts)
+	if manifest.KatlosImage.URL == "" || manifest.KatlosImage.Role != "install" {
+		t.Fatalf("katlos image = %#v", manifest.KatlosImage)
 	}
 }
 
@@ -73,6 +73,151 @@ func TestDecodeAcceptsNetworkdDomain(t *testing.T) {
 	}
 	if len(manifest.Node.Networkd.Files) != 1 || manifest.Node.Networkd.Files[0].Name != "10-lan.network" {
 		t.Fatalf("networkd = %#v", manifest.Node.Networkd)
+	}
+}
+
+func TestDecodeAcceptsLocalKatlosImageRef(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(manifestWithImageObject(`{
+		"localRef": "payloads/katlos-install.squashfs",
+		"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sizeBytes": 1073741824,
+		"version": "2026.06.04",
+		"architecture": "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+		"role": "install"
+	}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if manifest.KatlosImage.LocalRef != "payloads/katlos-install.squashfs" {
+		t.Fatalf("localRef = %q", manifest.KatlosImage.LocalRef)
+	}
+}
+
+func TestDecodeRejectsUnsafeKatlosImage(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{
+			name: "missing source",
+			image: `{
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "url or localRef",
+		},
+		{
+			name: "both sources",
+			image: `{
+				"url": "https://example.invalid/katlos.squashfs",
+				"localRef": "payloads/katlos.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "must not set both",
+		},
+		{
+			name: "relative url",
+			image: `{
+				"url": "payloads/katlos.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "url must be absolute",
+		},
+		{
+			name: "bad local ref characters",
+			image: `{
+				"localRef": "payloads/katlos image.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "clean relative path",
+		},
+		{
+			name: "bad local ref traversal",
+			image: `{
+				"localRef": "../payloads/katlos.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "dot segments",
+		},
+		{
+			name: "bad sha",
+			image: `{
+				"url": "https://example.invalid/katlos.squashfs",
+				"sha256": "not-a-digest",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "install"
+			}`,
+			want: "sha256 is invalid",
+		},
+		{
+			name: "bad role",
+			image: `{
+				"url": "https://example.invalid/katlos.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"sizeBytes": 1073741824,
+				"version": "2026.06.04",
+				"architecture": "x86_64",
+				"role": "upgrade"
+			}`,
+			want: "role must be install",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(manifestWithImageObject(tt.image)))
+			if err == nil {
+				t.Fatal("Decode() error = nil, want katlosImage rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsLegacyLooseArtifacts(t *testing.T) {
+	legacy := strings.Replace(validManifest(),
+		`"katlosImage": {
+			"url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sizeBytes": 1073741824,
+			"version": "2026.06.04",
+			"architecture": "x86_64",
+			"runtimeInterface": "katl-runtime-1",
+			"role": "install"
+		}`,
+		`"artifacts": {
+			"runtimeRoot": {
+				"url": "https://example.invalid/root.squashfs",
+				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			}
+		}`, 1)
+	_, err := Decode(strings.NewReader(legacy))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "artifacts") {
+		t.Fatalf("Decode() error = %v, want legacy artifacts rejection", err)
 	}
 }
 
@@ -318,22 +463,14 @@ func manifestWithTop(extra string) string {
 			"allowDestructiveInstall": true,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
-		"artifacts": {
-			"runtimeRoot": {
-				"url": "https://example.invalid/root.squashfs",
-				"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			"uki": {
-				"url": "https://example.invalid/katl.efi",
-				"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-			},
-			"sysexts": [
-				{
-					"name": "kubelet",
-					"url": "https://example.invalid/kubelet.sysext.raw",
-					"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-				}
-			]
+		"katlosImage": {
+			"url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sizeBytes": 1073741824,
+			"version": "2026.06.04",
+			"architecture": "x86_64",
+			"runtimeInterface": "katl-runtime-1",
+			"role": "install"
 		}%s
 	}`, extra)
 }
@@ -352,6 +489,28 @@ func manifestWithInstall(extra string) string {
 
 func manifestWithTarget(targetDisk string) string {
 	return strings.Replace(validManifest(), `{"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}`, targetDisk, 1)
+}
+
+func manifestWithImageObject(imageObject string) string {
+	return fmt.Sprintf(`{
+		"apiVersion": "install.katl.dev/v1alpha1",
+		"kind": "InstallManifest",
+		"node": {
+			"identity": {
+				"hostname": "lab-node-01",
+				"ssh": {
+					"authorizedKeys": [
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+					]
+				}
+			}
+		},
+		"install": {
+			"allowDestructiveInstall": true,
+			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
+		},
+		"katlosImage": %s
+	}`, imageObject)
 }
 
 func objectField(extra string) string {
