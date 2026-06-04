@@ -111,6 +111,98 @@ func TestVMDiskBoot(t *testing.T) {
 	}
 }
 
+func TestVMVSock(t *testing.T) {
+	result, config := vmFixture(t)
+	config.VSock.Enabled = true
+	config.VSock.GuestCID = 2048
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		output: func(string, ...string) ([]byte, error) {
+			return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if plan.VSock.GuestCID != 2048 || plan.VSock.Port != 10240 {
+		t.Fatalf("vsock = %#v", plan.VSock)
+	}
+	if !hasArg(plan.Args, "vhost-vsock-pci,id=vsock0,guest-cid=2048") {
+		t.Fatalf("vsock device missing from args: %#v", plan.Args)
+	}
+	runner := VMRunner{
+		Executor: vmExec{write: "serial ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.VSock.GuestCID != 2048 || result.VSock.Port != 10240 {
+		t.Fatalf("result vsock = %#v", result.VSock)
+	}
+}
+
+func TestCID(t *testing.T) {
+	first := cidForRun("run-a")
+	second := cidForRun("run-a")
+	other := cidForRun("run-b")
+	if first != second {
+		t.Fatalf("cid not deterministic: %d != %d", first, second)
+	}
+	if first == other {
+		t.Fatalf("cid collision for distinct run ids: %d", first)
+	}
+	if first < 1024 {
+		t.Fatalf("cid = %d", first)
+	}
+	if _, err := reserveExactCID("owner-a", 55000); err != nil {
+		t.Fatalf("reserve owner-a: %v", err)
+	}
+	if _, err := reserveExactCID("owner-b", 55000); err == nil {
+		t.Fatal("reserve owner-b succeeded")
+	}
+}
+
+func TestVSockHostCheck(t *testing.T) {
+	result, config := vmFixture(t)
+	config.VSock.Enabled = true
+	_, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access: func(path string) error {
+			if path == "/dev/vhost-vsock" {
+				return os.ErrNotExist
+			}
+			return nil
+		},
+		output: func(string, ...string) ([]byte, error) {
+			return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "/dev/vhost-vsock") {
+		t.Fatalf("planVM() error = %v", err)
+	}
+
+	_, err = planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		output: func(string, ...string) ([]byte, error) {
+			return nil, errors.New("unsupported")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "vhost-vsock-pci") {
+		t.Fatalf("planVM() unsupported error = %v", err)
+	}
+}
+
 func TestVMRun(t *testing.T) {
 	result, config := vmFixture(t)
 	runner := VMRunner{

@@ -2,6 +2,8 @@ package vmtest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,11 +36,25 @@ type VMConfig struct {
 	Timeout      time.Duration
 	PollInterval time.Duration
 	HostForwards []HostForward
+	VSock        VSockConfig
 }
 
 type HostForward struct {
 	HostPort  int
 	GuestPort int
+}
+
+type VSockConfig struct {
+	Enabled  bool
+	GuestCID uint32
+	Port     uint32
+}
+
+type VSockPlan struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	GuestCID uint32 `json:"guestCid,omitempty"`
+	Port     uint32 `json:"port,omitempty"`
+	Device   string `json:"device,omitempty"`
 }
 
 type VMPlan struct {
@@ -49,6 +66,7 @@ type VMPlan struct {
 	OVMFVars       string
 	OVMFVarsSource string
 	EFITree        string
+	VSock          VSockPlan
 }
 
 type VMExecutor interface {
@@ -83,6 +101,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	if err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 	}
+	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 	}
@@ -203,11 +222,19 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		return VMPlan{}, err
 	}
 	args = append(args, driveArgs...)
+	vsock, err := planVSock(result.RunID, config.VSock, qemu, probe)
+	if err != nil {
+		return VMPlan{}, err
+	}
 	args = append(args,
 		"-device", "virtio-rng-pci",
 		"-netdev", netdev(config.HostForwards),
 		"-device", "virtio-net-pci,netdev=net0",
 	)
+	if vsock.Enabled {
+		args = append(args, "-device", vsock.Device)
+		result.VSock = vsock
+	}
 	return VMPlan{
 		QEMUPath:       qemu,
 		Args:           args,
@@ -217,6 +244,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		OVMFVars:       filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
 		OVMFVarsSource: config.OVMFVars,
 		EFITree:        efiTree,
+		VSock:          vsock,
 	}, nil
 }
 
@@ -251,6 +279,9 @@ func normalizeVM(config VMConfig) VMConfig {
 	}
 	if config.Boot.ImageFormat == "" {
 		config.Boot.ImageFormat = DiskRaw
+	}
+	if config.VSock.Enabled && config.VSock.Port == 0 {
+		config.VSock.Port = 10240
 	}
 	return config
 }
@@ -316,6 +347,84 @@ func netdev(forwards []HostForward) string {
 		spec += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", forward.HostPort, forward.GuestPort)
 	}
 	return spec
+}
+
+var cidReservations = struct {
+	sync.Mutex
+	used map[uint32]string
+}{used: map[uint32]string{}}
+
+func planVSock(runID string, config VSockConfig, qemu string, probe probe) (VSockPlan, error) {
+	if !config.Enabled {
+		return VSockPlan{}, nil
+	}
+	if err := probe.access("/dev/vhost-vsock"); err != nil {
+		return VSockPlan{}, fmt.Errorf("/dev/vhost-vsock required for vmtest vsock: %w", err)
+	}
+	if err := checkQEMUVSock(qemu, probe); err != nil {
+		return VSockPlan{}, err
+	}
+	cid, err := reserveCID(runID, config.GuestCID)
+	if err != nil {
+		return VSockPlan{}, err
+	}
+	port := config.Port
+	if port == 0 {
+		port = 10240
+	}
+	return VSockPlan{
+		Enabled:  true,
+		GuestCID: cid,
+		Port:     port,
+		Device:   fmt.Sprintf("vhost-vsock-pci,id=vsock0,guest-cid=%d", cid),
+	}, nil
+}
+
+func checkQEMUVSock(qemu string, probe probe) error {
+	output, err := probe.output(qemu, "-device", "vhost-vsock-pci,help")
+	if err != nil {
+		return fmt.Errorf("QEMU does not expose vhost-vsock-pci: %w", err)
+	}
+	if !strings.Contains(string(output), "vhost-vsock-pci") && !strings.Contains(string(output), "guest-cid") {
+		return fmt.Errorf("QEMU vhost-vsock-pci help output did not describe guest-cid")
+	}
+	return nil
+}
+
+func reserveCID(runID string, requested uint32) (uint32, error) {
+	if requested != 0 {
+		return reserveExactCID(runID, requested)
+	}
+	base := cidForRun(runID)
+	for offset := uint32(0); offset < 256; offset++ {
+		cid := base + offset
+		if cid < 1024 {
+			continue
+		}
+		if reserved, err := reserveExactCID(runID, cid); err == nil {
+			return reserved, nil
+		}
+	}
+	return 0, fmt.Errorf("no free vmtest vsock guest CID for run %q", runID)
+}
+
+func reserveExactCID(runID string, cid uint32) (uint32, error) {
+	if cid < 3 {
+		return 0, fmt.Errorf("vsock guest CID %d is reserved", cid)
+	}
+	cidReservations.Lock()
+	defer cidReservations.Unlock()
+	if owner, ok := cidReservations.used[cid]; ok && owner != runID {
+		return 0, fmt.Errorf("vsock guest CID %d already reserved by %s", cid, owner)
+	}
+	cidReservations.used[cid] = runID
+	return cid, nil
+}
+
+func cidForRun(runID string) uint32 {
+	hash := sha256.Sum256([]byte(runID))
+	value := binary.BigEndian.Uint32(hash[:4])
+	return 1024 + value%60000
 }
 
 func finishVM(result Result, phase string, status Status, failure string, started, finished time.Time) Result {

@@ -88,6 +88,7 @@ type Result struct {
 	FailureSummary string                `json:"failureSummary,omitempty"`
 	Artifacts      ArtifactPaths         `json:"artifacts"`
 	Disks          []DiskPlan            `json:"disks,omitempty"`
+	VSock          VSockPlan             `json:"vsock,omitempty"`
 	Phases         []PhaseResult         `json:"phases,omitempty"`
 	Missing        []MissingPrerequisite `json:"missing,omitempty"`
 }
@@ -427,6 +428,7 @@ type probe struct {
 	stat     func(string) (fs.FileInfo, error)
 	access   func(string) error
 	env      func(string) string
+	output   func(string, ...string) ([]byte, error)
 }
 
 func systemProbe() probe {
@@ -441,6 +443,9 @@ func systemProbe() probe {
 			return file.Close()
 		},
 		env: os.Getenv,
+		output: func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput()
+		},
 	}
 }
 
@@ -462,6 +467,11 @@ func (p probe) withDefaults() probe {
 	}
 	if p.env == nil {
 		p.env = os.Getenv
+	}
+	if p.output == nil {
+		p.output = func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput()
+		}
 	}
 	return p
 }
