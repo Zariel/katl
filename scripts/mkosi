@@ -108,6 +108,12 @@ else
             write_kubernetes_repo_file "$kubernetes_repo_file"
             set -- --profile kubernetes-sysext -f build "$@"
             ;;
+        build-katlos-install-image)
+            shift
+            "$repo_root/scripts/mkosi" build-runtime
+            "$repo_root/scripts/mkosi" build-kubernetes-sysext
+            exec "$repo_root/scripts/build-katlos-install-image" "$@"
+            ;;
         installer-image | runtime)
             profile="$1"
             shift

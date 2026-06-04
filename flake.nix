@@ -26,6 +26,7 @@
             dnf5
             dosfstools
             e2fsprogs
+            erofs-utils
             git
             go
             jq

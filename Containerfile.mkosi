@@ -7,6 +7,7 @@ RUN dnf5 -y install \
         dnf5 \
         dosfstools \
         e2fsprogs \
+        erofs-utils \
         findutils \
         git-core \
         golang \

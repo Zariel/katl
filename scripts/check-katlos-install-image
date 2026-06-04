@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact="${1:-}"
+if [[ -z "$artifact" ]]; then
+    version="${KATL_VERSION:-0.0.0-dev}"
+    architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+    artifact="build/mkosi/katlos-install-${version}-${architecture}.squashfs"
+fi
+metadata="${artifact}.json"
+checksum="${artifact}.sha256"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need_file() {
+    local label="$1"
+    local path="$2"
+    [[ -f "$path" ]] || fail "$label not found: $path"
+}
+
+normal_path() {
+    local path="$1"
+    [[ -n "$path" ]] || return 1
+    [[ "$path" != /* ]] || return 1
+    [[ "$path" != *".."* ]] || return 1
+    [[ "$path" != *"//"* ]] || return 1
+}
+
+reject_host_paths_json() {
+    local label="$1"
+    local path="$2"
+    local value
+    while IFS= read -r value; do
+        case "$value" in
+            /* | *"/nix/store/"* | *"/run/current-system"* | *"/etc/profiles"* | *"/home/"*)
+                fail "$label embeds host-specific path: $value"
+                ;;
+        esac
+    done < <(jq -r '.. | strings' "$path")
+}
+
+component_sha() {
+    local role="$1"
+    jq -er --arg role "$role" '.components[] | select(.role == $role) | .sha256' "$index"
+}
+
+checksum_content_matches() {
+    local path="$1"
+    local rel="$2"
+    local digest="$3"
+    local content
+    content="$(unsquashfs -cat "$artifact" "$path")"
+    [[ "$content" == "$digest  $rel" ]] || fail "$path does not match embedded component digest/path"
+}
+
+need awk
+need jq
+need mktemp
+need sha256sum
+need stat
+need unsquashfs
+
+need_file "KatlOS image" "$artifact"
+need_file "KatlOS image metadata" "$metadata"
+need_file "KatlOS image checksum" "$checksum"
+
+(cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
+image_size="$(stat -c %s "$artifact")"
+image_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+jq -e \
+    --arg sha "$image_sha" \
+    --argjson size "$image_size" \
+    '.apiVersion == "katl.dev/v1alpha1"
+      and .kind == "KatlOSImageArtifact"
+      and .imageRole == "install"
+      and .format == "squashfs"
+      and .path != null
+      and .sizeBytes == $size
+      and .sha256 == $sha
+      and .embeddedIndexPath == "katlos/image.json"' "$metadata" >/dev/null ||
+    fail "KatlOS image metadata does not match artifact"
+reject_host_paths_json "adjacent KatlOS image metadata" "$metadata"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+index="$tmpdir/image.json"
+unsquashfs -cat "$artifact" katlos/image.json >"$index"
+reject_host_paths_json "embedded KatlOS image index" "$index"
+
+jq -e \
+    '.apiVersion == "katl.dev/v1alpha1"
+      and .kind == "KatlOSImage"
+      and .imageRole == "install"
+      and .format == "squashfs"
+      and .runtimeInterface == "katl-runtime-1"
+      and ([.components[].role] | sort) == ["kubernetes-sysext","runtime-root","runtime-uki"]' "$index" >/dev/null ||
+    fail "embedded KatlOS image index is invalid"
+
+while read -r path; do
+    normal_path "$path" || fail "component path is not a normal relative path: $path"
+done < <(jq -r '.components[].path' "$index")
+
+for path in \
+    components/metadata/runtime-root.json \
+    components/metadata/runtime-root.sha256 \
+    components/metadata/runtime-uki.json \
+    components/metadata/runtime-uki.sha256 \
+    components/metadata/kubernetes-sysext.json \
+    components/metadata/kubernetes-sysext.sha256
+do
+    normal_path "$path" || fail "metadata path is not normal: $path"
+    unsquashfs -cat "$artifact" "$path" >/dev/null
+done
+
+for path in \
+    components/metadata/runtime-root.json \
+    components/metadata/runtime-uki.json \
+    components/metadata/kubernetes-sysext.json
+do
+    metadata_file="$tmpdir/$(basename "$path")"
+    unsquashfs -cat "$artifact" "$path" >"$metadata_file"
+    reject_host_paths_json "$path" "$metadata_file"
+done
+
+while read -r component; do
+    role="$(jq -r '.role' <<<"$component")"
+    path="$(jq -r '.path' <<<"$component")"
+    want_sha="$(jq -r '.sha256' <<<"$component")"
+    want_size="$(jq -r '.sizeBytes' <<<"$component")"
+    component_file="$tmpdir/$role"
+    unsquashfs -cat "$artifact" "$path" >"$component_file"
+    got_sha="$(sha256sum "$component_file" | awk '{print $1}')"
+    got_size="$(stat -c %s "$component_file")"
+    [[ "$got_sha" == "$want_sha" ]] || fail "$role sha256 $got_sha does not match index $want_sha"
+    [[ "$got_size" == "$want_size" ]] || fail "$role size $got_size does not match index $want_size"
+done < <(jq -c '.components[]' "$index")
+
+checksum_content_matches components/metadata/runtime-root.sha256 ../runtime/root.squashfs "$(component_sha runtime-root)"
+checksum_content_matches components/metadata/runtime-uki.sha256 ../boot/katl.efi "$(component_sha runtime-uki)"
+checksum_content_matches components/metadata/kubernetes-sysext.sha256 ../sysext/kubernetes.raw "$(component_sha kubernetes-sysext)"
+
+jq -e '
+  .components[] | select(.role == "runtime-root") |
+  .compatibility.runtimeInterface == "katl-runtime-1" and
+  .installTarget.kind == "root-slot" and
+  .installTarget.filesystem == "squashfs"' "$index" >/dev/null ||
+    fail "runtime root component metadata is incomplete"
+jq -e '
+  .components[] | select(.role == "runtime-uki") |
+  .compatibility.runtimeInterface == "katl-runtime-1" and
+  .compatibility.kernelCommandLine == ["rootfstype=squashfs","ro"] and
+  .installTarget.kind == "esp-or-xbootldr"' "$index" >/dev/null ||
+    fail "runtime UKI component metadata is incomplete"
+jq -e '
+  .components[] | select(.role == "kubernetes-sysext") |
+  .payloadVersion != null and
+  .compatibility.runtimeInterface == "katl-runtime-1" and
+  .sourceRepo.id != null and
+  .packageVersions.kubeadm != null and
+  .installTarget.kind == "systemd-sysext"' "$index" >/dev/null ||
+    fail "Kubernetes sysext component metadata is incomplete"
+
+echo "ok: $artifact"
