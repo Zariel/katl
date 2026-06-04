@@ -15,6 +15,31 @@ if [[ -n "${KATL_VERSION:-}" ]]; then
 fi
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
+kubernetes_repo_file=""
+kubernetes_repo_backup=""
+
+write_kubernetes_repo_file() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<EOF
+[${KATL_KUBERNETES_REPO_ID}]
+name=Kubernetes ${KATL_KUBERNETES_MINOR}
+baseurl=${KATL_KUBERNETES_REPO_BASEURL}
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=${KATL_KUBERNETES_REPO_GPGKEY}
+EOF
+}
+
+restore_kubernetes_repo_file() {
+    if [[ -n "$kubernetes_repo_file" && -n "$kubernetes_repo_backup" && -f "$kubernetes_repo_backup" ]]; then
+        cp "$kubernetes_repo_backup" "$kubernetes_repo_file"
+        rm -f "$kubernetes_repo_backup"
+    fi
+}
+
+trap restore_kubernetes_repo_file EXIT
 
 if [[ -z "$runtime" ]]; then
     if command -v podman >/dev/null 2>&1; then
@@ -77,15 +102,10 @@ else
         build-kubernetes-sysext)
             shift
             emit_kubernetes_sysext=1
-            repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
-            grep -Fxq "baseurl=$KATL_KUBERNETES_REPO_BASEURL" "$repo_file" || {
-                echo "error: Kubernetes repo file does not match $kube_manifest" >&2
-                exit 1
-            }
-            grep -Fxq "gpgkey=$KATL_KUBERNETES_REPO_GPGKEY" "$repo_file" || {
-                echo "error: Kubernetes repo key does not match $kube_manifest" >&2
-                exit 1
-            }
+            kubernetes_repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
+            kubernetes_repo_backup="$(mktemp)"
+            cp "$kubernetes_repo_file" "$kubernetes_repo_backup"
+            write_kubernetes_repo_file "$kubernetes_repo_file"
             set -- --profile kubernetes-sysext -f build "$@"
             ;;
         installer-image | runtime)
@@ -114,6 +134,7 @@ run_flags=(
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
     --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
     --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
+    --env "KATL_KUBERNETES_PAYLOAD_VERSION=$KATL_KUBERNETES_PAYLOAD_VERSION"
     --env "KATL_KUBERNETES_KUBEADM_VERSION=$KATL_KUBERNETES_KUBEADM_VERSION"
     --env "KATL_KUBERNETES_KUBELET_VERSION=$KATL_KUBERNETES_KUBELET_VERSION"
     --env "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION"
@@ -157,6 +178,25 @@ fi
             return 1
         fi
         printf "%s" "$version"
+    }
+    payload_version_from_package() {
+        local version="$1"
+        version="${version#*:}"
+        version="${version%%-*}"
+        if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: could not derive Kubernetes payload version from package version $1" >&2
+            return 1
+        fi
+        printf "v%s" "$version"
+    }
+    expect_package_version() {
+        local package="$1"
+        local got="$2"
+        local want="$3"
+        if [[ -n "$want" && "$got" != "$want" ]]; then
+            echo "error: $package resolved as $got, want $want" >&2
+            return 1
+        fi
     }
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=build/mkosi/katl-runtime-root
@@ -215,8 +255,21 @@ EOF
             kubelet_version=$(pkg_version kubelet "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
             kubectl_version=$(pkg_version kubectl "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
             critools_version=$(pkg_version cri-tools "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
+            expect_package_version kubeadm "$kubeadm_version" "${KATL_KUBERNETES_KUBEADM_VERSION:-}" || status=1
+            expect_package_version kubelet "$kubelet_version" "${KATL_KUBERNETES_KUBELET_VERSION:-}" || status=1
+            expect_package_version kubectl "$kubectl_version" "${KATL_KUBERNETES_KUBECTL_VERSION:-}" || status=1
+            expect_package_version cri-tools "$critools_version" "${KATL_KUBERNETES_CRITOOLS_VERSION:-}" || status=1
+            payload_version=$(payload_version_from_package "$kubeadm_version") || status=1
             if [[ "$status" -ne 0 ]]; then
                 exit "$status"
+            fi
+            if [[ -n "${KATL_KUBERNETES_PAYLOAD_VERSION:-}" && "$payload_version" != "$KATL_KUBERNETES_PAYLOAD_VERSION" ]]; then
+                echo "error: Kubernetes payload version $payload_version resolved from kubeadm, want $KATL_KUBERNETES_PAYLOAD_VERSION" >&2
+                exit 1
+            fi
+            if [[ "$payload_version" != "${KATL_KUBERNETES_MINOR}."* ]]; then
+                echo "error: Kubernetes payload version $payload_version does not match selected minor ${KATL_KUBERNETES_MINOR}" >&2
+                exit 1
             fi
             if [[ -f "$runtime_meta" ]]; then
                 runtime_sha=$(sed -n "s/.*\"sha256\": \"\\([^\"]*\\)\".*/\\1/p" "$runtime_meta" | head -n 1)
@@ -235,12 +288,12 @@ EOF
   "sizeBytes": $size,
   "sha256": "$sha256",
   "version": "${KATL_BUILD_COMMIT:-unknown}",
-  "payloadVersion": "${KATL_KUBERNETES_MINOR:-v1.34}",
+  "payloadVersion": "$payload_version",
   "architecture": "$arch",
   "sourceRepo": {
-    "id": "${KATL_KUBERNETES_REPO_ID:-kubernetes}",
-    "baseURL": "${KATL_KUBERNETES_REPO_BASEURL:-}",
-    "minor": "${KATL_KUBERNETES_MINOR:-v1.34}"
+    "id": "${KATL_KUBERNETES_REPO_ID:?}",
+    "baseURL": "${KATL_KUBERNETES_REPO_BASEURL:?}",
+    "minor": "${KATL_KUBERNETES_MINOR:?}"
   },
   "packageVersions": {
     "kubeadm": "$kubeadm_version",

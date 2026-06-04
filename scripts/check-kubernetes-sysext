@@ -28,6 +28,37 @@ json_has() {
     grep -Fq "$1" "$metadata" || fail "metadata missing $1"
 }
 
+json_string() {
+    local key="$1"
+    sed -n "s/.*\"$key\": \"\\([^\"]*\\)\".*/\\1/p" "$metadata" | head -n 1
+}
+
+json_string_nonempty() {
+    local key="$1"
+    local value
+    value="$(json_string "$key")"
+    [[ -n "$value" ]] || fail "metadata missing non-empty $key"
+    printf "%s" "$value"
+}
+
+json_expect_or_nonempty() {
+    local key="$1"
+    local want="$2"
+    local value
+    value="$(json_string_nonempty "$key")"
+    if [[ -n "$want" && "$value" != "$want" ]]; then
+        fail "metadata $key = $value, want $want"
+    fi
+}
+
+payload_version_from_package() {
+    local version="$1"
+    version="${version#*:}"
+    version="${version%%-*}"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cannot derive Kubernetes payload version from package version $1"
+    printf "v%s" "$version"
+}
+
 has_path() {
     local path="$1"
     local output
@@ -68,16 +99,28 @@ sha256="$(sha256sum "$artifact" | awk '{print $1}')"
 json_has '"name": "kubernetes"'
 json_has '"kind": "sysext"'
 json_has '"format": "sysext"'
-json_has "\"payloadVersion\": \"$KATL_KUBERNETES_MINOR\""
+payload_version="$(json_string_nonempty payloadVersion)"
+kubeadm_metadata="$(json_string_nonempty kubeadm)"
+resolved_payload="$(payload_version_from_package "$kubeadm_metadata")"
+if [[ "$payload_version" != "$resolved_payload" ]]; then
+    fail "payloadVersion = $payload_version, want $resolved_payload derived from kubeadm package"
+fi
+expected_payload="${KATL_KUBERNETES_PAYLOAD_VERSION:-}"
+if [[ -n "$expected_payload" && "$payload_version" != "$expected_payload" ]]; then
+    fail "payloadVersion = $payload_version, want $expected_payload"
+fi
+[[ "$payload_version" == "$KATL_KUBERNETES_MINOR."* ]] || fail "payloadVersion $payload_version does not match selected minor $KATL_KUBERNETES_MINOR"
 json_has '"sourceRepo"'
 json_has "\"id\": \"$KATL_KUBERNETES_REPO_ID\""
 json_has "\"baseURL\": \"$KATL_KUBERNETES_REPO_BASEURL\""
 json_has "\"minor\": \"$KATL_KUBERNETES_MINOR\""
 json_has '"packageVersions"'
-json_has "\"kubeadm\": \"$KATL_KUBERNETES_KUBEADM_VERSION\""
-json_has "\"kubelet\": \"$KATL_KUBERNETES_KUBELET_VERSION\""
-json_has "\"kubectl\": \"$KATL_KUBERNETES_KUBECTL_VERSION\""
-json_has "\"cri-tools\": \"$KATL_KUBERNETES_CRITOOLS_VERSION\""
+if [[ -n "${KATL_KUBERNETES_KUBEADM_VERSION:-}" && "$kubeadm_metadata" != "$KATL_KUBERNETES_KUBEADM_VERSION" ]]; then
+    fail "metadata kubeadm = $kubeadm_metadata, want $KATL_KUBERNETES_KUBEADM_VERSION"
+fi
+json_expect_or_nonempty kubelet "${KATL_KUBERNETES_KUBELET_VERSION:-}"
+json_expect_or_nonempty kubectl "${KATL_KUBERNETES_KUBECTL_VERSION:-}"
+json_expect_or_nonempty cri-tools "${KATL_KUBERNETES_CRITOOLS_VERSION:-}"
 json_has '"runtimeInterface": "katl-runtime-1"'
 json_has '"compatibleRuntime"'
 json_has "\"sizeBytes\": $size"
