@@ -1,6 +1,7 @@
 # Codex local state
 .codex/
 .agents/
+.direnv/
 
 # Beads / Dolt local state
 .beads/
