@@ -14,6 +14,7 @@ import (
 
 	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/handoff"
+	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
 var (
@@ -29,9 +30,12 @@ func main() {
 	}
 }
 
-func runManifest(ctx context.Context, manifestPath, stateDir string) error {
+func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string) error {
 	if manifestPath == "" {
 		return fmt.Errorf("--manifest is required unless --list-states, --version, --apply-input, or --boot is set")
+	}
+	if strings.TrimSpace(inputSource) == "" {
+		inputSource = manifestPath
 	}
 
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), &installer.Context{
@@ -40,6 +44,8 @@ func runManifest(ctx context.Context, manifestPath, stateDir string) error {
 		TargetRoot:   "/mnt/target",
 		Commands:     installer.NewExecCommandRunner(),
 		Store:        installer.NewFileStateStore(stateDir),
+		InputMode:    inputMode,
+		InputSource:  inputSource,
 	})
 
 	return runner.Run(ctx)
@@ -66,7 +72,7 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 		if input.ManifestURL != "" && input.ManifestPath == "" {
 			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)
 		}
-		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"))
+		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), installstatus.InputModePXEPreseed, input.ManifestPath)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
 	}
@@ -155,7 +161,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return fmt.Errorf("write handoff manifest: %w", err)
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
-			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"))
+			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath)
 		}
 		select {
 		case <-ctx.Done():
@@ -216,5 +222,5 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir)
+	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir, installstatus.InputModePXEPreseed, strings.TrimSpace(*manifestPath))
 }

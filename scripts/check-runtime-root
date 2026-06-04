@@ -88,6 +88,7 @@ for path in \
     /usr/bin/ssh-keygen \
     /usr/bin/containerd \
     /usr/bin/crun \
+    /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/vmtest/katl-vmtest-agent \
     /usr/lib/systemd/system/systemd-networkd.service \
     /usr/lib/systemd/system/systemd-resolved.service \
@@ -105,6 +106,7 @@ root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
+has_path /usr/lib/katl/runtime/katl-runtime-status
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
 

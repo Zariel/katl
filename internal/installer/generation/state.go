@@ -26,6 +26,7 @@ type StateAssets struct {
 	VarMount           string
 	EtcKubernetesMount string
 	StateCheckService  string
+	RuntimeStatus      string
 	Tmpfiles           string
 	Dirs               []StateDir
 	MountPoints        []StateDir
@@ -68,6 +69,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
 		StateCheckService:  renderStateCheckService(),
+		RuntimeStatus:      renderRuntimeStatusService(),
 		Tmpfiles:           renderTmpfiles(dirs),
 		Dirs:               dirs,
 		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
@@ -120,6 +122,27 @@ func renderStateCheckService() string {
 	}, "\n")
 }
 
+func renderRuntimeStatusService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Record Katl runtime handoff status",
+		"Documentation=man:systemd.service(5)",
+		"Requires=katl-state-projection-check.service",
+		"After=katl-state-projection-check.service",
+		"Before=katl-kubeadm-ready.target",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-runtime-status",
+		"ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/",
+		"",
+		"[Install]",
+		"RequiredBy=katl-kubeadm-ready.target",
+		"",
+	}, "\n")
+}
+
 func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if strings.TrimSpace(root) == "" {
 		return StateAssets{}, fmt.Errorf("target root is required")
@@ -135,6 +158,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-state-projection-check.service", assets.StateCheckService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-runtime-handoff-status.service", assets.RuntimeStatus, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service", "../katl-runtime-handoff-status.service"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/tmpfiles.d/katl-state.conf", assets.Tmpfiles, 0o644); err != nil {
@@ -220,6 +249,27 @@ func writeFile(root string, rel string, content string, mode os.FileMode) error 
 	}
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		return fmt.Errorf("write %s: %w", rel, err)
+	}
+	return nil
+}
+
+func writeSymlink(root string, rel string, target string) error {
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create parent for %s: %w", rel, err)
+	}
+	current, err := os.Readlink(path)
+	if err == nil {
+		if current == target {
+			return nil
+		}
+		return fmt.Errorf("symlink %s points to %s, want %s", rel, current, target)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect %s: %w", rel, err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		return fmt.Errorf("link %s: %w", rel, err)
 	}
 	return nil
 }

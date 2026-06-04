@@ -1,15 +1,19 @@
 package installer
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
 type StepID string
@@ -49,12 +53,18 @@ type Context struct {
 	IdentityRandom io.Reader
 	Completed      []StepID
 	Chown          func(path string, uid int, gid int) error
+	InputMode      string
+	InputSource    string
+	RequestDigest  string
+	PreviousStatus *installstatus.Record
 }
 
 type Step interface {
 	ID() StepID
 	Run(context.Context, *Context) error
 }
+
+var ErrInstallRefused = errors.New("install refused")
 
 type Plan []Step
 
@@ -129,9 +139,15 @@ func (r Runner) Run(ctx context.Context) error {
 	if r.ctx.Store == nil {
 		return fmt.Errorf("state store is required")
 	}
+	if err := loadPreviousStatus(ctx, r.ctx); err != nil {
+		return err
+	}
 
 	for _, step := range r.plan {
 		if err := step.Run(ctx, r.ctx); err != nil {
+			if statusErr := recordFailure(ctx, r.ctx, step.ID(), err); statusErr != nil {
+				return fmt.Errorf("%s: %w", step.ID(), errors.Join(err, fmt.Errorf("record failure status: %w", statusErr)))
+			}
 			return fmt.Errorf("%s: %w", step.ID(), err)
 		}
 	}
@@ -154,16 +170,27 @@ func (loadManifestStep) Run(ctx context.Context, install *Context) error {
 	if install.ManifestPath == "" {
 		return fmt.Errorf("manifest path is required")
 	}
-	file, err := os.Open(install.ManifestPath)
+	data, err := os.ReadFile(install.ManifestPath)
 	if err != nil {
 		return fmt.Errorf("open manifest: %w", err)
 	}
-	defer file.Close()
-	decoded, err := manifest.Decode(file)
+	install.RequestDigest = installstatus.Digest(data)
+	if install.InputSource == "" {
+		install.InputSource = install.ManifestPath
+	}
+	decoded, err := manifest.Decode(bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	install.Manifest = decoded
+	digest, err := installstatus.DigestManifest(decoded)
+	if err != nil {
+		return err
+	}
+	install.RequestDigest = digest
+	if err := refuseChangedInterruptedRequest(install); err != nil {
+		return err
+	}
 	return recordStep(ctx, install, LoadManifest)
 }
 
@@ -253,8 +280,164 @@ func (s stubStep) Run(ctx context.Context, install *Context) error {
 
 func recordStep(ctx context.Context, install *Context, id StepID) error {
 	install.Completed = append(install.Completed, id)
-	return install.Store.SaveCheckpoint(ctx, Checkpoint{
+	if err := install.Store.SaveCheckpoint(ctx, Checkpoint{
 		CurrentStep:    id,
 		CompletedSteps: append([]StepID(nil), install.Completed...),
-	})
+	}); err != nil {
+		return err
+	}
+	record := statusFromContext(install, statusForStep(id), id, nil)
+	if err := install.Store.SaveStatus(ctx, record); err != nil {
+		return err
+	}
+	return writeTargetStatus(ctx, install, id, record)
+}
+
+func recordFailure(ctx context.Context, install *Context, id StepID, err error) error {
+	record := statusFromContext(install, failureState(install, id, err), id, err)
+	if saveErr := install.Store.SaveStatus(ctx, record); saveErr != nil {
+		return saveErr
+	}
+	return writeTargetStatus(ctx, install, id, record)
+}
+
+func statusFromContext(install *Context, state string, current StepID, err error) installstatus.Record {
+	record := installstatus.New(state, timeNow())
+	record.CurrentStep = string(current)
+	record.CompletedSteps = stepStrings(install.Completed)
+	record.InputMode = install.InputMode
+	record.InputSource = installstatus.RedactSource(install.InputSource)
+	record.RequestDigest = install.RequestDigest
+	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
+	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
+	if install.LoaderRecord != nil {
+		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
+		record.InstalledGeneration = install.LoaderRecord.GenerationID
+		record.BootArtifactVersion = install.LoaderRecord.Boot.UKIPath
+	}
+	if err != nil {
+		record.LastError = installstatus.RedactError(err)
+		record.RefusalReason = record.LastError
+		if state == installstatus.StateFailedBeforeMutation || state == installstatus.StateInstallRefused {
+			record.RetryHint = "fix input or environment and rerun before disk mutation"
+		} else {
+			record.RetryHint = "inspect target state before rerun or repair"
+			record.DestructiveMutation = true
+		}
+	}
+	return record
+}
+
+func statusForStep(id StepID) string {
+	if id == WaitForLocalConfig {
+		return installstatus.StateWaitingForConfig
+	}
+	if id == Reboot {
+		return installstatus.StateRebootRequested
+	}
+	return installstatus.StateRunning
+}
+
+func failureState(install *Context, id StepID, err error) string {
+	if errors.Is(err, ErrInstallRefused) {
+		return installstatus.StateInstallRefused
+	}
+	if !mutationStarted(install.Completed, id) {
+		return installstatus.StateFailedBeforeMutation
+	}
+	return installstatus.StateFailedAfterMutation
+}
+
+func mutationStarted(completed []StepID, current StepID) bool {
+	if current == PrepareDisk {
+		return true
+	}
+	for _, step := range completed {
+		if step == PrepareDisk || step == CreatePartitions || step == FormatFilesystems || step == MountTarget || step == InstallRootSlot {
+			return true
+		}
+	}
+	return false
+}
+
+func writeTargetStatus(ctx context.Context, install *Context, current StepID, record installstatus.Record) error {
+	if !targetStatusReady(install, current) {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	path, err := installstatus.RuntimeStatusPath(install.TargetRoot)
+	if err != nil {
+		return err
+	}
+	return installstatus.WriteFile(path, record)
+}
+
+func targetStatusReady(install *Context, current StepID) bool {
+	if install == nil || install.TargetRoot == "" {
+		return false
+	}
+	if current == MountTarget {
+		return true
+	}
+	for _, step := range install.Completed {
+		if step == MountTarget {
+			return true
+		}
+	}
+	return false
+}
+
+func loadPreviousStatus(ctx context.Context, install *Context) error {
+	if install.PreviousStatus != nil {
+		return nil
+	}
+	record, err := install.Store.LoadStatus(ctx)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("load previous install status: %w", err)
+	}
+	install.PreviousStatus = &record
+	return nil
+}
+
+func refuseChangedInterruptedRequest(install *Context) error {
+	if install.PreviousStatus == nil || !install.PreviousStatus.DestructiveMutation {
+		return nil
+	}
+	previousDigest := install.PreviousStatus.RequestDigest
+	if previousDigest == "" || previousDigest == install.RequestDigest {
+		return nil
+	}
+	return fmt.Errorf("%w: previous destructive install request digest %s does not match current request digest %s", ErrInstallRefused, previousDigest, install.RequestDigest)
+}
+
+func stepStrings(steps []StepID) []string {
+	out := make([]string, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, string(step))
+	}
+	return out
+}
+
+func targetDiskStableID(selector manifest.DiskSelector) string {
+	switch {
+	case selector.ByID != "":
+		return selector.ByID
+	case selector.WWN != "":
+		return "wwn:" + selector.WWN
+	case selector.Serial != "":
+		return "serial:" + selector.Serial
+	default:
+		return ""
+	}
+}
+
+func timeNow() time.Time {
+	return time.Now().UTC()
 }

@@ -6,6 +6,7 @@ repo="${SRCDIR:-}"
 version="${KATL_VERSION:-0.0.0-dev}"
 
 mkdir -p "$DESTDIR/usr/lib/katl/vmtest"
+mkdir -p "$DESTDIR/usr/lib/katl/runtime"
 
 if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
     repo=/work
@@ -40,3 +41,14 @@ go build \
     -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
     -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
     ./cmd/katl-vmtest-agent
+
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -o "$DESTDIR/usr/lib/katl/runtime/katl-runtime-status" \
+    ./cmd/katl-runtime-status

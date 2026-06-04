@@ -104,6 +104,32 @@ WantedBy=multi-user.target
 	}
 }
 
+func TestRuntimeStatusService(t *testing.T) {
+	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	want := `[Unit]
+Description=Record Katl runtime handoff status
+Documentation=man:systemd.service(5)
+Requires=katl-state-projection-check.service
+After=katl-state-projection-check.service
+Before=katl-kubeadm-ready.target
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-runtime-status
+ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/
+
+[Install]
+RequiredBy=katl-kubeadm-ready.target
+`
+	if assets.RuntimeStatus != want {
+		t.Fatalf("katl-runtime-handoff-status.service:\n%s\nwant:\n%s", assets.RuntimeStatus, want)
+	}
+}
+
 func TestWriteState(t *testing.T) {
 	root := t.TempDir()
 	assets, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID})
@@ -113,6 +139,8 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-state-projection-check.service"), assets.StateCheckService)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-runtime-handoff-status.service"), assets.RuntimeStatus)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service"), "../katl-runtime-handoff-status.service")
 	assertFile(t, filepath.Join(root, "etc/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 	assertDir(t, filepath.Join(root, "var/lib/katl"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/generations"), 0o755)
@@ -170,9 +198,10 @@ func TestStateUnitsVerify(t *testing.T) {
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/katl-kubeadm-ready.target", "[Unit]\nDescription=Katl kubeadm-ready\n")
+	writeUnit(t, root, "usr/lib/katl/runtime/katl-runtime-status", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/printf", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/true", "#!/bin/sh\nexit 0\n")
-	for _, fixture := range []string{"usr/bin/printf", "usr/bin/true"} {
+	for _, fixture := range []string{"usr/bin/printf", "usr/bin/true", "usr/lib/katl/runtime/katl-runtime-status"} {
 		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(fixture)), 0o755); err != nil {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
@@ -181,7 +210,8 @@ func TestStateUnitsVerify(t *testing.T) {
 	cmd := exec.Command("systemd-analyze", "verify", "--root="+root,
 		"/etc/systemd/system/var.mount",
 		"/etc/systemd/system/etc-kubernetes.mount",
-		"/etc/systemd/system/katl-state-projection-check.service")
+		"/etc/systemd/system/katl-state-projection-check.service",
+		"/etc/systemd/system/katl-runtime-handoff-status.service")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)
@@ -210,6 +240,17 @@ func assertDir(t *testing.T, path string, mode os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != mode {
 		t.Fatalf("%s mode = %04o, want %04o", path, got, mode)
+	}
+}
+
+func assertSymlink(t *testing.T, path string, want string) {
+	t.Helper()
+	got, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", path, err)
+	}
+	if got != want {
+		t.Fatalf("%s -> %s, want %s", path, got, want)
 	}
 }
 

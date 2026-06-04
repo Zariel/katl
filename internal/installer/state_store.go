@@ -7,11 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
 type StateStore interface {
 	SaveCheckpoint(context.Context, Checkpoint) error
 	LoadCheckpoint(context.Context) (Checkpoint, error)
+	SaveStatus(context.Context, installstatus.Record) error
+	LoadStatus(context.Context) (installstatus.Record, error)
 }
 
 type Checkpoint struct {
@@ -82,12 +86,47 @@ func (s *FileStateStore) LoadCheckpoint(ctx context.Context) (Checkpoint, error)
 	return checkpoint, nil
 }
 
+func (s *FileStateStore) SaveStatus(ctx context.Context, record installstatus.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = s.now().UTC()
+	}
+	if err := installstatus.WriteFile(s.statusPath(), record); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *FileStateStore) LoadStatus(ctx context.Context) (installstatus.Record, error) {
+	select {
+	case <-ctx.Done():
+		return installstatus.Record{}, ctx.Err()
+	default:
+	}
+
+	record, err := installstatus.ReadFile(s.statusPath())
+	if err != nil {
+		return installstatus.Record{}, err
+	}
+	return record, nil
+}
+
 func (s *FileStateStore) checkpointPath() string {
 	return filepath.Join(s.dir, "state.json")
 }
 
+func (s *FileStateStore) statusPath() string {
+	return filepath.Join(s.dir, "status.json")
+}
+
 type MemoryStateStore struct {
 	Checkpoints []Checkpoint
+	Statuses    []installstatus.Record
 }
 
 func (s *MemoryStateStore) SaveCheckpoint(ctx context.Context, checkpoint Checkpoint) error {
@@ -107,4 +146,23 @@ func (s *MemoryStateStore) LoadCheckpoint(context.Context) (Checkpoint, error) {
 	}
 
 	return s.Checkpoints[len(s.Checkpoints)-1], nil
+}
+
+func (s *MemoryStateStore) SaveStatus(ctx context.Context, record installstatus.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	s.Statuses = append(s.Statuses, record)
+	return nil
+}
+
+func (s *MemoryStateStore) LoadStatus(context.Context) (installstatus.Record, error) {
+	if len(s.Statuses) == 0 {
+		return installstatus.Record{}, os.ErrNotExist
+	}
+
+	return s.Statuses[len(s.Statuses)-1], nil
 }

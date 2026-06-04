@@ -35,6 +35,9 @@ func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
 	if status.State != HandoffWaiting || status.ManifestAccepted {
 		t.Fatalf("status = %#v", status)
 	}
+	if status.InstallStatus.State != "waiting-for-config" || status.InstallStatus.InputMode != "local-handoff" || status.InstallStatus.InputSource != "local-handoff" {
+		t.Fatalf("install status = %#v", status.InstallStatus)
+	}
 
 	announcement := server.Announcement("http://192.0.2.10:8080/")
 	if !strings.Contains(announcement, "http://192.0.2.10:8080/v1/install") || !strings.Contains(announcement, "token=test-token") {
@@ -61,6 +64,13 @@ func TestHandoffServerRequiresTokenAndAcceptsOneManifest(t *testing.T) {
 	}
 	if got := string(server.Manifest()); got != string(manifest) {
 		t.Fatalf("stored manifest = %s", got)
+	}
+	status := server.Status()
+	if status.InstallStatus.RequestDigest == "" || status.InstallStatus.InputSource != "local-handoff" || status.InstallStatus.KatlosImage.SHA256 == "" {
+		t.Fatalf("accepted status missing digest/image: %#v", status.InstallStatus)
+	}
+	if status.InstallStatus.KatlosImage.URL != "https://example.invalid/katlos-install.squashfs" {
+		t.Fatalf("status image URL = %q", status.InstallStatus.KatlosImage.URL)
 	}
 
 	resp = postManifest(t, ts.URL, "test-token", manifest)

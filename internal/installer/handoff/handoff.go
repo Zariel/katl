@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zariel/katl/internal/installer/manifest"
+	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
 type HandoffState string
@@ -28,11 +30,13 @@ type HandoffServer struct {
 	mu       sync.Mutex
 	state    HandoffState
 	manifest []byte
+	status   installstatus.Record
 }
 
 type HandoffStatus struct {
-	State            HandoffState `json:"state"`
-	ManifestAccepted bool         `json:"manifestAccepted"`
+	State            HandoffState         `json:"state"`
+	ManifestAccepted bool                 `json:"manifestAccepted"`
+	InstallStatus    installstatus.Record `json:"installStatus"`
 }
 
 func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer, error) {
@@ -47,10 +51,14 @@ func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer
 		validate = ValidateInstallManifestEnvelope
 	}
 
+	status := installstatus.New(installstatus.StateWaitingForConfig, time.Now().UTC())
+	status.InputMode = installstatus.InputModeLocalHandoff
+	status.InputSource = installstatus.InputModeLocalHandoff
 	return &HandoffServer{
 		token:    token,
 		validate: validate,
 		state:    HandoffWaiting,
+		status:   status,
 	}, nil
 }
 
@@ -80,6 +88,7 @@ func (s *HandoffServer) Status() HandoffStatus {
 	return HandoffStatus{
 		State:            s.state,
 		ManifestAccepted: len(s.manifest) > 0,
+		InstallStatus:    s.status,
 	}
 }
 
@@ -119,6 +128,16 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	decoded, err := manifest.Decode(bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	digest, err := installstatus.DigestManifest(decoded)
+	if err != nil {
+		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	s.mu.Lock()
 	if s.state != HandoffWaiting {
@@ -129,13 +148,22 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 
 	s.manifest = append([]byte(nil), body...)
 	s.state = HandoffAccepted
-	status := HandoffStatus{
+	status := installstatus.New(installstatus.StateRunning, time.Now().UTC())
+	status.InputMode = installstatus.InputModeLocalHandoff
+	status.InputSource = installstatus.InputModeLocalHandoff
+	status.RequestDigest = digest
+	status.KatlosImage = installstatus.ImageFromManifest(decoded)
+	status.CurrentStep = "WaitForLocalConfig"
+	status.CompletedSteps = []string{"WaitForLocalConfig"}
+	s.status = status
+	response := HandoffStatus{
 		State:            s.state,
 		ManifestAccepted: true,
+		InstallStatus:    s.status,
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, status)
+	writeJSON(w, response)
 }
 
 func (s *HandoffServer) authorized(r *http.Request) bool {
