@@ -11,6 +11,7 @@ build_index="${KATL_BUILD_ARTIFACT_INDEX:-$repo_root/build/mkosi/artifacts.json}
 installer_uki=
 installer_kernel=
 installer_initrd=
+runtime_uki=
 runtime_artifact=
 expect="${KATL_SMOKE_EXPECT:-Katl installer ready}"
 timeout_duration="${KATL_SMOKE_TIMEOUT:-120s}"
@@ -42,6 +43,7 @@ save_index() {
         printf 'INSTALLER_UKI=%q\n' "$installer_uki"
         printf 'INSTALLER_KERNEL=%q\n' "$installer_kernel"
         printf 'INSTALLER_INITRD=%q\n' "$installer_initrd"
+        printf 'RUNTIME_UKI=%q\n' "$runtime_uki"
         printf 'RUNTIME_SQUASHFS=%q\n' "$runtime_artifact"
         printf 'VM_STATE_DIR=%q\n' "$vm_dir"
         printf 'SERIAL_LOG=%q\n' "$vm_dir/serial.log"
@@ -77,10 +79,12 @@ echo "building runtime profile"
 installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$build_index")"
 installer_kernel="$("$repo_root/scripts/mkosi-artifacts" path installer-kernel "$build_index")"
 installer_initrd="$("$repo_root/scripts/mkosi-artifacts" path installer-initrd "$build_index")"
+runtime_uki="$("$repo_root/scripts/mkosi-artifacts" path runtime-uki "$build_index")"
 runtime_artifact="$("$repo_root/scripts/mkosi-artifacts" path runtime-root "$build_index")"
 need_file "installer UKI" "$installer_uki"
 need_file "installer kernel" "$installer_kernel"
 need_file "installer initrd" "$installer_initrd"
+need_file "runtime UKI" "$runtime_uki"
 need_file "runtime SquashFS" "$runtime_artifact"
 
 status=booting

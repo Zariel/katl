@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact="${1:-build/mkosi/katl-runtime.efi}"
+metadata="${artifact}.json"
+checksum="${artifact}.sha256"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+json_has() {
+    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
+}
+
+need grep
+need sha256sum
+need stat
+
+[[ -f "$artifact" ]] || fail "artifact not found: $artifact"
+[[ -f "$metadata" ]] || fail "metadata not found: $metadata"
+[[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+
+(cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
+
+size="$(stat -c %s "$artifact")"
+sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+json_has '"name": "runtime-uki"'
+json_has '"kind": "runtime-uki"'
+json_has '"format": "uki"'
+json_has '"runtimeInterface": "katl-runtime-1"'
+json_has '"compatibleRuntime"'
+json_has '"artifactPath": "katl-runtime-root.squashfs"'
+json_has '"rootfstype=squashfs"'
+json_has '"ro"'
+json_has "\"sizeBytes\": $size"
+json_has "\"sha256\": \"$sha256\""
+
+if command -v ukify >/dev/null 2>&1; then
+    inspection="$(ukify inspect "$artifact")"
+    grep -Fq '.linux:' <<<"$inspection" || fail "runtime UKI missing .linux section"
+    grep -Fq '.initrd:' <<<"$inspection" || fail "runtime UKI missing .initrd section"
+    grep -Fq 'rootfstype=squashfs ro' <<<"$inspection" || fail "runtime UKI missing expected cmdline"
+elif command -v file >/dev/null 2>&1; then
+    file "$artifact" | grep -Fq 'PE32+ executable for EFI' || fail "runtime UKI is not an EFI PE executable"
+else
+    fail "ukify or file is required"
+fi
+
+echo "ok: $artifact"

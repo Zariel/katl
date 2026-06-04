@@ -6,6 +6,9 @@ default_index="$repo_root/build/mkosi/artifacts.json"
 installer_uki="${KATL_INSTALLER_UKI:-$repo_root/build/mkosi/katl-installer.efi}"
 installer_kernel="${KATL_INSTALLER_KERNEL:-$repo_root/build/mkosi/katl-installer.vmlinuz}"
 installer_initrd="${KATL_INSTALLER_INITRD:-$repo_root/build/mkosi/katl-installer.initrd}"
+runtime_uki="${KATL_RUNTIME_UKI:-$repo_root/build/mkosi/katl-runtime.efi}"
+runtime_uki_metadata="${KATL_RUNTIME_UKI_METADATA:-$runtime_uki.json}"
+runtime_uki_checksum="${KATL_RUNTIME_UKI_CHECKSUM:-$runtime_uki.sha256}"
 runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
 runtime_metadata="${KATL_RUNTIME_METADATA:-$runtime_artifact.json}"
 runtime_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_artifact.sha256}"
@@ -25,6 +28,7 @@ Kinds:
   installer-uki
   installer-kernel
   installer-initrd
+  runtime-uki
   runtime-root
 USAGE
 }
@@ -170,6 +174,9 @@ write_index() {
     need_file "installer UKI" "$installer_uki"
     need_file "installer kernel" "$installer_kernel"
     need_file "installer initrd" "$installer_initrd"
+    need_file "runtime UKI" "$runtime_uki"
+    need_file "runtime UKI metadata" "$runtime_uki_metadata"
+    need_file "runtime UKI checksum" "$runtime_uki_checksum"
     need_file "runtime SquashFS" "$runtime_artifact"
     need_file "runtime metadata" "$runtime_metadata"
     need_file "runtime checksum" "$runtime_checksum"
@@ -191,6 +198,7 @@ write_index() {
         entry installer-uki uki "$installer_uki" , "$(metadata_path "$installer_uki")" "$(checksum_path "$installer_uki")"
         entry installer-kernel linux-kernel "$installer_kernel" , "$(metadata_path "$installer_kernel")" "$(checksum_path "$installer_kernel")"
         entry installer-initrd initrd "$installer_initrd" , "$(metadata_path "$installer_initrd")" "$(checksum_path "$installer_initrd")"
+        entry runtime-uki uki "$runtime_uki" , "$runtime_uki_metadata" "$runtime_uki_checksum"
         entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
         printf '  ]\n'
         printf '}\n'

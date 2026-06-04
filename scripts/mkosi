@@ -201,14 +201,18 @@ fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=build/mkosi/katl-runtime-root
         artifact=build/mkosi/katl-runtime-root.squashfs
+        boot_artifact=build/mkosi/katl-runtime.efi
         if [[ ! -d "$root" ]]; then
             echo "error: runtime root directory not found: $root" >&2
             status=1
         elif ! command -v mksquashfs >/dev/null 2>&1; then
             echo "error: mksquashfs is required to package the runtime root" >&2
             status=1
+        elif ! command -v ukify >/dev/null 2>&1; then
+            echo "error: ukify is required to package the runtime UKI" >&2
+            status=1
         else
-            rm -f "$artifact" "$artifact.sha256" "$artifact.json"
+            rm -f "$artifact" "$artifact.sha256" "$artifact.json" "$boot_artifact" "$boot_artifact.sha256" "$boot_artifact.json"
             if ! mksquashfs "$root" "$artifact" -noappend -all-root -comp zstd; then
                 status=1
             else
@@ -240,6 +244,67 @@ fi
   "created": "$created"
 }
 EOF
+                kernel_dir=$(find "$root/boot" -type f -name linux -printf "%h\n" | sort | head -n 1)
+                if [[ -z "$kernel_dir" ]]; then
+                    echo "error: runtime kernel not found under $root/boot" >&2
+                    status=1
+                else
+                    kernel="$kernel_dir/linux"
+                    initrd="$kernel_dir/initrd"
+                    kernel_version="$(basename "$kernel_dir")"
+                    os_release="$root/usr/lib/os-release"
+                    if [[ ! -f "$initrd" ]]; then
+                        echo "error: runtime initrd not found: $initrd" >&2
+                        status=1
+                    elif [[ ! -f "$os_release" ]]; then
+                        echo "error: runtime os-release not found: $os_release" >&2
+                        status=1
+                    else
+                        ukify_args=(
+                            build
+                            --linux "$kernel"
+                            --initrd "$initrd"
+                            --os-release "@$os_release"
+                            --cmdline "rootfstype=squashfs ro"
+                            --uname "$kernel_version"
+                            --output "$boot_artifact"
+                        )
+                        if [[ -f /usr/lib/systemd/boot/efi/linuxx64.efi.stub ]]; then
+                            ukify_args+=(--stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub)
+                        fi
+                        if ! ukify "${ukify_args[@]}"; then
+                            status=1
+                        else
+                            boot_size=$(stat -c %s "$boot_artifact")
+                            boot_sha256=$(sha256sum "$boot_artifact" | awk "{print \$1}")
+                            printf "%s  %s\n" "$boot_sha256" "$(basename "$boot_artifact")" > "$boot_artifact.sha256"
+                            cat > "$boot_artifact.json" <<EOF
+{
+  "name": "runtime-uki",
+  "kind": "runtime-uki",
+  "format": "uki",
+  "path": "$(basename "$boot_artifact")",
+  "sizeBytes": $boot_size,
+  "sha256": "$boot_sha256",
+  "version": "${KATL_BUILD_COMMIT:-unknown}",
+  "architecture": "$arch",
+  "runtimeInterface": "katl-runtime-1",
+  "compatibleRuntime": {
+    "interface": "katl-runtime-1",
+    "artifactPath": "$(basename "$artifact")",
+    "artifactSHA256": "$sha256"
+  },
+  "kernelVersion": "$kernel_version",
+  "kernelCommandLine": [
+    "rootfstype=squashfs",
+    "ro"
+  ],
+  "created": "$created"
+}
+EOF
+                        fi
+                    fi
+                fi
             fi
         fi
     fi
