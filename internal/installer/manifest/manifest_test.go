@@ -58,11 +58,89 @@ func TestDecodeAcceptsKubeadmConfigRef(t *testing.T) {
 	}
 }
 
+func TestDecodeAcceptsNetworkdDomain(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(manifestWithNode(`,
+			"networkd": {
+				"files": [
+					{
+						"name": "10-lan.network",
+						"content": "[Match]\nName=enp1s0\n"
+					}
+				]
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(manifest.Node.Networkd.Files) != 1 || manifest.Node.Networkd.Files[0].Name != "10-lan.network" {
+		t.Fatalf("networkd = %#v", manifest.Node.Networkd)
+	}
+}
+
+func TestDecodeRejectsUnsafeNetworkdDomain(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{
+			name: "path traversal",
+			file: `{"name": "../10-lan.network", "content": "[Match]\nName=enp1s0\n"}`,
+			want: "single path segment",
+		},
+		{
+			name: "wrong extension",
+			file: `{"name": "10-lan.conf", "content": "[Match]\nName=enp1s0\n"}`,
+			want: "must end with",
+		},
+		{
+			name: "empty content",
+			file: `{"name": "10-lan.network", "content": ""}`,
+			want: "content is required",
+		},
+		{
+			name: "bad character",
+			file: `{"name": "10 lan.network", "content": "[Match]\nName=enp1s0\n"}`,
+			want: "unsupported character",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(manifestWithNode(fmt.Sprintf(`,
+			"networkd": {
+				"files": [%s]
+			}`, tt.file))))
+			if err == nil {
+				t.Fatal("Decode() error = nil, want networkd rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsDuplicateNetworkdFiles(t *testing.T) {
+	_, err := Decode(strings.NewReader(manifestWithNode(`,
+			"networkd": {
+				"files": [
+					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"},
+					{"name": "10-lan.network", "content": "[Match]\nName=enp2s0\n"}
+				]
+			}`)))
+	if err == nil || !strings.Contains(err.Error(), "duplicates another networkd file") {
+		t.Fatalf("Decode() error = %v, want duplicate networkd rejection", err)
+	}
+}
+
 func TestDecodeRejectsUnsafeKubeadmConfigRef(t *testing.T) {
 	tests := []string{
 		"../control-plane",
 		"ControlPlane",
 		"control_plane",
+		"-control-plane",
+		"control-plane-",
+		" control-plane",
+		strings.Repeat("a", 64),
 	}
 	for _, configRef := range tests {
 		t.Run(configRef, func(t *testing.T) {

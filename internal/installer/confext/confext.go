@@ -121,20 +121,6 @@ func ValidateNativeEtcBundle(confextRoot string, files []NativeEtcFile) ([]Nativ
 	return plans, nil
 }
 
-func NativeEtcFilesFromManifest(files map[string]string) []NativeEtcFile {
-	nativeFiles := make([]NativeEtcFile, 0, len(files))
-	for path, content := range files {
-		nativeFiles = append(nativeFiles, NativeEtcFile{
-			Path:    path,
-			Content: content,
-			Mode:    0o644,
-			UID:     0,
-			GID:     0,
-		})
-	}
-	return nativeFiles
-}
-
 func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error) {
 	if strings.TrimSpace(request.GenerationsRoot) == "" {
 		return GenerationTree{}, fmt.Errorf("generations root is required")

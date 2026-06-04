@@ -131,6 +131,26 @@ kind: ResetConfiguration
 			want:   "single path segment",
 		},
 		{
+			name:   "leading dash name",
+			object: kubeadmObject("-control-plane", "kubeadm/bad.yaml"),
+			want:   "must start and end",
+		},
+		{
+			name:   "trailing dash name",
+			object: kubeadmObject("control-plane-", "kubeadm/bad.yaml"),
+			want:   "must start and end",
+		},
+		{
+			name:   "padded name",
+			object: kubeadmObject(" control-plane", "kubeadm/bad.yaml"),
+			want:   "must not contain leading or trailing whitespace",
+		},
+		{
+			name:   "too long name",
+			object: kubeadmObject(strings.Repeat("a", 64), "kubeadm/bad.yaml"),
+			want:   "63 characters or fewer",
+		},
+		{
 			name:   "absolute config",
 			object: kubeadmObject("control-plane", "/etc/kubeadm.yaml"),
 			want:   "repository-relative",

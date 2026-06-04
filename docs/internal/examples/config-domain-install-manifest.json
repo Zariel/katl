@@ -1,0 +1,45 @@
+{
+  "apiVersion": "install.katl.dev/v1alpha1",
+  "kind": "InstallManifest",
+  "node": {
+    "identity": {
+      "hostname": "control-plane-01",
+      "ssh": {
+        "authorizedKeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+        ]
+      }
+    },
+    "networkd": {
+      "files": [
+        {
+          "name": "10-lan.network",
+          "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
+        }
+      ]
+    },
+    "kubernetes": {
+      "kubeadm": {
+        "configRef": "control-plane"
+      }
+    }
+  },
+  "install": {
+    "allowDestructiveInstall": true,
+    "targetDisk": {
+      "byID": "/dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK",
+      "minSizeMiB": 32768
+    }
+  },
+  "artifacts": {
+    "runtimeRoot": {
+      "url": "https://artifacts.example.invalid/katl/runtime-root.squashfs",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "uki": {
+      "url": "https://artifacts.example.invalid/katl/katl.efi",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "sysexts": []
+  }
+}

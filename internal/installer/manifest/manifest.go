@@ -25,6 +25,7 @@ type Manifest struct {
 
 type NodeConfig struct {
 	Identity   NodeIdentity     `json:"identity"`
+	Networkd   NetworkdConfig   `json:"networkd,omitempty"`
 	Kubernetes KubernetesConfig `json:"kubernetes,omitempty"`
 }
 
@@ -35,6 +36,15 @@ type NodeIdentity struct {
 
 type SSHIdentity struct {
 	AuthorizedKeys []string `json:"authorizedKeys"`
+}
+
+type NetworkdConfig struct {
+	Files []NetworkdFile `json:"files,omitempty"`
+}
+
+type NetworkdFile struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
 }
 
 type KubernetesConfig struct {
@@ -124,6 +134,9 @@ func Decode(reader io.Reader) (Manifest, error) {
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
 		return Manifest{}, fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
 	}
+	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
+		return Manifest{}, err
+	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
 		return Manifest{}, err
 	}
@@ -167,20 +180,64 @@ func Decode(reader io.Reader) (Manifest, error) {
 	return manifest, nil
 }
 
+func validateNetworkd(config NetworkdConfig) error {
+	seen := make(map[string]struct{}, len(config.Files))
+	for i, file := range config.Files {
+		field := fmt.Sprintf("node.networkd.files[%d]", i)
+		if strings.TrimSpace(file.Name) == "" {
+			return fmt.Errorf("%s.name is required", field)
+		}
+		if file.Name != filepath.Base(file.Name) || file.Name == "." || file.Name == ".." {
+			return fmt.Errorf("%s.name %q must be a single path segment", field, file.Name)
+		}
+		ext := filepath.Ext(file.Name)
+		if ext != ".network" && ext != ".netdev" && ext != ".link" {
+			return fmt.Errorf("%s.name %q must end with .network, .netdev, or .link", field, file.Name)
+		}
+		for _, r := range file.Name {
+			ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._@+-", r)
+			if !ok {
+				return fmt.Errorf("%s.name %q contains unsupported character %q", field, file.Name, r)
+			}
+		}
+		if _, ok := seen[file.Name]; ok {
+			return fmt.Errorf("%s.name %q duplicates another networkd file", field, file.Name)
+		}
+		seen[file.Name] = struct{}{}
+		if strings.TrimSpace(file.Content) == "" {
+			return fmt.Errorf("%s.content is required", field)
+		}
+	}
+	return nil
+}
+
 func validateNameRef(field string, value string) error {
-	if strings.TrimSpace(value) == "" {
+	if value == "" {
 		return nil
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s %q must not contain leading or trailing whitespace", field, value)
 	}
 	if value != filepath.Base(value) || value == "." || value == ".." {
 		return fmt.Errorf("%s %q must be a single path segment", field, value)
 	}
+	if len(value) > 63 {
+		return fmt.Errorf("%s %q must be 63 characters or fewer", field, value)
+	}
+	if !isLowercaseLetterOrDigit(rune(value[0])) || !isLowercaseLetterOrDigit(rune(value[len(value)-1])) {
+		return fmt.Errorf("%s %q must start and end with a lowercase letter or digit", field, value)
+	}
 	for _, r := range value {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
+		ok := isLowercaseLetterOrDigit(r) || r == '-'
 		if !ok {
 			return fmt.Errorf("%s %q must contain only lowercase letters, digits, and dashes", field, value)
 		}
 	}
 	return nil
+}
+
+func isLowercaseLetterOrDigit(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
 }
 
 func validateDiskSelector(field string, selector DiskSelector) error {

@@ -165,16 +165,29 @@ func validateName(field, name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("%s is required", field)
 	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("%s %q must not contain leading or trailing whitespace", field, name)
+	}
 	if name != filepath.Base(name) || name == "." || name == ".." {
 		return fmt.Errorf("%s %q must be a single path segment", field, name)
 	}
+	if len(name) > 63 {
+		return fmt.Errorf("%s %q must be 63 characters or fewer", field, name)
+	}
+	if !isLowercaseLetterOrDigit(rune(name[0])) || !isLowercaseLetterOrDigit(rune(name[len(name)-1])) {
+		return fmt.Errorf("%s %q must start and end with a lowercase letter or digit", field, name)
+	}
 	for _, r := range name {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
+		ok := isLowercaseLetterOrDigit(r) || r == '-'
 		if !ok {
 			return fmt.Errorf("%s %q must contain only lowercase letters, digits, and dashes", field, name)
 		}
 	}
 	return nil
+}
+
+func isLowercaseLetterOrDigit(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
 }
 
 func repoFile(repoRoot, rel string) (string, error) {

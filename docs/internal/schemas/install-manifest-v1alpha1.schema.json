@@ -54,6 +54,12 @@
               }
             }
           }
+        },
+        "networkd": {
+          "$ref": "#/$defs/networkdConfig"
+        },
+        "kubernetes": {
+          "$ref": "#/$defs/kubernetesConfig"
         }
       }
     },
@@ -214,6 +220,24 @@
         }
       }
     },
+    "kubeadmReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configRef": {
+          "$ref": "#/$defs/dnsLabel"
+        }
+      }
+    },
+    "kubernetesConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kubeadm": {
+          "$ref": "#/$defs/kubeadmReference"
+        }
+      }
+    },
     "namedArtifact": {
       "type": "object",
       "additionalProperties": false,
@@ -236,6 +260,39 @@
         "sizeBytes": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "networkdConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/networkdFile"
+          }
+        }
+      }
+    },
+    "networkdFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "content"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._@+-]+\\.(network|netdev|link)$"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         }
       }
     },
