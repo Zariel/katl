@@ -31,6 +31,7 @@ type Manifest struct {
 
 type NodeConfig struct {
 	Identity   NodeIdentity     `json:"identity"`
+	SystemRole string           `json:"systemRole"`
 	Networkd   NetworkdConfig   `json:"networkd,omitempty"`
 	Kubernetes KubernetesConfig `json:"kubernetes,omitempty"`
 }
@@ -129,6 +130,9 @@ func Decode(reader io.Reader) (Manifest, error) {
 	if strings.TrimSpace(manifest.Node.Identity.Hostname) == "" {
 		return Manifest{}, fmt.Errorf("node.identity.hostname is required")
 	}
+	if err := validateSystemRole(manifest.Node.SystemRole); err != nil {
+		return Manifest{}, err
+	}
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
 		return Manifest{}, fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
 	}
@@ -159,6 +163,20 @@ func Decode(reader io.Reader) (Manifest, error) {
 		}
 	}
 	return manifest, nil
+}
+
+func validateSystemRole(value string) error {
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("node.systemRole %q must not contain leading or trailing whitespace", value)
+	}
+	switch value {
+	case "":
+		return fmt.Errorf("node.systemRole is required")
+	case "control-plane", "worker":
+		return nil
+	default:
+		return fmt.Errorf("node.systemRole %q is unsupported", value)
+	}
 }
 
 func validateNetworkd(config NetworkdConfig) error {

@@ -57,8 +57,10 @@ type File struct {
 }
 
 type Document struct {
-	APIVersion string
-	Kind       string
+	APIVersion        string
+	Kind              string
+	ControlPlane      bool
+	KubernetesVersion string
 }
 
 func Decode(reader io.Reader) (Object, error) {
@@ -294,7 +296,12 @@ func validateKubeadmYAML(data []byte, patchesRenderDir string) ([]Document, erro
 		if err := validateYAMLPaths(&node, patchesRenderDir); err != nil {
 			return nil, fmt.Errorf("kubeadm YAML document %d: %w", index+1, err)
 		}
-		documents = append(documents, Document{APIVersion: apiVersion, Kind: kind})
+		documents = append(documents, Document{
+			APIVersion:        apiVersion,
+			Kind:              kind,
+			ControlPlane:      kind == "JoinConfiguration" && mappingHasKey(&node, "controlPlane"),
+			KubernetesVersion: mappingScalar(&node, "kubernetesVersion"),
+		})
 	}
 	if len(documents) == 0 {
 		return nil, fmt.Errorf("kubeadm config must contain at least one YAML document")
@@ -329,6 +336,22 @@ func mappingScalar(node *yaml.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+func mappingHasKey(node *yaml.Node, key string) bool {
+	root := node
+	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
+		root = root.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedDocument(apiVersion, kind string) bool {

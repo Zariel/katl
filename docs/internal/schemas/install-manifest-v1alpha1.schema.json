@@ -22,7 +22,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "identity"
+        "identity",
+        "systemRole"
       ],
       "properties": {
         "identity": {
@@ -54,6 +55,12 @@
               }
             }
           }
+        },
+        "systemRole": {
+          "enum": [
+            "control-plane",
+            "worker"
+          ]
         },
         "networkd": {
           "$ref": "#/$defs/networkdConfig"

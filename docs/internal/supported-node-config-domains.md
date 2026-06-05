@@ -56,6 +56,11 @@ KubeadmConfig input
   selected KubeadmConfig reference
   native kubeadm and kubelet configuration YAML plus patches rendered under
   /etc/katl/kubeadm/<name>/
+
+Bootstrap node metadata
+  non-secret Katl node metadata rendered to /etc/katl/node.json
+  authoritative readiness-probe source for node identity, systemRole, selected
+  kubeadm config ref/path/intent, and selected Kubernetes payload version
   selected Kubernetes sysext payload version used for validation
 
 SSH and operator access

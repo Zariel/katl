@@ -69,7 +69,8 @@ func validInstallManifestForRecord() string {
 						"` + sshKey + `"
 					]
 				}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,

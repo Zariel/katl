@@ -1,6 +1,7 @@
 package configdomain
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -22,16 +23,10 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	files, err := NativeEtcFiles(RenderRequest{
-		Manifest: installManifest,
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
-			"control-plane": {
-				Name: "control-plane",
-				Config: kubeadmconfig.File{
-					RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
-					Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
-					Mode:       0o644,
-				},
-			},
+			"control-plane": controlPlanePlan("v1.36.1"),
 		},
 	})
 	if err != nil {
@@ -39,6 +34,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	}
 	want := []string{
 		"/etc/katl/kubeadm/control-plane/config.yaml",
+		"/etc/katl/node.json",
 		"/etc/systemd/network/10-lan.network",
 	}
 	if len(files) != len(want) {
@@ -51,6 +47,88 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		if files[i].Mode != 0o644 || files[i].UID != 0 || files[i].GID != 0 {
 			t.Fatalf("files[%d] mode/owner = %04o %d:%d", i, files[i].Mode, files[i].UID, files[i].GID)
 		}
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(files[1].Content), &metadata); err != nil {
+		t.Fatalf("decode node metadata: %v\n%s", err, files[1].Content)
+	}
+	if metadata["apiVersion"] != "katl.dev/v1alpha1" || metadata["kind"] != "NodeMetadata" || metadata["systemRole"] != "control-plane" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	kubeadm := metadata["kubeadm"].(map[string]any)
+	if kubeadm["configRef"] != "control-plane" || kubeadm["configPath"] != "/etc/katl/kubeadm/control-plane/config.yaml" || kubeadm["intent"] != "control-plane" {
+		t.Fatalf("metadata kubeadm = %#v", kubeadm)
+	}
+	kubernetes := metadata["kubernetes"].(map[string]any)
+	if kubernetes["payloadVersion"] != "v1.36.1" {
+		t.Fatalf("metadata kubernetes = %#v", kubernetes)
+	}
+}
+
+func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(strings.Replace(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "worker"}
+			}`), `"systemRole": "control-plane"`, `"systemRole": "worker"`, 1)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	files, err := NativeEtcFiles(RenderRequest{
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"worker": workerPlan(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NativeEtcFiles() error = %v", err)
+	}
+	var metadata map[string]any
+	for _, file := range files {
+		if file.Path == "/etc/katl/node.json" {
+			if err := json.Unmarshal([]byte(file.Content), &metadata); err != nil {
+				t.Fatalf("decode node metadata: %v", err)
+			}
+		}
+	}
+	if metadata["systemRole"] != "worker" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	kubeadm := metadata["kubeadm"].(map[string]any)
+	if kubeadm["intent"] != "worker" || kubeadm["configRef"] != "worker" {
+		t.Fatalf("metadata kubeadm = %#v", kubeadm)
+	}
+}
+
+func TestNativeEtcFilesAcceptsControlPlaneJoinIntent(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "control-plane-join"}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	files, err := NativeEtcFiles(RenderRequest{
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane-join": controlPlaneJoinPlan(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NativeEtcFiles() error = %v", err)
+	}
+	var metadata map[string]any
+	for _, file := range files {
+		if file.Path == "/etc/katl/node.json" {
+			if err := json.Unmarshal([]byte(file.Content), &metadata); err != nil {
+				t.Fatalf("decode node metadata: %v", err)
+			}
+		}
+	}
+	kubeadm := metadata["kubeadm"].(map[string]any)
+	if kubeadm["intent"] != "control-plane" || kubeadm["configRef"] != "control-plane-join" {
+		t.Fatalf("metadata kubeadm = %#v", kubeadm)
 	}
 }
 
@@ -77,7 +155,8 @@ func TestNativeEtcFilesRejectsMismatchedKubeadmPlan(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	_, err = NativeEtcFiles(RenderRequest{
-		Manifest: installManifest,
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": {
 				Name: "worker",
@@ -86,6 +165,7 @@ func TestNativeEtcFilesRejectsMismatchedKubeadmPlan(t *testing.T) {
 					Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n"),
 					Mode:       0o644,
 				},
+				Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "JoinConfiguration"}},
 			},
 		},
 	})
@@ -103,7 +183,8 @@ func TestNativeEtcFilesRejectsUnsafeRenderedPaths(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	_, err = NativeEtcFiles(RenderRequest{
-		Manifest: installManifest,
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": {
 				Name: "control-plane",
@@ -112,11 +193,70 @@ func TestNativeEtcFilesRejectsUnsafeRenderedPaths(t *testing.T) {
 					Content:    []byte("unsafe"),
 					Mode:       0o644,
 				},
+				Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"}},
 			},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot own kubeadm-managed") {
 		t.Fatalf("NativeEtcFiles() error = %v, want unsafe rendered path", err)
+	}
+}
+
+func TestNativeEtcFilesRejectsRoleConfigIntentMismatch(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "worker"}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	_, err = NativeEtcFiles(RenderRequest{
+		Manifest: installManifest,
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"worker": workerPlan(),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires kubeadm intent") {
+		t.Fatalf("NativeEtcFiles() error = %v, want intent mismatch", err)
+	}
+}
+
+func TestNativeEtcFilesRejectsKubernetesVersionMismatch(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "control-plane"}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	_, err = NativeEtcFiles(RenderRequest{
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": controlPlanePlan("v1.35.9"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match selected Kubernetes payload version") {
+		t.Fatalf("NativeEtcFiles() error = %v, want version mismatch", err)
+	}
+}
+
+func TestNativeEtcFilesRejectsMissingKubernetesVersionForKubeadmMetadata(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "control-plane"}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	_, err = NativeEtcFiles(RenderRequest{
+		Manifest: installManifest,
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": controlPlanePlan("v1.36.1"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires selected Kubernetes payload version") {
+		t.Fatalf("NativeEtcFiles() error = %v, want missing selected version", err)
 	}
 }
 
@@ -132,7 +272,8 @@ func manifestJSON(nodeExtra string) string {
 						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
 					]
 				}
-			}` + nodeExtra + `
+			},
+			"systemRole": "control-plane"` + nodeExtra + `
 		},
 		"install": {
 			"allowDestructiveInstall": true,
@@ -148,4 +289,43 @@ func manifestJSON(nodeExtra string) string {
 			"role": "install"
 		}
 	}`
+}
+
+func controlPlanePlan(version string) kubeadmconfig.Plan {
+	return kubeadmconfig.Plan{
+		Name: "control-plane",
+		Config: kubeadmconfig.File{
+			RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+			Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
+			Mode:       0o644,
+		},
+		Documents: []kubeadmconfig.Document{
+			{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"},
+			{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "ClusterConfiguration", KubernetesVersion: version},
+		},
+	}
+}
+
+func workerPlan() kubeadmconfig.Plan {
+	return kubeadmconfig.Plan{
+		Name: "worker",
+		Config: kubeadmconfig.File{
+			RenderPath: "/etc/katl/kubeadm/worker/config.yaml",
+			Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n"),
+			Mode:       0o644,
+		},
+		Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "JoinConfiguration"}},
+	}
+}
+
+func controlPlaneJoinPlan() kubeadmconfig.Plan {
+	return kubeadmconfig.Plan{
+		Name: "control-plane-join",
+		Config: kubeadmconfig.File{
+			RenderPath: "/etc/katl/kubeadm/control-plane-join/config.yaml",
+			Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\ncontrolPlane: {}\n"),
+			Mode:       0o644,
+		},
+		Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "JoinConfiguration", ControlPlane: true}},
+	}
 }

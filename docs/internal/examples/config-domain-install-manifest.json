@@ -10,6 +10,7 @@
         ]
       }
     },
+    "systemRole": "control-plane",
     "networkd": {
       "files": [
         {

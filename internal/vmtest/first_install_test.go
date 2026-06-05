@@ -138,7 +138,8 @@ func firstManifest() string {
 						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
 					]
 				}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,

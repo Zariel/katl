@@ -305,6 +305,26 @@ func TestDecodeRejectsUnsafeKubeadmConfigRef(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsMissingOrUnsupportedSystemRole(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{name: "missing", manifest: strings.Replace(validManifest(), `,`+"\n\t\t\t\"systemRole\": \"control-plane\"", "", 1), want: "node.systemRole is required"},
+		{name: "padded", manifest: strings.Replace(validManifest(), `"systemRole": "control-plane"`, `"systemRole": " worker "`, 1), want: "must not contain leading or trailing whitespace"},
+		{name: "unsupported", manifest: strings.Replace(validManifest(), `"systemRole": "control-plane"`, `"systemRole": "storage"`, 1), want: "unsupported"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.manifest))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsRootDiskLayoutFields(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -457,7 +477,8 @@ func manifestWithTop(extra string) string {
 						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
 					]
 				}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,
@@ -503,7 +524,8 @@ func manifestWithImageObject(imageObject string) string {
 						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
 					]
 				}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,

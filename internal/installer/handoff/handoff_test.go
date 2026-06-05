@@ -116,7 +116,8 @@ func TestValidateManifestEnvelope(t *testing.T) {
 			"identity": {
 				"hostname": "lab-node-01",
 				"ssh": {"authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"]}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,
@@ -183,7 +184,8 @@ func validManifestJSON() []byte {
 						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
 					]
 				}
-			}
+			},
+			"systemRole": "control-plane"
 		},
 		"install": {
 			"allowDestructiveInstall": true,

@@ -430,6 +430,23 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	assertText(t, filepath.Join(confextDir, "etc/systemd/network/10-lan.network"), "[Match]\nName=enp1s0\n")
 	assertText(t, filepath.Join(confextDir, "etc/katl/kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
 	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release.katl-node"), "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
+	assertText(t, filepath.Join(confextDir, "etc/katl/node.json"), `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "NodeMetadata",
+  "identity": {
+    "hostname": "lab-node-01"
+  },
+  "systemRole": "control-plane",
+  "kubeadm": {
+    "configRef": "control-plane",
+    "configPath": "/etc/katl/kubeadm/control-plane/config.yaml",
+    "intent": "control-plane"
+  },
+  "kubernetes": {
+    "payloadVersion": "v1.34.8"
+  }
+}
+`)
 
 	digest, err := generation.DigestDirectory(confextDir)
 	if err != nil {
@@ -519,7 +536,8 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 						"` + sshKey + `"
 					]
 				}
-			}` + nodeExtra + `
+			},
+			"systemRole": "control-plane"` + nodeExtra + `
 		},
 		"install": {
 			"allowDestructiveInstall": true,
@@ -544,7 +562,7 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 func writeCompactManifest(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "install.json")
-	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}}},"install":{"allowDestructiveInstall":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
+	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"allowDestructiveInstall":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -574,6 +592,7 @@ func kubeadmPlans() map[string]kubeadmconfig.Plan {
 				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
 				Mode:       0o644,
 			},
+			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"}},
 		},
 	}
 }

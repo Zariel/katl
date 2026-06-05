@@ -41,8 +41,9 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 	}
 
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
-		Manifest:       request.Manifest,
-		KubeadmConfigs: request.KubeadmConfigs,
+		Manifest:          request.Manifest,
+		KubeadmConfigs:    request.KubeadmConfigs,
+		KubernetesVersion: selectedKubernetesPayloadVersion(request.Record),
 	})
 	if err != nil {
 		return InstallRecordResult{}, err
@@ -124,4 +125,13 @@ func cleanInstallGenerationID(value string) (string, error) {
 
 func generatedConfextRuntimePath(generationID string) string {
 	return filepath.Join("/var/lib/katl/generations", generationID, "confext")
+}
+
+func selectedKubernetesPayloadVersion(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return sysext.PayloadVersion
+		}
+	}
+	return ""
 }
