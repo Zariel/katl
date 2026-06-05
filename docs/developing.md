@@ -120,8 +120,28 @@ in the NixOS host configuration.
 
 The opt-in installed-runtime vmtest-agent smoke expects a real installed runtime
 disk, a rendered ESP artifact tree, and a fixture manifest that binds those
-artifacts by checksum. Resolve those local inputs into a sourceable environment
-with:
+artifacts by checksum. Package completed install-to-runtime outputs into that
+fixture contract and generate a sourceable smoke-test environment with:
+
+```sh
+scripts/create-installed-runtime-fixture \
+  --disk build/local/cp-1.qcow2 \
+  --esp-artifacts build/local/cp-1-esp \
+  --node-metadata build/local/cp-1-node.json \
+  --format qcow2
+```
+
+The command copies the disk, ESP tree, and optional node metadata under
+`build/installed-runtime-fixture/`, writes an
+`InstalledRuntimeVMTestFixture` manifest with disk and ESP checksums, preflights
+the ESP loader entries through `scripts/check-installed-disk-smoke
+--preflight-only`, and writes generated files under the same directory. Source
+the generated `vmtest.env` or run the generated wrapper to execute
+`TestInstalledRuntimeVMTestAgentSmoke`. Use `--artifact-mode reference` when the
+fixture should bind existing paths instead of copying a large local disk.
+
+If a checksum-bound fixture manifest already exists, validate and resolve it
+directly with:
 
 ```sh
 scripts/resolve-installed-runtime-fixture \
@@ -131,15 +151,8 @@ scripts/resolve-installed-runtime-fixture \
   --format qcow2
 ```
 
-The command validates the fixture manifest, checks disk and ESP checksums,
-preflights the ESP loader entries through `scripts/check-installed-disk-smoke
---preflight-only`, and writes generated files under
-`build/installed-runtime-fixture/`. Source the generated `vmtest.env` or run the
-generated wrapper to execute `TestInstalledRuntimeVMTestAgentSmoke`.
-
-The resolver does not manufacture placeholder disks. A later factory path should
-run the real install-to-runtime flow and write the same
-`InstalledRuntimeVMTestFixture` manifest shape consumed here.
+Neither command manufactures placeholder disks; the disk and ESP tree should
+come from the real install-to-runtime flow.
 
 ## Two-Node Kubeadm VM Fixtures
 
