@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
+	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 )
@@ -120,6 +122,104 @@ func TestClusterBootstrapRequiresInventory(t *testing.T) {
 	}
 }
 
+func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
+	root := t.TempDir()
+	writeConfigApplyFixture(t, root, configApplyFixture{
+		GenerationID:       "2026.06.05-002",
+		PreviousGeneration: "2026.06.05-001",
+		Mode:               generation.ApplyModeLive,
+		Phase:              generation.ConfigApplyPhaseActive,
+		Domains:            []string{"networkd", "tmpfiles"},
+	})
+	writeConfigApplyFixture(t, root, configApplyFixture{
+		GenerationID:       "2026.06.05-003",
+		PreviousGeneration: "2026.06.05-002",
+		Mode:               generation.ApplyModeNextBoot,
+		Phase:              generation.ConfigApplyPhaseNextBoot,
+		Domains:            []string{"node-identity"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply", "status",
+		"--root", root,
+		"--active-generation", "2026.06.05-002",
+		"--next-boot-generation", "2026.06.05-003",
+		"--output", "json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report configApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.ActiveGenerationID != "2026.06.05-002" || report.NextBootGenerationID != "2026.06.05-003" {
+		t.Fatalf("report ids = %#v", report)
+	}
+	if report.Active == nil || report.Active.Phase != generation.ConfigApplyPhaseActive || strings.Join(report.Active.ChangedDomains, ",") != "networkd,tmpfiles" {
+		t.Fatalf("active report = %#v", report.Active)
+	}
+	if report.NextBoot == nil || report.NextBoot.Phase != generation.ConfigApplyPhaseNextBoot || report.NextBoot.AcceptedApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("next-boot report = %#v", report.NextBoot)
+	}
+}
+
+func TestConfigApplyStatusReportsFailureRollbackAndKubeadmRedacted(t *testing.T) {
+	root := t.TempDir()
+	secret := "abcdef.0123456789abcdef"
+	writeConfigApplyFixture(t, root, configApplyFixture{
+		GenerationID:       "2026.06.05-004",
+		PreviousGeneration: "2026.06.05-003",
+		Mode:               generation.ApplyModeNextBoot,
+		Phase:              generation.ConfigApplyPhaseFailed,
+		Domains:            []string{"kubeadm-config"},
+		FailureReason:      "desired kubeadm input contains join token " + secret,
+		Kubeadm: generation.KubeadmActionRequired{
+			Required: true,
+			Reason:   "operator must run kubeadm with token " + secret,
+		},
+	})
+	writeConfigApplyFixture(t, root, configApplyFixture{
+		GenerationID:       "2026.06.05-005",
+		PreviousGeneration: "2026.06.05-004",
+		Mode:               generation.ApplyModeLive,
+		Phase:              generation.ConfigApplyPhaseRolledBack,
+		Domains:            []string{"networkd"},
+		RollbackTarget:     "2026.06.05-004",
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply", "status",
+		"--root", root,
+		"--active-generation", "2026.06.05-004",
+		"--next-boot-generation", "2026.06.05-005",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), secret) {
+		t.Fatalf("status output leaked secret:\n%s", stdout.String())
+	}
+	var report configApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.Active == nil || report.Active.Phase != generation.ConfigApplyPhaseFailed {
+		t.Fatalf("active report = %#v", report.Active)
+	}
+	if !report.Active.KubeadmActionRequired.Required || !strings.Contains(report.Active.KubeadmActionRequired.Reason, "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("kubeadm report = %#v", report.Active.KubeadmActionRequired)
+	}
+	if !strings.Contains(report.Active.FailureReason, "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("failure reason = %q", report.Active.FailureReason)
+	}
+	if report.NextBoot == nil || report.NextBoot.Phase != generation.ConfigApplyPhaseRolledBack || report.NextBoot.RollbackTarget != "2026.06.05-004" {
+		t.Fatalf("rolled-back report = %#v", report.NextBoot)
+	}
+}
+
 func TestAddressOverrideValidation(t *testing.T) {
 	var overrides addressOverrides
 	if err := overrides.Set("bad"); err == nil {
@@ -130,6 +230,130 @@ func TestAddressOverrideValidation(t *testing.T) {
 	}
 	if overrides.values["node"] != "10.0.0.10" {
 		t.Fatalf("values = %#v", overrides.values)
+	}
+}
+
+type configApplyFixture struct {
+	GenerationID       string
+	PreviousGeneration string
+	Mode               string
+	Phase              string
+	Domains            []string
+	FailureReason      string
+	RollbackTarget     string
+	Kubeadm            generation.KubeadmActionRequired
+}
+
+func writeConfigApplyFixture(t *testing.T, root string, fixture configApplyFixture) {
+	t.Helper()
+	previous := configApplyBaseRecord(fixture.PreviousGeneration)
+	record, err := generation.NewRuntimeConfigRecord(generation.RuntimeConfigRequest{
+		GenerationID:       fixture.GenerationID,
+		Previous:           previous,
+		SourceDigest:       strings.Repeat("d", 64),
+		GeneratedConfext:   configApplyConfext(fixture.GenerationID),
+		ChangedDomains:     fixture.Domains,
+		RequestedApplyMode: fixture.Mode,
+		AcceptedApplyMode:  fixture.Mode,
+		Kubeadm:            fixture.Kubeadm,
+		CreatedAt:          time.Date(2026, 6, 5, 18, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeConfigRecord() error = %v", err)
+	}
+	metadataPath, err := generation.MetadataPath(root, fixture.GenerationID)
+	if err != nil {
+		t.Fatalf("MetadataPath() error = %v", err)
+	}
+	if err := generation.WriteRecord(metadataPath, record); err != nil {
+		t.Fatalf("WriteRecord() error = %v", err)
+	}
+	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
+		GenerationID:       fixture.GenerationID,
+		PreviousGeneration: fixture.PreviousGeneration,
+		RequestedApplyMode: fixture.Mode,
+		AcceptedApplyMode:  fixture.Mode,
+		ChangedDomains:     fixture.Domains,
+		HealthState:        "unknown",
+		Kubeadm:            fixture.Kubeadm,
+		UpdatedAt:          time.Date(2026, 6, 5, 18, 5, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NewConfigApplyStatus() error = %v", err)
+	}
+	status.Phase = fixture.Phase
+	status.FailureReason = fixture.FailureReason
+	status.DomainActions = []generation.ConfigApplyDomainAction{{
+		Domain: fixture.Domains[0],
+		Action: "fixture",
+		Status: generation.ConfigApplyActionPassed,
+	}}
+	if fixture.RollbackTarget != "" {
+		status.Rollback = &generation.ConfigApplyRollback{
+			TargetGenerationID: fixture.RollbackTarget,
+			Result:             generation.ConfigApplyActionPassed,
+			Reason:             "fixture rollback",
+		}
+	}
+	statusPath, err := generation.ConfigApplyStatusPath(root, fixture.GenerationID)
+	if err != nil {
+		t.Fatalf("ConfigApplyStatusPath() error = %v", err)
+	}
+	if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
+		t.Fatalf("WriteConfigApplyStatus() error = %v", err)
+	}
+}
+
+func configApplyBaseRecord(id string) generation.Record {
+	return generation.Record{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.Kind,
+		GenerationID:   id,
+		RuntimeVersion: "0.1.0",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		Boot: generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl-" + id + ".efi"},
+		Sysexts: []generation.ExtensionRef{{
+			Name:            "kubernetes",
+			Path:            "/var/lib/katl/generations/" + id + "/sysext/kubernetes.raw",
+			ActivationPath:  "/run/extensions/kubernetes.raw",
+			SHA256:          strings.Repeat("b", 64),
+			ArtifactVersion: "k8s-v1.36.1",
+			PayloadVersion:  "v1.36.1",
+			Architecture:    "x86_64",
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+		}},
+		Confexts: []generation.GeneratedConfext{configApplyConfext(id)},
+		KernelCommandLine: []string{
+			"root=PARTUUID=11111111-2222-3333-4444-555555555555",
+			"rootfstype=squashfs",
+			"ro",
+		},
+		CreatedAt:   time.Date(2026, 6, 5, 17, 0, 0, 0, time.UTC),
+		BootState:   "good",
+		HealthState: "healthy",
+	}
+}
+
+func configApplyConfext(id string) generation.GeneratedConfext {
+	return generation.GeneratedConfext{
+		Name:           "katl-node",
+		Path:           "/var/lib/katl/generations/" + id + "/confext",
+		ActivationPath: "/run/confexts/katl-node",
+		SHA256:         strings.Repeat("d", 64),
+		Compatibility: generation.ConfextCompatibility{
+			ID:           "katl",
+			VersionID:    "0.1.0",
+			ConfextLevel: 1,
+		},
 	}
 }
 

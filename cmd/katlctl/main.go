@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
+	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 	"gopkg.in/yaml.v3"
@@ -45,7 +47,173 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 2 && args[0] == "cluster" && args[1] == "bootstrap" {
 		return runClusterBootstrap(ctx, args[2:], stdout, stderr)
 	}
+	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "status" {
+		return runConfigApplyStatus(args[3:], stdout, stderr)
+	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
+}
+
+func runConfigApplyStatus(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl config apply status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	root := flags.String("root", "/", "runtime root to inspect")
+	activeGeneration := flags.String("active-generation", "", "active generation id")
+	nextBootGeneration := flags.String("next-boot-generation", "", "next boot generation id")
+	output := flags.String("output", "json", "output format: json")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *output != "json" {
+		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	report, err := loadConfigApplyReport(*root, *activeGeneration, *nextBootGeneration)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config apply status: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+type configApplyReport struct {
+	APIVersion           string                      `json:"apiVersion"`
+	Kind                 string                      `json:"kind"`
+	ActiveGenerationID   string                      `json:"activeGenerationID,omitempty"`
+	NextBootGenerationID string                      `json:"nextBootGenerationID,omitempty"`
+	Active               *configApplyGenerationState `json:"active,omitempty"`
+	NextBoot             *configApplyGenerationState `json:"nextBoot,omitempty"`
+}
+
+type configApplyGenerationState struct {
+	GenerationID          string                               `json:"generationID"`
+	PreviousGenerationID  string                               `json:"previousGenerationID,omitempty"`
+	RequestedApplyMode    string                               `json:"requestedApplyMode,omitempty"`
+	AcceptedApplyMode     string                               `json:"acceptedApplyMode,omitempty"`
+	ChangedDomains        []string                             `json:"changedDomains,omitempty"`
+	Phase                 string                               `json:"phase,omitempty"`
+	HealthState           string                               `json:"healthState,omitempty"`
+	DomainActions         []generation.ConfigApplyDomainAction `json:"domainActions,omitempty"`
+	DiagnosticArtifacts   []generation.DiagnosticArtifact      `json:"diagnosticArtifacts,omitempty"`
+	RollbackTarget        string                               `json:"rollbackTargetGenerationID,omitempty"`
+	RollbackResult        string                               `json:"rollbackResult,omitempty"`
+	KubeadmActionRequired generation.KubeadmActionRequired     `json:"kubeadmActionRequired"`
+	FailureReason         string                               `json:"failureReason,omitempty"`
+}
+
+func loadConfigApplyReport(root, activeGeneration, nextBootGeneration string) (configApplyReport, error) {
+	activeGeneration = strings.TrimSpace(activeGeneration)
+	nextBootGeneration = strings.TrimSpace(nextBootGeneration)
+	if activeGeneration == "" && nextBootGeneration == "" {
+		return configApplyReport{}, fmt.Errorf("--active-generation or --next-boot-generation is required")
+	}
+	report := configApplyReport{
+		APIVersion:           generation.APIVersion,
+		Kind:                 "ConfigApplyReport",
+		ActiveGenerationID:   activeGeneration,
+		NextBootGenerationID: nextBootGeneration,
+	}
+	if activeGeneration != "" {
+		state, err := loadConfigApplyGenerationState(root, activeGeneration)
+		if err != nil {
+			return configApplyReport{}, fmt.Errorf("active generation %s: %w", activeGeneration, err)
+		}
+		report.Active = &state
+	}
+	if nextBootGeneration != "" {
+		state, err := loadConfigApplyGenerationState(root, nextBootGeneration)
+		if err != nil {
+			return configApplyReport{}, fmt.Errorf("next-boot generation %s: %w", nextBootGeneration, err)
+		}
+		report.NextBoot = &state
+	}
+	return report, nil
+}
+
+func loadConfigApplyGenerationState(root, generationID string) (configApplyGenerationState, error) {
+	metadataPath, err := generation.MetadataPath(root, generationID)
+	if err != nil {
+		return configApplyGenerationState{}, err
+	}
+	record, err := generation.ReadRecord(metadataPath)
+	if err != nil {
+		return configApplyGenerationState{}, err
+	}
+	state := configApplyGenerationState{
+		GenerationID: generationID,
+		HealthState:  record.HealthState,
+	}
+	if record.ConfigApply != nil {
+		state.PreviousGenerationID = record.ConfigApply.PreviousGeneration
+		state.RequestedApplyMode = record.ConfigApply.RequestedApplyMode
+		state.AcceptedApplyMode = record.ConfigApply.AcceptedApplyMode
+		state.ChangedDomains = append([]string(nil), record.ConfigApply.ChangedDomains...)
+		state.KubeadmActionRequired = redactKubeadm(record.ConfigApply.Kubeadm)
+	}
+	statusPath, err := generation.ConfigApplyStatusPath(root, generationID)
+	if err != nil {
+		return configApplyGenerationState{}, err
+	}
+	status, err := generation.ReadConfigApplyStatus(statusPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return configApplyGenerationState{}, err
+	}
+	status = redactStatus(status)
+	state.PreviousGenerationID = firstNonEmpty(status.PreviousGeneration, state.PreviousGenerationID)
+	state.RequestedApplyMode = firstNonEmpty(status.RequestedApplyMode, state.RequestedApplyMode)
+	state.AcceptedApplyMode = firstNonEmpty(status.AcceptedApplyMode, state.AcceptedApplyMode)
+	if len(status.ChangedDomains) > 0 {
+		state.ChangedDomains = append([]string(nil), status.ChangedDomains...)
+	}
+	state.Phase = status.Phase
+	state.HealthState = firstNonEmpty(status.HealthState, state.HealthState)
+	state.DomainActions = append([]generation.ConfigApplyDomainAction(nil), status.DomainActions...)
+	state.DiagnosticArtifacts = append([]generation.DiagnosticArtifact(nil), status.DiagnosticArtifacts...)
+	if status.Rollback != nil {
+		state.RollbackTarget = status.Rollback.TargetGenerationID
+		state.RollbackResult = status.Rollback.Result
+	}
+	state.KubeadmActionRequired = redactKubeadm(status.Kubeadm)
+	state.FailureReason = generation.RedactConfigApplyMessage(status.FailureReason)
+	return state, nil
+}
+
+func redactStatus(status generation.ConfigApplyStatus) generation.ConfigApplyStatus {
+	status.FailureReason = generation.RedactConfigApplyMessage(status.FailureReason)
+	status.Kubeadm = redactKubeadm(status.Kubeadm)
+	for i := range status.DomainActions {
+		status.DomainActions[i].Diagnostic = generation.RedactConfigApplyMessage(status.DomainActions[i].Diagnostic)
+	}
+	for i := range status.DiagnosticArtifacts {
+		status.DiagnosticArtifacts[i].Path = generation.RedactConfigApplyMessage(status.DiagnosticArtifacts[i].Path)
+	}
+	if status.Rollback != nil {
+		status.Rollback.Reason = generation.RedactConfigApplyMessage(status.Rollback.Reason)
+	}
+	return status
+}
+
+func redactKubeadm(action generation.KubeadmActionRequired) generation.KubeadmActionRequired {
+	action.Reason = generation.RedactConfigApplyMessage(action.Reason)
+	return action
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer) error {
