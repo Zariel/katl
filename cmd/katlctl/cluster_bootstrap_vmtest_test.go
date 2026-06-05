@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	result.Started = time.Now().UTC()
+	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -74,7 +76,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
-		collectTwoNodeDiagnostics(cpNode)
+		collectTwoNodeDiagnostics(transcriptDir, cpNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start worker VM: %v", err)
 	}
@@ -89,13 +91,15 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
-		ControlPlaneRunDir: cpNode.Result.RunDir,
-		WorkerRunDir:       workerNode.Result.RunDir,
-		Inventory:          inventoryPath,
-		Kubeconfig:         kubeconfigPath,
-		BootstrapStdout:    stdoutPath,
-		BootstrapStderr:    stderrPath,
-		KubectlOutput:      kubectlOut,
+		ControlPlaneRunDir:     cpNode.Result.RunDir,
+		WorkerRunDir:           workerNode.Result.RunDir,
+		Inventory:              inventoryPath,
+		Kubeconfig:             kubeconfigPath,
+		BootstrapStdout:        stdoutPath,
+		BootstrapStderr:        stderrPath,
+		KubectlOutput:          kubectlOut,
+		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
+		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -109,27 +113,33 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
+		"--vmtest-transcript-dir", transcriptDir,
 	}, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	if err != nil {
-		collectTwoNodeDiagnostics(cpNode, workerNode)
+		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	assertBootstrapPhases(t, stdout.String())
+	if err := verifyTwoNodeBootstrapTranscripts(transcriptDir); err != nil {
+		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("bootstrap transcripts: %v", err)
+	}
 
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	output, err := cmd.CombinedOutput()
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
-		collectTwoNodeDiagnostics(cpNode, workerNode)
+		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
 	}
 	for _, want := range []string{"node/cp-1", "node/worker-1"} {
 		if !strings.Contains(string(output), want) {
-			collectTwoNodeDiagnostics(cpNode, workerNode)
+			collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
 		}
@@ -193,13 +203,15 @@ nodes:
 }
 
 type twoNodeArtifactManifest struct {
-	ControlPlaneRunDir string `json:"controlPlaneRunDir"`
-	WorkerRunDir       string `json:"workerRunDir"`
-	Inventory          string `json:"inventory"`
-	Kubeconfig         string `json:"kubeconfig"`
-	BootstrapStdout    string `json:"bootstrapStdout"`
-	BootstrapStderr    string `json:"bootstrapStderr"`
-	KubectlOutput      string `json:"kubectlOutput"`
+	ControlPlaneRunDir     string `json:"controlPlaneRunDir"`
+	WorkerRunDir           string `json:"workerRunDir"`
+	Inventory              string `json:"inventory"`
+	Kubeconfig             string `json:"kubeconfig"`
+	BootstrapStdout        string `json:"bootstrapStdout"`
+	BootstrapStderr        string `json:"bootstrapStderr"`
+	KubectlOutput          string `json:"kubectlOutput"`
+	ControlPlaneTranscript string `json:"controlPlaneTranscript"`
+	WorkerTranscript       string `json:"workerTranscript"`
 }
 
 func writeTwoNodeArtifactManifest(path string, manifest twoNodeArtifactManifest) error {
@@ -235,16 +247,78 @@ func assertBootstrapPhases(t *testing.T, output string) {
 	}
 }
 
-func collectTwoNodeDiagnostics(nodes ...vmtest.RunningInstalledRuntimeNode) {
+func verifyTwoNodeBootstrapTranscripts(transcriptDir string) error {
+	for _, node := range []string{"cp-1", "worker-1"} {
+		path := twoNodeBootstrapTranscriptPath(transcriptDir, node)
+		entries, err := readTranscriptFile(path)
+		if err != nil {
+			return fmt.Errorf("%s transcript %s: %w", node, path, err)
+		}
+		var runCommand, readFile, sensitiveCommand, sensitiveFile bool
+		for _, entry := range entries {
+			switch entry.Method {
+			case "RunCommand":
+				runCommand = true
+				if entry.SensitiveOutput || entry.Redaction == "output" {
+					sensitiveCommand = true
+				}
+			case "ReadFile":
+				readFile = true
+				if entry.SensitiveOutput || (entry.Redaction != "" && entry.Redaction != "none") {
+					sensitiveFile = true
+				}
+			}
+		}
+		if !runCommand {
+			return fmt.Errorf("%s transcript has no RunCommand entry", node)
+		}
+		if !readFile {
+			return fmt.Errorf("%s transcript has no ReadFile entry", node)
+		}
+		if !sensitiveCommand {
+			return fmt.Errorf("%s transcript has no redacted sensitive command entry", node)
+		}
+		if !sensitiveFile {
+			return fmt.Errorf("%s transcript has no sensitive file entry", node)
+		}
+	}
+	return nil
+}
+
+func readTranscriptFile(path string) ([]transcriptEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, errors.New("empty transcript")
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	entries := make([]transcriptEntry, 0, len(lines))
+	for i, line := range lines {
+		var entry transcriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInstalledRuntimeNode) {
 	diagCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	for _, node := range nodes {
 		if !node.VSock.Enabled {
 			continue
 		}
+		summary := twoNodeDiagnosticSummaryFor(transcriptDir, node)
 		client, err := vmtest.DialAgent(diagCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
 		if err != nil {
-			writeTwoNodeDiagnosticError(node, "dial-agent-error.txt", err)
+			summary.DialError = err.Error()
+			writeTwoNodeDiagnosticError(node, "dial-agent-error.txt", err, summary)
+			_ = writeTwoNodeDiagnosticJSON(filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-summary.json"), summary)
 			continue
 		}
 		guest := vmtest.NewGuestControl(node.Result, client)
@@ -267,15 +341,54 @@ func collectTwoNodeDiagnostics(nodes ...vmtest.RunningInstalledRuntimeNode) {
 			}},
 		})
 		if len(report.Errors) > 0 {
-			_ = writeTwoNodeDiagnosticJSON(filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-errors.json"), report.Errors)
+			summary.DiagnosticErrors = filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-errors.json")
+			summary.CollectionErrors = append(summary.CollectionErrors, report.Errors...)
+			_ = writeTwoNodeDiagnosticJSON(summary.DiagnosticErrors, report.Errors)
 		}
+		_ = writeTwoNodeDiagnosticJSON(filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-summary.json"), summary)
 		_ = client.Close()
 	}
 }
 
-func writeTwoNodeDiagnosticError(node vmtest.RunningInstalledRuntimeNode, name string, err error) {
+type twoNodeDiagnosticSummary struct {
+	Node                 string   `json:"node"`
+	BootstrapTranscript  string   `json:"bootstrapTranscript,omitempty"`
+	DiagnosticTranscript string   `json:"diagnosticTranscript,omitempty"`
+	GuestDiagnostics     string   `json:"guestDiagnostics,omitempty"`
+	DiagnosticErrors     string   `json:"diagnosticErrors,omitempty"`
+	DialError            string   `json:"dialError,omitempty"`
+	CollectionErrors     []string `json:"collectionErrors,omitempty"`
+}
+
+func twoNodeDiagnosticSummaryFor(transcriptDir string, node vmtest.RunningInstalledRuntimeNode) twoNodeDiagnosticSummary {
+	return twoNodeDiagnosticSummary{
+		Node:                 node.Name,
+		BootstrapTranscript:  twoNodeBootstrapTranscriptPath(transcriptDir, node.Name),
+		DiagnosticTranscript: node.Result.Artifacts.VSockTranscript,
+		GuestDiagnostics:     filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics.json"),
+	}
+}
+
+func twoNodeBootstrapTranscriptPath(transcriptDir, node string) string {
+	if transcriptDir == "" {
+		return ""
+	}
+	return filepath.Join(transcriptDir, node+".jsonl")
+}
+
+func writeTwoNodeDiagnosticError(node vmtest.RunningInstalledRuntimeNode, name string, err error, summary twoNodeDiagnosticSummary) {
 	_ = os.MkdirAll(node.Result.Artifacts.GuestDir, 0o755)
-	_ = os.WriteFile(filepath.Join(node.Result.Artifacts.GuestDir, name), []byte(err.Error()+"\n"), 0o644)
+	lines := []string{err.Error()}
+	if summary.BootstrapTranscript != "" {
+		lines = append(lines, "bootstrapTranscript="+summary.BootstrapTranscript)
+	}
+	if summary.DiagnosticTranscript != "" {
+		lines = append(lines, "diagnosticTranscript="+summary.DiagnosticTranscript)
+	}
+	if summary.GuestDiagnostics != "" {
+		lines = append(lines, "guestDiagnostics="+summary.GuestDiagnostics)
+	}
+	_ = os.WriteFile(filepath.Join(node.Result.Artifacts.GuestDir, name), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func writeTwoNodeDiagnosticJSON(path string, value any) error {

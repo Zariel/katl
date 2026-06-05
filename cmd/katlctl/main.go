@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ var (
 )
 
 var runBootstrap = cluster.Run
+var dialVMTestAgent = vmtest.DialAgent
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -57,6 +59,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	kubeconfigOut := flags.String("kubeconfig-out", "", "operator kubeconfig output path")
 	overwriteKubeconfig := flags.Bool("overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	dryRun := flags.Bool("dry-run", false, "validate and print the bootstrap plan without running kubeadm")
+	vmtestTranscriptDir := flags.String("vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
 	flags.Var(&addresses, "node-address", "node address override in node=address form")
 
 	if err := flags.Parse(args); err != nil {
@@ -80,13 +83,13 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 		KubeconfigOut:        *kubeconfigOut,
 		OverwriteKubeconfig:  *overwriteKubeconfig,
 		DryRun:               *dryRun,
-	}, bootstrapDependencies())
+	}, bootstrapDependencies(*vmtestTranscriptDir))
 	printBootstrapResult(stdout, result)
 	return err
 }
 
-func bootstrapDependencies() cluster.Dependencies {
-	transport := vmtestAgentTransport{}
+func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
+	transport := vmtestAgentTransport{TranscriptDir: strings.TrimSpace(vmtestTranscriptDir)}
 	return cluster.Dependencies{
 		ReadinessChecker: readiness.Checker{Agent: transport},
 		NodeRunner:       cluster.TransportRunner{Transport: transport},
@@ -201,10 +204,12 @@ func (o *addressOverrides) Set(value string) error {
 	return nil
 }
 
-type vmtestAgentTransport struct{}
+type vmtestAgentTransport struct {
+	TranscriptDir string
+}
 
-func (vmtestAgentTransport) RunCommand(ctx context.Context, node inventory.PlannedNode, req readiness.CommandRequest) (readiness.CommandResult, error) {
-	client, err := dialNodeAgent(ctx, node)
+func (t vmtestAgentTransport) RunCommand(ctx context.Context, node inventory.PlannedNode, req readiness.CommandRequest) (readiness.CommandResult, error) {
+	client, err := t.dialNodeAgent(ctx, node)
 	if err != nil {
 		return readiness.CommandResult{}, err
 	}
@@ -232,8 +237,8 @@ func (vmtestAgentTransport) RunCommand(ctx context.Context, node inventory.Plann
 	}, nil
 }
 
-func (vmtestAgentTransport) ReadFile(ctx context.Context, node inventory.PlannedNode, req readiness.FileRequest) (readiness.FileResult, error) {
-	client, err := dialNodeAgent(ctx, node)
+func (t vmtestAgentTransport) ReadFile(ctx context.Context, node inventory.PlannedNode, req readiness.FileRequest) (readiness.FileResult, error) {
+	client, err := t.dialNodeAgent(ctx, node)
 	if err != nil {
 		return readiness.FileResult{}, err
 	}
@@ -258,7 +263,7 @@ func (vmtestAgentTransport) ReadFile(ctx context.Context, node inventory.Planned
 	}, nil
 }
 
-func dialNodeAgent(ctx context.Context, node inventory.PlannedNode) (*vmtest.AgentClient, error) {
+func (t vmtestAgentTransport) dialNodeAgent(ctx context.Context, node inventory.PlannedNode) (*vmtest.AgentClient, error) {
 	if node.Access.Method != "agent" {
 		return nil, fmt.Errorf("node %q access method %q is not supported by vmtest agent transport", node.Name, node.Access.Method)
 	}
@@ -266,7 +271,14 @@ func dialNodeAgent(ctx context.Context, node inventory.PlannedNode) (*vmtest.Age
 	if err != nil {
 		return nil, fmt.Errorf("node %q agent credentialRef: %w", node.Name, err)
 	}
-	return vmtest.DialAgent(ctx, cid, port, "")
+	return dialVMTestAgent(ctx, cid, port, t.transcriptPath(node))
+}
+
+func (t vmtestAgentTransport) transcriptPath(node inventory.PlannedNode) string {
+	if t.TranscriptDir == "" {
+		return ""
+	}
+	return filepath.Join(t.TranscriptDir, node.Name+".jsonl")
 }
 
 func parseVSockCredentialRef(value string) (uint32, uint32, error) {
