@@ -379,8 +379,8 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 		Sysexts: []generation.ExtensionRef{
 			{
 				Name:            "kubernetes",
-				Path:            "/var/lib/katl/generations/2026.06.04-001/sysext/kubernetes.raw",
-				ActivationPath:  "/run/extensions/kubernetes.raw",
+				Path:            "/var/lib/katl/generations/2026.06.04-001/sysext/katl-kubernetes.raw",
+				ActivationPath:  "/run/extensions/katl-kubernetes.raw",
 				SHA256:          strings.Repeat("b", 64),
 				ArtifactVersion: "k8s-v1.34.8",
 				PayloadVersion:  "v1.34.8",
@@ -443,7 +443,8 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
     "intent": "control-plane"
   },
   "kubernetes": {
-    "payloadVersion": "v1.34.8"
+    "payloadVersion": "v1.34.8",
+    "activationPath": "/run/extensions/katl-kubernetes.raw"
   }
 }
 `)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -16,7 +17,6 @@ import (
 
 const (
 	NodeMetadataPath          = "/etc/katl/node.json"
-	KubernetesSysextPath      = "/run/extensions/kubernetes.raw"
 	ProjectedKubernetesSource = "/var/lib/katl/kubernetes/etc-kubernetes"
 )
 
@@ -41,6 +41,7 @@ type NodeKubeadm struct {
 
 type NodeKubernetes struct {
 	PayloadVersion string `json:"payloadVersion,omitempty"`
+	ActivationPath string `json:"activationPath,omitempty"`
 }
 
 type CommandTransport interface {
@@ -108,9 +109,14 @@ func (c *checker) check(ctx context.Context, node inventory.PlannedNode) (invent
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.KubernetesSysextActive, err = c.commandOK(ctx, node, "kubernetes-sysext", []string{"test", "-e", KubernetesSysextPath}, false)
-	if err != nil {
-		return snapshot, err
+	metadata := c.nodeMetadata(ctx, node)
+	snapshot.SystemRole = metadata.SystemRole
+	kubernetesSysextPath := c.kubernetesSysextPath(metadata)
+	if kubernetesSysextPath != "" {
+		snapshot.KubernetesSysextActive, err = c.commandOK(ctx, node, "kubernetes-sysext", []string{"test", "-e", kubernetesSysextPath}, false)
+		if err != nil {
+			return snapshot, err
+		}
 	}
 	kubeadmVersion, err := c.kubeadmVersion(ctx, node)
 	if err != nil {
@@ -150,7 +156,6 @@ func (c *checker) check(ctx context.Context, node inventory.PlannedNode) (invent
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.SystemRole = c.nodeSystemRole(ctx, node)
 	snapshot.Diagnostics = c.diagnostics
 	return snapshot, nil
 }
@@ -242,15 +247,15 @@ func (c *checker) etcKubernetesProjected(ctx context.Context, node inventory.Pla
 	return true, nil
 }
 
-func (c *checker) nodeSystemRole(ctx context.Context, node inventory.PlannedNode) inventory.SystemRole {
+func (c *checker) nodeMetadata(ctx context.Context, node inventory.PlannedNode) NodeMetadata {
 	path := c.metadataPath()
 	exists, err := c.commandOK(ctx, node, "node-metadata", []string{"test", "-f", path}, false)
 	if err != nil {
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{Field: "node-metadata", Message: inventory.Redact(err.Error())})
-		return ""
+		return NodeMetadata{}
 	}
 	if !exists {
-		return ""
+		return NodeMetadata{}
 	}
 	file, err := c.Agent.ReadFile(ctx, node, FileRequest{
 		Path:      path,
@@ -260,12 +265,12 @@ func (c *checker) nodeSystemRole(ctx context.Context, node inventory.PlannedNode
 	})
 	if err != nil {
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{Field: "node-metadata", Message: inventory.Redact(err.Error())})
-		return ""
+		return NodeMetadata{}
 	}
 	var metadata NodeMetadata
 	if err := json.Unmarshal(file.Content, &metadata); err != nil {
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{Field: "node-metadata", Message: "decode node metadata: " + inventory.Redact(err.Error())})
-		return ""
+		return NodeMetadata{}
 	}
 	if metadata.APIVersion != "katl.dev/v1alpha1" || metadata.Kind != "NodeMetadata" {
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{
@@ -282,6 +287,14 @@ func (c *checker) nodeSystemRole(ctx context.Context, node inventory.PlannedNode
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{
 			Field:   "node-metadata",
 			Message: fmt.Sprintf("metadata Kubernetes version %s, plan requires %s", metadata.Kubernetes.PayloadVersion, node.KubernetesVersion),
+		})
+	}
+	if metadata.Kubernetes.ActivationPath == "" {
+		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{Field: "node-metadata", Message: "metadata kubernetes.activationPath is required"})
+	} else if !validKubernetesActivationPath(metadata.Kubernetes.ActivationPath) {
+		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{
+			Field:   "node-metadata",
+			Message: fmt.Sprintf("metadata kubernetes.activationPath %s must be under /run/extensions", metadata.Kubernetes.ActivationPath),
 		})
 	}
 	if node.KubeadmConfig.Ref != "" && metadata.Kubeadm.ConfigRef == "" {
@@ -309,7 +322,20 @@ func (c *checker) nodeSystemRole(ctx context.Context, node inventory.PlannedNode
 			Message: fmt.Sprintf("metadata kubeadm intent %s, plan requires %s", metadata.Kubeadm.Intent, node.KubeadmConfig.Intent),
 		})
 	}
-	return metadata.SystemRole
+	return metadata
+}
+
+func (c *checker) kubernetesSysextPath(metadata NodeMetadata) string {
+	if !validKubernetesActivationPath(metadata.Kubernetes.ActivationPath) {
+		return ""
+	}
+	return metadata.Kubernetes.ActivationPath
+}
+
+func validKubernetesActivationPath(value string) bool {
+	value = strings.TrimSpace(value)
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	return value == cleaned && strings.HasPrefix(cleaned, "/run/extensions/") && cleaned != "/run/extensions/"
 }
 
 func (c *checker) timeout() time.Duration {

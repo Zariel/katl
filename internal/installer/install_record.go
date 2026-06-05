@@ -41,9 +41,10 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 	}
 
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
-		Manifest:          request.Manifest,
-		KubeadmConfigs:    request.KubeadmConfigs,
-		KubernetesVersion: selectedKubernetesPayloadVersion(request.Record),
+		Manifest:                 request.Manifest,
+		KubeadmConfigs:           request.KubeadmConfigs,
+		KubernetesVersion:        selectedKubernetesPayloadVersion(request.Record),
+		KubernetesActivationPath: selectedKubernetesActivationPath(request.Record),
 	})
 	if err != nil {
 		return InstallRecordResult{}, err
@@ -131,6 +132,15 @@ func selectedKubernetesPayloadVersion(record generation.Record) string {
 	for _, sysext := range record.Sysexts {
 		if sysext.Name == "kubernetes" {
 			return sysext.PayloadVersion
+		}
+	}
+	return ""
+}
+
+func selectedKubernetesActivationPath(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return sysext.ActivationPath
 		}
 	}
 	return ""

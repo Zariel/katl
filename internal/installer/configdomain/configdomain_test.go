@@ -23,8 +23,9 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	files, err := NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": controlPlanePlan("v1.36.1"),
 		},
@@ -60,7 +61,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		t.Fatalf("metadata kubeadm = %#v", kubeadm)
 	}
 	kubernetes := metadata["kubernetes"].(map[string]any)
-	if kubernetes["payloadVersion"] != "v1.36.1" {
+	if kubernetes["payloadVersion"] != "v1.36.1" || kubernetes["activationPath"] != "/run/extensions/katl-kubernetes.raw" {
 		t.Fatalf("metadata kubernetes = %#v", kubernetes)
 	}
 }
@@ -74,8 +75,9 @@ func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	files, err := NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"worker": workerPlan(),
 		},
@@ -109,8 +111,9 @@ func TestNativeEtcFilesAcceptsControlPlaneJoinIntent(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	files, err := NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane-join": controlPlaneJoinPlan(),
 		},
@@ -155,8 +158,9 @@ func TestNativeEtcFilesRejectsMismatchedKubeadmPlan(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	_, err = NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": {
 				Name: "worker",
@@ -183,8 +187,9 @@ func TestNativeEtcFilesRejectsUnsafeRenderedPaths(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	_, err = NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": {
 				Name: "control-plane",
@@ -230,14 +235,35 @@ func TestNativeEtcFilesRejectsKubernetesVersionMismatch(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	_, err = NativeEtcFiles(RenderRequest{
-		Manifest:          installManifest,
-		KubernetesVersion: "v1.36.1",
+		Manifest:                 installManifest,
+		KubernetesVersion:        "v1.36.1",
+		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
 			"control-plane": controlPlanePlan("v1.35.9"),
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match selected Kubernetes payload version") {
 		t.Fatalf("NativeEtcFiles() error = %v, want version mismatch", err)
+	}
+}
+
+func TestNativeEtcFilesRejectsMissingKubernetesActivationPathForKubeadmMetadata(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"kubernetes": {
+				"kubeadm": {"configRef": "control-plane"}
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	_, err = NativeEtcFiles(RenderRequest{
+		Manifest:          installManifest,
+		KubernetesVersion: "v1.36.1",
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": controlPlanePlan("v1.36.1"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires selected Kubernetes activation path") {
+		t.Fatalf("NativeEtcFiles() error = %v, want missing selected activation path", err)
 	}
 }
 

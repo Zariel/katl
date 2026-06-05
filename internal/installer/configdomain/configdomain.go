@@ -11,9 +11,10 @@ import (
 )
 
 type RenderRequest struct {
-	Manifest          manifest.Manifest
-	KubeadmConfigs    map[string]kubeadmconfig.Plan
-	KubernetesVersion string
+	Manifest                 manifest.Manifest
+	KubeadmConfigs           map[string]kubeadmconfig.Plan
+	KubernetesVersion        string
+	KubernetesActivationPath string
 }
 
 func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
@@ -34,13 +35,16 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		if request.KubernetesVersion == "" {
 			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q requires selected Kubernetes payload version", ref)
 		}
+		if request.KubernetesActivationPath == "" {
+			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q requires selected Kubernetes activation path", ref)
+		}
 		if err := validateKubeadmVersion(request.KubernetesVersion, config); err != nil {
 			return nil, err
 		}
 		kubeadm = &config
 		files = append(files, config.NativeEtcFiles()...)
 	}
-	nodeMetadata, err := nodeMetadataFile(request.Manifest, kubeadm, request.KubernetesVersion)
+	nodeMetadata, err := nodeMetadataFile(request.Manifest, kubeadm, request.KubernetesVersion, request.KubernetesActivationPath)
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +92,10 @@ type nodeMetadataKubeadm struct {
 
 type nodeMetadataKubernetes struct {
 	PayloadVersion string `json:"payloadVersion,omitempty"`
+	ActivationPath string `json:"activationPath,omitempty"`
 }
 
-func nodeMetadataFile(installManifest manifest.Manifest, config *kubeadmconfig.Plan, kubernetesVersion string) (confext.NativeEtcFile, error) {
+func nodeMetadataFile(installManifest manifest.Manifest, config *kubeadmconfig.Plan, kubernetesVersion string, kubernetesActivationPath string) (confext.NativeEtcFile, error) {
 	metadata := nodeMetadata{
 		APIVersion: "katl.dev/v1alpha1",
 		Kind:       "NodeMetadata",
@@ -100,6 +105,7 @@ func nodeMetadataFile(installManifest manifest.Manifest, config *kubeadmconfig.P
 		SystemRole: installManifest.Node.SystemRole,
 		Kubernetes: nodeMetadataKubernetes{
 			PayloadVersion: kubernetesVersion,
+			ActivationPath: kubernetesActivationPath,
 		},
 	}
 	if config != nil {

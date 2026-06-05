@@ -33,6 +33,9 @@ func TestCheckerReportsReadyNode(t *testing.T) {
 	if snapshot.SystemRole != inventory.RoleControlPlane || snapshot.KubeadmConfigIntent != inventory.IntentControlPlane {
 		t.Fatalf("role/intent = %s/%s", snapshot.SystemRole, snapshot.KubeadmConfigIntent)
 	}
+	if !checker.Agent.(*fakeTransport).seen[key("test", "-e", "/run/extensions/selected-kubernetes.raw")] {
+		t.Fatalf("selected Kubernetes sysext path was not probed: %#v", checker.Agent.(*fakeTransport).seen)
+	}
 
 	report, err := inventory.VerifyReadiness(context.Background(), inventory.Plan{Nodes: []inventory.PlannedNode{node}}, checker)
 	if err != nil {
@@ -89,7 +92,7 @@ func TestCheckerReportsNotReadyPrerequisites(t *testing.T) {
 func TestCheckerReportsInactiveKubernetesSysext(t *testing.T) {
 	node := readyNode()
 	transport := readyTransport(node)
-	transport.commands[key("test", "-e", KubernetesSysextPath)] = CommandResult{ExitStatus: 1, Stderr: "missing sysext"}
+	transport.commands[key("test", "-e", "/run/extensions/selected-kubernetes.raw")] = CommandResult{ExitStatus: 1, Stderr: "missing sysext"}
 
 	report, err := inventory.VerifyReadiness(context.Background(), inventory.Plan{Nodes: []inventory.PlannedNode{node}}, Checker{Agent: transport})
 	if err != nil {
@@ -99,7 +102,7 @@ func TestCheckerReportsInactiveKubernetesSysext(t *testing.T) {
 		t.Fatalf("report.Ready = true, want false")
 	}
 	text := inventory.Error(report).Error()
-	if !strings.Contains(text, "selected Kubernetes sysext is not active") || !strings.Contains(text, KubernetesSysextPath) {
+	if !strings.Contains(text, "selected Kubernetes sysext is not active") || !strings.Contains(text, "/run/extensions/selected-kubernetes.raw") {
 		t.Fatalf("readiness error = %q", text)
 	}
 }
@@ -138,6 +141,7 @@ func TestCheckerReportsIncompleteNodeMetadata(t *testing.T) {
 	for _, want := range []string{
 		"metadata systemRole is required",
 		"metadata kubernetes.payloadVersion is required",
+		"metadata kubernetes.activationPath is required",
 		"metadata kubeadm.configRef is required",
 		"metadata kubeadm.configPath is required",
 		"metadata kubeadm.intent is required",
@@ -153,7 +157,7 @@ func TestCheckerReportsVersionRoleAndIntentMismatch(t *testing.T) {
 	transport := readyTransport(node)
 	transport.commands[key("kubeadm", "version", "-o", "short")] = CommandResult{ExitStatus: 0, Stdout: "v1.35.9\n"}
 	transport.files[node.KubeadmConfig.Path] = []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n")
-	transport.files[NodeMetadataPath] = []byte(`{"apiVersion":"katl.dev/v1alpha1","kind":"NodeMetadata","systemRole":"worker","kubeadm":{"configRef":"worker","configPath":"/etc/katl/kubeadm/worker/config.yaml","intent":"worker"},"kubernetes":{"payloadVersion":"v1.35.9"}}`)
+	transport.files[NodeMetadataPath] = []byte(`{"apiVersion":"katl.dev/v1alpha1","kind":"NodeMetadata","systemRole":"worker","kubeadm":{"configRef":"worker","configPath":"/etc/katl/kubeadm/worker/config.yaml","intent":"worker"},"kubernetes":{"payloadVersion":"v1.35.9","activationPath":"/run/extensions/selected-kubernetes.raw"}}`)
 
 	report, err := inventory.VerifyReadiness(context.Background(), inventory.Plan{Nodes: []inventory.PlannedNode{node}}, Checker{Agent: transport})
 	if err != nil {
@@ -167,6 +171,28 @@ func TestCheckerReportsVersionRoleAndIntentMismatch(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("readiness error %q missing %q", text, want)
 		}
+	}
+}
+
+func TestCheckerRejectsUnsafeKubernetesActivationPath(t *testing.T) {
+	for _, activationPath := range []string{"/etc/passwd", "/run/extensions/../passwd"} {
+		t.Run(activationPath, func(t *testing.T) {
+			node := readyNode()
+			transport := readyTransport(node)
+			transport.files[NodeMetadataPath] = []byte(`{"apiVersion":"katl.dev/v1alpha1","kind":"NodeMetadata","systemRole":"control-plane","kubeadm":{"configRef":"control-plane","configPath":"/etc/katl/kubeadm/control-plane/config.yaml","intent":"control-plane"},"kubernetes":{"payloadVersion":"v1.36.1","activationPath":"` + activationPath + `"}}`)
+
+			report, err := inventory.VerifyReadiness(context.Background(), inventory.Plan{Nodes: []inventory.PlannedNode{node}}, Checker{Agent: transport})
+			if err != nil {
+				t.Fatalf("VerifyReadiness() error = %v", err)
+			}
+			if report.Ready {
+				t.Fatalf("report.Ready = true, want false")
+			}
+			text := inventory.Error(report).Error()
+			if !strings.Contains(text, "metadata kubernetes.activationPath") || transport.seen[key("test", "-e", activationPath)] {
+				t.Fatalf("readiness error = %q, seen = %#v", text, transport.seen)
+			}
+		})
 	}
 }
 
@@ -211,7 +237,7 @@ func readyTransport(node inventory.PlannedNode) *fakeTransport {
 	transport := &fakeTransport{
 		commands: map[string]CommandResult{
 			key("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {ExitStatus: 0},
-			key("test", "-e", KubernetesSysextPath):                                             {ExitStatus: 0},
+			key("test", "-e", "/run/extensions/selected-kubernetes.raw"):                        {ExitStatus: 0},
 			key("kubeadm", "version", "-o", "short"):                                            {ExitStatus: 0, Stdout: node.KubernetesVersion + "\n"},
 			key("test", "-f", configPath):                                                       {ExitStatus: 0},
 			key("systemctl", "is-active", "--quiet", "containerd.service"):                      {ExitStatus: 0},
@@ -226,7 +252,7 @@ func readyTransport(node inventory.PlannedNode) *fakeTransport {
 		seen: map[string]bool{},
 		files: map[string][]byte{
 			configPath:       []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
-			NodeMetadataPath: []byte(`{"apiVersion":"katl.dev/v1alpha1","kind":"NodeMetadata","identity":{"hostname":"cp-1"},"systemRole":"control-plane","kubeadm":{"configRef":"control-plane","configPath":"` + configPath + `","intent":"control-plane"},"kubernetes":{"payloadVersion":"v1.36.1"}}`),
+			NodeMetadataPath: []byte(`{"apiVersion":"katl.dev/v1alpha1","kind":"NodeMetadata","identity":{"hostname":"cp-1"},"systemRole":"control-plane","kubeadm":{"configRef":"control-plane","configPath":"` + configPath + `","intent":"control-plane"},"kubernetes":{"payloadVersion":"v1.36.1","activationPath":"/run/extensions/selected-kubernetes.raw"}}`),
 		},
 	}
 	return transport
