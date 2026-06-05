@@ -427,7 +427,7 @@ func TestRunDryRunSkipsKubeadm(t *testing.T) {
 	}
 }
 
-func TestRunRejectsAdditionalControlPlaneJoinBeforeReadiness(t *testing.T) {
+func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 	inv := validInventory()
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
@@ -437,12 +437,88 @@ func TestRunRejectsAdditionalControlPlaneJoinBeforeReadiness(t *testing.T) {
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 		KubernetesVersion: "v1.36.1",
 	})
-	_, err := Run(context.Background(), Request{Inventory: inv, InitNode: "cp-1"}, Dependencies{
-		ReadinessChecker: readyChecker{},
-		NodeRunner:       &fakeNodeRunner{},
+	inv.Nodes = append(inv.Nodes, inventory.Node{
+		Name:              "cp-3",
+		Address:           "10.0.0.13",
+		SystemRole:        inventory.RoleControlPlane,
+		Access:            inventory.Access{Method: "agent", CredentialRef: "agent/cp-3"},
+		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
+		KubernetesVersion: "v1.36.1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "control-plane join") {
-		t.Fatalf("Run() error = %v, want unsupported control-plane join", err)
+	nodeRunner := &fakeNodeRunner{
+		credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		join:             JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef"}},
+		controlPlaneJoin: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
+	}
+	result, err := Run(context.Background(), Request{
+		Inventory:           inv,
+		InitNode:            "cp-1",
+		KubeconfigOut:       filepath.Join(t.TempDir(), "operator.conf"),
+		OverwriteKubeconfig: true,
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	wantPhases := []string{
+		"plan", "readiness", "kubeadm-init", "api-ready",
+		"control-plane-join-material", "control-plane-join", "control-plane-ready",
+		"control-plane-join", "control-plane-ready",
+		"join-material", "worker-join", "api-ready-after-join", "kubeconfig",
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, wantPhases) {
+		t.Fatalf("phases = %#v, want %#v", got, wantPhases)
+	}
+	if got, want := nodeRunner.calls, []string{
+		"init:cp-1",
+		"ready:cp-1",
+		"join-control-plane-material:cp-1",
+		"join-control-plane:cp-2",
+		"ready-control-plane:cp-2",
+		"join-control-plane:cp-3",
+		"ready-control-plane:cp-3",
+		"join-material:cp-1",
+		"join-worker:worker-1",
+		"ready:cp-1",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunStopsAfterControlPlaneJoinHealthFailure(t *testing.T) {
+	inv := validInventory()
+	inv.Nodes = append(inv.Nodes, inventory.Node{
+		Name:              "cp-2",
+		Address:           "10.0.0.12",
+		SystemRole:        inventory.RoleControlPlane,
+		Access:            inventory.Access{Method: "agent", CredentialRef: "agent/cp-2"},
+		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
+		KubernetesVersion: "v1.36.1",
+	})
+	secret := "abcdef.0123456789abcdef"
+	nodeRunner := &fakeNodeRunner{
+		credentials:          AdminCredentials{CertificateAuthorityData: testCA, ClientCertificateData: testCert, ClientKeyData: testKey},
+		controlPlaneJoin:     JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret, "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
+		controlPlaneReadyErr: errors.New("etcd unhealthy with token " + secret),
+	}
+	result, err := Run(context.Background(), Request{Inventory: inv, InitNode: "cp-1"}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want control-plane readiness failure")
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("error = %q, want redacted token", err.Error())
+	}
+	if got := phaseNames(result.Phases); containsString(got, "join-material") {
+		t.Fatalf("phases = %#v, worker join material should not be created after control-plane failure", got)
 	}
 }
 
@@ -558,6 +634,118 @@ func TestTransportRunnerRejectsAmbiguousJoinAlreadyExists(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("RunWorkerJoin() error = %v, want non-idempotent failure", err)
+	}
+}
+
+func TestTransportRunnerCreatesControlPlaneJoinMaterial(t *testing.T) {
+	transport := newFakeTransport()
+	certificateKey := strings.Repeat("a", 64)
+	transport.commands[commandKey("kubeadm", "init", "phase", "upload-certs", "--upload-certs", "--kubeconfig", adminKubeconfigPath)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     "sha256:" + strings.Repeat("b", 64) + "\nUsing certificate key:\n" + certificateKey + "\n",
+	}
+	transport.commands[commandKey("kubeadm", "token", "create", "--print-join-command", "--certificate-key", certificateKey, "--kubeconfig", adminKubeconfigPath)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     "kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef\n",
+	}
+	material, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	if err != nil {
+		t.Fatalf("CreateControlPlaneJoin() error = %v", err)
+	}
+	if !reflect.DeepEqual(material.Argv, []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey}) {
+		t.Fatalf("join argv = %#v", material.Argv)
+	}
+}
+
+func TestTransportRunnerRejectsUploadCertsWithoutStandaloneCertificateKey(t *testing.T) {
+	transport := newFakeTransport()
+	transport.commands[commandKey("kubeadm", "init", "phase", "upload-certs", "--upload-certs", "--kubeconfig", adminKubeconfigPath)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     "sha256:" + strings.Repeat("b", 64) + "\n",
+	}
+	_, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	if err == nil || !strings.Contains(err.Error(), "certificate key") {
+		t.Fatalf("CreateControlPlaneJoin() error = %v, want missing certificate key", err)
+	}
+}
+
+func TestTransportRunnerRunControlPlaneJoinRedactsCertificateKey(t *testing.T) {
+	transport := newFakeTransport()
+	certificateKey := strings.Repeat("a", 64)
+	transport.commands[commandKey("kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey, "--config", "/etc/katl/kubeadm/control-plane/config.yaml")] = readiness.CommandResult{
+		ExitStatus: 1,
+		Stderr:     "join failed with certificate-key " + certificateKey,
+	}
+	err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), validPlannedNode("cp-2", inventory.ActionControlPlaneJoin), JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey},
+	})
+	if err == nil {
+		t.Fatal("RunControlPlaneJoin() error = nil, want join failure")
+	}
+	if strings.Contains(err.Error(), certificateKey) || !strings.Contains(err.Error(), "certificate-key[REDACTED]") {
+		t.Fatalf("RunControlPlaneJoin() error = %q, want redacted certificate key", err.Error())
+	}
+}
+
+func TestTransportRunnerWaitsForControlPlaneJoinReady(t *testing.T) {
+	transport := newFakeTransport()
+	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz")] = readiness.CommandResult{ExitStatus: 0, Stdout: "ok\n"}
+	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", "cp-2")] = readiness.CommandResult{ExitStatus: 0, Stdout: "cp-2\n"}
+	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
+		transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
+	}
+	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,
+	}
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "status", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"member_id":"a1"},"version":"3.5.12","leader":"a1"}}]`,
+	}
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "member", "list", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `{"members":[{"ID":"a1","name":"cp-1"},{"ID":"b2","name":"cp-2"},{"ID":"c3","name":"cp-3"}]}`,
+	}
+
+	err := (TransportRunner{Transport: transport, APITimeout: time.Second, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
+		context.Background(),
+		validPlannedNode("cp-1", inventory.ActionInit),
+		validPlannedNode("cp-2", inventory.ActionControlPlaneJoin),
+	)
+	if err != nil {
+		t.Fatalf("WaitControlPlaneJoinReady() error = %v", err)
+	}
+}
+
+func TestTransportRunnerWaitControlPlaneJoinReadyRequiresEtcdMember(t *testing.T) {
+	transport := newFakeTransport()
+	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz")] = readiness.CommandResult{ExitStatus: 0, Stdout: "ok\n"}
+	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", "cp-2")] = readiness.CommandResult{ExitStatus: 0, Stdout: "cp-2\n"}
+	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
+		transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
+	}
+	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,
+	}
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "status", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"member_id":"a1"},"version":"3.5.12","leader":"a1"}}]`,
+	}
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "member", "list", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 0,
+		Stdout:     `{"members":[{"ID":"a1","name":"cp-1"}]}`,
+	}
+
+	err := (TransportRunner{Transport: transport, APITimeout: time.Millisecond, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
+		context.Background(),
+		validPlannedNode("cp-1", inventory.ActionInit),
+		validPlannedNode("cp-2", inventory.ActionControlPlaneJoin),
+	)
+	if err == nil || !strings.Contains(err.Error(), "member cp-2 is missing") {
+		t.Fatalf("WaitControlPlaneJoinReady() error = %v, want missing member", err)
 	}
 }
 
@@ -888,12 +1076,14 @@ func (c failingChecker) CheckReadiness(_ context.Context, _ inventory.PlannedNod
 }
 
 type fakeNodeRunner struct {
-	calls       []string
-	events      *[]string
-	credentials AdminCredentials
-	join        JoinMaterial
-	err         error
-	apiErr      error
+	calls                []string
+	events               *[]string
+	credentials          AdminCredentials
+	join                 JoinMaterial
+	controlPlaneJoin     JoinMaterial
+	err                  error
+	apiErr               error
+	controlPlaneReadyErr error
 }
 
 func (r *fakeNodeRunner) RunKubeadmInit(_ context.Context, node inventory.PlannedNode) (AdminCredentials, error) {
@@ -910,6 +1100,27 @@ func (r *fakeNodeRunner) CreateWorkerJoin(_ context.Context, initNode inventory.
 		return JoinMaterial{}, r.err
 	}
 	return r.join, nil
+}
+
+func (r *fakeNodeRunner) CreateControlPlaneJoin(_ context.Context, initNode inventory.PlannedNode) (JoinMaterial, error) {
+	r.record("join-control-plane-material:" + initNode.Name)
+	if r.err != nil {
+		return JoinMaterial{}, r.err
+	}
+	return r.controlPlaneJoin, nil
+}
+
+func (r *fakeNodeRunner) RunControlPlaneJoin(_ context.Context, node inventory.PlannedNode, _ JoinMaterial) error {
+	r.record("join-control-plane:" + node.Name)
+	return r.err
+}
+
+func (r *fakeNodeRunner) WaitControlPlaneJoinReady(_ context.Context, _ inventory.PlannedNode, node inventory.PlannedNode) error {
+	r.record("ready-control-plane:" + node.Name)
+	if r.controlPlaneReadyErr != nil {
+		return r.controlPlaneReadyErr
+	}
+	return r.err
 }
 
 func (r *fakeNodeRunner) RunWorkerJoin(_ context.Context, node inventory.PlannedNode, _ JoinMaterial) error {

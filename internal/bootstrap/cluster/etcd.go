@@ -74,6 +74,19 @@ type EtcdSnapshotReport struct {
 	Diagnostics []inventory.Diagnostic
 }
 
+func (r EtcdReport) HasMember(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, member := range r.Members {
+		if member.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (c EtcdChecker) Check(ctx context.Context, node inventory.PlannedNode) (EtcdReport, error) {
 	report := EtcdReport{Node: node.Name}
 	if node.SystemRole != inventory.RoleControlPlane {

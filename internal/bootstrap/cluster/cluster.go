@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ const (
 	adminKubeconfigPath = "/etc/kubernetes/admin.conf"
 	defaultAPIPort      = "6443"
 )
+
+var certificateKeyLinePattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
 
 type Request struct {
 	Inventory            inventory.Inventory
@@ -48,6 +51,9 @@ type Dependencies struct {
 
 type NodeRunner interface {
 	RunKubeadmInit(ctx context.Context, node inventory.PlannedNode) (AdminCredentials, error)
+	CreateControlPlaneJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error)
+	RunControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error
+	WaitControlPlaneJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error
 	CreateWorkerJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error)
 	RunWorkerJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error
 	WaitAPIReady(ctx context.Context, initNode inventory.PlannedNode) error
@@ -150,10 +156,6 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	if err != nil {
 		return result, err
 	}
-	if err := rejectUnsupportedControlPlaneJoin(plan); err != nil {
-		result.addPhase("control-plane-join", "", inventory.ActionControlPlaneJoin, "failed")
-		return result, err
-	}
 	if deps.ReadinessChecker == nil {
 		return result, errors.New("bootstrap readiness checker is required")
 	}
@@ -190,6 +192,28 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 		return result, fmt.Errorf("wait for API readiness on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addPhase("api-ready", initNode.Name, "", "passed")
+
+	controlPlanes := controlPlaneJoinNodes(plan)
+	if len(controlPlanes) > 0 {
+		material, err := deps.NodeRunner.CreateControlPlaneJoin(ctx, initNode)
+		if err != nil {
+			result.addPhase("control-plane-join-material", initNode.Name, "", "failed")
+			return result, fmt.Errorf("create control-plane join material: %s", inventory.Redact(err.Error()))
+		}
+		result.addPhase("control-plane-join-material", initNode.Name, "", "passed")
+		for _, node := range controlPlanes {
+			if err := deps.NodeRunner.RunControlPlaneJoin(ctx, node, material); err != nil {
+				result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
+				return result, fmt.Errorf("control-plane join on %s: %s", node.Name, inventory.Redact(err.Error()))
+			}
+			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed")
+			if err := deps.NodeRunner.WaitControlPlaneJoinReady(ctx, initNode, node); err != nil {
+				result.addPhase("control-plane-ready", node.Name, "", "failed")
+				return result, fmt.Errorf("wait for control-plane readiness on %s: %s", node.Name, inventory.Redact(err.Error()))
+			}
+			result.addPhase("control-plane-ready", node.Name, "", "passed")
+		}
+	}
 
 	workers := workerNodes(plan)
 	if len(workers) > 0 {
@@ -468,13 +492,14 @@ func (r *Result) addPhase(name, node string, action inventory.BootstrapAction, s
 	r.Phases = append(r.Phases, Phase{Name: name, Node: node, Action: action, Status: status})
 }
 
-func rejectUnsupportedControlPlaneJoin(plan inventory.Plan) error {
+func controlPlaneJoinNodes(plan inventory.Plan) []inventory.PlannedNode {
+	var nodes []inventory.PlannedNode
 	for _, node := range plan.Nodes {
 		if node.Action == inventory.ActionControlPlaneJoin {
-			return fmt.Errorf("control-plane join for node %q is not implemented yet", node.Name)
+			nodes = append(nodes, node)
 		}
 	}
-	return nil
+	return nodes
 }
 
 func findInitNode(plan inventory.Plan) (inventory.PlannedNode, error) {
@@ -797,9 +822,70 @@ func (r TransportRunner) CreateWorkerJoin(ctx context.Context, initNode inventor
 	if err != nil {
 		return JoinMaterial{}, err
 	}
-	argv := strings.Fields(strings.TrimSpace(result.Stdout))
+	return parseJoinMaterial(result.Stdout)
+}
+
+func (r TransportRunner) CreateControlPlaneJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error) {
+	keyResult, err := r.run(ctx, initNode, []string{"kubeadm", "init", "phase", "upload-certs", "--upload-certs", "--kubeconfig", adminKubeconfigPath}, true)
+	if err != nil {
+		return JoinMaterial{}, err
+	}
+	certificateKey := certificateKey(keyResult.Stdout + "\n" + keyResult.Stderr)
+	if certificateKey == "" {
+		return JoinMaterial{}, errors.New("kubeadm did not print a certificate key")
+	}
+	result, err := r.run(ctx, initNode, []string{"kubeadm", "token", "create", "--print-join-command", "--certificate-key", certificateKey, "--kubeconfig", adminKubeconfigPath}, true)
+	if err != nil {
+		return JoinMaterial{}, err
+	}
+	material, err := parseJoinMaterial(result.Stdout)
+	if err != nil {
+		return JoinMaterial{}, err
+	}
+	material.Argv = ensureFlag(material.Argv, "--control-plane")
+	material.Argv = ensureFlagValue(material.Argv, "--certificate-key", certificateKey)
+	return material, nil
+}
+
+func (r TransportRunner) RunControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error {
+	if len(material.Argv) == 0 {
+		return errors.New("control-plane join material is required")
+	}
+	argv := append([]string(nil), material.Argv...)
+	argv = append(argv, "--config", kubeadmConfigPath(node))
+	result, err := r.run(ctx, node, argv, true)
+	if err != nil && (!alreadyJoined(result) || !r.controlPlaneJoinComplete(ctx, node)) {
+		return err
+	}
+	return nil
+}
+
+func (r TransportRunner) WaitControlPlaneJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error {
+	timeout := r.apiTimeout()
+	interval := r.apiPollInterval()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := r.controlPlaneJoinReady(ctx, initNode, node); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("control-plane %s health: %w", node.Name, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func parseJoinMaterial(output string) (JoinMaterial, error) {
+	argv := strings.Fields(strings.TrimSpace(output))
 	if len(argv) < 2 || argv[0] != "kubeadm" || argv[1] != "join" {
-		return JoinMaterial{}, errors.New("kubeadm did not print a worker join command")
+		return JoinMaterial{}, errors.New("kubeadm did not print a join command")
 	}
 	return JoinMaterial{Argv: argv}, nil
 }
@@ -849,6 +935,58 @@ func (r TransportRunner) workerJoinComplete(ctx context.Context, node inventory.
 		}
 	}
 	return true
+}
+
+func (r TransportRunner) controlPlaneJoinComplete(ctx context.Context, node inventory.PlannedNode) bool {
+	for _, argv := range [][]string{
+		{"test", "-f", "/etc/kubernetes/kubelet.conf"},
+		{"test", "-f", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+		{"test", "-f", "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
+		{"test", "-f", "/etc/kubernetes/manifests/kube-scheduler.yaml"},
+		{"test", "-f", "/etc/kubernetes/manifests/etcd.yaml"},
+		{"systemctl", "is-active", "--quiet", "kubelet.service"},
+	} {
+		if _, err := r.run(ctx, node, argv, false); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (r TransportRunner) controlPlaneJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error {
+	if err := r.runSensitive(ctx, initNode, []string{"kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz"}); err != nil {
+		return fmt.Errorf("api readyz: %w", err)
+	}
+	if err := r.runSensitive(ctx, initNode, []string{"kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", node.Name}); err != nil {
+		return fmt.Errorf("node object: %w", err)
+	}
+	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
+		if err := r.runningContainer(ctx, node, name); err != nil {
+			return err
+		}
+	}
+	etcdReport, err := (EtcdChecker{Transport: r.transport(), Timeout: r.timeout(), OutputLimit: r.outputLimit()}).Check(ctx, node)
+	if err != nil {
+		return err
+	}
+	if !etcdReport.Healthy {
+		return fmt.Errorf("etcd health: %s", diagnosticsSummary(etcdReport.Diagnostics))
+	}
+	if !etcdReport.HasMember(node.Name) {
+		return fmt.Errorf("etcd health: member %s is missing from etcd member list", node.Name)
+	}
+	return nil
+}
+
+func (r TransportRunner) runningContainer(ctx context.Context, node inventory.PlannedNode, name string) error {
+	result, err := r.run(ctx, node, []string{"crictl", "ps", "--name", name, "--state", "Running", "--quiet"}, false)
+	if err != nil {
+		return fmt.Errorf("%s static pod: %w", name, err)
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
+		return fmt.Errorf("%s static pod is not running", name)
+	}
+	return nil
 }
 
 func (r TransportRunner) runSensitive(ctx context.Context, node inventory.PlannedNode, argv []string) error {
@@ -925,6 +1063,58 @@ func commandError(argv []string, result readiness.CommandResult) error {
 		parts = append(parts, "stderr: "+inventory.Redact(strings.TrimSpace(result.Stderr)))
 	}
 	return errors.New(strings.Join(parts, "; "))
+}
+
+func certificateKey(output string) string {
+	previousLineMentionedKey := false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if certificateKeyLinePattern.MatchString(line) {
+			if previousLineMentionedKey {
+				return line
+			}
+			continue
+		}
+		previousLineMentionedKey = strings.Contains(strings.ToLower(line), "certificate key")
+	}
+	return ""
+}
+
+func ensureFlag(argv []string, flag string) []string {
+	for _, arg := range argv {
+		if arg == flag {
+			return argv
+		}
+	}
+	return append(argv, flag)
+}
+
+func ensureFlagValue(argv []string, flag, value string) []string {
+	for i, arg := range argv {
+		if arg == flag {
+			if i+1 < len(argv) {
+				argv[i+1] = value
+				return argv
+			}
+			return append(argv, value)
+		}
+		if strings.HasPrefix(arg, flag+"=") {
+			argv[i] = flag + "=" + value
+			return argv
+		}
+	}
+	return append(argv, flag, value)
+}
+
+func diagnosticsSummary(diagnostics []inventory.Diagnostic) string {
+	if len(diagnostics) == 0 {
+		return "not healthy"
+	}
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		parts = append(parts, diagnostic.Field+": "+inventory.Redact(diagnostic.Message))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func alreadyInitialized(result readiness.CommandResult) bool {
