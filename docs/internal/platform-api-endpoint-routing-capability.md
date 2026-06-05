@@ -12,10 +12,9 @@ This decision builds on:
 
 ```text
 docs/internal/cluster-bootstrap-cli.md
+docs/internal/platform-api-endpoint-helper-input-schema.md
 docs/internal/system-roles-and-capabilities.md
 docs/internal/supported-node-config-domains.md
-katl-dty.11.20.13
-katl-dty.12.10.1.1
 ```
 
 ## Decision
@@ -99,6 +98,9 @@ health probe target, defaulting to local kube-apiserver /readyz
 advertisement enablement policy
 status output path and retention policy
 ```
+
+The field-level schema and validation contract are defined in
+`docs/internal/platform-api-endpoint-helper-input-schema.md`.
 
 Static and no-dynamic-routing fabrics are allowed as user-owned environments,
 but they are not first-class for this helper.
@@ -271,35 +273,19 @@ package installation.
 
 ## Follow-Up Work
 
-Implementation must be split into focused Beads:
+Implementation must be split into focused follow-up work:
 
 ```text
-katl-dty.12.10.2
-  design the app sysext contract for optional node applications
+design the app sysext contract for optional node applications
 
-katl-dty.12.10.1.3
-  define the platform API endpoint helper input schema and generated artifacts
+define the platform API endpoint helper input schema and generated artifacts
 
-katl-dty.12.10.1.2
-  package BIRD or equivalent helper as a Katl or fixture app sysext
+package BIRD or equivalent helper as a Katl or fixture app sysext
 
-katl-dty.12.10.1.4
-  implement the advertisement health gate and status record
+implement the advertisement health gate and status record
 
-katl-dty.12.10.1.5
-  define live versus next-boot apply planner behavior for helper config
+define live versus next-boot apply planner behavior for helper config
 
-katl-dty.11.22
-  verify pre-Cilium reachability, local BIRD export, withdrawal, and diagnostics
-  in VM tests
-```
-
-Existing related Beads:
-
-```text
-katl-dty.11.20.14
-katl-dty.11.22
-katl-dty.11.23
-katl-dty.11.8.2
-katl-dty.12.10
+verify pre-Cilium reachability, local BIRD export, withdrawal, and diagnostics
+in VM tests
 ```

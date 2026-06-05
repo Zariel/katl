@@ -349,8 +349,8 @@ metadata labels, user-chosen generation IDs, node matching selectors, SSH
 enable/disable policy, installer SSH overrides, artifact trust roots, bootloader
 policy, loader entry names, kernel arguments, or extra disk mount options. The
 hostname under `node.identity.hostname` is the only per-node identity field.
-Those can be added later through explicit design and Beads when there is a
-concrete implementation need.
+Those can be added later through explicit design when there is a concrete
+implementation need.
 
 The manifest is intentionally explicit about destructive installation:
 

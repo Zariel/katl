@@ -1,6 +1,6 @@
 # Go VM Scenario Test Harness Design
 
-Status: proposed design for `katl-dty.4.5`.
+Status: proposed design.
 
 This document defines the Go-authored VM scenario harness for Katl integration
 tests. The harness grows the current shell smoke checks into typed scenario

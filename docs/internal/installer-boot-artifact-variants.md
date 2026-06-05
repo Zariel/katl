@@ -217,26 +217,21 @@ Examples for matchbox or iPXE should show how to pass documented kernel
 arguments and fetch the generic artifacts. They must not turn Katl into a
 provisioning server or require checked-in site-specific paths.
 
-## Follow-Up Beads
+## Follow-Up Work
 
-Existing Beads cover the implementation path:
+Existing follow-up work covers the implementation path:
 
 ```text
-katl-dty.12.7
-  build split installer kernel and initrd artifacts
+build split installer kernel and initrd artifacts
 
-katl-dty.12.8
-  verify PXE boot can supply config without image rebuild
+verify PXE boot can supply config without image rebuild
 
-katl-dty.12.11
-  update install manifest schema for one KatlOS image reference
+update install manifest schema for one KatlOS image reference
 
-katl-dty.12.3
-  consume single KatlOS install image in installer
+consume single KatlOS install image in installer
 
-katl-dty.11.11
-  define node install-to-bootstrap state machine after boot and payload input
-  contracts are stable
+define node install-to-bootstrap state machine after boot and payload input
+contracts are stable
 ```
 
 These are sufficient follow-ups for this decision.

@@ -18,7 +18,9 @@ Capability overlays remain a day-2 design topic. They need a clearer input
 model, merge model, and test contract before they become user-facing.
 The opt-in platform API endpoint routing capability is one concrete deferred
 capability and is documented in
-`docs/internal/platform-api-endpoint-routing-capability.md`.
+`docs/internal/platform-api-endpoint-routing-capability.md`. Its proposed
+bounded input schema is documented in
+`docs/internal/platform-api-endpoint-helper-input-schema.md`.
 
 This document builds on `docs/internal/supported-node-config-domains.md`: every
 rendered output must still land in a supported systemd-native domain or bounded

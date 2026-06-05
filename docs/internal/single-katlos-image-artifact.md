@@ -305,32 +305,25 @@ credentials for fetching a private image are supplied by installer input or a
   protected local channel, not embedded in the reusable image
 ```
 
-## Follow-Up Beads
+## Follow-Up Work
 
-Existing Beads cover the implementation path:
+Existing follow-up work covers the implementation path:
 
 ```text
-katl-dty.12.2
-  build single KatlOS install image
+build single KatlOS install image
 
-katl-dty.12.11
-  update install manifest schema for one KatlOS image reference
+update install manifest schema for one KatlOS image reference
 
-katl-dty.12.3
-  consume single KatlOS install image in installer
+consume single KatlOS install image in installer
 
-katl-dty.12.4
-  define and implement single KatlOS upgrade image apply path
+define and implement single KatlOS upgrade image apply path
 
-katl-dty.12.5
-  verify install and upgrade consume one image
+verify install and upgrade consume one image
 
-katl-dty.12.6
-  define installer boot artifact variants that point at the KatlOS image
+define installer boot artifact variants that point at the KatlOS image
 
-katl-dty.12.8
-  verify PXE boot can supply config without image rebuild
+verify PXE boot can supply config without image rebuild
 ```
 
-These are sufficient follow-ups for this decision. No new Beads are required for
-the contract itself.
+These are sufficient follow-ups for this decision. No new tracked work is
+required for the contract itself.

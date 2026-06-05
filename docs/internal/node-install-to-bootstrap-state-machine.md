@@ -298,7 +298,7 @@ node is installed, has reached `katl-kubeadm-ready.target`, and is ready for the
 bounded operator-run cluster bootstrap CLI. It also means node install has not
 run `kubeadm init` or `kubeadm join`.
 
-## Tests And Follow-Up Beads
+## Tests And Follow-Up Work
 
 Unit tests should cover:
 
@@ -313,29 +313,22 @@ pre-mutation versus post-mutation failure classification
 redacted diagnostic output
 ```
 
-Existing Beads cover VM validation and dependent implementation:
+Existing follow-up work covers VM validation and dependent implementation:
 
 ```text
-katl-dty.11.12
-  PXE/preseeded node install-to-bootstrap vmtest
+PXE/preseeded node install-to-bootstrap vmtest
 
-katl-dty.11.13
-  USB/local-handoff node install-to-bootstrap vmtest
+USB/local-handoff node install-to-bootstrap vmtest
 
-katl-dty.11.15
-  persist install-to-bootstrap status checkpoints
+persist install-to-bootstrap status checkpoints
 
-katl-dty.11.2
-  compile system roles into per-node install materials
+compile system roles into per-node install materials
 
-katl-dty.11.9
-  bootstrap node inventory and readiness checks
+bootstrap node inventory and readiness checks
 
-katl-dty.12.11
-  install manifest schema for one KatlOS image reference
+install manifest schema for one KatlOS image reference
 
-katl-dty.12.3
-  consume single KatlOS install image in installer
+consume single KatlOS install image in installer
 ```
 
 These are sufficient follow-ups for this decision.

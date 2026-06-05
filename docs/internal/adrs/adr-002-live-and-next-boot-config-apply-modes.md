@@ -234,7 +234,7 @@ node identity is rejected instead of silently changing cluster state.
 
 ## Testing Contract
 
-Implementation Beads must cover:
+Implementation follow-up work must cover:
 
 ```text
 planner unit tests for live, next-boot, staged-only, and rejected-live decisions
@@ -252,11 +252,11 @@ machine-local paths into committed configuration.
 
 ## Consequences
 
-`katl-dty.11.8.4` should implement a typed planner before any runtime agent
-executes live changes. The planner should produce an explicit decision:
-accepted `live`, accepted `next-boot`, or rejected with domain diagnostics.
+A follow-up should implement a typed planner before any runtime agent executes
+live changes. The planner should produce an explicit decision: accepted `live`,
+accepted `next-boot`, or rejected with domain diagnostics.
 
-`katl-dty.11.8.5` should prove the decision in VM tests before live application
+Another follow-up should prove the decision in VM tests before live application
 is considered supported.
 
 Future kubeadm-aware actions must build on the desired/live state planner rather

@@ -361,37 +361,28 @@ perform hidden kubeadm upgrades during config activation
 run kubeadm from install manifests or generated confext activation
 ```
 
-## Follow-Up Beads
+## Follow-Up Work
 
-Existing Beads cover the implementation path:
+Existing follow-up work covers the implementation path:
 
 ```text
-katl-dty.11.9
-  bootstrap node inventory and readiness checks
+bootstrap node inventory and readiness checks
 
-katl-dty.11.11
-  node install-to-bootstrap state machine feeding kubeadm-ready checks
+node install-to-bootstrap state machine feeding kubeadm-ready checks
 
-katl-dty.11.10
-  operator kubeconfig materialization
+operator kubeconfig materialization
 
-katl-dty.11.3
-  cluster bootstrap CLI command
+cluster bootstrap CLI command
 
-katl-dty.11.5
-  light user bootstrap handoff after API readiness
+light user bootstrap handoff after API readiness
 
-katl-dty.11.4
-  two-node kubeadm join VM scenario
+two-node kubeadm join VM scenario
 
-katl-dty.11.6
-  usable multi-node cluster smoke
+usable multi-node cluster smoke
 
-katl-dty.11.7
-  additional control-plane join smoke
+additional control-plane join smoke
 
-katl-dty.11.8 and children
-  config-change handling after bootstrap
+config-change handling after bootstrap
 ```
 
 These are sufficient follow-ups for this decision.
