@@ -35,6 +35,13 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Generated systemd units should be verifiable with `systemd-analyze verify` where practical.
 - Changes to disk layout, boot flow, update flow, or kubeadm state handling need tests or an explicit note explaining the remaining gap.
 
+## Naming
+
+- Keep identifiers concise and specific. Prefer names that add local meaning over names that repeat package, type, or file context.
+- Name functions for the action or result they provide, not for every implementation detail they touch.
+- Keep test names focused on the behavior under test. Avoid long sentence-style names; use table case names for detailed scenarios when that keeps the test function name short.
+- Do not shorten names into unclear abbreviations. Concise still means readable to someone who has not been working in the file.
+
 ## Task Tracking
 
 - Use Beads through the `bd` CLI for project task tracking.
