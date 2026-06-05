@@ -234,6 +234,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	flags.Var(&bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
 	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, or condition[:namespace]:kind/name:Condition")
 	bootstrapStableEndpoint := flags.String("bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
+	bootstrapStableEndpointBeforeManifests := flags.Bool("bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -248,7 +249,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	if err != nil {
 		return err
 	}
-	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapWaitValues.values, *bootstrapStableEndpoint)
+	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapWaitValues.values, *bootstrapStableEndpoint, *bootstrapStableEndpointBeforeManifests)
 	if err != nil {
 		return err
 	}
@@ -405,8 +406,14 @@ func (l *stringList) Set(value string) error {
 	return nil
 }
 
-func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint string) (cluster.UserBootstrap, error) {
-	bootstrap := cluster.UserBootstrap{StableEndpoint: strings.TrimSpace(stableEndpoint)}
+func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint string, stableEndpointBeforeManifests bool) (cluster.UserBootstrap, error) {
+	bootstrap := cluster.UserBootstrap{
+		StableEndpoint:                strings.TrimSpace(stableEndpoint),
+		StableEndpointBeforeManifests: stableEndpointBeforeManifests,
+	}
+	if stableEndpointBeforeManifests && bootstrap.StableEndpoint == "" {
+		return cluster.UserBootstrap{}, fmt.Errorf("--bootstrap-stable-endpoint-before-manifests requires --bootstrap-stable-endpoint")
+	}
 	for _, path := range manifestPaths {
 		path = strings.TrimSpace(path)
 		if path == "" {

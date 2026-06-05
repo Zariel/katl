@@ -58,9 +58,10 @@ type BootstrapRunner interface {
 }
 
 type UserBootstrap struct {
-	Manifests      []BootstrapManifest
-	Waits          []BootstrapWait
-	StableEndpoint string
+	Manifests                     []BootstrapManifest
+	Waits                         []BootstrapWait
+	StableEndpoint                string
+	StableEndpointBeforeManifests bool
 }
 
 type BootstrapManifest struct {
@@ -80,6 +81,7 @@ type BootstrapRequest struct {
 	Server         string
 	StableEndpoint string
 	Credentials    AdminCredentials
+	PreWaits       []BootstrapWait
 	Manifests      []BootstrapManifest
 	Waits          []BootstrapWait
 }
@@ -220,6 +222,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 			Server:         bootstrapServer(initNode, plan),
 			StableEndpoint: bootstrap.StableEndpoint,
 			Credentials:    credentials,
+			PreWaits:       bootstrap.preWaits(),
 			Manifests:      bootstrap.Manifests,
 			Waits:          bootstrap.waitsWithEndpoint(),
 		})
@@ -264,6 +267,8 @@ func prepareBootstrap(bootstrap UserBootstrap) (UserBootstrap, error) {
 		if err := validateEndpointLike(bootstrap.StableEndpoint); err != nil {
 			return UserBootstrap{}, fmt.Errorf("bootstrap stable endpoint: %w", err)
 		}
+	} else if bootstrap.StableEndpointBeforeManifests {
+		return UserBootstrap{}, fmt.Errorf("bootstrap stable endpoint before manifests requires stable endpoint")
 	}
 	manifests := make([]BootstrapManifest, 0, len(bootstrap.Manifests))
 	for _, manifest := range bootstrap.Manifests {
@@ -290,7 +295,10 @@ func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
 	if bootstrap == nil {
 		return UserBootstrap{}
 	}
-	result := UserBootstrap{StableEndpoint: bootstrap.StableEndpoint}
+	result := UserBootstrap{
+		StableEndpoint:                bootstrap.StableEndpoint,
+		StableEndpointBeforeManifests: bootstrap.StableEndpointBeforeManifests,
+	}
 	for _, manifest := range bootstrap.Manifests {
 		result.Manifests = append(result.Manifests, BootstrapManifest{Path: manifest.Path})
 	}
@@ -307,8 +315,9 @@ func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
 
 func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
 	result := UserBootstrap{
-		Manifests: append([]BootstrapManifest(nil), plan.Manifests...),
-		Waits:     append([]BootstrapWait(nil), plan.Waits...),
+		Manifests:                     append([]BootstrapManifest(nil), plan.Manifests...),
+		Waits:                         append([]BootstrapWait(nil), plan.Waits...),
+		StableEndpointBeforeManifests: plan.StableEndpointBeforeManifests || request.StableEndpointBeforeManifests,
 	}
 	if strings.TrimSpace(request.StableEndpoint) != "" {
 		result.StableEndpoint = request.StableEndpoint
@@ -367,12 +376,23 @@ func (b UserBootstrap) enabled() bool {
 	return len(b.Manifests) > 0 || len(b.Waits) > 0 || strings.TrimSpace(b.StableEndpoint) != ""
 }
 
+func (b UserBootstrap) preWaits() []BootstrapWait {
+	if !b.StableEndpointBeforeManifests || strings.TrimSpace(b.StableEndpoint) == "" {
+		return nil
+	}
+	return []BootstrapWait{b.stableEndpointWait()}
+}
+
 func (b UserBootstrap) waitsWithEndpoint() []BootstrapWait {
 	waits := append([]BootstrapWait(nil), b.Waits...)
-	if strings.TrimSpace(b.StableEndpoint) != "" {
-		waits = append(waits, BootstrapWait{Kind: BootstrapWaitStableEndpoint, Name: b.StableEndpoint})
+	if strings.TrimSpace(b.StableEndpoint) != "" && !b.StableEndpointBeforeManifests {
+		waits = append(waits, b.stableEndpointWait())
 	}
 	return waits
+}
+
+func (b UserBootstrap) stableEndpointWait() BootstrapWait {
+	return BootstrapWait{Kind: BootstrapWaitStableEndpoint, Name: b.StableEndpoint}
 }
 
 func normalizeBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
@@ -519,6 +539,14 @@ func (r KubectlBootstrapRunner) RunUserBootstrap(ctx context.Context, request Bo
 		return BootstrapResult{}, err
 	}
 	result := BootstrapResult{}
+	for _, wait := range request.PreWaits {
+		stableReady, err := r.runBootstrapWait(ctx, dir, kubeconfigPath, &request, wait)
+		if err != nil {
+			return result, err
+		}
+		result.StableEndpointReady = result.StableEndpointReady || stableReady
+		result.Waits = append(result.Waits, wait)
+	}
 	for index, manifest := range request.Manifests {
 		path, err := r.writeManifest(dir, index, manifest)
 		if err != nil {
@@ -530,36 +558,40 @@ func (r KubectlBootstrapRunner) RunUserBootstrap(ctx context.Context, request Bo
 		result.AppliedManifests = append(result.AppliedManifests, manifest)
 	}
 	for _, wait := range request.Waits {
-		if wait.Kind == BootstrapWaitStableEndpoint {
-			if strings.TrimSpace(request.StableEndpoint) == "" {
-				request.StableEndpoint = wait.Name
-			}
-			stableKubeconfig, err := r.writeKubeconfig(dir, request.StableEndpoint, request.Credentials)
-			if err != nil {
-				return result, err
-			}
-			if err := r.pollKubectl(ctx, []string{"--kubeconfig", stableKubeconfig, "--context", "katl-bootstrap", "get", "--raw=/readyz"}); err != nil {
-				return result, err
-			}
-			result.StableEndpointReady = true
-			result.Waits = append(result.Waits, wait)
-			continue
-		}
-		args, err := waitKubectlArgs(kubeconfigPath, wait)
+		stableReady, err := r.runBootstrapWait(ctx, dir, kubeconfigPath, &request, wait)
 		if err != nil {
 			return result, err
 		}
-		if wait.Kind == BootstrapWaitAPIReady || wait.Kind == BootstrapWaitResourceExists {
-			err = r.pollKubectl(ctx, args)
-		} else {
-			err = r.runKubectl(ctx, args)
-		}
-		if err != nil {
-			return result, err
-		}
+		result.StableEndpointReady = result.StableEndpointReady || stableReady
 		result.Waits = append(result.Waits, wait)
 	}
 	return result, nil
+}
+
+func (r KubectlBootstrapRunner) runBootstrapWait(ctx context.Context, dir, kubeconfigPath string, request *BootstrapRequest, wait BootstrapWait) (bool, error) {
+	if wait.Kind == BootstrapWaitStableEndpoint {
+		if strings.TrimSpace(request.StableEndpoint) == "" {
+			request.StableEndpoint = wait.Name
+		}
+		stableKubeconfig, err := r.writeKubeconfig(dir, request.StableEndpoint, request.Credentials)
+		if err != nil {
+			return false, err
+		}
+		if err := r.pollKubectl(ctx, []string{"--kubeconfig", stableKubeconfig, "--context", "katl-bootstrap", "get", "--raw=/readyz"}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	args, err := waitKubectlArgs(kubeconfigPath, wait)
+	if err != nil {
+		return false, err
+	}
+	if wait.Kind == BootstrapWaitAPIReady || wait.Kind == BootstrapWaitResourceExists {
+		err = r.pollKubectl(ctx, args)
+	} else {
+		err = r.runKubectl(ctx, args)
+	}
+	return false, err
 }
 
 func (r KubectlBootstrapRunner) workDir() (string, func(), error) {

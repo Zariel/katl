@@ -149,6 +149,101 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 	}
 }
 
+func TestRunAppliesStableEndpointWaitBeforeUserBootstrapManifests(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
+	result, err := Run(context.Background(), Request{
+		Inventory:           validSingleNodeInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+		Bootstrap: UserBootstrap{
+			StableEndpoint:                "api.stable.test:6443",
+			StableEndpointBeforeManifests: true,
+			Manifests: []BootstrapManifest{{
+				Path:    "cni.yaml",
+				Content: []byte(validBootstrapManifest("cni")),
+			}},
+		},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		}},
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
+		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
+	}
+	if len(bootstrapRunner.requests) != 1 {
+		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
+	}
+	request := bootstrapRunner.requests[0]
+	if len(request.PreWaits) != 1 || request.PreWaits[0].Kind != BootstrapWaitStableEndpoint || request.PreWaits[0].Name != "api.stable.test:6443" {
+		t.Fatalf("pre waits = %#v, want stable endpoint", request.PreWaits)
+	}
+	if len(request.Waits) != 0 {
+		t.Fatalf("post waits = %#v, want no duplicate stable endpoint wait", request.Waits)
+	}
+}
+
+func TestRunRejectsPreManifestStableEndpointWithoutEndpoint(t *testing.T) {
+	result, err := Run(context.Background(), Request{
+		Inventory: validSingleNodeInventory(),
+		Bootstrap: UserBootstrap{StableEndpointBeforeManifests: true},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       &fakeNodeRunner{},
+		BootstrapRunner:  &fakeBootstrapRunner{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires stable endpoint") {
+		t.Fatalf("Run() error = %v, want stable endpoint validation", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan"}) {
+		t.Fatalf("phases = %#v, want plan only", got)
+	}
+}
+
+func TestRunStopsAfterPreManifestStableEndpointFailureAndRedactsSecret(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	secret := "abcdef.0123456789abcdef"
+	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("stable endpoint failed with token " + secret)}
+	result, err := Run(context.Background(), Request{
+		Inventory:           validSingleNodeInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+		Bootstrap: UserBootstrap{
+			StableEndpoint:                "api.stable.test:6443",
+			StableEndpointBeforeManifests: true,
+			Manifests: []BootstrapManifest{{
+				Path:    "cni.yaml",
+				Content: []byte(validBootstrapManifest("cni")),
+			}},
+		},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		}},
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want stable endpoint failure")
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("error = %q, want redacted token", err.Error())
+	}
+	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, kubeconfig should not run after pre wait failure", got)
+	}
+}
+
 func TestRunRejectsInvalidBootstrapYAMLBeforeKubeadm(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{}
 	bootstrapRunner := &fakeBootstrapRunner{}
@@ -510,6 +605,87 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	stableKubeconfig := readFileString(t, commands.calls[5][2])
 	if !strings.Contains(stableKubeconfig, "server: https://api.stable.test:6443") {
 		t.Fatalf("stable bootstrap kubeconfig did not normalize server:\n%s", stableKubeconfig)
+	}
+}
+
+func TestKubectlBootstrapRunnerRunsPreWaitBeforeManifests(t *testing.T) {
+	dir := t.TempDir()
+	commands := &fakeKubectlCommandRunner{}
+	result, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       dir,
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server:         "10.0.0.11:6443",
+		StableEndpoint: "api.stable.test:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		PreWaits: []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"}},
+		Manifests: []BootstrapManifest{{
+			Path:    "01-cni.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunUserBootstrap() error = %v", err)
+	}
+	if !result.StableEndpointReady || len(result.AppliedManifests) != 1 || len(result.Waits) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(commands.calls) != 2 {
+		t.Fatalf("kubectl calls = %#v, want pre wait then apply", commands.calls)
+	}
+	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
+		t.Fatalf("first kubectl args = %#v, want stable endpoint readyz", commands.calls[0])
+	}
+	if got := commands.calls[1][5:]; !reflect.DeepEqual(got, []string{"apply", "-f", filepath.Join(dir, "0000.yaml")}) {
+		t.Fatalf("second kubectl args = %#v, want apply", commands.calls[1])
+	}
+	stableKubeconfig := readFileString(t, commands.calls[0][2])
+	if !strings.Contains(stableKubeconfig, "server: https://api.stable.test:6443") {
+		t.Fatalf("pre-wait kubeconfig did not use stable endpoint:\n%s", stableKubeconfig)
+	}
+}
+
+func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
+	commands := &fakeKubectlCommandRunner{
+		results: []readiness.CommandResult{
+			{ExitStatus: 1, Stderr: "stable endpoint not ready"},
+			{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
+		},
+	}
+	_, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       t.TempDir(),
+		Timeout:       2 * time.Millisecond,
+		PollInterval:  time.Millisecond,
+		ProbeTimeout:  time.Millisecond,
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server:         "10.0.0.11:6443",
+		StableEndpoint: "api.stable.test:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		PreWaits: []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"}},
+		Manifests: []BootstrapManifest{{
+			Path:    "01-cni.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}},
+	})
+	if err == nil {
+		t.Fatal("RunUserBootstrap() error = nil, want pre-wait failure")
+	}
+	if len(commands.calls) == 0 {
+		t.Fatal("kubectl calls = 0, want readiness polling")
+	}
+	for _, call := range commands.calls {
+		if got := call[5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
+			t.Fatalf("kubectl call = %#v, want only stable endpoint probes before failure", call)
+		}
 	}
 }
 

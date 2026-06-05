@@ -54,6 +54,10 @@ Important options:
 
 --bootstrap-stable-endpoint <host:port>
   stable API endpoint to verify after user bootstrap before writing kubeconfig
+
+--bootstrap-stable-endpoint-before-manifests
+  verify the stable API endpoint before applying user bootstrap manifests; use
+  when early user resources such as Cilium must talk to that endpoint
 ```
 
 The command is a bounded coordinator. It runs phases, writes outputs, reports
@@ -86,6 +90,10 @@ bootstrap.waits[]
 
 bootstrap.stableEndpoint
   optional API endpoint to verify before kubeconfig output uses it
+
+bootstrap.stableEndpointBeforeManifests
+  require the stable endpoint wait before user manifests apply instead of only
+  after user bootstrap resources run
 ```
 
 Addresses may come from the cluster plan, inventory, or `--node-address`
@@ -167,10 +175,12 @@ The bootstrap command runs phases in this order:
 7. join remaining worker nodes
 8. join additional control-plane nodes later, when that path is implemented
 9. wait for API readiness using the init or declared endpoint
-10. optionally run light user bootstrap handoff after API readiness
-11. write operator kubeconfig, using a declared stable endpoint only after the
+10. optionally verify the declared stable endpoint before user bootstrap
+    manifests when requested
+11. optionally run light user bootstrap handoff after API readiness
+12. write operator kubeconfig, using a declared stable endpoint only after the
     endpoint handoff wait succeeds
-12. print next steps and exit
+13. print next steps and exit
 ```
 
 Worker joins must not start until init succeeds and join material exists.
@@ -231,7 +241,9 @@ stable endpoint handoff
 
 Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
 as part of this command. The command may wait for a user-declared endpoint after
-API readiness and after optional user bootstrap resources run.
+API readiness and either before or after optional user bootstrap resources run.
+The before-manifests mode is for user-owned bootstrap resources, such as Cilium,
+that must contact the stable API endpoint while they start.
 
 Do not add kubePrism as an initial requirement.
 
@@ -320,7 +332,7 @@ Allowed first shape:
 ordered manifest files or bundles
 server-side apply or create, implementation-defined
 waits for API readiness, resource existence/conditions, optional node readiness,
-  and optional stable endpoint reachability
+  and optional stable endpoint reachability before or after manifests
 ```
 
 This can install CNI, CoreDNS, CRDs, Flux, BIRD-related resources, or other

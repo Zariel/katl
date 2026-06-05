@@ -85,6 +85,7 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 		"--bootstrap-wait", "condition:kube-system:deployment/cilium-operator:Available",
 		"--bootstrap-wait", "nodes-ready",
 		"--bootstrap-stable-endpoint", "api.stable.test:6443",
+		"--bootstrap-stable-endpoint-before-manifests",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -100,6 +101,9 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	}
 	if got.Bootstrap.StableEndpoint != "api.stable.test:6443" {
 		t.Fatalf("bootstrap stable endpoint = %q", got.Bootstrap.StableEndpoint)
+	}
+	if !got.Bootstrap.StableEndpointBeforeManifests {
+		t.Fatal("bootstrap stable endpoint before manifests = false")
 	}
 	if len(got.Bootstrap.Manifests) != 2 || got.Bootstrap.Manifests[0].Path != "01-cni.yaml" || got.Bootstrap.Manifests[1].Path != "02-flux.yaml" {
 		t.Fatalf("bootstrap manifests = %#v", got.Bootstrap.Manifests)
@@ -174,6 +178,26 @@ func TestClusterBootstrapRejectsInvalidBootstrapWait(t *testing.T) {
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "target must be kind/name") {
 		t.Fatalf("run() error = %v, want kind/name validation failure", err)
+	}
+}
+
+func TestClusterBootstrapRejectsPreManifestStableEndpointWithoutEndpoint(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	old := runBootstrap
+	runBootstrap = func(context.Context, cluster.Request, cluster.Dependencies) (cluster.Result, error) {
+		t.Fatal("runBootstrap should not be called for invalid stable endpoint gate")
+		return cluster.Result{}, nil
+	}
+	t.Cleanup(func() { runBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--bootstrap-stable-endpoint-before-manifests",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "requires --bootstrap-stable-endpoint") {
+		t.Fatalf("run() error = %v, want stable endpoint validation failure", err)
 	}
 }
 

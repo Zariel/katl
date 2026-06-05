@@ -42,9 +42,10 @@ type Inventory struct {
 }
 
 type Bootstrap struct {
-	Manifests      []BootstrapManifest `json:"manifests,omitempty" yaml:"manifests"`
-	Waits          []BootstrapWait     `json:"waits,omitempty" yaml:"waits"`
-	StableEndpoint string              `json:"stableEndpoint,omitempty" yaml:"stableEndpoint"`
+	Manifests                     []BootstrapManifest `json:"manifests,omitempty" yaml:"manifests"`
+	Waits                         []BootstrapWait     `json:"waits,omitempty" yaml:"waits"`
+	StableEndpoint                string              `json:"stableEndpoint,omitempty" yaml:"stableEndpoint"`
+	StableEndpointBeforeManifests bool                `json:"stableEndpointBeforeManifests,omitempty" yaml:"stableEndpointBeforeManifests"`
 }
 
 type BootstrapManifest struct {
