@@ -116,6 +116,54 @@ in the NixOS host configuration.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
 - `/dev/net/tun` and `vhost_net`: useful once tests need richer VM networking.
 
+## Two-Node Kubeadm VM Fixtures
+
+The opt-in two-node kubeadm join smoke expects two already installed runtime
+disks, rendered per-node ESP artifact trees, per-node `/etc/katl/node.json`
+metadata files, per-node fixture manifests that bind those artifacts by checksum,
+and bridge-reachable addresses for the guests. The control-plane disk must be
+installed from `cp-1` materials, and the worker disk must be installed from
+`worker-1` materials. Resolve those local inputs into a sourceable environment
+with:
+
+```sh
+scripts/resolve-two-node-kubeadm-fixtures \
+  --control-plane-disk build/local/cp-1.qcow2 \
+  --worker-disk build/local/worker-1.qcow2 \
+  --control-plane-esp build/local/cp-1-esp \
+  --worker-esp build/local/worker-1-esp \
+  --control-plane-metadata build/local/cp-1-node.json \
+  --worker-metadata build/local/worker-1-node.json \
+  --control-plane-fixture build/local/cp-1-fixture.json \
+  --worker-fixture build/local/worker-1-fixture.json \
+  --control-plane-address 10.88.0.11 \
+  --worker-address 10.88.0.12 \
+  --control-plane-format qcow2 \
+  --worker-format qcow2 \
+  --bridge katlbr0
+```
+
+The command preflights each disk against its ESP tree, verifies the node metadata
+matches `cp-1` and `worker-1`, rejects shared disk, ESP, metadata, or address
+inputs, checks fixture manifest checksums, checks that the bridge exists with an
+IPv4 subnet containing both node addresses, and writes generated files under
+`build/two-node-kubeadm-fixtures/`. Source the generated `vmtest.env` or run the
+generated wrapper to execute `TestInstalledRuntimeTwoNodeKubeadmJoinSmoke`.
+
+Each fixture manifest binds one installed node's artifacts:
+
+```json
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "InstalledRuntimeVMTestFixture",
+  "nodeName": "cp-1",
+  "systemRole": "control-plane",
+  "disk": {"path": "cp-1.qcow2", "format": "qcow2", "sha256": "..."},
+  "espArtifacts": {"path": "cp-1-esp", "treeSHA256": "..."},
+  "nodeMetadata": {"path": "cp-1-node.json", "sha256": "..."}
+}
+```
+
 ## Sanity Checks
 
 Run these from the same shell/session that will build and test Katl:

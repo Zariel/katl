@@ -24,7 +24,8 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	}
 	cpDisk := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_INSTALLED_DISK")
 	workerDisk := vmtest.RequireEnv(t, "KATL_WORKER_INSTALLED_DISK")
-	esp := vmtest.RequireEnv(t, "KATL_INSTALLED_ESP_ARTIFACTS")
+	cpESP := requireNodeESP(t, "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS")
+	workerESP := requireNodeESP(t, "KATL_WORKER_INSTALLED_ESP_ARTIFACTS")
 	cpAddress := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_ADDRESS")
 	workerAddress := vmtest.RequireEnv(t, "KATL_WORKER_ADDRESS")
 	kubernetesVersion := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1")
@@ -53,7 +54,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		Runtime: vmtest.InstalledRuntimeConfig{
 			Disk:         cpDisk,
 			DiskFormat:   vmtest.DiskFormat(firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
-			ESPArtifacts: esp,
+			ESPArtifacts: cpESP,
 			VM:           twoNodeVMConfig(options.KVM, 43101),
 		},
 	}, vmtest.VMRunner{})
@@ -68,7 +69,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		Runtime: vmtest.InstalledRuntimeConfig{
 			Disk:         workerDisk,
 			DiskFormat:   vmtest.DiskFormat(firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
-			ESPArtifacts: esp,
+			ESPArtifacts: workerESP,
 			VM:           twoNodeVMConfig(options.KVM, 43102),
 		},
 	}, vmtest.VMRunner{})
@@ -150,6 +151,14 @@ func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 			GuestCID: cid,
 		},
 	}
+}
+
+func requireNodeESP(t *testing.T, env string) string {
+	t.Helper()
+	if value := os.Getenv(env); value != "" {
+		return value
+	}
+	return vmtest.RequireEnv(t, "KATL_INSTALLED_ESP_ARTIFACTS")
 }
 
 func writeTwoNodeInventory(path string, kubernetesVersion string, cpNode vmtest.RunningInstalledRuntimeNode, workerNode vmtest.RunningInstalledRuntimeNode) error {
