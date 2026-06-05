@@ -111,6 +111,10 @@ kube-system kubeadm and kubelet ConfigMaps
 kubeadm upgrade and reconfiguration behavior
 ```
 
+The greenfield stacked-etcd ownership and data policy for kubeadm control-plane
+bootstrap is defined in
+`docs/internal/stacked-etcd-bootstrap-data-policy.md`.
+
 The operator owns:
 
 ```text

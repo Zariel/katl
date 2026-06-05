@@ -192,6 +192,10 @@ control-plane node is classified for a later control-plane join from
 `systemRole`; until that implementation exists, multi-control-plane plans fail
 with a clear unsupported message after init-node selection validation.
 
+The greenfield multi-control-plane target is kubeadm stacked etcd. Its data
+ownership, quorum, join ordering, and rollback limits are defined in
+`docs/internal/stacked-etcd-bootstrap-data-policy.md`.
+
 ## kubeadm Material
 
 The command runs kubeadm against rendered Katl input:

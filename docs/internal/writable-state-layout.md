@@ -183,6 +183,9 @@ The `/etc/kubernetes` projection from
 `/var/lib/katl/kubernetes/etc-kubernetes` is defined in
 `docs/internal/etc-kubernetes-projection.md`.
 
+The stacked-etcd bootstrap and data ownership policy is defined in
+`docs/internal/stacked-etcd-bootstrap-data-policy.md`.
+
 ## Follow-up Gates
 
 Mount units and tmpfiles snippets should be verified with `systemd-analyze
