@@ -113,6 +113,7 @@ func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 	for _, path := range []string{
 		"/etc/katl/node.json",
 		"/etc/katl/kubeadm/control-plane/config.yaml",
+		"/etc/kubernetes/admin.conf",
 	} {
 		if !pathAllowed(path, defaultAgentFilePaths()) {
 			t.Fatalf("%s is not allowlisted", path)
