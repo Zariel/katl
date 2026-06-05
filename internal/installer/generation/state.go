@@ -25,6 +25,7 @@ type KubernetesProjectionRequest struct {
 type StateAssets struct {
 	VarMount           string
 	EtcKubernetesMount string
+	GenerationActivate string
 	StateCheckService  string
 	RuntimeStatus      string
 	Tmpfiles           string
@@ -68,6 +69,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"",
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
+		GenerationActivate: renderGenerationActivateService(),
 		StateCheckService:  renderStateCheckService(),
 		RuntimeStatus:      renderRuntimeStatusService(),
 		Tmpfiles:           renderTmpfiles(dirs),
@@ -100,6 +102,29 @@ func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, er
 		"WantedBy=local-fs.target",
 		"",
 	}, "\n"), nil
+}
+
+func renderGenerationActivateService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Activate selected Katl generation extensions",
+		"Documentation=man:systemd-sysext(8) man:systemd-confext(8)",
+		"DefaultDependencies=no",
+		"Requires=var.mount",
+		"After=var.mount",
+		"Before=systemd-sysext.service systemd-confext.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-generation-activate",
+		"ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/",
+		"",
+		"[Install]",
+		"RequiredBy=systemd-sysext.service",
+		"RequiredBy=systemd-confext.service",
+		"",
+	}, "\n")
 }
 
 func renderStateCheckService() string {
@@ -155,6 +180,15 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-generation-activate.service", assets.GenerationActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/systemd-sysext.service.requires/katl-generation-activate.service", "../katl-generation-activate.service"); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/systemd-confext.service.requires/katl-generation-activate.service", "../katl-generation-activate.service"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-state-projection-check.service", assets.StateCheckService, 0o644); err != nil {
