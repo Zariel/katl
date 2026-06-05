@@ -4,10 +4,145 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install fixture smoke")
+	}
+	options.Missing = MissingSkips
+	options.Keep = KeepAlways
+	installerUKI := RequireEnv(t, "KATL_INSTALLER_UKI")
+	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
+	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+	if runtimeESP == "" {
+		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
+	}
+	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
+	repoRoot := repoRoot(t)
+	for _, tool := range []string{"jq", "sha256sum"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is required to package installed runtime fixtures: %v", tool, err)
+		}
+	}
+
+	runner := NewRunner(options)
+	runner.RequireHost(t, HostRequirements{
+		QEMU:    true,
+		QEMUImg: true,
+		OVMF:    true,
+		KVM:     options.KVM,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	vm := VMConfig{
+		KVM:     options.KVM,
+		RAMMiB:  4096,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+		VSock: VSockConfig{
+			Enabled: true,
+		},
+		Agent: AgentControlConfig{
+			RequireHealth: true,
+			Timeout:       30 * time.Second,
+		},
+	}
+	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-installed-runtime-fixture"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    installerUKI,
+			RuntimeArtifact: runtimeArtifact,
+			VM:              vm,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts:       runtimeESP,
+			RequireVMTestAgent: true,
+			VM:                 vm,
+		},
+		ManifestPath: manifestPath,
+		TargetDisk:   TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if firstResult.Status != StatusPassed {
+		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
+	}
+	targetDisk := targetDiskPath(t, firstResult)
+	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
+	createFixture := exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "create-installed-runtime-fixture"),
+		"--disk", targetDisk,
+		"--esp-artifacts", runtimeESP,
+		"--format", string(DiskQCOW2),
+		"--state-dir", fixtureDir,
+	)
+	output, err := createFixture.CombinedOutput()
+	if err != nil {
+		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
+	}
+
+	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
+	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
+	packagedESP := filepath.Join(fixtureDir, "esp")
+	checkFixture := exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"),
+		"--disk", packagedDisk,
+		"--esp-artifacts", packagedESP,
+		"--fixture", fixtureManifest,
+		"--format", string(DiskQCOW2),
+		"--state-dir", filepath.Join(fixtureDir, "recheck"),
+		"--check-only",
+	)
+	output, err = checkFixture.CombinedOutput()
+	if err != nil {
+		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
+	}
+
+	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixtureManifest)
+	runtimeResult, err := runner.Plan(Scenario{Name: "first-install-packaged-runtime-agent"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	runtimeResult.start(runner.time())
+	runtimeResult = RunInstalledRuntime(ctx, runtimeResult, InstalledRuntimeConfig{
+		Disk:               packagedDisk,
+		DiskFormat:         DiskQCOW2,
+		ESPArtifacts:       packagedESP,
+		RequireVMTestAgent: true,
+		VM: VMConfig{
+			KVM:     options.KVM,
+			RAMMiB:  4096,
+			CPUs:    2,
+			Timeout: 8 * time.Minute,
+			VSock: VSockConfig{
+				Enabled: true,
+			},
+			Agent: AgentControlConfig{
+				RequireHealth: true,
+				Timeout:       30 * time.Second,
+			},
+		},
+	}, VMRunner{})
+	if err := runner.Write(Scenario{Name: "first-install-packaged-runtime-agent"}, runtimeResult); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if runtimeResult.Status != StatusPassed {
+		t.Fatalf("packaged runtime status = %q, failure = %q, run dir = %s", runtimeResult.Status, runtimeResult.FailureSummary, runtimeResult.RunDir)
+	}
+	transcript, err := os.ReadFile(runtimeResult.Artifacts.VSockTranscript)
+	if err != nil {
+		t.Fatalf("read vsock transcript: %v", err)
+	}
+	if !strings.Contains(string(transcript), `"method":"Health"`) || !strings.Contains(string(transcript), `"status":"ok"`) {
+		t.Fatalf("vsock transcript did not record successful health: %s", transcript)
+	}
+}
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 	options := DefaultOptions()
@@ -138,4 +273,28 @@ func requireInstalledRuntimeFixture(t *testing.T, options Options, scenarioName 
 	}
 	t.Skip(message)
 	return "", ""
+}
+
+func targetDiskPath(t *testing.T, result Result) string {
+	t.Helper()
+	for _, disk := range result.Disks {
+		if disk.Kind == DiskTarget {
+			if _, err := os.Stat(disk.HostPath); err != nil {
+				t.Fatalf("target disk %s is not available after first install: %v", disk.HostPath, err)
+			}
+			return disk.HostPath
+		}
+	}
+	t.Fatalf("first install result has no target disk: %#v", result.Disks)
+	return ""
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }

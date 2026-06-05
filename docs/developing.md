@@ -154,6 +154,28 @@ scripts/resolve-installed-runtime-fixture \
 Neither command manufactures placeholder disks; the disk and ESP tree should
 come from the real install-to-runtime flow.
 
+To run the opt-in first-install target-disk fixture contract smoke, provide the
+installer UKI, runtime artifact, runtime ESP artifacts, and install manifest:
+
+```sh
+export KATL_VMTEST_RUN=1
+export KATL_INSTALLER_UKI=build/mkosi/katl-installer.efi
+export KATL_RUNTIME_ARTIFACT=build/mkosi/katl-runtime-root.squashfs
+export KATL_RUNTIME_ESP_ARTIFACTS=build/local/cp-1-esp
+export KATL_INSTALL_MANIFEST=docs/internal/examples/minimal-install-manifest.json
+
+GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest \
+  -run '^TestFirstInstallTargetDiskFixtureContract$' \
+  -count=1 -timeout 35m -katl.vmtest.run
+```
+
+The smoke keeps the target disk from the first-install harness, packages it with
+`scripts/create-installed-runtime-fixture`, revalidates the generated fixture
+manifest, then boots the packaged fixture with `RequireVMTestAgent=true` and
+records the vsock health transcript. The current harness still owns whether the
+target disk was actually written by the in-guest installer; this smoke fails if
+that path does not leave a bootable installed runtime disk.
+
 ## Two-Node Kubeadm VM Fixtures
 
 The opt-in two-node kubeadm join smoke expects two already installed runtime
