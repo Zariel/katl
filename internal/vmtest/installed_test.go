@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,10 @@ func TestInstalledRuntime(t *testing.T) {
 	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), "Katl state projection ready") {
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || input.RequireVMTestAgent {
+		t.Fatalf("installed runtime input = %#v", input)
+	}
 	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
 	if err != nil {
 		t.Fatalf("read qemu command: %v", err)
@@ -133,6 +138,10 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if !strings.Contains(string(entry), "katl.vmtest_agent=1") {
 		t.Fatalf("vmtest agent flag missing from copied loader entry: %s", entry)
 	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || !input.RequireVMTestAgent {
+		t.Fatalf("installed runtime input = %#v", input)
+	}
 	source, err := os.ReadFile(loaderEntry(t, esp))
 	if err != nil {
 		t.Fatalf("read source loader entry: %v", err)
@@ -140,6 +149,19 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if strings.Contains(string(source), "katl.vmtest_agent=1") {
 		t.Fatalf("source ESP artifact was mutated: %s", source)
 	}
+}
+
+func readInstalledRuntimeInput(t *testing.T, path string) installedRuntimeRecord {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read installed runtime input: %v", err)
+	}
+	var record installedRuntimeRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode installed runtime input: %v", err)
+	}
+	return record
 }
 
 func espFixture(t *testing.T) string {

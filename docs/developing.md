@@ -116,6 +116,31 @@ in the NixOS host configuration.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
 - `/dev/net/tun` and `vhost_net`: useful once tests need richer VM networking.
 
+## Installed Runtime VM Fixture
+
+The opt-in installed-runtime vmtest-agent smoke expects a real installed runtime
+disk, a rendered ESP artifact tree, and a fixture manifest that binds those
+artifacts by checksum. Resolve those local inputs into a sourceable environment
+with:
+
+```sh
+scripts/resolve-installed-runtime-fixture \
+  --disk build/local/cp-1.qcow2 \
+  --esp-artifacts build/local/cp-1-esp \
+  --fixture build/local/cp-1-fixture.json \
+  --format qcow2
+```
+
+The command validates the fixture manifest, checks disk and ESP checksums,
+preflights the ESP loader entries through `scripts/check-installed-disk-smoke
+--preflight-only`, and writes generated files under
+`build/installed-runtime-fixture/`. Source the generated `vmtest.env` or run the
+generated wrapper to execute `TestInstalledRuntimeVMTestAgentSmoke`.
+
+The resolver does not manufacture placeholder disks. A later factory path should
+run the real install-to-runtime flow and write the same
+`InstalledRuntimeVMTestFixture` manifest shape consumed here.
+
 ## Two-Node Kubeadm VM Fixtures
 
 The opt-in two-node kubeadm join smoke expects two already installed runtime

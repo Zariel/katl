@@ -20,6 +20,17 @@ type InstalledRuntimeConfig struct {
 	VM                 VMConfig
 }
 
+type installedRuntimeRecord struct {
+	APIVersion         string `json:"apiVersion"`
+	Kind               string `json:"kind"`
+	Disk               string `json:"disk"`
+	DiskFormat         string `json:"diskFormat"`
+	ESPArtifacts       string `json:"espArtifacts"`
+	RequireVMTestAgent bool   `json:"requireVMTestAgent"`
+	FixtureManifest    string `json:"fixtureManifest,omitempty"`
+	NodeMetadata       string `json:"nodeMetadata,omitempty"`
+}
+
 func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRuntimeConfig, runner VMRunner) Result {
 	if err := PrepareInstalledRuntime(result, config); err != nil {
 		return finishVM(result, "runtime", StatusFailed, err.Error(), result.Started, runnerTime())
@@ -48,6 +59,9 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 	if config.ESPArtifacts == "" {
 		return errors.New("ESP artifacts directory is required")
 	}
+	if err := writeInstalledRuntimeRecord(result, config); err != nil {
+		return err
+	}
 	esp := runtimeESPPath(result)
 	if err := copyDir(config.ESPArtifacts, esp); err != nil {
 		return err
@@ -58,6 +72,23 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 		}
 	}
 	return CheckESP(esp)
+}
+
+func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) error {
+	if err := os.MkdirAll(filepath.Dir(result.Artifacts.InstalledRuntime), 0o755); err != nil {
+		return err
+	}
+	record := installedRuntimeRecord{
+		APIVersion:         "katl.dev/v1alpha1",
+		Kind:               "InstalledRuntimeVMTestInput",
+		Disk:               config.Disk,
+		DiskFormat:         string(diskFormat(config.DiskFormat)),
+		ESPArtifacts:       config.ESPArtifacts,
+		RequireVMTestAgent: config.RequireVMTestAgent,
+		FixtureManifest:    os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST"),
+		NodeMetadata:       os.Getenv("KATL_INSTALLED_NODE_METADATA"),
+	}
+	return writeJSON(result.Artifacts.InstalledRuntime, record)
 }
 
 func runtimeESPPath(result Result) string {
