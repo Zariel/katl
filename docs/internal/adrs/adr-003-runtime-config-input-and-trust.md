@@ -47,6 +47,14 @@ agent to apply it. A local file path is therefore the first concrete transport.
 The local file is not the trust root by itself; it is only the handoff format
 for an authenticated operator action.
 
+The request contains desired Katl configuration, not generated extension
+artifacts. After authentication and validation, the runtime agent locally renders
+the candidate generation: generated confext content, selected sysext activation
+metadata, immutable generation metadata, and apply status. User input cannot
+directly provide confext images, activation links, or generation paths. The
+agent rejects unknown domains, unsupported fields, unsupported sysext selection
+requests, and unsupported apply modes before render.
+
 The runtime agent must merge input in this order:
 
 ```text
@@ -192,13 +200,19 @@ unauthenticated or unsupported input transport
 missing sourceID or desiredVersion
 stale or replay-conflicting desiredVersion
 unknown domains
+unsupported fields in known domains
 unsafe paths or duplicate rendered outputs
 unsupported live domain decisions
+unsupported sysext selection requests
 attempted kubeadm/kubectl/CNI/GitOps/package-manager side effects
 attempted /etc/kubernetes or host account ownership
-root, UKI, kernel command line, or sysext selection changes through normal
-  runtime config
+root, UKI, or kernel command line changes through normal runtime config
+raw sysext activation paths or unsupported sysext selection changes
 ```
+
+Typed sysext update input may be accepted only by a planner that stages a new
+generation and validates compatibility with the selected runtime root and
+generated confext.
 
 Diagnostics must redact URLs with credentials, bearer tokens, kubeadm bootstrap
 tokens, discovery token hashes, private keys, and kubeconfig-like secrets.
@@ -239,9 +253,11 @@ cluster defaults, systemRole-level overrides, and per-node override merge order
 sourceID, desiredVersion, and request digest recording
 idempotent retry for same version and digest
 rejection for stale versions and same-version digest conflicts
-rejection for unknown domains and arbitrary /etc paths
+rejection for unknown domains, unsupported fields, and arbitrary /etc paths
+rejection for unsupported sysext selection requests
 rejection for /etc/kubernetes, host account policy, kubeadm/kubectl/CNI/GitOps,
-  package-manager, root, UKI, kernel command line, and sysext selection changes
+  package-manager, root, UKI, kernel command line, and raw or unsupported sysext
+  selection changes
 kubeadm desired input producing explicit-action-required status instead of
   live cluster mutation
 redaction in audit/status diagnostics

@@ -17,6 +17,12 @@ Katl renders trusted Katl-native node configuration into generated confext.
 First install writes one generation and boots it. Later, an installed node also
 needs a controlled path for changed Katl configuration without making Katl a
 general-purpose configuration manager or a Kubernetes lifecycle controller.
+Runtime apply still starts with Katl configuration. The installed node locally
+compiles that trusted input into a new generation-scoped confext and selected
+sysext activation set instead of accepting user-supplied extension trees.
+The KatlOS runtime agent fails closed: unsupported domains, fields, apply modes,
+sysext selections, and raw extension activation paths are rejected before
+rendering.
 
 The key distinction is whether a requested change can be made effective on the
 currently running node, or whether it must be staged as the next bootable
@@ -43,6 +49,13 @@ to individual raw files. Domain renderers and the planner decide whether the
 requested domain diffs are valid for that mode. If a request mixes domains and
 any diff is not accepted for the requested mode, Katl rejects the request before
 rendering or activating partial state.
+
+The render step happens on the node that receives the request. A successful
+request creates local generation artifacts from trusted Katl config: generated
+confext content, sysext activation metadata, generation metadata, and apply
+status. The request is not a transport for prebuilt confext images or arbitrary
+systemd extension activation paths.
+Unsupported config never produces partial generation artifacts.
 
 Install-time materialization has no apply mode; it creates the first selected
 generation.
@@ -131,12 +144,12 @@ Rejected-live changes fail before render or activation:
 ```text
 systemRole changes
 selected kubeadm config ref/path/intent changes
-selected Kubernetes sysext payload changes
+selected Kubernetes sysext payload changes requested for live apply
 kubelet node identity changes
 user ownership of host account, PAM, sudo, passwd, shadow, or sysusers files
 /etc/kubernetes or kubeadm-owned mutable state
 unknown domains or arbitrary /etc paths
-root, UKI, kernel command line, or sysext selection changes
+root, UKI, kernel command line, or raw sysext activation changes
 ```
 
 The planner may later promote a staged-only domain to online-applicable only
@@ -147,6 +160,10 @@ after its live preflight, activation, rollback, and VM tests exist.
 Every accepted runtime change creates a new generation record. A confext-only
 change reuses the current root slot, root artifact digest, UKI, kernel command
 line, and sysext set, but records a new generated confext path and digest.
+Changes that select a different compatible sysext payload are staged as a new
+generation that records the selected sysext set with the generated confext.
+Raw sysext activation paths and unsupported sysext selections remain rejected
+runtime config input.
 
 The immutable generation `metadata.json` for runtime configuration changes must
 record:

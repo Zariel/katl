@@ -116,6 +116,7 @@ Common validation requirements:
 
 ```text
 reject unknown domains
+reject unsupported fields inside known domains
 reject path traversal and absolute user-selected render paths
 reject symlinks and non-regular source files where files are copied
 reject duplicate normalized output paths
@@ -124,6 +125,7 @@ reject writes to /etc/kubernetes
 reject host account, PAM, sudo, passwd, shadow, and sysusers ownership
 reject runtime-only paths such as /run and generated Katl generation paths
 reject conflicting domains that render the same output
+reject unsupported sysext selection requests
 validate native syntax enough to catch unsupported or dangerous fields
 ```
 
@@ -185,6 +187,17 @@ Install-time materialization writes the selected domains into the generated
 confext for the candidate generation. Later runtime configuration changes
 should render a new generated confext generation and select it atomically with
 the runtime root and sysext set.
+
+Runtime configuration apply receives Katl configuration and compiles it on the
+installed node into generation-scoped artifacts. The node-local renderer owns the
+generated confext tree or image, compatibility validation, generation metadata,
+and sysext activation selection. Users do not hand the node arbitrary confext
+images or raw extension activation paths as the configuration API.
+
+The KatlOS runtime agent must reject unknown and unsupported config before the
+renderer writes a generation. Rejection is required for unknown domains,
+unsupported fields inside a known domain, unsupported apply modes, unsupported
+sysext selection requests, and raw confext or sysext activation paths.
 
 The live versus next-boot runtime apply contract is defined in
 `docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`. Domain

@@ -8,9 +8,12 @@ under `docs/internal/adrs/`.
 
 ## North Star
 
-Katl is a systemd-native Kubernetes node OS builder. It builds installer and
-runtime assets for users who want reproducible, kubeadm-ready nodes without
-turning Katl into a Kubernetes distribution or a site provisioning system.
+The durable product direction lives in `docs/internal/north-star.md`.
+
+Katl is a stripped-down Linux OS builder for Kubernetes nodes. It builds
+installer, runtime, configuration, sysext, and update assets that produce
+reproducible kubeadm-ready nodes while fitting a user-owned GitOps cluster
+workflow.
 
 The long-term user workflow is:
 
@@ -31,7 +34,7 @@ disk, and boot that installed runtime.
 
 ## Active Product Boundary
 
-Katl owns:
+Katl-owned surfaces:
 
 ```text
 katlc configuration compiler
@@ -45,7 +48,7 @@ systemd boot/update/mount/health wiring
 local QEMU validation harness
 ```
 
-Katl does not own:
+User-owned surfaces:
 
 ```text
 DHCP, TFTP, PXE, iPXE, matchbox, or firmware boot order management
@@ -119,6 +122,20 @@ prebuilt artifacts and writes them into the installed layout.
 ## Configuration Model
 
 Katl uses a Katl-native install manifest and generated confext.
+
+Katl configuration is applied to nodes as Katl configuration. Users and external
+automation should not have to prebuild confext content for a node. On first
+install, `katlos-install` validates the manifest and locally renders the
+initial generated confext. After install, runtime configuration apply receives
+trusted Katl configuration and locally renders a new generation that contains
+generated confext and the selected sysext activation set. Sysext payloads are
+prebuilt artifacts; the node-local generation records which compatible sysexts
+are selected with the rendered confext.
+
+The KatlOS runtime agent must fail closed. Unknown domains, unsupported fields,
+unsupported sysext selections, unsupported apply modes, and raw extension
+activation inputs are rejected before render, staging, live apply, or boot
+selection.
 
 Users supply:
 
@@ -378,6 +395,13 @@ candidate becomes default only after katl-boot-complete.target succeeds
 failed candidate returns to the previous known-good generation
 ```
 
+Update and rollback code should prefer native systemd mechanisms over custom
+replacement machinery: systemd-boot for boot selection and trial boots,
+systemd-sysext and systemd-confext for extension activation, native mount units
+for state projections, systemd-tmpfiles for Katl-owned state preparation, and
+systemd health targets for local boot completion. Katl-owned agents coordinate
+the generation record, compatibility checks, status, and rollback decisions.
+
 The boot health target is local. It proves the OS generation booted, mounted
 state, activated selected extensions, established identity, and started required
 local services. It does not need to prove full Kubernetes control-plane
@@ -420,6 +444,10 @@ run a bounded kubeadm preflight or dry-run check for kubeadm init readiness
 Use these files for implementation detail:
 
 ```text
+docs/internal/north-star.md
+  Durable product direction, user story, design principles, ownership
+  boundaries, and document map.
+
 docs/internal/installer-runtime-design.md
   Main component, disk, artifact, installer, runtime, and boot design.
 

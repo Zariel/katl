@@ -19,6 +19,12 @@ confext activation set
 Katl must never roll back only the root slot while leaving sysext or confext
 activation pointed at the failed generation.
 
+Rollback should use native systemd mechanisms where they fit. Boot selection
+should use systemd-boot one-shot, boot counting, or loader-entry behavior before
+custom boot selectors. Extension rollback should regenerate the selected
+systemd-sysext and systemd-confext activation inputs from generation metadata
+rather than maintaining a separate mutable extension state.
+
 ## Known-Good Rule
 
 A generation becomes known-good only after it reaches the configured boot health

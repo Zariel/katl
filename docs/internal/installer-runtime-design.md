@@ -685,6 +685,15 @@ Users should not supply confext images directly in the default path. Users
 supply Katl install manifests and configuration in known domains. Katl
 materializes that input into generated confext content.
 
+Configuration apply is node-local. The input handed to the installer or runtime
+agent is Katl configuration; the node validates that input and renders the
+generation-scoped extension state itself. Generated confext is built locally for
+that generation. Sysext payloads are prebuilt artifacts, but their selected
+activation set is recorded with the same generation as the rendered confext.
+The runtime agent must reject unknown or unsupported configuration before it
+renders anything. Unsupported domains, fields, sysext selections, apply modes,
+or raw extension paths are validation failures, not ignored input.
+
 The configuration API should be small and explicit. It is not an arbitrary
 `/etc` passthrough. Each supported domain defines:
 

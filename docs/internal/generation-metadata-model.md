@@ -102,10 +102,29 @@ KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
 compatible with the new runtime root. Kubernetes-only updates may keep the
 existing KatlOS runtime root when the new sysext is compatible with it.
 
+Generation activation should use systemd-native functions where practical:
+systemd-boot for boot target selection, systemd-sysext and systemd-confext for
+extension activation, native mount units for state projections, tmpfiles for
+Katl-owned directory preparation, and boot health targets for known-good
+promotion. Generation metadata is the Katl coordination layer around those
+native mechanisms.
+
 Runtime configuration changes are confext-only generations unless they are
 combined with an explicit root or sysext update. The apply-mode decision for
 those generated confext changes is recorded in
 `docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`.
+
+Those runtime changes start as Katl configuration applied to the installed node.
+The node renders the generated confext locally and writes a new generation
+record that selects the rendered confext together with the current or updated
+sysext set. User-supplied runtime input does not directly name generated confext
+activation paths or mutate the sysext activation set outside generation
+metadata.
+
+The runtime agent creates a generation record only after validation accepts the
+requested config. Unknown domains, unsupported fields, unsupported sysext
+selection requests, and unsupported apply modes do not get placeholder
+generation records; they produce rejected request status only.
 
 Before a candidate generation is made bootable, Katl must validate the selected
 runtime root, UKI, sysexts, and confexts as one compatibility set. The generation

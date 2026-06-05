@@ -28,6 +28,15 @@ Users should not be required to build or provide confext artifacts directly.
 They should provide Katl configuration in known domains. Katl then validates
 that input and renders the generated configuration artifacts.
 
+The same rule applies after install: runtime configuration is applied to the
+installed node as Katl configuration. The node-local runtime path validates the
+trusted input, renders generated confext for a new generation, and records the
+selected sysext activation set with that generation. Sysext payloads are still
+prebuilt artifacts; runtime config decides which compatible payloads a
+generation selects. The KatlOS runtime agent must reject unknown domains,
+unsupported fields, unsupported sysext selection requests, unsupported apply
+modes, and raw extension activation paths before rendering.
+
 ## Decision
 
 Katl uses a Katl-native install manifest for initial node input.
@@ -51,6 +60,8 @@ same logical operation on an installed node:
 ```text
 receive desired Katl configuration
 validate trust and policy
+reject unknown or unsupported configuration
+select the compatible sysext activation set for the generation
 render a new generated confext generation
 stage it under /var/lib/katl/generations/<generation-id>/
 activate it with the selected generation

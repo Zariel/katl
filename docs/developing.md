@@ -6,6 +6,9 @@ local VM, and prove the boot by matching deterministic serial output. Katl shoul
 move toward a usable system one working step at a time instead of carrying named
 phase labels in docs.
 
+Read `docs/internal/north-star.md` for the product direction that grounds the
+local development loop.
+
 ## Current VM Stance
 
 Use the simplest layer that proves the OS boots:
