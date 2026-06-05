@@ -181,11 +181,32 @@ func TestClusterBootstrapRejectsInvalidBootstrapWait(t *testing.T) {
 	}
 }
 
-func TestClusterBootstrapRejectsPreManifestStableEndpointWithoutEndpoint(t *testing.T) {
-	inventoryPath := writeInventory(t)
+func TestClusterBootstrapAllowsPreManifestStableEndpointFromInventory(t *testing.T) {
+	inventoryPath := filepath.Join(t.TempDir(), "cluster.yaml")
+	data := `controlPlaneEndpoint: api.katl.test:6443
+kubernetesVersion: v1.36.1
+bootstrap:
+  stableEndpoint: api.inventory.test:6443
+nodes:
+- name: cp-1
+  address: 10.0.0.11
+  systemRole: control-plane
+  access:
+    method: agent
+    credentialRef: agent/cp-1
+  kubeadmConfig:
+    ref: control-plane
+    path: /etc/katl/kubeadm/control-plane/config.yaml
+    intent: control-plane
+  kubernetesVersion: v1.36.1
+`
+	if err := os.WriteFile(inventoryPath, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got cluster.Request
 	old := runBootstrap
-	runBootstrap = func(context.Context, cluster.Request, cluster.Dependencies) (cluster.Result, error) {
-		t.Fatal("runBootstrap should not be called for invalid stable endpoint gate")
+	runBootstrap = func(_ context.Context, request cluster.Request, _ cluster.Dependencies) (cluster.Result, error) {
+		got = request
 		return cluster.Result{}, nil
 	}
 	t.Cleanup(func() { runBootstrap = old })
@@ -196,8 +217,17 @@ func TestClusterBootstrapRejectsPreManifestStableEndpointWithoutEndpoint(t *test
 		"--inventory", inventoryPath,
 		"--bootstrap-stable-endpoint-before-manifests",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "requires --bootstrap-stable-endpoint") {
-		t.Fatalf("run() error = %v, want stable endpoint validation failure", err)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if got.Bootstrap.StableEndpoint != "" {
+		t.Fatalf("request bootstrap stable endpoint = %q, want CLI unset", got.Bootstrap.StableEndpoint)
+	}
+	if !got.Bootstrap.StableEndpointBeforeManifests {
+		t.Fatal("request bootstrap stable endpoint before manifests = false")
+	}
+	if got.Inventory.Bootstrap == nil || got.Inventory.Bootstrap.StableEndpoint != "api.inventory.test:6443" {
+		t.Fatalf("inventory bootstrap = %#v", got.Inventory.Bootstrap)
 	}
 }
 

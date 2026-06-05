@@ -57,7 +57,8 @@ Important options:
 
 --bootstrap-stable-endpoint-before-manifests
   verify the stable API endpoint before applying user bootstrap manifests; use
-  when early user resources such as Cilium must talk to that endpoint
+  when early user resources such as Cilium must talk to an independently
+  reachable endpoint
 ```
 
 The command is a bounded coordinator. It runs phases, writes outputs, reports
@@ -93,7 +94,8 @@ bootstrap.stableEndpoint
 
 bootstrap.stableEndpointBeforeManifests
   require the stable endpoint wait before user manifests apply instead of only
-  after user bootstrap resources run
+  after user bootstrap resources run; the endpoint must already be reachable
+  without relying on the manifests being applied by this handoff
 ```
 
 Addresses may come from the cluster plan, inventory, or `--node-address`
@@ -243,7 +245,9 @@ Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
 as part of this command. The command may wait for a user-declared endpoint after
 API readiness and either before or after optional user bootstrap resources run.
 The before-manifests mode is for user-owned bootstrap resources, such as Cilium,
-that must contact the stable API endpoint while they start.
+that must contact an already reachable stable API endpoint while they start.
+Do not use before-manifests mode for an endpoint that is created or advertised
+by the same manifests; use the post-handoff stable endpoint wait for that shape.
 
 Do not add kubePrism as an initial requirement.
 

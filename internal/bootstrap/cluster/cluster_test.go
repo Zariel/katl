@@ -191,6 +191,39 @@ func TestRunAppliesStableEndpointWaitBeforeUserBootstrapManifests(t *testing.T) 
 	}
 }
 
+func TestRunUsesInventoryStableEndpointForRequestedPreManifestWait(t *testing.T) {
+	inv := validSingleNodeInventory()
+	inv.Bootstrap = &inventory.Bootstrap{StableEndpoint: "api.inventory.test:6443"}
+	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
+	_, err := Run(context.Background(), Request{
+		Inventory:           inv,
+		KubeconfigOut:       filepath.Join(t.TempDir(), "operator.conf"),
+		OverwriteKubeconfig: true,
+		Bootstrap:           UserBootstrap{StableEndpointBeforeManifests: true},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		}},
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(bootstrapRunner.requests) != 1 {
+		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
+	}
+	request := bootstrapRunner.requests[0]
+	if len(request.PreWaits) != 1 || request.PreWaits[0].Name != "api.inventory.test:6443" {
+		t.Fatalf("pre waits = %#v, want inventory stable endpoint", request.PreWaits)
+	}
+	if request.StableEndpoint != "api.inventory.test:6443" {
+		t.Fatalf("stable endpoint = %q, want inventory stable endpoint", request.StableEndpoint)
+	}
+}
+
 func TestRunRejectsPreManifestStableEndpointWithoutEndpoint(t *testing.T) {
 	result, err := Run(context.Background(), Request{
 		Inventory: validSingleNodeInventory(),
@@ -651,6 +684,7 @@ func TestKubectlBootstrapRunnerRunsPreWaitBeforeManifests(t *testing.T) {
 
 func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
 	commands := &fakeKubectlCommandRunner{
+		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
 		results: []readiness.CommandResult{
 			{ExitStatus: 1, Stderr: "stable endpoint not ready"},
 			{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
@@ -692,6 +726,7 @@ func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
 func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	commands := &fakeKubectlCommandRunner{
+		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "still missing token " + secret},
 		results: []readiness.CommandResult{
 			{ExitStatus: 1, Stderr: "missing token " + secret},
 			{ExitStatus: 1, Stderr: "still missing token " + secret},
@@ -916,8 +951,9 @@ func (r *fakeBootstrapRunner) RunUserBootstrap(_ context.Context, request Bootst
 }
 
 type fakeKubectlCommandRunner struct {
-	calls   [][]string
-	results []readiness.CommandResult
+	calls         [][]string
+	results       []readiness.CommandResult
+	defaultResult *readiness.CommandResult
 }
 
 func (r *fakeKubectlCommandRunner) Run(_ context.Context, argv []string) (readiness.CommandResult, error) {
@@ -926,6 +962,9 @@ func (r *fakeKubectlCommandRunner) Run(_ context.Context, argv []string) (readin
 		result := r.results[0]
 		r.results = r.results[1:]
 		return result, nil
+	}
+	if r.defaultResult != nil {
+		return *r.defaultResult, nil
 	}
 	return readiness.CommandResult{ExitStatus: 0}, nil
 }

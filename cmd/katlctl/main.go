@@ -411,9 +411,6 @@ func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint strin
 		StableEndpoint:                strings.TrimSpace(stableEndpoint),
 		StableEndpointBeforeManifests: stableEndpointBeforeManifests,
 	}
-	if stableEndpointBeforeManifests && bootstrap.StableEndpoint == "" {
-		return cluster.UserBootstrap{}, fmt.Errorf("--bootstrap-stable-endpoint-before-manifests requires --bootstrap-stable-endpoint")
-	}
 	for _, path := range manifestPaths {
 		path = strings.TrimSpace(path)
 		if path == "" {
