@@ -178,6 +178,12 @@ confext for the candidate generation. Later runtime configuration changes
 should render a new generated confext generation and select it atomically with
 the runtime root and sysext set.
 
+The live versus next-boot runtime apply contract is defined in
+`docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`. Domain
+implementations must declare whether their diffs are online-applicable,
+staged-only, or rejected for live application before the runtime agent accepts
+them.
+
 Normal confext activation must not run kubeadm, kubectl, CNI installers, package
 managers, or application controllers. Kubeadm-aware actions remain explicit
 operator or test-harness steps.

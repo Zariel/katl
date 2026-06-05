@@ -102,6 +102,11 @@ KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
 compatible with the new runtime root. Kubernetes-only updates may keep the
 existing KatlOS runtime root when the new sysext is compatible with it.
 
+Runtime configuration changes are confext-only generations unless they are
+combined with an explicit root or sysext update. The apply-mode decision for
+those generated confext changes is recorded in
+`docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`.
+
 Before a candidate generation is made bootable, Katl must validate the selected
 runtime root, UKI, sysexts, and confexts as one compatibility set. The generation
 record stores the exact artifact digests and versions that were validated, then
