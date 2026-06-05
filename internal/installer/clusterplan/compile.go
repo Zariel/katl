@@ -1,0 +1,315 @@
+package clusterplan
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+
+	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer/configdomain"
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/sysextcatalog"
+)
+
+const validationActivationPath = "/run/extensions/katl-kubernetes.raw"
+
+type selectedKubernetes struct {
+	version        string
+	catalogRef     string
+	sysext         *generation.ExtensionRef
+	activationPath string
+}
+
+func Compile(request CompileRequest) (Plan, error) {
+	config := request.Config
+	if config.APIVersion != APIVersion {
+		return Plan{}, fmt.Errorf("apiVersion must be %s", APIVersion)
+	}
+	if config.Kind != Kind {
+		return Plan{}, fmt.Errorf("kind must be %s", Kind)
+	}
+	if strings.TrimSpace(config.Metadata.Name) == "" {
+		return Plan{}, fmt.Errorf("metadata.name is required")
+	}
+	if err := validateClusterImage(config.Spec.KatlosImage); err != nil {
+		return Plan{}, err
+	}
+	if err := validateSystemRoleDefaults(config.Spec.SystemRoleDefaults); err != nil {
+		return Plan{}, err
+	}
+	kubernetes, err := selectKubernetes(config.Spec.Kubernetes, config.Spec.KatlosImage, request)
+	if err != nil {
+		return Plan{}, err
+	}
+	if len(config.Spec.Nodes) == 0 {
+		return Plan{}, fmt.Errorf("spec.nodes must not be empty")
+	}
+
+	nodes := append([]Node(nil), config.Spec.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	seen := make(map[string]struct{}, len(nodes))
+	materials := make([]NodeMaterial, 0, len(nodes))
+	inventoryNodes := make([]inventory.Node, 0, len(nodes))
+	addressOverrides := make([]inventory.AddressOverride, 0, len(request.AddressOverrides))
+	unusedAddressOverrides := make(map[string]string, len(request.AddressOverrides))
+	for name, address := range request.AddressOverrides {
+		unusedAddressOverrides[name] = address
+	}
+	for _, node := range nodes {
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			return Plan{}, fmt.Errorf("node name is required")
+		}
+		if _, ok := seen[name]; ok {
+			return Plan{}, fmt.Errorf("duplicate node name %q", name)
+		}
+		seen[name] = struct{}{}
+		role := inventory.SystemRole(strings.TrimSpace(string(node.SystemRole)))
+		if role != inventory.RoleControlPlane && role != inventory.RoleWorker {
+			return Plan{}, fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
+		}
+		layer, err := mergedLayer(config.Spec.Defaults, config.Spec.SystemRoleDefaults[role], node.Overrides)
+		if err != nil {
+			return Plan{}, fmt.Errorf("node %q: %w", name, err)
+		}
+		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs)
+		if err != nil {
+			return Plan{}, err
+		}
+		if override, ok := unusedAddressOverrides[name]; ok {
+			delete(unusedAddressOverrides, name)
+			override = strings.TrimSpace(override)
+			if override == "" {
+				return Plan{}, fmt.Errorf("address override for node %q is empty", name)
+			}
+			addressOverrides = append(addressOverrides, inventory.AddressOverride{
+				Node:    name,
+				Before:  invNode.Address,
+				Address: override,
+			})
+			invNode.Address = override
+			material.BootstrapAddress = override
+		}
+		materials = append(materials, material)
+		inventoryNodes = append(inventoryNodes, invNode)
+	}
+	if len(unusedAddressOverrides) > 0 {
+		var names []string
+		for name := range unusedAddressOverrides {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return Plan{}, fmt.Errorf("address override references unknown node %q", names[0])
+	}
+	sort.Slice(addressOverrides, func(i, j int) bool {
+		return addressOverrides[i].Node < addressOverrides[j].Node
+	})
+	bootstrapInventory := inventory.Inventory{
+		ControlPlaneEndpoint: strings.TrimSpace(config.Spec.ControlPlaneEndpoint),
+		KubernetesVersion:    kubernetes.version,
+		Nodes:                inventoryNodes,
+	}
+	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
+		return Plan{}, err
+	}
+	return Plan{
+		ControlPlaneEndpoint: bootstrapInventory.ControlPlaneEndpoint,
+		KubernetesVersion:    kubernetes.version,
+		KubernetesCatalogRef: kubernetes.catalogRef,
+		KubernetesSysext:     kubernetes.sysext,
+		KatlosImage:          config.Spec.KatlosImage,
+		Nodes:                materials,
+		BootstrapInventory:   bootstrapInventory,
+		AddressOverrides:     addressOverrides,
+	}, nil
+}
+
+func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan) (NodeMaterial, inventory.Node, error) {
+	hostname := strings.TrimSpace(layer.Hostname)
+	if hostname == "" {
+		hostname = name
+	}
+	if layer.Install.TargetDisk == nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q install.targetDisk is required", name)
+	}
+	installManifest := manifest.Manifest{
+		APIVersion: manifest.APIVersion,
+		Kind:       manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity: manifest.NodeIdentity{
+				Hostname: hostname,
+				SSH:      layer.SSH,
+			},
+			SystemRole: string(role),
+			Networkd:   layer.Networkd,
+			Kubernetes: manifest.KubernetesConfig{
+				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
+			},
+		},
+		Install: manifest.InstallConfig{
+			AllowDestructiveInstall: config.Spec.AllowDestructiveInstall,
+			TargetDisk:              *layer.Install.TargetDisk,
+			ExtraDisks:              append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
+		},
+		KatlosImage: config.Spec.KatlosImage,
+	}
+	if err := manifest.Validate(installManifest); err != nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q manifest: %w", name, err)
+	}
+	kubeadmRef := strings.TrimSpace(layer.Kubernetes.KubeadmConfigRef)
+	kubeadmConfig := inventory.KubeadmConfig{}
+	if kubeadmRef != "" {
+		configPlan, ok := kubeadmConfigs[kubeadmRef]
+		if !ok {
+			return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q kubeadm config ref %q was not resolved", name, kubeadmRef)
+		}
+		kubeadmConfig = inventory.KubeadmConfig{
+			Ref:    kubeadmRef,
+			Path:   configPlan.Config.RenderPath,
+			Intent: inventory.KubeadmIntent(role),
+		}
+	}
+	nativeEtcFiles, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
+		Manifest:                 installManifest,
+		KubeadmConfigs:           kubeadmConfigs,
+		KubernetesVersion:        kubernetes.version,
+		KubernetesActivationPath: kubernetes.activationPath,
+	})
+	if err != nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q config domains: %w", name, err)
+	}
+	if err := rejectHostSpecificMaterials(installManifest, nativeEtcFiles, kubeadmConfig, kubernetes.sysext); err != nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q: %w", name, err)
+	}
+	invNode := inventory.Node{
+		Name:              name,
+		Address:           strings.TrimSpace(layer.Bootstrap.Address),
+		SystemRole:        role,
+		Access:            layer.Bootstrap.Access,
+		KubeadmConfig:     kubeadmConfig,
+		KubernetesVersion: kubernetes.version,
+	}
+	return NodeMaterial{
+		Name:                 name,
+		SystemRole:           role,
+		BootstrapAddress:     invNode.Address,
+		InstallManifest:      installManifest,
+		NativeEtcFiles:       nativeEtcFiles,
+		KubeadmConfig:        kubeadmConfig,
+		KubernetesVersion:    kubernetes.version,
+		KubernetesCatalogRef: kubernetes.catalogRef,
+		KubernetesSysext:     kubernetes.sysext,
+	}, invNode, nil
+}
+
+func validateSystemRoleDefaults(defaults map[inventory.SystemRole]NodeLayer) error {
+	for role := range defaults {
+		switch role {
+		case inventory.RoleControlPlane, inventory.RoleWorker:
+		default:
+			return fmt.Errorf("systemRoleDefaults key %q is unsupported", role)
+		}
+	}
+	return nil
+}
+
+func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage, request CompileRequest) (selectedKubernetes, error) {
+	version := strings.TrimSpace(selection.PayloadVersion)
+	catalogRef := strings.TrimSpace(selection.CatalogRef)
+	if version == "" && catalogRef == "" {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion or catalogRef is required")
+	}
+	if version != "" && catalogRef != "" {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes must not set both payloadVersion and catalogRef")
+	}
+	if version != "" {
+		if sysextcatalog.KubernetesMinor(version) == "" {
+			return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion %q must be vMAJOR.MINOR.PATCH", version)
+		}
+		return selectedKubernetes{
+			version:        version,
+			activationPath: validationActivationPath,
+		}, nil
+	}
+
+	ref, err := sysextcatalog.Select(sysextcatalog.SelectionRequest{
+		Catalog: request.KubernetesCatalog,
+		Version: catalogRef,
+		Runtime: sysextcatalog.Runtime{
+			Interface:    strings.TrimSpace(image.RuntimeInterface),
+			Architecture: strings.TrimSpace(image.Architecture),
+		},
+		ArtifactBasePath: strings.TrimSpace(request.KubernetesArtifactBasePath),
+		ActivationPath:   strings.TrimSpace(request.KubernetesActivationPath),
+	})
+	if err != nil {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.catalogRef %q: %w", catalogRef, err)
+	}
+	return selectedKubernetes{
+		version:        ref.PayloadVersion,
+		catalogRef:     catalogRef,
+		sysext:         &ref,
+		activationPath: ref.ActivationPath,
+	}, nil
+}
+
+func validateClusterImage(image manifest.KatlosImage) error {
+	testManifest := manifest.Manifest{
+		APIVersion: manifest.APIVersion,
+		Kind:       manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity: manifest.NodeIdentity{
+				Hostname: "image-validation",
+				SSH: manifest.SSHIdentity{AuthorizedKeys: []string{
+					"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example",
+				}},
+			},
+			SystemRole: string(inventory.RoleControlPlane),
+		},
+		Install: manifest.InstallConfig{
+			AllowDestructiveInstall: true,
+			TargetDisk:              manifest.DiskSelector{ByID: "/dev/disk/by-id/katl-image-validation"},
+		},
+		KatlosImage: image,
+	}
+	if err := manifest.Validate(testManifest); err != nil {
+		return fmt.Errorf("spec.katlosImage: %w", err)
+	}
+	return nil
+}
+
+func validateBootstrapInventory(bootstrapInventory inventory.Inventory) error {
+	validationInventory := bootstrapInventory
+	validationInventory.Nodes = append([]inventory.Node(nil), bootstrapInventory.Nodes...)
+	for i := range validationInventory.Nodes {
+		if strings.TrimSpace(validationInventory.Nodes[i].Address) == "" {
+			validationInventory.Nodes[i].Address = "127.0.0.1"
+		}
+	}
+	if _, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: validationInventory}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rejectHostSpecificMaterials(values ...any) error {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	text := string(data)
+	for _, denied := range []string{"/run/current-system", "/nix/store", "/etc/profiles", "/home/"} {
+		if strings.Contains(text, denied) {
+			return fmt.Errorf("generated materials contain host-specific path %s", denied)
+		}
+	}
+	return nil
+}
+
+func same(a, b any) bool {
+	return reflect.DeepEqual(a, b)
+}

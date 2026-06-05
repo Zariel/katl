@@ -22,80 +22,80 @@ const (
 var localRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
 
 type Manifest struct {
-	APIVersion  string        `json:"apiVersion"`
-	Kind        string        `json:"kind"`
-	Node        NodeConfig    `json:"node"`
-	Install     InstallConfig `json:"install"`
-	KatlosImage KatlosImage   `json:"katlosImage"`
+	APIVersion  string        `json:"apiVersion" yaml:"apiVersion"`
+	Kind        string        `json:"kind" yaml:"kind"`
+	Node        NodeConfig    `json:"node" yaml:"node"`
+	Install     InstallConfig `json:"install" yaml:"install"`
+	KatlosImage KatlosImage   `json:"katlosImage" yaml:"katlosImage"`
 }
 
 type NodeConfig struct {
-	Identity   NodeIdentity     `json:"identity"`
-	SystemRole string           `json:"systemRole"`
-	Networkd   NetworkdConfig   `json:"networkd,omitempty"`
-	Kubernetes KubernetesConfig `json:"kubernetes,omitempty"`
+	Identity   NodeIdentity     `json:"identity" yaml:"identity"`
+	SystemRole string           `json:"systemRole" yaml:"systemRole"`
+	Networkd   NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
+	Kubernetes KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 }
 
 type NodeIdentity struct {
-	Hostname string      `json:"hostname"`
-	SSH      SSHIdentity `json:"ssh"`
+	Hostname string      `json:"hostname" yaml:"hostname"`
+	SSH      SSHIdentity `json:"ssh" yaml:"ssh"`
 }
 
 type SSHIdentity struct {
-	AuthorizedKeys []string `json:"authorizedKeys"`
+	AuthorizedKeys []string `json:"authorizedKeys" yaml:"authorizedKeys"`
 }
 
 type NetworkdConfig struct {
-	Files []NetworkdFile `json:"files,omitempty"`
+	Files []NetworkdFile `json:"files,omitempty" yaml:"files,omitempty"`
 }
 
 type NetworkdFile struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
+	Name    string `json:"name" yaml:"name"`
+	Content string `json:"content" yaml:"content"`
 }
 
 type KubernetesConfig struct {
-	Kubeadm KubeadmReference `json:"kubeadm,omitempty"`
+	Kubeadm KubeadmReference `json:"kubeadm,omitempty" yaml:"kubeadm,omitempty"`
 }
 
 type KubeadmReference struct {
-	ConfigRef string `json:"configRef,omitempty"`
+	ConfigRef string `json:"configRef,omitempty" yaml:"configRef,omitempty"`
 }
 
 type InstallConfig struct {
-	AllowDestructiveInstall bool         `json:"allowDestructiveInstall"`
-	TargetDisk              DiskSelector `json:"targetDisk"`
-	ExtraDisks              []ExtraDisk  `json:"extraDisks,omitempty"`
+	AllowDestructiveInstall bool         `json:"allowDestructiveInstall" yaml:"allowDestructiveInstall"`
+	TargetDisk              DiskSelector `json:"targetDisk" yaml:"targetDisk"`
+	ExtraDisks              []ExtraDisk  `json:"extraDisks,omitempty" yaml:"extraDisks,omitempty"`
 }
 
 type DiskSelector struct {
-	ByID       string `json:"byID,omitempty"`
-	WWN        string `json:"wwn,omitempty"`
-	Serial     string `json:"serial,omitempty"`
-	MinSizeMiB uint64 `json:"minSizeMiB,omitempty"`
+	ByID       string `json:"byID,omitempty" yaml:"byID,omitempty"`
+	WWN        string `json:"wwn,omitempty" yaml:"wwn,omitempty"`
+	Serial     string `json:"serial,omitempty" yaml:"serial,omitempty"`
+	MinSizeMiB uint64 `json:"minSizeMiB,omitempty" yaml:"minSizeMiB,omitempty"`
 }
 
 type ExtraDisk struct {
-	Name       string       `json:"name"`
-	Selector   DiskSelector `json:"selector"`
-	Filesystem string       `json:"filesystem"`
-	Mount      ExtraMount   `json:"mount"`
-	Wipe       bool         `json:"wipe,omitempty"`
+	Name       string       `json:"name" yaml:"name"`
+	Selector   DiskSelector `json:"selector" yaml:"selector"`
+	Filesystem string       `json:"filesystem" yaml:"filesystem"`
+	Mount      ExtraMount   `json:"mount" yaml:"mount"`
+	Wipe       bool         `json:"wipe,omitempty" yaml:"wipe,omitempty"`
 }
 
 type ExtraMount struct {
-	Path string `json:"path"`
+	Path string `json:"path" yaml:"path"`
 }
 
 type KatlosImage struct {
-	URL              string `json:"url,omitempty"`
-	LocalRef         string `json:"localRef,omitempty"`
-	SHA256           string `json:"sha256"`
-	SizeBytes        uint64 `json:"sizeBytes"`
-	Version          string `json:"version"`
-	Architecture     string `json:"architecture"`
-	RuntimeInterface string `json:"runtimeInterface,omitempty"`
-	Role             string `json:"role"`
+	URL              string `json:"url,omitempty" yaml:"url,omitempty"`
+	LocalRef         string `json:"localRef,omitempty" yaml:"localRef,omitempty"`
+	SHA256           string `json:"sha256" yaml:"sha256"`
+	SizeBytes        uint64 `json:"sizeBytes" yaml:"sizeBytes"`
+	Version          string `json:"version" yaml:"version"`
+	Architecture     string `json:"architecture" yaml:"architecture"`
+	RuntimeInterface string `json:"runtimeInterface,omitempty" yaml:"runtimeInterface,omitempty"`
+	Role             string `json:"role" yaml:"role"`
 }
 
 type RootDiskProfile struct {
@@ -124,45 +124,52 @@ func Decode(reader io.Reader) (Manifest, error) {
 	if manifest.Kind != Kind {
 		return Manifest{}, fmt.Errorf("kind must be %s", Kind)
 	}
+	if err := Validate(manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func Validate(manifest Manifest) error {
 	if !manifest.Install.AllowDestructiveInstall {
-		return Manifest{}, fmt.Errorf("install.allowDestructiveInstall must be true")
+		return fmt.Errorf("install.allowDestructiveInstall must be true")
 	}
 	if strings.TrimSpace(manifest.Node.Identity.Hostname) == "" {
-		return Manifest{}, fmt.Errorf("node.identity.hostname is required")
+		return fmt.Errorf("node.identity.hostname is required")
 	}
 	if err := validateSystemRole(manifest.Node.SystemRole); err != nil {
-		return Manifest{}, err
+		return err
 	}
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
-		return Manifest{}, fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
+		return fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
 	}
 	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
-		return Manifest{}, err
+		return err
 	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
-		return Manifest{}, err
+		return err
 	}
 	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
-		return Manifest{}, err
+		return err
 	}
 	if err := validateKatlosImage(manifest.KatlosImage); err != nil {
-		return Manifest{}, err
+		return err
 	}
 	for i, extra := range manifest.Install.ExtraDisks {
 		if strings.TrimSpace(extra.Name) == "" {
-			return Manifest{}, fmt.Errorf("install.extraDisks[%d].name is required", i)
+			return fmt.Errorf("install.extraDisks[%d].name is required", i)
 		}
 		if err := validateDiskSelector(fmt.Sprintf("install.extraDisks[%d].selector", i), extra.Selector); err != nil {
-			return Manifest{}, err
+			return err
 		}
 		if strings.TrimSpace(extra.Filesystem) == "" {
-			return Manifest{}, fmt.Errorf("install.extraDisks[%d].filesystem is required", i)
+			return fmt.Errorf("install.extraDisks[%d].filesystem is required", i)
 		}
 		if strings.TrimSpace(extra.Mount.Path) == "" {
-			return Manifest{}, fmt.Errorf("install.extraDisks[%d].mount.path is required", i)
+			return fmt.Errorf("install.extraDisks[%d].mount.path is required", i)
 		}
 	}
-	return manifest, nil
+	return nil
 }
 
 func validateSystemRole(value string) error {

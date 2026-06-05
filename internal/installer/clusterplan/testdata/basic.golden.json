@@ -1,0 +1,228 @@
+{
+  "controlPlaneEndpoint": "api.katl.test:6443",
+  "kubernetesVersion": "v1.36.1",
+  "katlosImage": {
+    "url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 1073741824,
+    "version": "2026.06.04",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1",
+    "role": "install"
+  },
+  "nodes": [
+    {
+      "name": "cp-1",
+      "systemRole": "control-plane",
+      "bootstrapAddress": "10.0.0.11",
+      "installManifest": {
+        "apiVersion": "install.katl.dev/v1alpha1",
+        "kind": "InstallManifest",
+        "node": {
+          "identity": {
+            "hostname": "cp-1-host",
+            "ssh": {
+              "authorizedKeys": [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+              ]
+            }
+          },
+          "systemRole": "control-plane",
+          "networkd": {
+            "files": [
+              {
+                "name": "10-common.network",
+                "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
+              },
+              {
+                "name": "20-cp.network",
+                "content": "[Match]\nName=enp2s0\n"
+              }
+            ]
+          },
+          "kubernetes": {
+            "kubeadm": {
+              "configRef": "control-plane"
+            }
+          }
+        },
+        "install": {
+          "allowDestructiveInstall": true,
+          "targetDisk": {
+            "byID": "/dev/disk/by-id/ata-cp-root",
+            "minSizeMiB": 32768
+          },
+          "extraDisks": [
+            {
+              "name": "data",
+              "selector": {
+                "byID": "/dev/disk/by-id/ata-data"
+              },
+              "filesystem": "xfs",
+              "mount": {
+                "path": "/srv/data"
+              }
+            }
+          ]
+        },
+        "katlosImage": {
+          "url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sizeBytes": 1073741824,
+          "version": "2026.06.04",
+          "architecture": "x86_64",
+          "runtimeInterface": "katl-runtime-1",
+          "role": "install"
+        }
+      },
+      "nativeEtcFiles": [
+        {
+          "path": "/etc/katl/kubeadm/control-plane/config.yaml",
+          "content": "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/katl/node.json",
+          "content": "{\n  \"apiVersion\": \"katl.dev/v1alpha1\",\n  \"kind\": \"NodeMetadata\",\n  \"identity\": {\n    \"hostname\": \"cp-1-host\"\n  },\n  \"systemRole\": \"control-plane\",\n  \"kubeadm\": {\n    \"configRef\": \"control-plane\",\n    \"configPath\": \"/etc/katl/kubeadm/control-plane/config.yaml\",\n    \"intent\": \"control-plane\"\n  },\n  \"kubernetes\": {\n    \"payloadVersion\": \"v1.36.1\",\n    \"activationPath\": \"/run/extensions/katl-kubernetes.raw\"\n  }\n}\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/systemd/network/10-common.network",
+          "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/systemd/network/20-cp.network",
+          "content": "[Match]\nName=enp2s0\n",
+          "mode": 420
+        }
+      ],
+      "kubeadmConfig": {
+        "ref": "control-plane",
+        "path": "/etc/katl/kubeadm/control-plane/config.yaml",
+        "intent": "control-plane"
+      },
+      "kubernetesVersion": "v1.36.1"
+    },
+    {
+      "name": "worker-1",
+      "systemRole": "worker",
+      "bootstrapAddress": "10.0.0.21",
+      "installManifest": {
+        "apiVersion": "install.katl.dev/v1alpha1",
+        "kind": "InstallManifest",
+        "node": {
+          "identity": {
+            "hostname": "worker-1",
+            "ssh": {
+              "authorizedKeys": [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+              ]
+            }
+          },
+          "systemRole": "worker",
+          "networkd": {
+            "files": [
+              {
+                "name": "10-common.network",
+                "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
+              }
+            ]
+          },
+          "kubernetes": {
+            "kubeadm": {
+              "configRef": "worker"
+            }
+          }
+        },
+        "install": {
+          "allowDestructiveInstall": true,
+          "targetDisk": {
+            "byID": "/dev/disk/by-id/ata-worker-root",
+            "minSizeMiB": 32768
+          },
+          "extraDisks": [
+            {
+              "name": "data",
+              "selector": {
+                "byID": "/dev/disk/by-id/ata-data"
+              },
+              "filesystem": "xfs",
+              "mount": {
+                "path": "/srv/data"
+              }
+            }
+          ]
+        },
+        "katlosImage": {
+          "url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sizeBytes": 1073741824,
+          "version": "2026.06.04",
+          "architecture": "x86_64",
+          "runtimeInterface": "katl-runtime-1",
+          "role": "install"
+        }
+      },
+      "nativeEtcFiles": [
+        {
+          "path": "/etc/katl/kubeadm/worker/config.yaml",
+          "content": "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/katl/node.json",
+          "content": "{\n  \"apiVersion\": \"katl.dev/v1alpha1\",\n  \"kind\": \"NodeMetadata\",\n  \"identity\": {\n    \"hostname\": \"worker-1\"\n  },\n  \"systemRole\": \"worker\",\n  \"kubeadm\": {\n    \"configRef\": \"worker\",\n    \"configPath\": \"/etc/katl/kubeadm/worker/config.yaml\",\n    \"intent\": \"worker\"\n  },\n  \"kubernetes\": {\n    \"payloadVersion\": \"v1.36.1\",\n    \"activationPath\": \"/run/extensions/katl-kubernetes.raw\"\n  }\n}\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/systemd/network/10-common.network",
+          "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
+          "mode": 420
+        }
+      ],
+      "kubeadmConfig": {
+        "ref": "worker",
+        "path": "/etc/katl/kubeadm/worker/config.yaml",
+        "intent": "worker"
+      },
+      "kubernetesVersion": "v1.36.1"
+    }
+  ],
+  "bootstrapInventory": {
+    "controlPlaneEndpoint": "api.katl.test:6443",
+    "kubernetesVersion": "v1.36.1",
+    "nodes": [
+      {
+        "name": "cp-1",
+        "address": "10.0.0.11",
+        "systemRole": "control-plane",
+        "access": {
+          "method": "agent",
+          "credentialRef": "vsock:1234:10240"
+        },
+        "kubeadmConfig": {
+          "ref": "control-plane",
+          "path": "/etc/katl/kubeadm/control-plane/config.yaml",
+          "intent": "control-plane"
+        },
+        "kubernetesVersion": "v1.36.1"
+      },
+      {
+        "name": "worker-1",
+        "address": "10.0.0.21",
+        "systemRole": "worker",
+        "access": {
+          "method": "agent",
+          "credentialRef": "vsock:1235:10240"
+        },
+        "kubeadmConfig": {
+          "ref": "worker",
+          "path": "/etc/katl/kubeadm/worker/config.yaml",
+          "intent": "worker"
+        },
+        "kubernetesVersion": "v1.36.1"
+      }
+    ]
+  }
+}

@@ -35,30 +35,30 @@ const (
 )
 
 type Inventory struct {
-	ControlPlaneEndpoint string
-	KubernetesVersion    string
-	Nodes                []Node
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint"`
+	KubernetesVersion    string `json:"kubernetesVersion"`
+	Nodes                []Node `json:"nodes"`
 }
 
 type Node struct {
-	Name              string
-	Address           string
-	SystemRole        SystemRole
-	Access            Access
-	KubeadmConfig     KubeadmConfig
-	KubernetesVersion string
+	Name              string        `json:"name"`
+	Address           string        `json:"address,omitempty"`
+	SystemRole        SystemRole    `json:"systemRole"`
+	Access            Access        `json:"access"`
+	KubeadmConfig     KubeadmConfig `json:"kubeadmConfig"`
+	KubernetesVersion string        `json:"kubernetesVersion"`
 }
 
 type Access struct {
-	Method        string
-	User          string
-	CredentialRef string
+	Method        string `json:"method" yaml:"method"`
+	User          string `json:"user,omitempty" yaml:"user"`
+	CredentialRef string `json:"credentialRef" yaml:"credentialRef"`
 }
 
 type KubeadmConfig struct {
-	Ref    string
-	Path   string
-	Intent KubeadmIntent
+	Ref    string        `json:"ref"`
+	Path   string        `json:"path"`
+	Intent KubeadmIntent `json:"intent"`
 }
 
 type PlanRequest struct {
@@ -68,27 +68,27 @@ type PlanRequest struct {
 }
 
 type Plan struct {
-	InitNode             string
-	ControlPlaneEndpoint string
-	KubernetesVersion    string
-	Nodes                []PlannedNode
-	AddressOverrides     []AddressOverride
+	InitNode             string            `json:"initNode"`
+	ControlPlaneEndpoint string            `json:"controlPlaneEndpoint"`
+	KubernetesVersion    string            `json:"kubernetesVersion"`
+	Nodes                []PlannedNode     `json:"nodes"`
+	AddressOverrides     []AddressOverride `json:"addressOverrides,omitempty"`
 }
 
 type PlannedNode struct {
-	Name              string
-	Address           string
-	SystemRole        SystemRole
-	Action            BootstrapAction
-	Access            Access
-	KubeadmConfig     KubeadmConfig
-	KubernetesVersion string
+	Name              string          `json:"name"`
+	Address           string          `json:"address"`
+	SystemRole        SystemRole      `json:"systemRole"`
+	Action            BootstrapAction `json:"action"`
+	Access            Access          `json:"access"`
+	KubeadmConfig     KubeadmConfig   `json:"kubeadmConfig"`
+	KubernetesVersion string          `json:"kubernetesVersion"`
 }
 
 type AddressOverride struct {
-	Node    string
-	Before  string
-	Address string
+	Node    string `json:"node"`
+	Before  string `json:"before,omitempty"`
+	Address string `json:"address"`
 }
 
 func PlanInventory(request PlanRequest) (Plan, error) {

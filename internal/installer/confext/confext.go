@@ -20,12 +20,12 @@ const (
 )
 
 type NativeEtcFile struct {
-	Path    string
-	Content string
-	Type    NativeEtcFileType
-	Mode    fs.FileMode
-	UID     int
-	GID     int
+	Path    string            `json:"path"`
+	Content string            `json:"content"`
+	Type    NativeEtcFileType `json:"type,omitempty"`
+	Mode    fs.FileMode       `json:"mode,omitempty"`
+	UID     int               `json:"uid,omitempty"`
+	GID     int               `json:"gid,omitempty"`
 }
 
 type NativeEtcFilePlan struct {
