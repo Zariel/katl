@@ -6,29 +6,41 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zariel/katl/internal/installer/handoff"
 )
 
 type FirstInstallConfig struct {
-	Installer       InstallerBootConfig
-	Runtime         InstalledRuntimeConfig
-	Manifest        []byte
-	ManifestPath    string
-	HandoffToken    string
-	HandoffURL      string
-	TargetDisk      DiskFixture
-	DiskRunner      DiskRunner
-	InstallerRunner VMRunner
-	RuntimeRunner   VMRunner
+	Installer        InstallerBootConfig
+	Runtime          InstalledRuntimeConfig
+	Manifest         []byte
+	ManifestPath     string
+	GuestHandoff     bool
+	HandoffToken     string
+	HandoffURL       string
+	HandoffHostPort  int
+	HandoffGuestPort int
+	HandoffPoster    func(context.Context, string, string, []byte) (int, string, error)
+	TargetDisk       DiskFixture
+	DiskRunner       DiskRunner
+	InstallerRunner  VMRunner
+	RuntimeRunner    VMRunner
 }
+
+const (
+	guestHandoffSignal         = "katlos-install waiting for config at "
+	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
+)
 
 type handoffLog struct {
 	URL          string `json:"url"`
+	PostURL      string `json:"postUrl,omitempty"`
 	Token        string `json:"token,omitempty"`
 	ManifestPath string `json:"manifestPath"`
 	Announcement string `json:"announcement,omitempty"`
@@ -53,6 +65,12 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	if err := writeManifest(result, manifest); err != nil {
 		return failFirst(runner, scenario, result, "install-manifest", err)
 	}
+	if config.GuestHandoff {
+		config, err = configureGuestHandoff(result, config, manifest)
+		if err != nil {
+			return failFirst(runner, scenario, result, "guest-handoff", err)
+		}
+	}
 
 	result = BootInstaller(ctx, result, config.Installer, config.InstallerRunner)
 	if err := copyArtifact(result.Artifacts.QEMUCommand, result.Artifacts.InstallerQEMUCommand); err != nil {
@@ -64,11 +82,19 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 		return result, nil
 	}
-	if err := deliverHandoff(ctx, result, config, manifest); err != nil {
-		return failFirst(runner, scenario, result, "local-handoff", err)
+	if config.GuestHandoff {
+		if err := requireGuestHandoff(result); err != nil {
+			return failFirst(runner, scenario, result, "guest-handoff", err)
+		}
+		now := runner.time()
+		result.addPhase("guest-handoff", StatusPassed, "", now, now)
+	} else {
+		if err := deliverHandoff(ctx, result, config, manifest); err != nil {
+			return failFirst(runner, scenario, result, "local-handoff", err)
+		}
+		now := runner.time()
+		result.addPhase("local-handoff", StatusPassed, "", now, now)
 	}
-	now := runner.time()
-	result.addPhase("local-handoff", StatusPassed, "", now, now)
 
 	runtime, err := runtimeConfig(result, config.Runtime)
 	if err != nil {
@@ -125,11 +151,123 @@ func loadManifest(config FirstInstallConfig) ([]byte, error) {
 	return data, nil
 }
 
+func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []byte) (FirstInstallConfig, error) {
+	hostPort := config.HandoffHostPort
+	guestPort := config.HandoffGuestPort
+	if guestPort == 0 {
+		guestPort = 8080
+	}
+	if config.HandoffURL == "" {
+		if hostPort == 0 {
+			port, err := freeTCPPort()
+			if err != nil {
+				return config, err
+			}
+			hostPort = port
+		}
+		config.Installer.VM.HostForwards = append(config.Installer.VM.HostForwards, HostForward{
+			HostPort:  hostPort,
+			GuestPort: guestPort,
+		})
+	}
+	if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
+		config.Installer.Expect = guestHandoffAcceptedSignal
+	}
+	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, SerialHook{
+		Name:   "installer-guest-handoff",
+		Signal: guestHandoffSignal,
+		Run: func(ctx context.Context, event SerialHookEvent) error {
+			return deliverGuestHandoff(ctx, result, config, manifest, hostPort, event.SerialText)
+		},
+	})
+	return config, nil
+}
+
+func requireGuestHandoff(result Result) error {
+	if _, err := os.Stat(result.Artifacts.HandoffResponse); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("guest handoff response artifact is missing")
+		}
+		return fmt.Errorf("stat guest handoff response: %w", err)
+	}
+	return nil
+}
+
+func freeTCPPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("reserve handoff host port: %w", err)
+	}
+	defer listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("reserve handoff host port: unexpected address %s", listener.Addr())
+	}
+	return addr.Port, nil
+}
+
 func writeManifest(result Result, manifest []byte) error {
 	if err := os.MkdirAll(filepath.Dir(result.Artifacts.InstallManifest), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(result.Artifacts.InstallManifest, manifest, 0o600)
+}
+
+func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, hostPort int, serialText string) error {
+	announcement, url, token, err := parseHandoffAnnouncement(serialText)
+	if err != nil {
+		return err
+	}
+	postURL := strings.TrimSpace(config.HandoffURL)
+	if postURL == "" {
+		if hostPort == 0 {
+			return errors.New("handoff host port is required")
+		}
+		postURL = fmt.Sprintf("http://127.0.0.1:%d/v1/install", hostPort)
+	}
+	request := handoffLog{
+		URL:          url,
+		PostURL:      postURL,
+		Token:        token,
+		ManifestPath: result.Artifacts.InstallManifest,
+		Announcement: announcement,
+	}
+	if err := writeJSON(result.Artifacts.HandoffRequest, request); err != nil {
+		return err
+	}
+	status, body, err := postHandoff(ctx, config, postURL, token, manifest)
+	if err != nil {
+		return err
+	}
+	return writeHandoff(result, url, status, body)
+}
+
+func parseHandoffAnnouncement(serialText string) (announcement string, url string, token string, err error) {
+	for _, line := range strings.Split(serialText, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, guestHandoffSignal) {
+			announcement = line
+		}
+	}
+	if announcement == "" {
+		return "", "", "", errors.New("handoff announcement not found in installer serial log")
+	}
+	start := strings.Index(announcement, guestHandoffSignal)
+	if start < 0 {
+		return "", "", "", fmt.Errorf("could not parse handoff announcement: %s", announcement)
+	}
+	payload := strings.TrimSpace(announcement[start+len(guestHandoffSignal):])
+	const tokenPrefix = " token="
+	tokenStart := strings.LastIndex(payload, tokenPrefix)
+	if tokenStart < 0 {
+		return "", "", "", fmt.Errorf("could not parse handoff token from announcement: %s", announcement)
+	}
+	url = strings.TrimSpace(payload[:tokenStart])
+	token = strings.TrimSpace(payload[tokenStart+len(tokenPrefix):])
+	if url == "" || token == "" {
+		return "", "", "", fmt.Errorf("could not parse handoff URL/token from announcement: %s", announcement)
+	}
+	return announcement, url, token, nil
 }
 
 func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) error {
@@ -168,11 +306,18 @@ func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfi
 		}
 		return writeHandoff(result, url, status, body)
 	}
-	status, body, err := postRemote(ctx, url, token, manifest)
+	status, body, err := postHandoff(ctx, config, url, token, manifest)
 	if err != nil {
 		return err
 	}
 	return writeHandoff(result, url, status, body)
+}
+
+func postHandoff(ctx context.Context, config FirstInstallConfig, url, token string, manifest []byte) (int, string, error) {
+	if config.HandoffPoster != nil {
+		return config.HandoffPoster(ctx, url, token, manifest)
+	}
+	return postRemote(ctx, url, token, manifest)
 }
 
 func postLocal(ctx context.Context, handler http.Handler, url, token string, manifest []byte) (int, string, error) {

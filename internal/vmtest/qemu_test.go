@@ -345,6 +345,38 @@ func TestVMExpect(t *testing.T) {
 	}
 }
 
+func TestVMSerialHook(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Expect = "runtime ready"
+	called := false
+	config.SerialHooks = []SerialHook{{
+		Name:   "handoff",
+		Signal: "waiting for config",
+		Run: func(_ context.Context, event SerialHookEvent) error {
+			called = true
+			if !strings.Contains(event.SerialText, "runtime ready") {
+				t.Fatalf("SerialText = %q, want final signal", event.SerialText)
+			}
+			return nil
+		},
+	}}
+	runner := VMRunner{
+		Executor: vmExec{write: "waiting for config\nruntime ready\n"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if !called {
+		t.Fatal("serial hook was not called")
+	}
+}
+
 func TestVMFailure(t *testing.T) {
 	result, config := vmFixture(t)
 	runner := VMRunner{

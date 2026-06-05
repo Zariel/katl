@@ -67,6 +67,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 			VM:                 vm,
 		},
 		ManifestPath: manifestPath,
+		GuestHandoff: true,
 		TargetDisk:   TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
 	})
 	if err != nil {

@@ -38,8 +38,22 @@ type VMConfig struct {
 	PollInterval time.Duration
 	Network      VMNetworkConfig
 	HostForwards []HostForward
+	SerialHooks  []SerialHook
 	VSock        VSockConfig
 	Agent        AgentControlConfig
+}
+
+type SerialHook struct {
+	Name   string
+	Signal string
+	Run    func(context.Context, SerialHookEvent) error
+}
+
+type SerialHookEvent struct {
+	Result     Result
+	Config     VMConfig
+	Plan       VMPlan
+	SerialText string
 }
 
 type VMNetworkMode string
@@ -153,7 +167,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, file)
 	}()
 	if config.Expect != "" {
-		return r.waitSerial(ctx, cancel, done, result, config, plan.SerialLog, started)
+		return r.waitSerial(ctx, cancel, done, result, config, plan, started)
 	}
 	if err := <-done; err != nil {
 		summary := fmt.Sprintf("qemu exited: %v", err)
@@ -165,15 +179,22 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
 }
 
-func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, serialLog string, started time.Time) Result {
+func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
 	interval := config.PollInterval
 	if interval == 0 {
 		interval = 250 * time.Millisecond
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	hooksRun := make([]bool, len(config.SerialHooks))
 	for {
-		if serialHas(serialLog, config.Expect) {
+		serialText := readSerial(plan.SerialLog)
+		if err := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); err != nil {
+			cancel()
+			<-done
+			return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
+		}
+		if strings.Contains(serialText, config.Expect) {
 			if err := r.checkAgent(ctx, result, config); err != nil {
 				cancel()
 				<-done
@@ -185,7 +206,11 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		}
 		select {
 		case err := <-done:
-			if serialHas(serialLog, config.Expect) {
+			serialText := readSerial(plan.SerialLog)
+			if hookErr := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); hookErr != nil {
+				return finishVM(result, phaseName(config), StatusFailed, hookErr.Error(), started, time.Now().UTC())
+			}
+			if strings.Contains(serialText, config.Expect) {
 				if checkErr := r.checkAgent(ctx, result, config); checkErr != nil {
 					return finishVM(result, phaseName(config), StatusFailed, checkErr.Error(), started, time.Now().UTC())
 				}
@@ -202,6 +227,34 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r VMRunner) runSerialHooks(ctx context.Context, result Result, config VMConfig, plan VMPlan, serialText string, hooksRun []bool) error {
+	for i, hook := range config.SerialHooks {
+		if hooksRun[i] || hook.Signal == "" || !strings.Contains(serialText, hook.Signal) {
+			continue
+		}
+		if hook.Run == nil {
+			return fmt.Errorf("serial hook %q has no runner", serialHookName(hook))
+		}
+		if err := hook.Run(ctx, SerialHookEvent{
+			Result:     result,
+			Config:     config,
+			Plan:       plan,
+			SerialText: serialText,
+		}); err != nil {
+			return fmt.Errorf("serial hook %q failed: %w", serialHookName(hook), err)
+		}
+		hooksRun[i] = true
+	}
+	return nil
+}
+
+func serialHookName(hook SerialHook) string {
+	if hook.Name != "" {
+		return hook.Name
+	}
+	return hook.Signal
 }
 
 func (r VMRunner) checkAgent(ctx context.Context, result Result, config VMConfig) error {
@@ -395,8 +448,15 @@ func normalizeVM(config VMConfig) VMConfig {
 }
 
 func serialHas(path, text string) bool {
+	return strings.Contains(readSerial(path), text)
+}
+
+func readSerial(path string) string {
 	data, err := os.ReadFile(path)
-	return err == nil && strings.Contains(string(data), text)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func qemuAccel(policy KVMPolicy, probe probe) (string, error) {
