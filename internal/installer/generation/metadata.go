@@ -29,6 +29,7 @@ type Record struct {
 	Sysexts           []ExtensionRef     `json:"sysexts"`
 	Confexts          []GeneratedConfext `json:"confexts"`
 	KernelCommandLine []string           `json:"kernelCommandLine"`
+	ConfigApply       *ConfigApplyRecord `json:"configApply,omitempty"`
 	CreatedAt         time.Time          `json:"createdAt"`
 	BootState         string             `json:"bootState"`
 	HealthState       string             `json:"healthState"`
@@ -91,6 +92,27 @@ type FirstInstallRequest struct {
 	CreatedAt             time.Time
 }
 
+type RuntimeConfigRequest struct {
+	GenerationID       string
+	Previous           Record
+	SourceDigest       string
+	GeneratedConfext   GeneratedConfext
+	ChangedDomains     []string
+	RequestedApplyMode string
+	AcceptedApplyMode  string
+	Kubeadm            KubeadmActionRequired
+	CreatedAt          time.Time
+}
+
+type ConfigApplyRecord struct {
+	SourceDigest       string                `json:"sourceDigest"`
+	ChangedDomains     []string              `json:"changedDomains"`
+	RequestedApplyMode string                `json:"requestedApplyMode"`
+	AcceptedApplyMode  string                `json:"acceptedApplyMode"`
+	PreviousGeneration string                `json:"previousGenerationID"`
+	Kubeadm            KubeadmActionRequired `json:"kubeadm"`
+}
+
 func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return Record{}, fmt.Errorf("generation id is required")
@@ -150,6 +172,72 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 		CreatedAt:         createdAt.UTC(),
 		BootState:         "pending",
 		HealthState:       "unknown",
+	}
+	if err := ValidateRecord(record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
+	if err := ValidateRecord(request.Previous); err != nil {
+		return Record{}, fmt.Errorf("previous generation metadata is invalid: %w", err)
+	}
+	if strings.TrimSpace(request.Previous.GenerationID) == "" {
+		return Record{}, fmt.Errorf("previous generation id is required")
+	}
+	if strings.TrimSpace(request.GenerationID) == "" {
+		return Record{}, fmt.Errorf("generation id is required")
+	}
+	if request.GenerationID == request.Previous.GenerationID {
+		return Record{}, fmt.Errorf("runtime configuration generation must differ from previous generation")
+	}
+	if err := validateSHA256("configuration source", request.SourceDigest); err != nil {
+		return Record{}, err
+	}
+	if err := validateApplyMode("requested apply mode", request.RequestedApplyMode); err != nil {
+		return Record{}, err
+	}
+	if strings.TrimSpace(request.AcceptedApplyMode) == "" {
+		request.AcceptedApplyMode = request.RequestedApplyMode
+	}
+	if err := validateApplyMode("accepted apply mode", request.AcceptedApplyMode); err != nil {
+		return Record{}, err
+	}
+	domains, err := cleanChangedDomains(request.ChangedDomains)
+	if err != nil {
+		return Record{}, err
+	}
+	confext, err := normalizeGeneratedConfext(request.GeneratedConfext)
+	if err != nil {
+		return Record{}, err
+	}
+	createdAt := request.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	record := Record{
+		APIVersion:        APIVersion,
+		Kind:              Kind,
+		GenerationID:      strings.TrimSpace(request.GenerationID),
+		RuntimeVersion:    request.Previous.RuntimeVersion,
+		Root:              request.Previous.Root,
+		Boot:              request.Previous.Boot,
+		Sysexts:           append([]ExtensionRef(nil), request.Previous.Sysexts...),
+		Confexts:          []GeneratedConfext{confext},
+		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
+		ConfigApply: &ConfigApplyRecord{
+			SourceDigest:       strings.ToLower(request.SourceDigest),
+			ChangedDomains:     domains,
+			RequestedApplyMode: strings.TrimSpace(request.RequestedApplyMode),
+			AcceptedApplyMode:  strings.TrimSpace(request.AcceptedApplyMode),
+			PreviousGeneration: strings.TrimSpace(request.Previous.GenerationID),
+			Kubeadm:            redactKubeadmActionRequired(request.Kubeadm),
+		},
+		CreatedAt:   createdAt.UTC(),
+		BootState:   "pending",
+		HealthState: "unknown",
 	}
 	if err := ValidateRecord(record); err != nil {
 		return Record{}, err
@@ -280,6 +368,30 @@ func ValidateRecord(record Record) error {
 		if err := ValidatePair(record.Root, sysext); err != nil {
 			return err
 		}
+	}
+	if record.ConfigApply != nil {
+		if err := validateConfigApplyRecord(*record.ConfigApply); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateConfigApplyRecord(config ConfigApplyRecord) error {
+	if err := validateSHA256("configuration source", config.SourceDigest); err != nil {
+		return err
+	}
+	if _, err := cleanChangedDomains(config.ChangedDomains); err != nil {
+		return fmt.Errorf("config apply metadata: %w", err)
+	}
+	if err := validateApplyMode("requested apply mode", config.RequestedApplyMode); err != nil {
+		return err
+	}
+	if err := validateApplyMode("accepted apply mode", config.AcceptedApplyMode); err != nil {
+		return err
+	}
+	if strings.TrimSpace(config.PreviousGeneration) == "" {
+		return fmt.Errorf("config apply metadata previous generation id is required")
 	}
 	return nil
 }

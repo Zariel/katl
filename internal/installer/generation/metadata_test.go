@@ -145,6 +145,107 @@ func TestWriteRecordPersistsMetadataJSON(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
+	previous := abRecord(t, "2026.06.05-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC))
+	record, err := NewRuntimeConfigRecord(RuntimeConfigRequest{
+		GenerationID:       "2026.06.05-002",
+		Previous:           previous,
+		SourceDigest:       strings.Repeat("d", 64),
+		GeneratedConfext:   runtimeConfext("2026.06.05-002"),
+		ChangedDomains:     []string{"networkd", "tmpfiles", "networkd"},
+		RequestedApplyMode: ApplyModeLive,
+		AcceptedApplyMode:  ApplyModeLive,
+		Kubeadm: KubeadmActionRequired{
+			Required: true,
+			Reason:   "rendered kubeadm input differs; token abcdef.0123456789abcdef requires explicit action",
+		},
+		CreatedAt: time.Date(2026, 6, 5, 15, 30, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeConfigRecord() error = %v", err)
+	}
+
+	data, err := MarshalRecord(record)
+	if err != nil {
+		t.Fatalf("MarshalRecord() error = %v", err)
+	}
+	want := `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "GenerationRecord",
+  "generationID": "2026.06.05-002",
+  "runtimeVersion": "0.1.0",
+  "root": {
+    "slot": "root-a",
+    "partitionUUID": "11111111-2222-3333-4444-555555555555",
+    "runtimeVersion": "0.1.0",
+    "runtimeInterface": "katl-runtime-1",
+    "architecture": "x86_64",
+    "runtimeArtifactSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "boot": {
+    "ukiPath": "/efi/EFI/Linux/katl-2026.06.05-001.efi"
+  },
+  "sysexts": [
+    {
+      "name": "kubernetes",
+      "path": "/var/lib/katl/generations/2026.06.05-001/sysext/kubernetes.raw",
+      "activationPath": "/run/extensions/kubernetes.raw",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "artifactVersion": "k8s-v1.36.1",
+      "payloadVersion": "v1.36.1",
+      "architecture": "x86_64",
+      "compatibility": {
+        "runtimeInterfaces": [
+          "katl-runtime-1"
+        ]
+      }
+    }
+  ],
+  "confexts": [
+    {
+      "name": "katl-node",
+      "path": "/var/lib/katl/generations/2026.06.05-002/confext",
+      "activationPath": "/run/confexts/katl-node",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "compatibility": {
+        "id": "katl",
+        "versionID": "0.1.0",
+        "confextLevel": 1
+      }
+    }
+  ],
+  "kernelCommandLine": [
+    "root=PARTUUID=11111111-2222-3333-4444-555555555555",
+    "rootfstype=squashfs",
+    "ro"
+  ],
+  "configApply": {
+    "sourceDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "changedDomains": [
+      "networkd",
+      "tmpfiles"
+    ],
+    "requestedApplyMode": "live",
+    "acceptedApplyMode": "live",
+    "previousGenerationID": "2026.06.05-001",
+    "kubeadm": {
+      "required": true,
+      "reason": "rendered kubeadm input differs; token [REDACTED BOOTSTRAP TOKEN] requires explicit action"
+    }
+  },
+  "createdAt": "2026-06-05T15:30:00Z",
+  "bootState": "pending",
+  "healthState": "unknown"
+}
+`
+	if string(data) != want {
+		t.Fatalf("runtime record json:\n%s\nwant:\n%s", data, want)
+	}
+	if record.Root != previous.Root || record.Boot != previous.Boot || record.Sysexts[0].Path != previous.Sysexts[0].Path {
+		t.Fatalf("runtime config record did not reuse root, boot, and sysext selections: %#v", record)
+	}
+}
+
 func TestDigestDirectoryIsDeterministic(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "etc", "b.conf"), "b\n", 0o600)
@@ -169,6 +270,65 @@ func TestDigestDirectoryIsDeterministic(t *testing.T) {
 	}
 	if digestC == digestA {
 		t.Fatalf("digest did not change after content update: %s", digestC)
+	}
+}
+
+func TestRuntimeConfigRecordRejectsInvalidMetadata(t *testing.T) {
+	previous := abRecord(t, "2026.06.05-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC))
+	tests := []struct {
+		name    string
+		mutate  func(RuntimeConfigRequest) RuntimeConfigRequest
+		wantErr string
+	}{
+		{
+			name: "same generation",
+			mutate: func(request RuntimeConfigRequest) RuntimeConfigRequest {
+				request.GenerationID = previous.GenerationID
+				return request
+			},
+			wantErr: "must differ",
+		},
+		{
+			name: "source digest",
+			mutate: func(request RuntimeConfigRequest) RuntimeConfigRequest {
+				request.SourceDigest = "abc"
+				return request
+			},
+			wantErr: "configuration source SHA-256",
+		},
+		{
+			name: "changed domains",
+			mutate: func(request RuntimeConfigRequest) RuntimeConfigRequest {
+				request.ChangedDomains = nil
+				return request
+			},
+			wantErr: "changed domains",
+		},
+		{
+			name: "apply mode",
+			mutate: func(request RuntimeConfigRequest) RuntimeConfigRequest {
+				request.RequestedApplyMode = "immediate"
+				return request
+			},
+			wantErr: "requested apply mode",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := RuntimeConfigRequest{
+				GenerationID:       "2026.06.05-002",
+				Previous:           previous,
+				SourceDigest:       strings.Repeat("d", 64),
+				GeneratedConfext:   runtimeConfext("2026.06.05-002"),
+				ChangedDomains:     []string{"tmpfiles"},
+				RequestedApplyMode: ApplyModeLive,
+				AcceptedApplyMode:  ApplyModeLive,
+			}
+			_, err := NewRuntimeConfigRecord(tt.mutate(request))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NewRuntimeConfigRecord() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -364,6 +524,20 @@ func validRecord(t *testing.T, runtimeVersion string, runtimeInterface string, k
 		t.Fatalf("NewFirstInstallRecord() error = %v", err)
 	}
 	return record
+}
+
+func runtimeConfext(id string) GeneratedConfext {
+	return GeneratedConfext{
+		Name:           "katl-node",
+		Path:           filepath.Join(GenerationRecordsDir, id, "confext"),
+		ActivationPath: "/run/confexts/katl-node",
+		SHA256:         strings.Repeat("d", 64),
+		Compatibility: ConfextCompatibility{
+			ID:           "katl",
+			VersionID:    "0.1.0",
+			ConfextLevel: 1,
+		},
+	}
 }
 
 func mustWrite(t *testing.T, path string, content string, mode os.FileMode) {

@@ -1,0 +1,129 @@
+package configapply
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/zariel/katl/internal/installer/generation"
+)
+
+const (
+	NodeConfigurationChangeKind = "NodeConfigurationChange"
+)
+
+type NodeConfigurationChange struct {
+	APIVersion       string
+	Kind             string
+	GenerationID     string
+	SourceDigest     string
+	Apply            Apply
+	Changes          []Change
+	GeneratedConfext generation.GeneratedConfext
+	Kubeadm          generation.KubeadmActionRequired
+	RequestedAt      time.Time
+}
+
+type Apply struct {
+	Mode string
+}
+
+type Result struct {
+	Decision         Decision
+	GenerationRecord generation.Record
+	Status           generation.ConfigApplyStatus
+}
+
+func PlanChange(current generation.Record, request NodeConfigurationChange) (Result, error) {
+	if strings.TrimSpace(request.APIVersion) != generation.APIVersion {
+		return Result{}, fmt.Errorf("node configuration change apiVersion = %q, want %q", request.APIVersion, generation.APIVersion)
+	}
+	if strings.TrimSpace(request.Kind) != NodeConfigurationChangeKind {
+		return Result{}, fmt.Errorf("node configuration change kind = %q, want %q", request.Kind, NodeConfigurationChangeKind)
+	}
+	if strings.TrimSpace(request.GenerationID) == "" {
+		return Result{}, fmt.Errorf("generation id is required")
+	}
+	if strings.TrimSpace(request.SourceDigest) == "" {
+		return Result{}, fmt.Errorf("configuration source digest is required")
+	}
+
+	decision, err := Plan(request.Apply.Mode, request.Changes)
+	if err != nil {
+		return Result{Decision: decision}, err
+	}
+
+	record, err := generation.NewRuntimeConfigRecord(generation.RuntimeConfigRequest{
+		GenerationID:       request.GenerationID,
+		Previous:           current,
+		SourceDigest:       request.SourceDigest,
+		GeneratedConfext:   request.GeneratedConfext,
+		ChangedDomains:     decision.ChangedDomains,
+		RequestedApplyMode: decision.RequestedMode,
+		AcceptedApplyMode:  decision.AcceptedMode,
+		Kubeadm:            request.Kubeadm,
+		CreatedAt:          request.RequestedAt,
+	})
+	if err != nil {
+		return Result{Decision: decision}, err
+	}
+	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
+		GenerationID:       record.GenerationID,
+		PreviousGeneration: current.GenerationID,
+		RequestedApplyMode: decision.RequestedMode,
+		AcceptedApplyMode:  decision.AcceptedMode,
+		ChangedDomains:     decision.ChangedDomains,
+		HealthState:        record.HealthState,
+		Kubeadm:            request.Kubeadm,
+		UpdatedAt:          request.RequestedAt,
+	})
+	if err != nil {
+		return Result{Decision: decision}, err
+	}
+	status.DomainActions = domainActions(decision.AcceptedMode, decision.ChangedDomains)
+	if err := generation.ValidateConfigApplyStatus(status); err != nil {
+		return Result{Decision: decision}, err
+	}
+
+	return Result{
+		Decision:         decision,
+		GenerationRecord: record,
+		Status:           status,
+	}, nil
+}
+
+func domainActions(acceptedMode string, domains []string) []generation.ConfigApplyDomainAction {
+	actions := make([]generation.ConfigApplyDomainAction, 0, len(domains))
+	for _, domain := range domains {
+		action := generation.ConfigApplyDomainAction{
+			Domain: domain,
+		}
+		if acceptedMode == generation.ApplyModeNextBoot {
+			action.Action = "stage-next-boot"
+			action.Status = generation.ConfigApplyActionSkipped
+			action.Diagnostic = "domain staged into next boot generation"
+		} else {
+			action.Action = liveAction(domain)
+			action.Status = generation.ConfigApplyActionPlanned
+		}
+		actions = append(actions, action)
+	}
+	return actions
+}
+
+func liveAction(domain string) string {
+	switch domain {
+	case DomainResolved:
+		return "systemd-resolved-reload"
+	case DomainSysctl:
+		return "systemd-sysctl"
+	case DomainTmpfiles:
+		return "systemd-tmpfiles"
+	case DomainNetworkd:
+		return "networkctl-reload"
+	case DomainBootstrapNodeMetadata:
+		return "node-metadata-refresh"
+	default:
+		return "none"
+	}
+}

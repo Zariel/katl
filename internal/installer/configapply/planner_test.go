@@ -1,0 +1,262 @@
+package configapply
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zariel/katl/internal/installer/generation"
+)
+
+func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
+	current := currentRecord()
+	result, err := PlanChange(current, NodeConfigurationChange{
+		APIVersion:   generation.APIVersion,
+		Kind:         NodeConfigurationChangeKind,
+		GenerationID: "2026.06.05-002",
+		SourceDigest: strings.Repeat("d", 64),
+		Apply:        Apply{Mode: generation.ApplyModeLive},
+		Changes: []Change{
+			{Domain: DomainNetworkd, LivePreflightOK: true},
+			{Domain: DomainTmpfiles},
+		},
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("PlanChange() error = %v, diagnostics = %#v", err, result.Decision.Diagnostics)
+	}
+	if result.Decision.AcceptedMode != generation.ApplyModeLive || len(result.Decision.Diagnostics) != 0 {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.GenerationRecord.ConfigApply == nil {
+		t.Fatalf("runtime config metadata was not recorded: %#v", result.GenerationRecord)
+	}
+	metadata := result.GenerationRecord.ConfigApply
+	if metadata.SourceDigest != strings.Repeat("d", 64) || metadata.PreviousGeneration != current.GenerationID {
+		t.Fatalf("config apply metadata = %#v", metadata)
+	}
+	if got, want := strings.Join(metadata.ChangedDomains, ","), "networkd,tmpfiles"; got != want {
+		t.Fatalf("metadata changed domains = %q, want %q", got, want)
+	}
+	if result.GenerationRecord.Root != current.Root || result.GenerationRecord.Boot != current.Boot || result.GenerationRecord.Sysexts[0].Path != current.Sysexts[0].Path {
+		t.Fatalf("runtime config record did not reuse current immutable selections: %#v", result.GenerationRecord)
+	}
+	if result.Status.GenerationID != "2026.06.05-002" || result.Status.Phase != generation.ConfigApplyPhasePlanned {
+		t.Fatalf("status = %#v", result.Status)
+	}
+	if len(result.Status.DomainActions) != 2 || result.Status.DomainActions[0].Action != "networkctl-reload" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
+		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
+	}
+}
+
+func TestPlanChangeProducesNextBootRecordAndStatus(t *testing.T) {
+	result, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		APIVersion:       generation.APIVersion,
+		Kind:             NodeConfigurationChangeKind,
+		GenerationID:     "2026.06.05-002",
+		SourceDigest:     strings.Repeat("d", 64),
+		Apply:            Apply{Mode: generation.ApplyModeNextBoot},
+		Changes:          []Change{{Domain: DomainNodeIdentity}, {Domain: DomainModulesLoad}},
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("PlanChange() error = %v, diagnostics = %#v", err, result.Decision.Diagnostics)
+	}
+	if result.GenerationRecord.ConfigApply.AcceptedApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("config apply metadata = %#v", result.GenerationRecord.ConfigApply)
+	}
+	if len(result.Status.DomainActions) != 2 || result.Status.DomainActions[0].Action != "stage-next-boot" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
+		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
+	}
+	if result.GenerationRecord.BootState != "pending" || result.GenerationRecord.HealthState != "unknown" {
+		t.Fatalf("record state = %s/%s", result.GenerationRecord.BootState, result.GenerationRecord.HealthState)
+	}
+}
+
+func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.T) {
+	result, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		APIVersion:   generation.APIVersion,
+		Kind:         NodeConfigurationChangeKind,
+		GenerationID: "2026.06.05-002",
+		SourceDigest: strings.Repeat("d", 64),
+		Apply:        Apply{Mode: generation.ApplyModeLive},
+		Changes: []Change{
+			{Domain: DomainResolved},
+			{Domain: DomainKubeadmConfig},
+			{Domain: DomainEtcKubernetes},
+		},
+		GeneratedConfext: generation.GeneratedConfext{},
+	})
+	if err == nil {
+		t.Fatalf("PlanChange() error = nil, result = %#v", result)
+	}
+	if result.Decision.AcceptedMode != "" || len(result.Decision.Diagnostics) != 2 {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.GenerationRecord.Kind != "" || result.Status.Kind != "" {
+		t.Fatalf("rejected plan constructed candidate metadata or status: %#v %#v", result.GenerationRecord, result.Status)
+	}
+	if !strings.Contains(err.Error(), "live request rejected") {
+		t.Fatalf("error = %q, want live rejection", err)
+	}
+}
+
+func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
+	live, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		APIVersion:       generation.APIVersion,
+		Kind:             NodeConfigurationChangeKind,
+		GenerationID:     "2026.06.05-002",
+		SourceDigest:     strings.Repeat("d", 64),
+		Apply:            Apply{Mode: generation.ApplyModeLive},
+		Changes:          []Change{{Domain: DomainKubeadmConfig}},
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+	})
+	if err == nil {
+		t.Fatalf("PlanChange(live kubeadm) error = nil, result = %#v", live)
+	}
+	if len(live.Decision.Diagnostics) != 1 || live.Decision.Diagnostics[0].Decision != DecisionStagedRequired {
+		t.Fatalf("live kubeadm diagnostics = %#v", live.Decision.Diagnostics)
+	}
+
+	next, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		APIVersion:       generation.APIVersion,
+		Kind:             NodeConfigurationChangeKind,
+		GenerationID:     "2026.06.05-002",
+		SourceDigest:     strings.Repeat("d", 64),
+		Apply:            Apply{Mode: generation.ApplyModeNextBoot},
+		Changes:          []Change{{Domain: DomainKubeadmConfig}},
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+		Kubeadm: generation.KubeadmActionRequired{
+			Required: true,
+			Reason:   "desired kubeadm input changed; join token abcdef.0123456789abcdef requires explicit action",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanChange(next kubeadm) error = %v, diagnostics = %#v", err, next.Decision.Diagnostics)
+	}
+	if !next.GenerationRecord.ConfigApply.Kubeadm.Required || !next.Status.Kubeadm.Required {
+		t.Fatalf("kubeadm explicit action flag missing: %#v %#v", next.GenerationRecord.ConfigApply.Kubeadm, next.Status.Kubeadm)
+	}
+	if strings.Contains(next.Status.Kubeadm.Reason, "abcdef.0123456789abcdef") || !strings.Contains(next.Status.Kubeadm.Reason, "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("status kubeadm reason was not redacted: %q", next.Status.Kubeadm.Reason)
+	}
+}
+
+func TestPlanChangeRejectsBadEnvelope(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(NodeConfigurationChange) NodeConfigurationChange
+		wantErr string
+	}{
+		{
+			name: "api version",
+			mutate: func(request NodeConfigurationChange) NodeConfigurationChange {
+				request.APIVersion = "katl.dev/v1beta1"
+				return request
+			},
+			wantErr: "apiVersion",
+		},
+		{
+			name: "kind",
+			mutate: func(request NodeConfigurationChange) NodeConfigurationChange {
+				request.Kind = "ConfigMap"
+				return request
+			},
+			wantErr: "kind",
+		},
+		{
+			name: "apply mode",
+			mutate: func(request NodeConfigurationChange) NodeConfigurationChange {
+				request.Apply.Mode = "immediate"
+				return request
+			},
+			wantErr: "apply mode",
+		},
+		{
+			name: "source digest",
+			mutate: func(request NodeConfigurationChange) NodeConfigurationChange {
+				request.SourceDigest = ""
+				return request
+			},
+			wantErr: "source digest",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := NodeConfigurationChange{
+				APIVersion:       generation.APIVersion,
+				Kind:             NodeConfigurationChangeKind,
+				GenerationID:     "2026.06.05-002",
+				SourceDigest:     strings.Repeat("d", 64),
+				Apply:            Apply{Mode: generation.ApplyModeLive},
+				Changes:          []Change{{Domain: DomainTmpfiles}},
+				GeneratedConfext: candidateConfext("2026.06.05-002"),
+			}
+			_, err := PlanChange(currentRecord(), tt.mutate(request))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PlanChange() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func currentRecord() generation.Record {
+	return generation.Record{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.Kind,
+		GenerationID:   "2026.06.05-001",
+		RuntimeVersion: "0.1.0",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		Boot: generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl-2026.06.05-001.efi"},
+		Sysexts: []generation.ExtensionRef{{
+			Name:            "kubernetes",
+			Path:            "/var/lib/katl/generations/2026.06.05-001/sysext/kubernetes.raw",
+			ActivationPath:  "/run/extensions/kubernetes.raw",
+			SHA256:          strings.Repeat("b", 64),
+			ArtifactVersion: "k8s-v1.36.1",
+			PayloadVersion:  "v1.36.1",
+			Architecture:    "x86_64",
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+		}},
+		Confexts: []generation.GeneratedConfext{{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/2026.06.05-001/confext",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("c", 64),
+			Compatibility: generation.ConfextCompatibility{
+				ID:           "katl",
+				VersionID:    "0.1.0",
+				ConfextLevel: 1,
+			},
+		}},
+		KernelCommandLine: []string{"root=PARTUUID=11111111-2222-3333-4444-555555555555", "rootfstype=squashfs", "ro"},
+		CreatedAt:         time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+		BootState:         "good",
+		HealthState:       "healthy",
+	}
+}
+
+func candidateConfext(id string) generation.GeneratedConfext {
+	return generation.GeneratedConfext{
+		Name:           "katl-node",
+		Path:           "/var/lib/katl/generations/" + id + "/confext",
+		ActivationPath: "/run/confexts/katl-node",
+		SHA256:         strings.Repeat("d", 64),
+		Compatibility: generation.ConfextCompatibility{
+			ID:           "katl",
+			VersionID:    "0.1.0",
+			ConfextLevel: 1,
+		},
+	}
+}
