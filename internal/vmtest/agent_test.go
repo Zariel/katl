@@ -106,6 +106,20 @@ func TestAgentCommandAllowlist(t *testing.T) {
 	}
 }
 
+func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
+	if !commandAllowed("crictl", defaultAgentCommands()) {
+		t.Fatal("crictl is not allowlisted")
+	}
+	for _, path := range []string{
+		"/etc/katl/node.json",
+		"/etc/katl/kubeadm/control-plane/config.yaml",
+	} {
+		if !pathAllowed(path, defaultAgentFilePaths()) {
+			t.Fatalf("%s is not allowlisted", path)
+		}
+	}
+}
+
 func TestAgentResponseError(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	server := NewAgentServer("test")

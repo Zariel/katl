@@ -319,6 +319,7 @@ func limitOrDefault(value, fallback uint32) uint32 {
 
 func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
+		"crictl":     true,
 		"findmnt":    true,
 		"journalctl": true,
 		"kubeadm":    true,
@@ -332,6 +333,7 @@ func defaultAgentCommands() map[string]bool {
 
 func defaultAgentFilePaths() []string {
 	return []string{
+		"/etc/katl/",
 		"/etc/os-release",
 		"/proc/cmdline",
 		"/run/katl/",
