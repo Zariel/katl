@@ -189,6 +189,49 @@ Each fixture manifest binds one installed node's artifacts:
 }
 ```
 
+## Three-Control-Plane Stacked-Etcd VM Smoke
+
+The opt-in three-control-plane stacked-etcd smoke expects three already
+installed control-plane runtime disks, rendered per-node ESP artifact trees, and
+bridge-reachable addresses. It uses the operator bootstrap path to run
+`kubeadm init` on `cp-1`, join `cp-2` and `cp-3` serially, verify the resulting
+node objects, verify stacked-etcd health and membership, and create a restricted
+etcd snapshot artifact.
+
+Set the fixture environment in the shell that runs the test:
+
+```sh
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_BRIDGE=katlbr0
+export KATL_CONTROL_PLANE_1_INSTALLED_DISK=build/local/cp-1.qcow2
+export KATL_CONTROL_PLANE_2_INSTALLED_DISK=build/local/cp-2.qcow2
+export KATL_CONTROL_PLANE_3_INSTALLED_DISK=build/local/cp-3.qcow2
+export KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS=build/local/cp-1-esp
+export KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS=build/local/cp-2-esp
+export KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS=build/local/cp-3-esp
+export KATL_CONTROL_PLANE_1_ADDRESS=10.88.0.11
+export KATL_CONTROL_PLANE_2_ADDRESS=10.88.0.12
+export KATL_CONTROL_PLANE_3_ADDRESS=10.88.0.13
+export KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT=qcow2
+export KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT=qcow2
+export KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT=qcow2
+```
+
+Then run:
+
+```sh
+GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./cmd/katlctl \
+  -run '^TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke$' \
+  -count=1 -timeout 60m -katl.vmtest.run
+```
+
+If all three nodes share one ESP artifact tree, set
+`KATL_INSTALLED_ESP_ARTIFACTS` instead of the per-node ESP variables. The
+legacy `KATL_CONTROL_PLANE_INSTALLED_DISK`,
+`KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS`,
+`KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT`, and `KATL_CONTROL_PLANE_ADDRESS`
+variables may be used for `cp-1` only.
+
 ## Sanity Checks
 
 Run these from the same shell/session that will build and test Katl:
