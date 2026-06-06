@@ -134,6 +134,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	if err != nil {
+		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())

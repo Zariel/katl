@@ -132,6 +132,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	if err != nil {
+		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
@@ -558,6 +559,17 @@ func collectKubectlDiagnostics(kubeconfigPath, runDir string) {
 	}
 }
 
+func collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, runDir string) bool {
+	if strings.TrimSpace(kubeconfigPath) == "" {
+		return false
+	}
+	if _, err := os.Stat(kubeconfigPath); err != nil {
+		return false
+	}
+	collectKubectlDiagnostics(kubeconfigPath, runDir)
+	return true
+}
+
 func kubectlDiagnosticPaths(runDir string) map[string]string {
 	if strings.TrimSpace(runDir) == "" {
 		return nil
@@ -882,6 +894,19 @@ func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
 	}
 	if !kubectlDiagnosticCommandHasArgs(commands, "clusterInfo", "cluster-info") {
 		t.Fatalf("clusterInfo diagnostic command missing expected args: %#v", commands)
+	}
+}
+
+func TestCollectKubectlDiagnosticsIfKubeconfigExistsSkipsMissingKubeconfig(t *testing.T) {
+	runDir := t.TempDir()
+	if collectKubectlDiagnosticsIfKubeconfigExists("", runDir) {
+		t.Fatalf("collectKubectlDiagnosticsIfKubeconfigExists() collected for empty kubeconfig")
+	}
+	if collectKubectlDiagnosticsIfKubeconfigExists(filepath.Join(runDir, "missing.yaml"), runDir) {
+		t.Fatalf("collectKubectlDiagnosticsIfKubeconfigExists() collected for missing kubeconfig")
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "kubectl-get-nodes-wide.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected kubectl diagnostics file for missing kubeconfig: %v", err)
 	}
 }
 
