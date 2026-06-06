@@ -54,7 +54,7 @@ if [[ -z "$runtime" ]]; then
 fi
 
 case "$runtime" in
-    docker | podman)
+    direct | docker | podman)
         ;;
     *)
         echo "error: unsupported container runtime: $runtime" >&2
@@ -69,6 +69,9 @@ image_exists() {
             ;;
         podman)
             podman image exists "$image" >/dev/null 2>&1
+            ;;
+        direct)
+            return 0
             ;;
     esac
 }
@@ -156,6 +159,53 @@ run_flags=(
 
 if [[ -n "$installer_package_set" ]]; then
     mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$installer_package_set")
+fi
+
+direct_tool_search_path() {
+    local tool
+    local path
+    local dir
+    local seen=""
+    local -a dirs=()
+    for tool in bash xargs dnf5 ukify; do
+        if ! path="$(command -v "$tool")"; then
+            echo "error: $tool is required for KATL_CONTAINER_RUNTIME=direct" >&2
+            return 1
+        fi
+        dir="$(dirname "$path")"
+        if [[ ":$seen:" == *":$dir:"* ]]; then
+            continue
+        fi
+        dirs+=("$dir")
+        seen="${seen:+$seen:}$dir"
+    done
+    local IFS=,
+    printf '%s\n' "${dirs[*]}"
+}
+
+if [[ "$runtime" == direct ]]; then
+    if [[ "$emit_runtime_artifact" == 1 || "$emit_kubernetes_sysext" == 1 ]]; then
+        echo "error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only" >&2
+        exit 1
+    fi
+    log="$(mktemp)"
+    trap 'restore_kubernetes_repo_file; rm -f "$log"' EXIT
+    mkdir -p "$repo_root/build/go-mod"
+    export GOMODCACHE="${GOMODCACHE:-$repo_root/build/go-mod}"
+    export MKOSI_DNF="${MKOSI_DNF:-dnf5}"
+    export TMPDIR="${TMPDIR:-/tmp}"
+    if [[ -n "$installer_package_set" ]]; then
+        rm -f "$repo_root/$installer_package_set"
+    fi
+    extra_search_path="$(direct_tool_search_path)"
+    set +e
+    mkosi --extra-search-path "$extra_search_path" "${mkosi_env[@]}" "$@" 2>&1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    set -e
+    if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
+        GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" go run ./cmd/katl-mkosi-artifacts write >/dev/null || status=1
+    fi
+    exit "$status"
 fi
 
 if [[ "$runtime" == podman ]]; then
