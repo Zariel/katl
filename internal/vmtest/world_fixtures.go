@@ -13,6 +13,10 @@ import (
 
 const (
 	FixtureMkosiArtifactIndex    = "mkosi-artifact-index"
+	FixtureInstallerUKI          = "installer-uki"
+	FixtureInstallerKernel       = "installer-kernel"
+	FixtureInstallerInitrd       = "installer-initrd"
+	FixtureRuntimeArtifact       = "runtime-artifact"
 	FixtureKatlOSInstallImage    = "katlos-install-image"
 	FixtureFirstInstallDisk      = "first-install-target-disk"
 	FixtureInstalledRuntime      = "installed-runtime"
@@ -75,6 +79,38 @@ func (scenario *WorldScenario) NodeFixtures(node Node) NodeFixtureFactory {
 
 func (factory NodeFixtureFactory) MkosiArtifactIndex(source string) (FixtureRecord, error) {
 	return factory.stageFileFixture(FixtureMkosiArtifactIndex, "mkosi-artifacts.json", source)
+}
+
+func (factory NodeFixtureFactory) InstallerBoot(input InstallerBootConfig) (InstallerBootConfig, error) {
+	output := input
+	if strings.TrimSpace(input.InstallerKernel) != "" || strings.TrimSpace(input.InstallerInitrd) != "" {
+		kernel, err := factory.stageFileFixture(FixtureInstallerKernel, filepath.Base(input.InstallerKernel), input.InstallerKernel)
+		if err != nil {
+			return InstallerBootConfig{}, err
+		}
+		initrd, err := factory.stageFileFixture(FixtureInstallerInitrd, filepath.Base(input.InstallerInitrd), input.InstallerInitrd)
+		if err != nil {
+			return InstallerBootConfig{}, err
+		}
+		output.InstallerKernel = kernel.Path
+		output.InstallerInitrd = initrd.Path
+		output.InstallerUKI = ""
+		return output, nil
+	}
+	uki, err := factory.stageFileFixture(FixtureInstallerUKI, filepath.Base(input.InstallerUKI), input.InstallerUKI)
+	if err != nil {
+		return InstallerBootConfig{}, err
+	}
+	output.InstallerUKI = uki.Path
+	return output, nil
+}
+
+func (factory NodeFixtureFactory) RuntimeArtifact(source string) (FixtureRecord, error) {
+	name := filepath.Base(source)
+	if strings.TrimSpace(name) == "" || name == "." {
+		name = "runtime-root.squashfs"
+	}
+	return factory.stageFileFixture(FixtureRuntimeArtifact, name, source)
 }
 
 func (factory NodeFixtureFactory) KatlOSInstallImage(source string) (FixtureRecord, error) {

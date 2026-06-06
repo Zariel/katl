@@ -19,43 +19,58 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	installerBoot := firstInstallInstallerBoot(t)
-	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
-	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-	if runtimeESP == "" && !useInstalledESP {
-		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
-	}
-	nodeMetadata := first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
-	if nodeMetadata != "" {
-		if _, err := os.Stat(nodeMetadata); err != nil {
-			t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
+	var runner Runner
+	var installerBoot InstallerBootConfig
+	var runtimeArtifact, runtimeESP, nodeMetadata, manifestPath, repo string
+	targetDiskFixture := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
+	if worldRun, ok := firstInstallWorldRunFor(t, "first-install-installed-runtime-fixture", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP); ok {
+		runner = worldRun.Runner
+		installerBoot = worldRun.Config.Installer
+		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
+		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
+		nodeMetadata = worldRun.Config.Runtime.NodeMetadata
+		manifestPath = worldRun.Config.ManifestPath
+		targetDiskFixture = worldRun.Config.TargetDisk
+		repo = worldRun.Repo
+	} else {
+		installerBoot = firstInstallInstallerBoot(t)
+		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
+		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+		if runtimeESP == "" && !useInstalledESP {
+			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
 		}
+		nodeMetadata = first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
+		if nodeMetadata != "" {
+			if _, err := os.Stat(nodeMetadata); err != nil {
+				t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
+			}
+		}
+		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
+		repo = repoRoot(t)
+		runner = NewRunner(options)
 	}
-	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
-	repoRoot := repoRoot(t)
 	requiredTools := []string{"jq", "sha256sum"}
 	if useInstalledESP {
 		requiredTools = append(requiredTools, "sfdisk", "mcopy")
 	}
 	for _, tool := range requiredTools {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required to package installed runtime fixtures: %v", tool, err)
+			t.Fatalf("%s is required to package installed runtime fixtures: %v", tool, err)
 		}
 	}
 
-	runner := NewRunner(options)
 	runner.RequireHost(t, HostRequirements{
 		QEMU:    true,
 		QEMUImg: true,
 		OVMF:    true,
-		KVM:     options.KVM,
+		KVM:     runner.options().KVM,
 		MTools:  true,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	vm := VMConfig{
-		KVM:     options.KVM,
+		KVM:     runner.options().KVM,
 		RAMMiB:  4096,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
@@ -84,7 +99,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		UseInstalledESP: useInstalledESP,
 		ManifestPath:    manifestPath,
 		PreseedManifest: true,
-		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
+		TargetDisk:      targetDiskFixture,
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -92,7 +107,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	if firstResult.Status != StatusPassed {
 		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
 	}
-	targetDisk := targetDiskPath(t, firstResult)
+	installedDisk := targetDiskPath(t, firstResult)
 	fixtureESP := runtimeESP
 	if useInstalledESP {
 		fixtureESP = firstResult.Artifacts.InstalledESP
@@ -101,7 +116,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		}
 	}
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	createFixture := createInstalledRuntimeFixtureCommand(ctx, repoRoot, targetDisk, fixtureESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
+	createFixture := createInstalledRuntimeFixtureCommand(ctx, repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
 	output, err := createFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
@@ -110,7 +125,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
 	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
 	packagedESP := filepath.Join(fixtureDir, "esp")
-	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, repoRoot, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, nodeMetadata))
+	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, nodeMetadata))
 	output, err = checkFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
@@ -128,7 +143,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		ESPArtifacts:       packagedESP,
 		RequireVMTestAgent: true,
 		VM: VMConfig{
-			KVM:     options.KVM,
+			KVM:     runner.options().KVM,
 			RAMMiB:  4096,
 			CPUs:    2,
 			Timeout: 8 * time.Minute,
@@ -166,7 +181,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 			DiskFormat:   DiskQCOW2,
 			ESPArtifacts: packagedESP,
 			VM: VMConfig{
-				KVM:     options.KVM,
+				KVM:     runner.options().KVM,
 				RAMMiB:  4096,
 				CPUs:    2,
 				Timeout: 8 * time.Minute,
@@ -192,36 +207,49 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	installerBoot := firstInstallInstallerBoot(t)
-	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
-	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-	if runtimeESP == "" && !useInstalledESP {
-		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install serial smoke")
+	var runner Runner
+	var installerBoot InstallerBootConfig
+	var runtimeArtifact, runtimeESP, manifestPath string
+	targetDisk := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
+	if worldRun, ok := firstInstallWorldRunFor(t, "first-install-serial-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP); ok {
+		runner = worldRun.Runner
+		installerBoot = worldRun.Config.Installer
+		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
+		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
+		manifestPath = worldRun.Config.ManifestPath
+		targetDisk = worldRun.Config.TargetDisk
+	} else {
+		installerBoot = firstInstallInstallerBoot(t)
+		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
+		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+		if runtimeESP == "" && !useInstalledESP {
+			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install serial smoke")
+		}
+		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
+		runner = NewRunner(options)
 	}
-	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
 	var requiredTools []string
 	if useInstalledESP {
 		requiredTools = append(requiredTools, "sfdisk", "mcopy")
 	}
 	for _, tool := range requiredTools {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required to run first-install serial smoke: %v", tool, err)
+			t.Fatalf("%s is required to run first-install serial smoke: %v", tool, err)
 		}
 	}
 
-	runner := NewRunner(options)
 	runner.RequireHost(t, HostRequirements{
 		QEMU:    true,
 		QEMUImg: true,
 		OVMF:    true,
-		KVM:     options.KVM,
+		KVM:     runner.options().KVM,
 		MTools:  true,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	vm := VMConfig{
-		KVM:     options.KVM,
+		KVM:     runner.options().KVM,
 		RAMMiB:  4096,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
@@ -242,7 +270,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		UseInstalledESP: useInstalledESP,
 		ManifestPath:    manifestPath,
 		PreseedManifest: true,
-		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
+		TargetDisk:      targetDisk,
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -262,31 +290,23 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 
 func firstInstallInstallerBoot(t *testing.T) InstallerBootConfig {
 	t.Helper()
-	kernel := strings.TrimSpace(os.Getenv("KATL_INSTALLER_KERNEL"))
-	initrd := strings.TrimSpace(os.Getenv("KATL_INSTALLER_INITRD"))
-	if kernel != "" || initrd != "" {
-		if kernel == "" || initrd == "" {
+	boot := firstInstallInstallerBootFromEnv()
+	if boot.InstallerKernel != "" || boot.InstallerInitrd != "" {
+		if boot.InstallerKernel == "" || boot.InstallerInitrd == "" {
 			t.Fatal("set both KATL_INSTALLER_KERNEL and KATL_INSTALLER_INITRD")
 		}
 		for name, path := range map[string]string{
-			"KATL_INSTALLER_KERNEL": kernel,
-			"KATL_INSTALLER_INITRD": initrd,
+			"KATL_INSTALLER_KERNEL": boot.InstallerKernel,
+			"KATL_INSTALLER_INITRD": boot.InstallerInitrd,
 		} {
 			if _, err := os.Stat(path); err != nil {
 				t.Fatalf("%s is unavailable: %v", name, err)
 			}
 		}
-		return InstallerBootConfig{
-			InstallerKernel: kernel,
-			InstallerInitrd: initrd,
-			CommandLine: []string{
-				"console=ttyS0,115200n8",
-				"systemd.log_target=console",
-				"loglevel=6",
-			},
-		}
+		return boot
 	}
-	return InstallerBootConfig{InstallerUKI: RequireEnv(t, "KATL_INSTALLER_UKI")}
+	boot.InstallerUKI = RequireEnv(t, "KATL_INSTALLER_UKI")
+	return boot
 }
 
 func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {

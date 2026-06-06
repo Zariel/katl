@@ -57,6 +57,70 @@ func TestWorldFixturesWriteInstalledRuntimeManifest(t *testing.T) {
 	}
 }
 
+func TestWorldFixturesStageFirstInstallInputs(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "first install inputs")
+	node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	factory := scenario.NodeFixtures(node)
+
+	installer := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-installer.efi"), "installer")
+	runtime := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-runtime-root.squashfs"), "runtime")
+	manifest := writeFixtureFile(t, filepath.Join(t.TempDir(), "install-manifest.json"), firstManifest())
+
+	boot, err := factory.InstallerBoot(InstallerBootConfig{InstallerUKI: installer})
+	if err != nil {
+		t.Fatalf("InstallerBoot() error = %v", err)
+	}
+	if boot.InstallerUKI == installer || boot.InstallerUKI == "" {
+		t.Fatalf("staged installer UKI = %q, source = %q", boot.InstallerUKI, installer)
+	}
+	runtimeRecord, err := factory.RuntimeArtifact(runtime)
+	if err != nil {
+		t.Fatalf("RuntimeArtifact() error = %v", err)
+	}
+	manifestRecord, err := factory.InstallManifest(manifest)
+	if err != nil {
+		t.Fatalf("InstallManifest() error = %v", err)
+	}
+
+	for _, path := range []string{boot.InstallerUKI, runtimeRecord.Path, manifestRecord.Path} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("staged fixture %s missing: %v", path, err)
+		}
+	}
+	scenarioManifest := readScenarioManifest(t, scenario.ManifestPath)
+	for _, kind := range []string{FixtureInstallerUKI, FixtureRuntimeArtifact, FixtureInstallManifest} {
+		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
+			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
+		}
+	}
+}
+
+func TestWorldFixturesStageDirectKernelInstallerBoot(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "direct kernel installer")
+	node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	factory := scenario.NodeFixtures(node)
+
+	kernel := writeFixtureFile(t, filepath.Join(t.TempDir(), "vmlinuz"), "kernel")
+	initrd := writeFixtureFile(t, filepath.Join(t.TempDir(), "initrd"), "initrd")
+	boot, err := factory.InstallerBoot(InstallerBootConfig{
+		InstallerUKI:    writeFixtureFile(t, filepath.Join(t.TempDir(), "ignored.efi"), "uki"),
+		InstallerKernel: kernel,
+		InstallerInitrd: initrd,
+	})
+	if err != nil {
+		t.Fatalf("InstallerBoot() error = %v", err)
+	}
+	if boot.InstallerUKI != "" || boot.InstallerKernel == kernel || boot.InstallerInitrd == initrd {
+		t.Fatalf("direct boot = %#v", boot)
+	}
+	scenarioManifest := readScenarioManifest(t, scenario.ManifestPath)
+	if !hasFixtureKind(scenarioManifest.Fixtures, FixtureInstallerKernel) || !hasFixtureKind(scenarioManifest.Fixtures, FixtureInstallerInitrd) {
+		t.Fatalf("scenario fixtures = %#v", scenarioManifest.Fixtures)
+	}
+}
+
 func TestWorldFixturesRejectStaleCachedFile(t *testing.T) {
 	world := testWorld(t)
 	scenario := world.NewScenario(t, "stale cache")
