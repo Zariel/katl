@@ -170,6 +170,34 @@ env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
     --state-dir "$tmpdir/three-cp-valid" \
     --check-only >/dev/null
 
+env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-three-control-plane-kubeadm-fixtures" \
+    --cp1-published-dir "$published_dir" \
+    --cp2-published-dir "$cp2_published_dir" \
+    --cp3-published-dir "$cp3_published_dir" \
+    --cp1-address 10.44.0.10 \
+    --cp2-address 10.44.0.11 \
+    --cp3-address 10.44.0.12 \
+    --bridge katlbr0 \
+    --bootstrap-manifest "$bootstrap_manifest" \
+    --bootstrap-wait nodes-ready \
+    --state-dir "$tmpdir/three-cp-bootstrap" >/dev/null
+
+jq -e \
+    --arg manifest "$resolved_bootstrap_manifest" '
+    .bootstrap.manifests == [$manifest] and
+    .bootstrap.waits == ["nodes-ready"]
+    ' "$tmpdir/three-cp-bootstrap/fixtures.json" >/dev/null ||
+    fail "three-control-plane resolver did not record bootstrap fixture inputs"
+grep -Fq "KATL_BOOTSTRAP_MANIFESTS=" "$tmpdir/three-cp-bootstrap/vmtest.env" ||
+    fail "three-control-plane resolver env did not export bootstrap manifests"
+grep -Fq "KATL_BOOTSTRAP_WAITS=" "$tmpdir/three-cp-bootstrap/vmtest.env" ||
+    fail "three-control-plane resolver env did not export bootstrap waits"
+grep -Fq -- "--bootstrap-manifest" "$tmpdir/three-cp-bootstrap/run-three-control-plane-stacked-etcd.sh" ||
+    fail "three-control-plane resolver wrapper did not recheck bootstrap manifests"
+grep -Fq -- "--bootstrap-wait" "$tmpdir/three-cp-bootstrap/run-three-control-plane-stacked-etcd.sh" ||
+    fail "three-control-plane resolver wrapper did not recheck bootstrap waits"
+
 wrong_two_node="$tmpdir/wrong-two-node"
 mkdir -p "$wrong_two_node"
 jq '.nodeName = "worker-1" | .systemRole = "worker"' "$published_manifest" >"$wrong_two_node/published-first-install-runtime-fixture.json"

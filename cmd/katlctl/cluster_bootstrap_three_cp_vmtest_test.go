@@ -95,6 +95,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
 	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
+	bootstrapFixture := bootstrapFixtureInputsFromEnv()
 	if err := writeThreeControlPlaneInventory(inventoryPath, kubernetesVersion, nodes); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +107,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		Kubeconfig:         kubeconfigPath,
 		BootstrapStdout:    stdoutPath,
 		BootstrapStderr:    stderrPath,
+		BootstrapFixture:   bootstrapFixture.manifestValue(),
 		KubectlOutput:      kubectlOut,
 		KubectlDiagnostics: kubectlDiagnosticPaths(result.RunDir),
 		EtcdReport:         etcdReportPath,
@@ -117,7 +119,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = run(ctx, []string{
+	err = run(ctx, appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
@@ -128,7 +130,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 		"--vmtest-transcript-dir", transcriptDir,
-	}, &stdout, &stderr)
+	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	if err != nil {
@@ -221,6 +223,7 @@ type threeControlPlaneArtifactManifest struct {
 	Kubeconfig         string                      `json:"kubeconfig"`
 	BootstrapStdout    string                      `json:"bootstrapStdout"`
 	BootstrapStderr    string                      `json:"bootstrapStderr"`
+	BootstrapFixture   *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
 	KubectlOutput      string                      `json:"kubectlOutput"`
 	KubectlDiagnostics map[string]string           `json:"kubectlDiagnostics,omitempty"`
 	EtcdReport         string                      `json:"etcdReport"`
@@ -738,6 +741,7 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 		NodeRunDirs:        map[string]string{"cp-1": "/tmp/cp-1-run"},
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
+		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
@@ -762,6 +766,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+	if manifest.BootstrapFixture == nil || !stringSlicesEqual(manifest.BootstrapFixture.Manifests, []string{"/tmp/ha-cni.yaml"}) || !stringSlicesEqual(manifest.BootstrapFixture.Waits, []string{"nodes-ready"}) {
+		t.Fatalf("artifact manifest bootstrap fixture = %#v", manifest.BootstrapFixture)
 	}
 	if manifest.KubectlDiagnostics["kubeSystemPods"] != "/tmp/run/kubectl-get-pods-kube-system.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
