@@ -13,6 +13,33 @@ import (
 )
 
 func TestConfigApplyNspawnSmoke(t *testing.T) {
+	if worldRun, ok := nspawnWorldRunFor(t, "config apply smoke"); ok {
+		runtimeFixture := runtimeUserspaceFixture(t)
+		fixture := configApplyNspawnFixture(t)
+		runtimeWorkspace, err := worldRun.Scenario.BindWorkspaceFromRoot("runtime fixture", "/mnt/katl-runtime-fixture", runtimeFixture.Root)
+		if err != nil {
+			failWorldSetup(t, worldRun.Scenario, err)
+		}
+		configWorkspace, err := worldRun.Scenario.BindWorkspaceFromRoot("config apply fixture", "/mnt/katl-config-apply-fixture", fixture.Root)
+		if err != nil {
+			failWorldSetup(t, worldRun.Scenario, err)
+		}
+		worldRun.Runner.Run(t, nspawntest.Scenario{
+			Name: "config apply smoke",
+			Binds: []nspawntest.Bind{
+				{
+					Source: runtimeWorkspace.Source,
+					Target: runtimeWorkspace.Target,
+				},
+				{
+					Source: configWorkspace.Source,
+					Target: configWorkspace.Target,
+				},
+			},
+			Commands: configApplyNspawnCommands(runtimeFixture.GenerationID),
+		})
+		return
+	}
 	repo := repoRoot(t)
 	options := nspawntest.DefaultOptions()
 	options.Missing = nspawntest.MissingSkips
@@ -39,12 +66,16 @@ func TestConfigApplyNspawnSmoke(t *testing.T) {
 				Target: "/mnt/katl-config-apply-fixture",
 			},
 		},
-		Commands: []nspawntest.Command{{
-			Name:    "config apply rejected and accepted requests",
-			Argv:    []string{"sh", "-ceu", configApplyNspawnScript(runtimeFixture.GenerationID)},
-			Timeout: 2 * time.Minute,
-		}},
+		Commands: configApplyNspawnCommands(runtimeFixture.GenerationID),
 	})
+}
+
+func configApplyNspawnCommands(generationID string) []nspawntest.Command {
+	return []nspawntest.Command{{
+		Name:    "config apply rejected and accepted requests",
+		Argv:    []string{"sh", "-ceu", configApplyNspawnScript(generationID)},
+		Timeout: 2 * time.Minute,
+	}}
 }
 
 type configApplyFixture struct {

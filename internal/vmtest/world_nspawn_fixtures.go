@@ -177,6 +177,14 @@ func (scenario *WorldScenario) NspawnUserspaceImage(sourceImage string) (NspawnU
 }
 
 func (scenario *WorldScenario) BindWorkspace(name, target string) (BindWorkspace, error) {
+	return scenario.bindWorkspace(name, target, "", "")
+}
+
+func (scenario *WorldScenario) BindWorkspaceFromRoot(name, target, sourceRoot string) (BindWorkspace, error) {
+	return scenario.bindWorkspace(name, target, sourceRoot, "directory")
+}
+
+func (scenario *WorldScenario) bindWorkspace(name, target, sourceRoot, sourceKind string) (BindWorkspace, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return BindWorkspace{}, errors.New("bind workspace name is required")
@@ -190,9 +198,6 @@ func (scenario *WorldScenario) BindWorkspace(name, target string) (BindWorkspace
 		return BindWorkspace{}, fmt.Errorf("bind workspace target %q must be absolute", target)
 	}
 	source := filepath.Join(scenario.Dir, "binds", id)
-	if err := os.MkdirAll(source, 0o755); err != nil {
-		return BindWorkspace{}, err
-	}
 	record := FixtureRecord{
 		Kind: FixtureBindWorkspace,
 		Name: name,
@@ -200,6 +205,36 @@ func (scenario *WorldScenario) BindWorkspace(name, target string) (BindWorkspace
 		Provenance: FixtureProvenance{
 			Source: "generated",
 		},
+	}
+	if strings.TrimSpace(sourceRoot) == "" {
+		if err := os.MkdirAll(source, 0o755); err != nil {
+			return BindWorkspace{}, err
+		}
+	} else {
+		src, err := cleanAbs(sourceRoot)
+		if err != nil {
+			return BindWorkspace{}, err
+		}
+		info, err := os.Stat(src)
+		if err != nil {
+			return BindWorkspace{}, fmt.Errorf("stat bind workspace source: %w", err)
+		}
+		if !info.IsDir() {
+			return BindWorkspace{}, fmt.Errorf("bind workspace source is not a directory: %s", src)
+		}
+		sha, err := nspawnTreeSHA256(src)
+		if err != nil {
+			return BindWorkspace{}, fmt.Errorf("hash bind workspace source: %w", err)
+		}
+		if err := copyOrRejectStaleNspawnRoot(src, source, sha); err != nil {
+			return BindWorkspace{}, fmt.Errorf("stage bind workspace: %w", err)
+		}
+		record.TreeSHA256 = sha
+		record.Provenance = FixtureProvenance{
+			Source:           first(sourceKind, "directory"),
+			SourcePath:       src,
+			SourceTreeSHA256: sha,
+		}
 	}
 	if target != "" {
 		record.Properties = map[string]string{"target": target}

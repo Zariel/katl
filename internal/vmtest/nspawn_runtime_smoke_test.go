@@ -16,6 +16,21 @@ import (
 
 func TestRuntimeUserspaceNspawnSmoke(t *testing.T) {
 	fixture := runtimeUserspaceFixture(t)
+	if worldRun, ok := nspawnWorldRunFor(t, "runtime userspace smoke"); ok {
+		workspace, err := worldRun.Scenario.BindWorkspaceFromRoot("runtime fixture", "/mnt/katl-runtime-fixture", fixture.Root)
+		if err != nil {
+			failWorldSetup(t, worldRun.Scenario, err)
+		}
+		worldRun.Runner.Run(t, nspawntest.Scenario{
+			Name: "runtime userspace smoke",
+			Binds: []nspawntest.Bind{{
+				Source: workspace.Source,
+				Target: workspace.Target,
+			}},
+			Commands: runtimeUserspaceCommands(fixture.GenerationID),
+		})
+		return
+	}
 	options := nspawntest.DefaultOptions()
 	options.Missing = nspawntest.MissingSkips
 	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repoRoot(t)); err != nil {
@@ -27,21 +42,25 @@ func TestRuntimeUserspaceNspawnSmoke(t *testing.T) {
 			Source: fixture.Root,
 			Target: "/mnt/katl-runtime-fixture",
 		}},
-		Commands: []nspawntest.Command{
-			{
-				Name: "runtime helper execution",
-				Argv: []string{"sh", "-ceu", runtimeHelperScript(fixture.GenerationID)},
-			},
-			{
-				Name: "optional Kubernetes tools",
-				Argv: []string{"sh", "-ceu", optionalKubernetesToolsScript},
-			},
-			{
-				Name: "generation metadata inspection",
-				Argv: []string{"sh", "-ceu", metadataInspectionScript(fixture.GenerationID)},
-			},
-		},
+		Commands: runtimeUserspaceCommands(fixture.GenerationID),
 	})
+}
+
+func runtimeUserspaceCommands(generationID string) []nspawntest.Command {
+	return []nspawntest.Command{
+		{
+			Name: "runtime helper execution",
+			Argv: []string{"sh", "-ceu", runtimeHelperScript(generationID)},
+		},
+		{
+			Name: "optional Kubernetes tools",
+			Argv: []string{"sh", "-ceu", optionalKubernetesToolsScript},
+		},
+		{
+			Name: "generation metadata inspection",
+			Argv: []string{"sh", "-ceu", metadataInspectionScript(generationID)},
+		},
+	}
 }
 
 type runtimeFixture struct {
