@@ -93,6 +93,10 @@ func manifestMediaRoot(manifestPath string) (string, error) {
 }
 
 func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer) error {
+	return runBootWithHandoff(ctx, runDir, etcDir, handoffAddr, stdout, runHandoff)
+}
+
+func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer, handoffRunner func(context.Context, string, string, io.Writer) error) error {
 	input, err := bootInput(runDir, etcDir)
 	if err != nil {
 		return err
@@ -109,7 +113,7 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 		<-ctx.Done()
 		return ctx.Err()
 	case installer.InstallActionWaitForConfig:
-		return runHandoff(ctx, runDir, handoffAddr, stdout)
+		return handoffRunner(ctx, runDir, handoffAddr, stdout)
 	case installer.InstallActionRun:
 		if input.ManifestURL != "" && input.ManifestPath == "" {
 			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)

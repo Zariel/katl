@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,8 +183,20 @@ func TestBootWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
+	runDir := filepath.Join(t.TempDir(), "run")
+	etcDir := filepath.Join(t.TempDir(), "etc")
 	var stdout bytes.Buffer
-	err := runBoot(ctx, filepath.Join(t.TempDir(), "run"), filepath.Join(t.TempDir(), "etc"), "127.0.0.1:0", &stdout)
+	err := runBootWithHandoff(ctx, runDir, etcDir, "127.0.0.1:0", &stdout, func(ctx context.Context, gotRunDir, gotAddr string, stdout io.Writer) error {
+		if gotRunDir != runDir {
+			t.Fatalf("run dir = %q, want %q", gotRunDir, runDir)
+		}
+		if gotAddr != "127.0.0.1:0" {
+			t.Fatalf("handoff addr = %q", gotAddr)
+		}
+		fmt.Fprintln(stdout, "katlos-install waiting for config at http://127.0.0.1:0/v1/install")
+		<-ctx.Done()
+		return ctx.Err()
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("runBoot() error = %v, want deadline", err)
 	}
