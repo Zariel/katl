@@ -242,6 +242,9 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
 		return err
 	}
+	if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), ""); err != nil {
+		return err
+	}
 	lockDigest := ""
 	switch *mode {
 	case "refresh":
@@ -432,6 +435,80 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 		PackageSetRef: "runtime",
 	})
 	return nil
+}
+
+type kubernetesSysextMetadata struct {
+	Architecture    string            `json:"architecture"`
+	SourceRepo      kubernetesRepo    `json:"sourceRepo"`
+	PackageVersions map[string]string `json:"packageVersions"`
+}
+
+type kubernetesRepo struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"baseURL"`
+	Minor   string `json:"minor"`
+}
+
+func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath string, lockDigest string) error {
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read Kubernetes sysext metadata %s: %w", metadataPath, err)
+	}
+	var metadata kubernetesSysextMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return fmt.Errorf("decode Kubernetes sysext metadata %s: %w", metadataPath, err)
+	}
+	packages, err := kubernetesPackages(metadata)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes sysext packages from %s: %w", metadataPath, err)
+	}
+	repo := resourcetest.PackageRepository{
+		ID:      metadata.SourceRepo.ID,
+		BaseURL: metadata.SourceRepo.BaseURL,
+	}
+	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
+		Name:         "kubernetes-sysext",
+		Source:       "mkosi.profiles/kubernetes-sysext",
+		LockDigest:   lockDigest,
+		Distribution: "kubernetes",
+		Release:      metadata.SourceRepo.Minor,
+		Architecture: metadata.Architecture,
+		Repositories: []resourcetest.PackageRepository{repo},
+		Packages:     packages,
+	})
+	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
+		Name:          "kubernetes-sysext",
+		Path:          "mkosi.profiles/kubernetes-sysext",
+		PackageSetRef: "kubernetes-sysext",
+	})
+	return nil
+}
+
+func kubernetesPackages(metadata kubernetesSysextMetadata) ([]resourcetest.Package, error) {
+	if len(metadata.PackageVersions) == 0 {
+		return nil, fmt.Errorf("packageVersions is required")
+	}
+	names := make([]string, 0, len(metadata.PackageVersions))
+	for name := range metadata.PackageVersions {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	packages := make([]resourcetest.Package, 0, len(names))
+	for _, name := range names {
+		version := strings.TrimSpace(metadata.PackageVersions[name])
+		if strings.TrimSpace(name) == "" || version == "" {
+			return nil, fmt.Errorf("packageVersions contains an empty package name or version")
+		}
+		nevra := name + "-" + version
+		if metadata.Architecture != "" {
+			nevra += "." + metadata.Architecture
+		}
+		packages = append(packages, resourcetest.Package{Name: name, NEVRA: nevra})
+	}
+	return packages, nil
 }
 
 func artifactFromPath(name, kind, path string) (resourcetest.Artifact, bool, error) {
