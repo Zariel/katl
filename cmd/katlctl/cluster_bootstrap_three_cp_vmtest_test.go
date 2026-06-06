@@ -99,15 +99,16 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		NodeRunDirs:     nodeRunDirs(nodes),
-		Inventory:       inventoryPath,
-		Kubeconfig:      kubeconfigPath,
-		BootstrapStdout: stdoutPath,
-		BootstrapStderr: stderrPath,
-		KubectlOutput:   kubectlOut,
-		EtcdReport:      etcdReportPath,
-		Transcripts:     transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts: transcriptPaths(etcdTranscriptDir, nodes),
+		NodeRunDirs:       nodeRunDirs(nodes),
+		PublishedFixtures: threeControlPlanePublishedFixtureDirs(),
+		Inventory:         inventoryPath,
+		Kubeconfig:        kubeconfigPath,
+		BootstrapStdout:   stdoutPath,
+		BootstrapStderr:   stderrPath,
+		KubectlOutput:     kubectlOut,
+		EtcdReport:        etcdReportPath,
+		Transcripts:       transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:   transcriptPaths(etcdTranscriptDir, nodes),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,15 +208,16 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
-	NodeRunDirs     map[string]string `json:"nodeRunDirs"`
-	Inventory       string            `json:"inventory"`
-	Kubeconfig      string            `json:"kubeconfig"`
-	BootstrapStdout string            `json:"bootstrapStdout"`
-	BootstrapStderr string            `json:"bootstrapStderr"`
-	KubectlOutput   string            `json:"kubectlOutput"`
-	EtcdReport      string            `json:"etcdReport"`
-	Transcripts     map[string]string `json:"transcripts"`
-	EtcdTranscripts map[string]string `json:"etcdTranscripts"`
+	NodeRunDirs       map[string]string `json:"nodeRunDirs"`
+	PublishedFixtures map[string]string `json:"publishedFixtures,omitempty"`
+	Inventory         string            `json:"inventory"`
+	Kubeconfig        string            `json:"kubeconfig"`
+	BootstrapStdout   string            `json:"bootstrapStdout"`
+	BootstrapStderr   string            `json:"bootstrapStderr"`
+	KubectlOutput     string            `json:"kubectlOutput"`
+	EtcdReport        string            `json:"etcdReport"`
+	Transcripts       map[string]string `json:"transcripts"`
+	EtcdTranscripts   map[string]string `json:"etcdTranscripts"`
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -227,6 +229,14 @@ func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPl
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func threeControlPlanePublishedFixtureDirs() map[string]string {
+	return compactStringMap(map[string]string{
+		"cp-1": firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR")),
+		"cp-2": os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR"),
+		"cp-3": os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR"),
+	})
 }
 
 func assertThreeControlPlaneBootstrapPhases(t *testing.T, output string) {
@@ -538,5 +548,33 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
 	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
 		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
+	}
+}
+
+func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
+	t.Setenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR", "/tmp/cp-1")
+	t.Setenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR", "/tmp/cp-2")
+	t.Setenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR", "/tmp/cp-3")
+	got := threeControlPlanePublishedFixtureDirs()
+	if got["cp-1"] != "/tmp/cp-1" || got["cp-2"] != "/tmp/cp-2" || got["cp-3"] != "/tmp/cp-3" {
+		t.Fatalf("published fixtures = %#v", got)
+	}
+	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
+	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
+		NodeRunDirs:       map[string]string{"cp-1": "/tmp/cp-1-run"},
+		PublishedFixtures: got,
+	}); err != nil {
+		t.Fatalf("writeThreeControlPlaneArtifactManifest() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read artifact manifest: %v", err)
+	}
+	var manifest threeControlPlaneArtifactManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode artifact manifest: %v", err)
+	}
+	if manifest.PublishedFixtures["cp-1"] != "/tmp/cp-1" || manifest.PublishedFixtures["cp-2"] != "/tmp/cp-2" || manifest.PublishedFixtures["cp-3"] != "/tmp/cp-3" {
+		t.Fatalf("artifact manifest published fixtures = %#v", manifest.PublishedFixtures)
 	}
 }

@@ -101,6 +101,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	if err := writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
 		ControlPlaneRunDir:     cpNode.Result.RunDir,
 		WorkerRunDir:           workerNode.Result.RunDir,
+		PublishedFixtures:      twoNodePublishedFixtureDirs(),
 		Inventory:              inventoryPath,
 		Kubeconfig:             kubeconfigPath,
 		BootstrapStdout:        stdoutPath,
@@ -211,15 +212,16 @@ nodes:
 }
 
 type twoNodeArtifactManifest struct {
-	ControlPlaneRunDir     string `json:"controlPlaneRunDir"`
-	WorkerRunDir           string `json:"workerRunDir"`
-	Inventory              string `json:"inventory"`
-	Kubeconfig             string `json:"kubeconfig"`
-	BootstrapStdout        string `json:"bootstrapStdout"`
-	BootstrapStderr        string `json:"bootstrapStderr"`
-	KubectlOutput          string `json:"kubectlOutput"`
-	ControlPlaneTranscript string `json:"controlPlaneTranscript"`
-	WorkerTranscript       string `json:"workerTranscript"`
+	ControlPlaneRunDir     string            `json:"controlPlaneRunDir"`
+	WorkerRunDir           string            `json:"workerRunDir"`
+	PublishedFixtures      map[string]string `json:"publishedFixtures,omitempty"`
+	Inventory              string            `json:"inventory"`
+	Kubeconfig             string            `json:"kubeconfig"`
+	BootstrapStdout        string            `json:"bootstrapStdout"`
+	BootstrapStderr        string            `json:"bootstrapStderr"`
+	KubectlOutput          string            `json:"kubectlOutput"`
+	ControlPlaneTranscript string            `json:"controlPlaneTranscript"`
+	WorkerTranscript       string            `json:"workerTranscript"`
 }
 
 func writeTwoNodeArtifactManifest(path string, manifest twoNodeArtifactManifest) error {
@@ -231,6 +233,13 @@ func writeTwoNodeArtifactManifest(path string, manifest twoNodeArtifactManifest)
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func twoNodePublishedFixtureDirs() map[string]string {
+	return compactStringMap(map[string]string{
+		"cp-1":     os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR"),
+		"worker-1": os.Getenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR"),
+	})
 }
 
 func assertBootstrapPhases(t *testing.T, output string) {
@@ -446,6 +455,49 @@ func firstString(values ...string) string {
 	return ""
 }
 
+func compactStringMap(values map[string]string) map[string]string {
+	out := make(map[string]string)
+	for key, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func uint32String(value uint32) string {
 	return strconv.FormatUint(uint64(value), 10)
+}
+
+func TestTwoNodePublishedFixtureDirs(t *testing.T) {
+	t.Setenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR", "/tmp/cp")
+	t.Setenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR", "/tmp/worker")
+	got := twoNodePublishedFixtureDirs()
+	if got["cp-1"] != "/tmp/cp" || got["worker-1"] != "/tmp/worker" {
+		t.Fatalf("published fixtures = %#v", got)
+	}
+	path := filepath.Join(t.TempDir(), "two-node-artifacts.json")
+	if err := writeTwoNodeArtifactManifest(path, twoNodeArtifactManifest{
+		ControlPlaneRunDir: "/tmp/cp-run",
+		WorkerRunDir:       "/tmp/worker-run",
+		PublishedFixtures:  got,
+	}); err != nil {
+		t.Fatalf("writeTwoNodeArtifactManifest() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read artifact manifest: %v", err)
+	}
+	var manifest twoNodeArtifactManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode artifact manifest: %v", err)
+	}
+	if manifest.PublishedFixtures["cp-1"] != "/tmp/cp" || manifest.PublishedFixtures["worker-1"] != "/tmp/worker" {
+		t.Fatalf("artifact manifest published fixtures = %#v", manifest.PublishedFixtures)
+	}
 }
