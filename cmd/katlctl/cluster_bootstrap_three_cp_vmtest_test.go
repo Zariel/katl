@@ -77,8 +77,9 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 	}
 	run := threeControlPlaneSmokeRun{WorldScenario: scenario}
 	nodes := make(map[string]vmtest.InstalledRuntimeWorldNode, 3)
+	buildRoots := publishedRuntimeBuildRoots(world, repo)
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
-		node, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: name, Role: vmtest.ControlPlane})
+		node, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: name, Role: vmtest.ControlPlane})
 		if err != nil {
 			_ = scenario.WriteSetupFailure(err)
 			return run, err
@@ -954,6 +955,23 @@ func TestPlanThreeControlPlaneWorldSmokeRunWritesSetupFailureForMissingPublished
 	if result.Status != vmtest.WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
 		t.Fatalf("world setup result = %#v", result)
 	}
+}
+
+func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
+	world := twoNodeTestWorld(t)
+	repo := t.TempDir()
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-"+name, name, vmtest.ControlPlane)
+		writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-"+name, name, vmtest.ControlPlane)
+	}
+
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
+	if err != nil {
+		t.Fatalf("planThreeControlPlaneWorldSmokeRun() error = %v", err)
+	}
+	assertFileContent(t, run.Inputs.CP1Disk, "disk-world-cp-1")
+	assertFileContent(t, run.Inputs.CP2Disk, "disk-world-cp-2")
+	assertFileContent(t, run.Inputs.CP3Disk, "disk-world-cp-3")
 }
 
 func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {

@@ -72,12 +72,13 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 		return twoNodeSmokeRun{}, err
 	}
 	run := twoNodeSmokeRun{WorldScenario: scenario}
-	cp, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
+	buildRoots := publishedRuntimeBuildRoots(world, repo)
+	cp, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
-	worker, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: "worker-1", Role: vmtest.Worker})
+	worker, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "worker-1", Role: vmtest.Worker})
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
@@ -1234,6 +1235,25 @@ func TestPlanTwoNodeWorldSmokeRunWritesSetupFailureForMissingPublishedFixture(t 
 	}
 	if result.Status != vmtest.WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
 		t.Fatalf("world setup result = %#v", result)
+	}
+}
+
+func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
+	world := twoNodeTestWorld(t)
+	repo := t.TempDir()
+	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-worker", "worker-1", vmtest.Worker)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-worker", "worker-1", vmtest.Worker)
+
+	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
+	if err != nil {
+		t.Fatalf("planTwoNodeWorldSmokeRun() error = %v", err)
+	}
+	assertFileContent(t, run.Inputs.ControlPlaneDisk, "disk-world-cp")
+	assertFileContent(t, run.Inputs.WorkerDisk, "disk-world-worker")
+	if !hasPathPrefix(run.Inputs.ControlPlaneFixture, run.WorldScenario.Dir) || !hasPathPrefix(run.Inputs.WorkerFixture, run.WorldScenario.Dir) {
+		t.Fatalf("fixtures were not staged into world scenario: cp=%q worker=%q", run.Inputs.ControlPlaneFixture, run.Inputs.WorkerFixture)
 	}
 }
 
