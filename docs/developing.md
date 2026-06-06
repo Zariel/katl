@@ -217,7 +217,8 @@ matches `cp-1` and `worker-1`, rejects shared disk, ESP, metadata, or address
 inputs, checks fixture manifest checksums, checks that the bridge exists with an
 IPv4 subnet containing both node addresses, and writes generated files under
 `build/two-node-kubeadm-fixtures/`. Source the generated `vmtest.env` or run the
-generated wrapper to execute `TestInstalledRuntimeTwoNodeKubeadmJoinSmoke`.
+generated wrapper to revalidate the fixture inputs and execute
+`TestInstalledRuntimeTwoNodeKubeadmJoinSmoke`.
 
 Each fixture manifest binds one installed node's artifacts:
 
@@ -273,8 +274,8 @@ metadata file matches `cp-1`, `cp-2`, or `cp-3`, rejects shared disk, metadata,
 fixture, or address inputs, checks fixture manifest checksums, checks that the
 bridge exists with an IPv4 subnet containing all three node addresses, and
 writes generated files under `build/three-control-plane-kubeadm-fixtures/`.
-Source the generated `vmtest.env` or run the generated wrapper to execute
-`TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke`.
+Source the generated `vmtest.env` or run the generated wrapper to revalidate the
+fixture inputs and execute `TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke`.
 
 To run the smoke directly after sourcing the generated env:
 
