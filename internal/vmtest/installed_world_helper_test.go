@@ -1,0 +1,107 @@
+package vmtest
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestPlanInstalledRuntimeWorldRunWritesSetupFailureForMissingPublishedFixture(t *testing.T) {
+	world := testWorld(t)
+	run, err := planInstalledRuntimeWorldRun(world, "missing installed runtime", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMAuto)
+	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
+		t.Fatalf("planInstalledRuntimeWorldRun() error = %v, want missing published fixture", err)
+	}
+	if run.Scenario == nil {
+		t.Fatal("planInstalledRuntimeWorldRun() did not return scenario on setup failure")
+	}
+	var result scenarioResult
+	readJSONForTest(t, run.Scenario.ResultPath, &result)
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	sourceManifest := writePublishedInstalledRuntimeFixture(t, repo, "first", "cp-1", ControlPlane, time.Unix(10, 0))
+
+	run, err := planInstalledRuntimeWorldRun(world, "installed runtime", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
+	if err != nil {
+		t.Fatalf("planInstalledRuntimeWorldRun() error = %v", err)
+	}
+	if run.Config.Disk == "" || run.Config.ESPArtifacts == "" || run.Config.FixtureManifest == "" {
+		t.Fatalf("config = %#v", run.Config)
+	}
+	if run.Config.DiskFormat != DiskRaw {
+		t.Fatalf("disk format = %q, want raw", run.Config.DiskFormat)
+	}
+	if run.Runner.options().StateRoot != filepath.Join(run.Scenario.Dir, "vm-runs") || run.Runner.options().KVM != KVMOff {
+		t.Fatalf("runner options = %#v", run.Runner.options())
+	}
+	record := readInstalledRuntimeFixtureForTest(t, run.Config.FixtureManifest)
+	if record.NodeName != "cp-1" || record.SystemRole != "control-plane" {
+		t.Fatalf("fixture = %#v", record)
+	}
+	if _, err := os.Stat(sourceManifest); err != nil {
+		t.Fatalf("source fixture missing: %v", err)
+	}
+}
+
+func TestFindPublishedFirstInstallRuntimeFixtureSelectsNewestMatch(t *testing.T) {
+	repo := t.TempDir()
+	old := writePublishedInstalledRuntimeFixture(t, repo, "old", "cp-1", ControlPlane, time.Unix(10, 0))
+	newestWorker := writePublishedInstalledRuntimeFixture(t, repo, "new-worker", "worker-1", Worker, time.Unix(30, 0))
+	newestCP := writePublishedInstalledRuntimeFixture(t, repo, "new-cp", "cp-1", ControlPlane, time.Unix(20, 0))
+
+	published, err := findPublishedFirstInstallRuntimeFixture(repo, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	if err != nil {
+		t.Fatalf("findPublishedFirstInstallRuntimeFixture() error = %v", err)
+	}
+	if published.FixtureManifest != newestCP {
+		t.Fatalf("fixture = %q, want %q", published.FixtureManifest, newestCP)
+	}
+	if published.FixtureManifest == old || published.FixtureManifest == newestWorker {
+		t.Fatalf("selected wrong fixture = %#v", published)
+	}
+}
+
+func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName string, role NodeRole, modTime time.Time) string {
+	t.Helper()
+	dir := filepath.Join(repo, "build", "published", name)
+	disk := writeFixtureFile(t, filepath.Join(dir, "installed-runtime.raw"), "disk-"+name)
+	esp := writeFixtureESP(t, filepath.Join(dir, "esp"))
+	metadata := writeFixtureNodeMetadata(t, filepath.Join(dir, "node.json"), Node{Name: nodeName, Role: role})
+	fixtureManifest := writeInstalledFixtureManifestWithESPHash(t, dir, disk, esp, mustTreeSHA(t, esp), metadata)
+	fixtureRecord := readInstalledRuntimeFixtureForTest(t, fixtureManifest)
+	fixtureRecord.NodeName = nodeName
+	fixtureRecord.SystemRole = string(role)
+	fixtureContent, err := json.MarshalIndent(fixtureRecord, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	if err := os.WriteFile(fixtureManifest, append(fixtureContent, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", fixtureManifest, err)
+	}
+	publishedManifest := filepath.Join(dir, "published-first-install-runtime-fixture.json")
+	content := `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "PublishedFirstInstallRuntimeFixture",
+  "nodeName": "` + nodeName + `",
+  "systemRole": "` + string(role) + `",
+  "fixtureManifest": "installed-runtime-fixture.json",
+  "diskFormat": "raw"
+}
+`
+	if err := os.WriteFile(publishedManifest, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", publishedManifest, err)
+	}
+	if err := os.Chtimes(publishedManifest, modTime, modTime); err != nil {
+		t.Fatalf("Chtimes(%s) error = %v", publishedManifest, err)
+	}
+	return fixtureManifest
+}
