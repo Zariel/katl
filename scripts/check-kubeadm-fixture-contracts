@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need jq
+need mktemp
+
+make_esp() {
+    local root="$1"
+    mkdir -p "$root/loader/entries"
+    cat >"$root/loader/entries/katl.conf" <<'EOF'
+title Katl
+linux /EFI/Linux/katl.efi
+options root=PARTUUID=11111111-2222-3333-4444-555555555555 rootfstype=squashfs ro katl.generation=test systemd.machine_id=0123456789abcdef0123456789abcdef
+EOF
+}
+
+make_metadata() {
+    local path="$1"
+    local node="$2"
+    local role="$3"
+    mkdir -p "$(dirname "$path")"
+    cat >"$path" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "NodeMetadata",
+  "identity": {"hostname": "$node"},
+  "systemRole": "$role"
+}
+EOF
+}
+
+expect_failure() {
+    local want="$1"
+    shift
+    local log="$tmpdir/failure.log"
+    if "$@" >"$log" 2>&1; then
+        fail "command unexpectedly succeeded: $*"
+    fi
+    grep -Fq "$want" "$log" || {
+        cat "$log" >&2
+        fail "command did not fail with expected text: $want"
+    }
+}
+
+source_run="$tmpdir/vmtest-state/first-install-installed-runtime-fixture-1"
+fixture_dir="$source_run/manifests/installed-runtime-fixture"
+source_disk="$tmpdir/source.raw"
+source_esp="$tmpdir/source-esp"
+source_metadata="$tmpdir/source-node.json"
+
+printf 'disk\n' >"$source_disk"
+make_esp "$source_esp"
+make_metadata "$source_metadata" "cp-1" "control-plane"
+
+"$repo_root/scripts/create-installed-runtime-fixture" \
+    --disk "$source_disk" \
+    --esp-artifacts "$source_esp" \
+    --node-metadata "$source_metadata" \
+    --format raw \
+    --state-dir "$fixture_dir" >/dev/null
+
+published_dir="$tmpdir/published-cp-1"
+"$repo_root/scripts/publish-first-install-runtime-fixture" \
+    --vmtest-state-root "$tmpdir/vmtest-state" \
+    --state-dir "$published_dir" \
+    --format raw \
+    --node-name cp-1 \
+    --system-role control-plane >/dev/null
+
+published_manifest="$published_dir/published-first-install-runtime-fixture.json"
+jq -e '
+    .apiVersion == "katl.dev/v1alpha1" and
+    .kind == "PublishedFirstInstallRuntimeFixture" and
+    .nodeName == "cp-1" and
+    .systemRole == "control-plane"
+    ' "$published_manifest" >/dev/null ||
+    fail "published fixture manifest did not record cp-1 control-plane identity"
+
+wrong_two_node="$tmpdir/wrong-two-node"
+mkdir -p "$wrong_two_node"
+jq '.nodeName = "worker-1" | .systemRole = "worker"' "$published_manifest" >"$wrong_two_node/published-first-install-runtime-fixture.json"
+
+expect_failure "control-plane published fixture manifest is invalid for cp-1 role=control-plane" \
+    env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-two-node-kubeadm-fixtures" \
+    --control-plane-published-dir "$wrong_two_node" \
+    --control-plane-address 192.0.2.10 \
+    --worker-address 192.0.2.11 \
+    --check-only
+
+wrong_three_cp="$tmpdir/wrong-three-cp"
+mkdir -p "$wrong_three_cp"
+jq '.nodeName = "cp-2" | .systemRole = "worker"' "$published_manifest" >"$wrong_three_cp/published-first-install-runtime-fixture.json"
+
+expect_failure "cp-1 published fixture manifest is invalid for cp-1 role=control-plane" \
+    env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-three-control-plane-kubeadm-fixtures" \
+    --cp1-published-dir "$wrong_three_cp" \
+    --cp1-address 192.0.2.10 \
+    --cp2-address 192.0.2.11 \
+    --cp3-address 192.0.2.12 \
+    --check-only
+
+echo "ok: kubeadm fixture contracts valid"
