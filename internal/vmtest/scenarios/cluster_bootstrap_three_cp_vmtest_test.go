@@ -338,6 +338,7 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
+	VMTestRun                string                      `json:"vmtestRun,omitempty"`
 	WorldManifest            string                      `json:"worldManifest,omitempty"`
 	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
 	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
@@ -367,6 +368,7 @@ type threeControlPlaneArtifactManifest struct {
 
 func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
 	return writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
+		VMTestRun:                inputs.WorldProvenance.VMTestRun,
 		WorldManifest:            inputs.WorldProvenance.WorldManifest,
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
@@ -923,7 +925,7 @@ func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *test
 	assertFileContent(t, run.Inputs.CP1Disk, "disk-world-cp-1")
 	assertFileContent(t, run.Inputs.CP2Disk, "disk-world-cp-2")
 	assertFileContent(t, run.Inputs.CP3Disk, "disk-world-cp-3")
-	if run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-3"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-3-control-plane", "result.json") {
@@ -1008,6 +1010,7 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
 	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
+		VMTestRun:          "/tmp/run.json",
 		WorldManifest:      "/tmp/world.json",
 		HostCapabilities:   "/tmp/host-capabilities.json",
 		MkosiArtifactIndex: "/tmp/mkosi-artifacts.json",
@@ -1051,8 +1054,8 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].NodeMetadata != "cp3-node.json" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
 	}
-	if manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
-		t.Fatalf("artifact manifest world provenance = %q %q %q", manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
+	if manifest.VMTestRun != "/tmp/run.json" || manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
+		t.Fatalf("artifact manifest world provenance = %q %q %q %q", manifest.VMTestRun, manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
 	}
 	if manifest.FixtureProducerScenarios["cp-2"] != "/tmp/fixture-cp-2/scenario.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
 		t.Fatalf("artifact manifest fixture provenance = %#v %#v", manifest.FixtureProducerScenarios, manifest.FixtureProducerResults)

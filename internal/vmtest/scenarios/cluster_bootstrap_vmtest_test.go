@@ -307,6 +307,7 @@ type twoNodeSmokeInputs struct {
 }
 
 type multiNodeWorldProvenancePaths struct {
+	VMTestRun                string
 	WorldManifest            string
 	HostCapabilities         string
 	MkosiArtifactIndex       string
@@ -316,6 +317,7 @@ type multiNodeWorldProvenancePaths struct {
 
 func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) multiNodeWorldProvenancePaths {
 	provenance := multiNodeWorldProvenancePaths{
+		VMTestRun:          filepath.Join(world.RunDir, "run.json"),
 		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
 		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
 		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
@@ -461,6 +463,7 @@ nodes:
 }
 
 type twoNodeArtifactManifest struct {
+	VMTestRun                string                      `json:"vmtestRun,omitempty"`
 	WorldManifest            string                      `json:"worldManifest,omitempty"`
 	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
 	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
@@ -491,6 +494,7 @@ type twoNodeArtifactManifest struct {
 func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmokeInputs, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
 	nodeByName := nodeMap(nodes)
 	return writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
+		VMTestRun:                inputs.WorldProvenance.VMTestRun,
 		WorldManifest:            inputs.WorldProvenance.WorldManifest,
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
@@ -1114,6 +1118,7 @@ func TestTwoNodeArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "two-node-artifacts.json")
 	if err := writeTwoNodeArtifactManifest(path, twoNodeArtifactManifest{
+		VMTestRun:          "/tmp/run.json",
 		WorldManifest:      "/tmp/world.json",
 		HostCapabilities:   "/tmp/host-capabilities.json",
 		MkosiArtifactIndex: "/tmp/mkosi-artifacts.json",
@@ -1161,8 +1166,8 @@ func TestTwoNodeArtifactManifestRecordsWorldInputs(t *testing.T) {
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp-fixture.json" || manifest.FixtureInputs["worker-1"].NodeMetadata != "worker-node.json" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
 	}
-	if manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
-		t.Fatalf("artifact manifest world provenance = %q %q %q", manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
+	if manifest.VMTestRun != "/tmp/run.json" || manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
+		t.Fatalf("artifact manifest world provenance = %q %q %q %q", manifest.VMTestRun, manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
 	}
 	if manifest.FixtureProducerScenarios["cp-1"] != "/tmp/fixture-cp/scenario.json" || manifest.FixtureProducerResults["worker-1"] != "/tmp/fixture-worker/result.json" {
 		t.Fatalf("artifact manifest fixture provenance = %#v %#v", manifest.FixtureProducerScenarios, manifest.FixtureProducerResults)
@@ -1235,7 +1240,7 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	if !hasPathPrefix(run.Inputs.ControlPlaneFixture, run.WorldScenario.Dir) || !hasPathPrefix(run.Inputs.WorkerFixture, run.WorldScenario.Dir) {
 		t.Fatalf("fixtures were not staged into world scenario: cp=%q worker=%q", run.Inputs.ControlPlaneFixture, run.Inputs.WorkerFixture)
 	}
-	if run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-1"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-1-control-plane", "result.json") {
