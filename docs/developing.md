@@ -126,19 +126,23 @@ smokes run through one runner-created world. Use `scripts/vmtest-run` instead of
 preparing fixture environment files or invoking `scripts/vmtest-exec` directly:
 
 ```sh
-scripts/vmtest-run ./internal/vmtest -run Nspawn
+scripts/vmtest-run ./internal/vmtest -run Nspawn -count=1
 scripts/vmtest-run ./internal/vmtest \
-  -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply'
+  -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply' -count=1
 scripts/vmtest-run ./internal/vmtest/scenarios \
   -run 'TwoNodeKubeadmJoin|ThreeControlPlaneStackedEtcd' \
-  -timeout 60m
+  -timeout 60m -count=1
 ```
 
 The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
-host capabilities, records `world.json`, runs package test binaries through
-`go test -exec scripts/vmtest-exec`, and writes `summary.json` plus
-`go-test.log`. Pass normal `go test` flags to the runner; add `-json` only when
-JSON event output is wanted.
+host capabilities, records `world.json` and `host-capabilities.json`, exports the
+world environment, and then executes `go test` with the caller's package patterns
+and flags. Argument meaning belongs to `go test`; `scripts/vmtest-run` only adds
+the harness execution needed to route compiled package test binaries through
+`scripts/vmtest-exec`.
+
+`go test` owns the terminal output and exit status. Scenario artifacts remain
+under the world directory for later inspection or aggregation by another tool.
 
 Plain `go test ./...` keeps VM and nspawn scenarios disabled. If an enabled
 smoke is invoked directly without the world manifest, it fails with a setup
@@ -174,13 +178,14 @@ bridge:
 ```sh
 nix develop .#vm -c env \
   KATL_VMTEST_RUN_ID=capable-host-$(date -u +%Y%m%dT%H%M%SZ) \
-  scripts/vmtest-run
+  scripts/vmtest-run ./... -count=1
 ```
 
-A capable-host run exits zero and writes `summary.json`, `world.json`,
-`host-capabilities.json`, `go-test.log`, and per-scenario `result.json` files
-under the printed run directory. A restricted host should fail during setup with
-explicit host capability gaps rather than fixture generation errors.
+A capable-host run exits zero after `go test` completes. The runner records
+`world.json` and `host-capabilities.json` before handing off to Go; enabled
+tests write their own per-scenario artifacts under the world directory. A
+restricted host should fail during setup with explicit host capability gaps
+rather than fixture generation errors.
 
 ## Sanity Checks
 

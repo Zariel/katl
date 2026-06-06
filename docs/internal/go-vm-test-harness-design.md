@@ -249,10 +249,10 @@ separate supported developer path for manually assembled fixtures.
 
 The hermetic world execution model is defined in
 `docs/internal/hermetic-vmtest-worlds.md`. That document narrows the standard VM
-contract further: `scripts/vmtest-run` creates a tmpdir world and injects it
-with `go test -exec`; tests allocate their own nodes and guest addresses inside
-the world instead of receiving per-scenario fixture paths and IP addresses from
-the developer.
+contract further: `scripts/vmtest-run` creates a tmpdir world, exports the world
+environment, and ends by executing `go test` with `go test -exec`; tests allocate
+their own nodes and guest addresses inside the world instead of receiving
+per-scenario fixture paths and IP addresses from the developer.
 
 Cluster VM scenarios should live in a VM integration package, not under
 end-user command packages such as `cmd/katlctl`. A scenario may execute the
@@ -607,9 +607,10 @@ unless `-katl.vmtest.run` or a focused integration test command enables them.
 
 Some generated filesystem and systemd checks can run through `systemd-nspawn`
 before a full QEMU boot. Standard enabled checks run through
-`scripts/vmtest-run`, which creates a world manifest and supplies the prepared
-userspace fixture to `internal/nspawntest` instead of asking the developer to
-export a root or image path.
+`scripts/vmtest-run`, which creates a world manifest, exports the world
+environment, and then executes `go test`. The prepared userspace fixture is
+supplied to `internal/nspawntest` from inside the world instead of asking the
+developer to export a root or image path.
 
 Generated unit trees should be mounted read-only into the container and verified
 with the userspace root's `systemd-analyze`. Missing `systemd-nspawn` or

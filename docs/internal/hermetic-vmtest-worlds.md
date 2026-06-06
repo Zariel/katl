@@ -25,9 +25,9 @@ entrypoints.
 
 After a developer installs the required host capabilities, `scripts/vmtest-run`
 should do everything else needed for an enabled nspawn or VM test: create the
-world, prepare shared artifacts, set up host-side networking when the selected
-tests need it, invoke Go tests through `go test -exec`, collect results, and
-print the preserved run directory when a failure needs inspection.
+world, prepare shared artifacts, set up configured host-side world resources,
+export the world environment, and execute Go tests through `go test -exec`. The
+resulting Go test process owns output and exit status.
 
 This is the canonical nspawn and VM test direction. The broader resource-test
 entrypoint may run suites through `scripts/vmtest-run`, but it should not define
@@ -42,15 +42,15 @@ The hermetic runner should:
 ```text
 create all mutable output under TMPDIR
 print the run directory and link the latest run from build/vmtest/
-probe host capabilities before running scenarios
-set up host-side VM networking only when selected tests need it
-avoid QEMU, firmware, and bridge setup for nspawn-only worlds
+probe configured host capabilities before handing off to go test
+set up host-side VM networking when the selected world backend requires it
+support explicit world backends without inferring them from Go test arguments
 provide a CIDR and gateway to tests, not per-scenario node addresses
 build or resolve Katl artifacts before scenario assertions start
 run Go test binaries inside the world with go test -exec
-collect logs, manifests, result files, and summaries from every enabled scenario
-fail when enabled tests skip for missing repo-owned setup
-classify only declared host capability gaps as host-skipped
+let tests write logs, manifests, and result files under the world directory
+leave enabled-test skip classification to tests or later aggregation
+record host capability gaps without interpreting Go test arguments
 ```
 
 The world is test infrastructure, not a Katl product feature. It must not make
@@ -71,21 +71,21 @@ ${TMPDIR:-/tmp}/katl-vmtest/<run-id>/
   nspawn/
   packages/
   scenarios/
-  go-test.log
-  summary.json
 ```
 
 Repo-local `build/` should not be the primary scratch root for hermetic runs.
-It may contain only durable pointers and small summaries, for example:
+It may contain only durable pointers or small summaries produced by separate
+aggregation tooling, for example:
 
 ```text
 build/vmtest/latest -> ${TMPDIR:-/tmp}/katl-vmtest/<run-id>
 build/vmtest/latest-summary.json
 ```
 
-On failure the runner prints the absolute run directory and leaves it in place.
-On success it may delete large throwaway state according to a keep policy, but
-the summary should still identify the run and the artifacts that were tested.
+The runner should print the absolute run directory before handing off to
+`go test`, and `scripts/vmtest-exec` should print it again when a package test
+binary exits nonzero. Cleanup and summary generation belong to separate tooling
+when the project needs those workflows.
 
 The runner should avoid writing host-specific absolute paths into committed
 configuration. Absolute paths are acceptable in generated tmpdir manifests and
@@ -227,21 +227,21 @@ behavior.
 
 ## go test -exec
 
-`scripts/vmtest-run` is a thin wrapper over `go test`. Its normal arguments are
-Go package patterns and `go test` flags:
+`scripts/vmtest-run` is a thin world setup wrapper over `go test`. Its arguments
+are Go package patterns and `go test` flags:
 
 ```sh
 scripts/vmtest-run ./internal/vmtest -run Nspawn
 scripts/vmtest-run ./internal/vmtest/scenarios \
-  -run '^TestTwoNodeKubeadmJoinSmoke$'
+  -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
 
-The wrapper injects the VM world by translating that command to the equivalent
-`go test -exec` invocation:
+The wrapper injects the VM world by preparing the world environment and ending
+with the equivalent `go test -exec` invocation:
 
 ```sh
-go test -count=1 -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
-  -run '^TestTwoNodeKubeadmJoinSmoke$'
+go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
+  -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
 
 `go test -exec` lets the world wrapper run each compiled test binary inside a
@@ -259,28 +259,29 @@ export KATL_VMTEST_WORLD_MANIFEST
 force VM tests into strict enabled mode
 forward all test arguments unchanged
 preserve the child exit code
-record go test package metadata and result paths
 print the run directory on failure
 ```
 
 `go test -exec` wraps one package test binary at a time. `scripts/vmtest-run`
-should own broad invocations, create the world once, invoke
-`go test -exec scripts/vmtest-exec` for the selected packages, collect the Go
-test output, and write the final summary. Callers can pass the normal `go test`
-`-json` flag when JSON event output is needed.
+creates the world once, exports the world variables, and then tail-calls
+`go test -exec scripts/vmtest-exec` with the caller's arguments. The runner
+should not classify package patterns or flags, choose a default package set,
+inspect `-run` expressions, pipe Go test output, or write a post-test summary
+after `go test` exits. Callers can pass the normal `go test` `-json` flag when
+JSON event output is needed.
 
 `scripts/vmtest-exec` is an implementation detail of `scripts/vmtest-run`, not
 a second developer entrypoint. It should fail when invoked without a world
 created by the runner.
 
-The wrapper should not grow a separate scenario configuration language. Package
-selection, `-run`, `-count`, `-timeout`, and other ordinary test controls should
-remain `go test` flags. Any harness-only options should be few, clearly named,
-and limited to world behavior such as keep policy, CIDR override, network
-backend, or host-skip policy.
+Package selection, `-run`, `-count`, `-timeout`, and other ordinary test controls
+remain `go test` flags with Go's usual meaning. Harness controls should use
+environment variables or a separate setup command so the runner does not need to
+parse the Go test argument stream.
 
-Nspawn and VM suites should use `-count=1`; they must not depend on Go test
-caching.
+Nspawn and VM suites should use `-count=1`; callers or higher-level check
+commands should pass that flag explicitly because `scripts/vmtest-run` forwards
+ordinary Go test controls with Go's usual meaning.
 
 ## Resource Generation
 
@@ -369,8 +370,8 @@ ask the developer to export a list of fixture paths and addresses.
 2. Add `scripts/vmtest-exec` that joins the runner-created tmpdir world and
    exports `KATL_VMTEST_WORLD_MANIFEST`.
 3. Add `scripts/vmtest-run` as the conventional entrypoint. It should accept
-   ordinary `go test` package patterns and flags, then inject
-   `-exec scripts/vmtest-exec`.
+   ordinary `go test` package patterns and flags, prepare the world, and end by
+   executing `go test` with `-exec scripts/vmtest-exec`.
 4. Move enabled nspawn and VM tests from skip-on-missing to strict setup failure
    unless the missing prerequisite is a declared host capability.
 5. Add world-backed address leasing and scenario directories to `internal/vmtest`.

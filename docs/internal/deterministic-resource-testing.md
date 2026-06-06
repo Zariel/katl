@@ -253,11 +253,11 @@ scripts/vmtest-run
 
 For nspawn and VM-backed suites, the stronger execution contract is the
 hermetic world model in `docs/internal/hermetic-vmtest-worlds.md`:
-`scripts/vmtest-run` creates a tmpdir world, runs package test binaries through
-`go test -exec`, and lets each test allocate its own containers, VMs, and guest
-addresses inside that world. Resource checking remains an internal setup and
-summary concern, not a developer-facing requirement to pass fixture paths and IP
-addresses.
+`scripts/vmtest-run` creates a tmpdir world, exports the world environment,
+then executes `go test` through `go test -exec`. Each test allocates its own
+containers, VMs, and guest addresses inside that world. Resource checking remains
+an internal setup concern, not a developer-facing requirement to pass fixture
+paths and IP addresses.
 
 `scripts/check-resource-tests` may delegate to `scripts/vmtest-run` for nspawn
 and VM suites, but `scripts/vmtest-run` is the direct developer entrypoint for
@@ -272,17 +272,16 @@ write and verify the mkosi artifact index
 generate node manifests and metadata under build/resource-tests/<run-id>/
 prepare the nspawn userspace fixture
 run first-install VM setup and publish installed-runtime fixtures
-run Go test packages with generated environment and resource-test strict mode
-collect result.json and scenario.json files from nspawn and VM test roots
-fail on setup-failed, failed, unexpected skipped, missing results, or stale locks
+exec go test with the caller's arguments and resource-test strict mode
 ```
 
 The script can call smaller existing scripts such as `scripts/mkosi` and
 `scripts/mkosi-artifacts`. Existing fixture resolvers and publishers are
 transitional; once world fixture factories exist, their policy should move
-behind `scripts/vmtest-run` or be deleted. Parsing, result aggregation, lock
-validation, and scenario status classification should move to Go when the shell
-starts carrying policy.
+behind `scripts/vmtest-run` or be deleted. Argument interpretation, result
+aggregation, lock validation, and scenario status classification belong in
+separate Go tooling when they are needed; they should not be embedded in the
+world setup wrapper.
 
 ## Test Layout
 
@@ -292,13 +291,13 @@ The normal test commands should keep distinct purposes:
 go test ./...
   pure unit, parser, planner, golden, and helper tests; no privileged resources
 
-scripts/vmtest-run ./internal/vmtest -run Nspawn
+scripts/vmtest-run ./internal/vmtest -run Nspawn -count=1
   nspawn userspace and generated systemd/config checks
 
-scripts/vmtest-run ./internal/vmtest
+scripts/vmtest-run ./internal/vmtest -count=1
   QEMU first-install and installed-runtime checks
 
-scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane'
+scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' -count=1
   multi-node kubeadm and stacked-etcd checks
 ```
 
