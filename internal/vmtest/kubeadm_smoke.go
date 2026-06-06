@@ -85,7 +85,7 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 
 	executor := runner.Executor
 	if executor == nil {
-		executor = ExecVMExecutor{}
+		executor = defaultVMExecutor(result)
 	}
 	done := make(chan error, 1)
 	go func() {

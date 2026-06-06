@@ -75,7 +75,7 @@ func RunInstalledKubeadmReadySmoke(ctx context.Context, result Result, config Ku
 
 	executor := runner.Executor
 	if executor == nil {
-		executor = ExecVMExecutor{}
+		executor = defaultVMExecutor(result)
 	}
 	done := make(chan error, 1)
 	go func() {

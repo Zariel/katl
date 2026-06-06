@@ -74,7 +74,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	}
 	executor := runner.Executor
 	if executor == nil {
-		executor = ExecVMExecutor{}
+		executor = defaultVMExecutor(result)
 	}
 	done := make(chan error, 1)
 	go func() {

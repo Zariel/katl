@@ -42,7 +42,8 @@ func TestVMPlan(t *testing.T) {
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
 		"-drive", "if=virtio,index=0,format=raw,file=fat:rw:" + filepath.Join(result.QEMUDir, "efi"),
 		"-drive", "if=virtio,index=1,format=qcow2,file=" + config.Boot.Image + ",snapshot=on",
-		"-drive", "if=virtio,index=2,format=qcow2,file=" + filepath.Join(result.DiskDir, "00-root.qcow2") + ",serial=katl-root",
+		"-drive", "if=none,id=katldisk2,format=qcow2,file=" + filepath.Join(result.DiskDir, "00-root.qcow2"),
+		"-device", "virtio-blk-pci,drive=katldisk2,serial=katl-root",
 		"-device", "virtio-rng-pci",
 		"-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:18080-:8080",
 		"-device", "virtio-net-pci,netdev=net0",
@@ -166,6 +167,21 @@ func TestVMPrepare(t *testing.T) {
 	}
 	if !strings.Contains(string(command), "q35,accel=tcg") {
 		t.Fatalf("command = %q", command)
+	}
+}
+
+func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "qemu-tmp")
+	var serial strings.Builder
+	err := (ExecVMExecutor{TempDir: tmp}).Run(context.Background(), "sh", []string{"-c", "printf %s \"$TMPDIR\""}, &serial)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := serial.String(); got != tmp {
+		t.Fatalf("TMPDIR = %q, want %q", got, tmp)
+	}
+	if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
+		t.Fatalf("TMPDIR was not created: %v", err)
 	}
 }
 

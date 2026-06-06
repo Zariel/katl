@@ -113,12 +113,20 @@ type AgentHealthClient interface {
 	Close() error
 }
 
-type ExecVMExecutor struct{}
+type ExecVMExecutor struct {
+	TempDir string
+}
 
-func (ExecVMExecutor) Run(ctx context.Context, name string, args []string, serial io.Writer) error {
+func (e ExecVMExecutor) Run(ctx context.Context, name string, args []string, serial io.Writer) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = serial
 	cmd.Stderr = serial
+	if e.TempDir != "" {
+		if err := os.MkdirAll(e.TempDir, 0o755); err != nil {
+			return err
+		}
+		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
+	}
 	return cmd.Run()
 }
 
@@ -133,7 +141,7 @@ func PlanVM(result Result, config VMConfig) (VMPlan, error) {
 }
 
 func RunVM(ctx context.Context, result Result, config VMConfig) Result {
-	return VMRunner{Executor: ExecVMExecutor{}, probe: systemProbe()}.Run(ctx, result, config)
+	return VMRunner{probe: systemProbe()}.Run(ctx, result, config)
 }
 
 func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Result {
@@ -160,7 +168,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	defer file.Close()
 	executor := r.Executor
 	if executor == nil {
-		executor = ExecVMExecutor{}
+		executor = defaultVMExecutor(result)
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -177,6 +185,10 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		return finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC())
 	}
 	return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
+}
+
+func defaultVMExecutor(result Result) VMExecutor {
+	return ExecVMExecutor{TempDir: filepath.Join(result.QEMUDir, "tmp")}
 }
 
 func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
@@ -505,7 +517,12 @@ func vmDrives(result Result, boot VMBoot) ([]string, string, error) {
 		add(imageSpec(boot))
 	}
 	for _, disk := range result.Disks {
-		add(fmt.Sprintf("format=%s,file=%s,serial=katl-%s", disk.Format, disk.HostPath, clean(disk.Name)))
+		id := fmt.Sprintf("katldisk%d", index)
+		args = append(args,
+			"-drive", fmt.Sprintf("if=none,id=%s,format=%s,file=%s", id, disk.Format, disk.HostPath),
+			"-device", fmt.Sprintf("virtio-blk-pci,drive=%s,serial=katl-%s", id, clean(disk.Name)),
+		)
+		index++
 	}
 	return args, efiTree, nil
 }
