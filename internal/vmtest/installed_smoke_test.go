@@ -145,6 +145,7 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 	return firstInstallFixtureContractRun{
 		Runner:          worldRun.Runner,
 		WorldScenario:   worldRun.Scenario,
+		WorldNode:       worldRun.Node,
 		InstallerBoot:   worldRun.Config.Installer,
 		RuntimeArtifact: worldRun.Config.Installer.RuntimeArtifact,
 		RuntimeESP:      worldRun.Config.Runtime.ESPArtifacts,

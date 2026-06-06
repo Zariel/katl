@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 type FirstInstallRuntimeFixtureContract struct {
 	Runner          Runner
 	WorldScenario   *WorldScenario
+	WorldNode       Node
 	InstallerBoot   InstallerBootConfig
 	RuntimeArtifact string
 	RuntimeESP      string
@@ -88,6 +90,7 @@ func FirstInstallRuntimeFixtureContractForWorld(world World, repo string, spec N
 	return FirstInstallRuntimeFixtureContract{
 		Runner:          run.Runner,
 		WorldScenario:   run.Scenario,
+		WorldNode:       run.Node,
 		InstallerBoot:   run.Config.Installer,
 		RuntimeArtifact: run.Config.Installer.RuntimeArtifact,
 		RuntimeESP:      run.Config.Runtime.ESPArtifacts,
@@ -176,6 +179,47 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 			return ProducedInstalledRuntimeFixture{}, fmt.Errorf("installed ESP artifacts %s are unavailable: %w", fixtureESP, err)
 		}
 	}
+	if contract.WorldScenario != nil {
+		return publishFirstInstallRuntimeWorldFixture(contract, installedDisk, fixtureESP)
+	}
+	return packageFirstInstallRuntimeFixture(ctx, contract, firstResult, installedDisk, fixtureESP)
+}
+
+func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureContract, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
+	if contract.WorldNode.Name == "" {
+		return ProducedInstalledRuntimeFixture{}, errors.New("first-install runtime fixture contract is missing world node")
+	}
+	factory := contract.WorldScenario.NodeFixtures(contract.WorldNode)
+	fixture, err := factory.InstalledRuntime(InstalledRuntimeFixtureInput{
+		Disk:         installedDisk,
+		DiskFormat:   DiskQCOW2,
+		ESPArtifacts: fixtureESP,
+		NodeMetadata: contract.NodeMetadata,
+		NodeName:     contract.Node.Name,
+		SystemRole:   contract.Node.Role,
+	})
+	if err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	fixture.Record.Kind = FixturePublishedFirstInstall
+	fixture.Record.Provenance = FixtureProvenance{
+		Source:     "first-install",
+		SourcePath: contract.ManifestPath,
+	}
+	if err := factory.replaceRecord(FixtureInstalledRuntime, fixture.Record); err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	if _, err := WritePublishedFirstInstallRuntimeFixture(contract.WorldScenario.World.RunDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), fixture.ManifestPath, DiskQCOW2); err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("publish first-install runtime fixture: %w", err)
+	}
+	return ProducedInstalledRuntimeFixture{
+		ManifestPath: fixture.ManifestPath,
+		Disk:         fixture.Disk,
+		ESPArtifacts: fixture.ESPArtifacts,
+	}, nil
+}
+
+func packageFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstallRuntimeFixtureContract, firstResult Result, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
 	output, err := createInstalledRuntimeFixtureCmd(ctx, contract.Repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, contract.NodeMetadata).CombinedOutput()
 	if err != nil {
@@ -188,11 +232,6 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 	output, err = resolveInstalledRuntimeFixtureCmd(ctx, contract.Repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, contract.NodeMetadata)).CombinedOutput()
 	if err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("check installed runtime fixture failed: %w\n%s", err, output)
-	}
-	if contract.WorldScenario != nil {
-		if _, err := WritePublishedFirstInstallRuntimeFixture(contract.WorldScenario.World.RunDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), fixtureManifest, DiskQCOW2); err != nil {
-			return ProducedInstalledRuntimeFixture{}, fmt.Errorf("publish first-install runtime fixture: %w", err)
-		}
 	}
 	return ProducedInstalledRuntimeFixture{
 		ManifestPath: fixtureManifest,

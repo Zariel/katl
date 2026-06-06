@@ -171,6 +171,47 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *test
 	}
 }
 
+func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
+	world := testWorld(t)
+	scenario, err := world.PlanScenario("first-install-installed-runtime-fixture-cp-1-control-plane")
+	if err != nil {
+		t.Fatalf("PlanScenario() error = %v", err)
+	}
+	node, err := scenario.AddNode(NodeSpec{Name: "cp-1", Role: ControlPlane})
+	if err != nil {
+		t.Fatalf("AddNode() error = %v", err)
+	}
+	sourceDir := t.TempDir()
+	disk := writeFixtureFile(t, filepath.Join(sourceDir, "installed-runtime.qcow2"), "disk")
+	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
+	metadata := writeFixtureNodeMetadata(t, filepath.Join(sourceDir, "node.json"), Node{Name: "cp-1", Role: ControlPlane})
+
+	fixture, err := publishFirstInstallRuntimeWorldFixture(FirstInstallRuntimeFixtureContract{
+		WorldScenario: scenario,
+		WorldNode:     node,
+		ManifestPath:  filepath.Join(sourceDir, "install-manifest.json"),
+		NodeMetadata:  metadata,
+		Node:          NodeSpec{Name: "cp-1", Role: ControlPlane},
+	}, disk, esp)
+	if err != nil {
+		t.Fatalf("publishFirstInstallRuntimeWorldFixture() error = %v", err)
+	}
+	if !strings.HasPrefix(fixture.ManifestPath, node.ManifestDir) || !strings.HasPrefix(fixture.Disk, node.DiskDir) || !strings.HasPrefix(fixture.ESPArtifacts, node.ArtifactDir) {
+		t.Fatalf("fixture was not staged under node dirs: %#v node=%#v", fixture, node)
+	}
+	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	if err != nil {
+		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
+	}
+	if published.FixtureManifest != fixture.ManifestPath {
+		t.Fatalf("published fixture = %q, want %q", published.FixtureManifest, fixture.ManifestPath)
+	}
+	manifest := readScenarioManifest(t, scenario.ManifestPath)
+	if !hasFixtureKind(manifest.Fixtures, FixturePublishedFirstInstall) {
+		t.Fatalf("scenario fixtures missing published first-install runtime: %#v", manifest.Fixtures)
+	}
+}
+
 func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := t.TempDir()

@@ -11,6 +11,7 @@ import (
 
 type FirstInstallWorldRun struct {
 	Scenario *WorldScenario
+	Node     Node
 	Runner   Runner
 	Config   FirstInstallConfig
 	Repo     string
@@ -82,6 +83,7 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
+	run.Node = node
 	factory := scenario.NodeFixtures(node)
 	input, err = ResolveFirstInstallWorldInput(scenario, repo, spec, input)
 	if err != nil {
