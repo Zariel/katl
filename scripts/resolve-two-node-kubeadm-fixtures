@@ -708,6 +708,14 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'recheck_dir=%q\n' "$state_dir/recheck"
     # shellcheck disable=SC2016
     printf 'recheck_args=(--control-plane-disk "$KATL_CONTROL_PLANE_INSTALLED_DISK" --worker-disk "$KATL_WORKER_INSTALLED_DISK" --control-plane-esp "$KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS" --worker-esp "$KATL_WORKER_INSTALLED_ESP_ARTIFACTS" --control-plane-metadata "$KATL_CONTROL_PLANE_NODE_METADATA" --worker-metadata "$KATL_WORKER_NODE_METADATA" --control-plane-fixture "$KATL_CONTROL_PLANE_FIXTURE_MANIFEST" --worker-fixture "$KATL_WORKER_FIXTURE_MANIFEST" --control-plane-address "$KATL_CONTROL_PLANE_ADDRESS" --worker-address "$KATL_WORKER_ADDRESS" --control-plane-format "${KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT:-raw}" --worker-format "${KATL_WORKER_INSTALLED_DISK_FORMAT:-raw}" --kubernetes-version "${KATL_KUBERNETES_VERSION:-v1.36.1}" --bridge "$KATL_VMTEST_BRIDGE" --state-dir "$recheck_dir" --check-only)\n'
+    if [[ -n "$cp_katlos_fixture_manifest" ]]; then
+        # shellcheck disable=SC2016
+        printf 'recheck_args+=(--control-plane-katlos-fixture "$KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST")\n'
+    fi
+    if [[ -n "$worker_katlos_fixture_manifest" ]]; then
+        # shellcheck disable=SC2016
+        printf 'recheck_args+=(--worker-katlos-fixture "$KATL_WORKER_KATLOS_FIXTURE_MANIFEST")\n'
+    fi
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_QEMU_BRIDGE_HELPER:-}" ]]; then\n'
     # shellcheck disable=SC2016
