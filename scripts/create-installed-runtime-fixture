@@ -38,6 +38,7 @@ Options:
 After this command succeeds:
   source <state-dir>/vmtest.env
   <state-dir>/run-installed-runtime-vmtest-agent.sh
+  <state-dir>/run-installed-runtime-kubeadm-ready.sh
 USAGE
 }
 

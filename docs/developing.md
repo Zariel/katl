@@ -139,9 +139,10 @@ The command copies the disk, ESP tree, and optional node metadata under
 `InstalledRuntimeVMTestFixture` manifest with disk and ESP checksums, preflights
 the ESP loader entries through `scripts/check-installed-disk-smoke
 --preflight-only`, and writes generated files under the same directory. Source
-the generated `vmtest.env` or run the generated wrapper to execute
-`TestInstalledRuntimeVMTestAgentSmoke`. Use `--artifact-mode reference` when the
-fixture should bind existing paths instead of copying a large local disk.
+the generated `vmtest.env` or run the generated wrappers to execute
+`TestInstalledRuntimeVMTestAgentSmoke` and
+`TestInstalledRuntimeKubeadmReadySmoke`. Use `--artifact-mode reference` when
+the fixture should bind existing paths instead of copying a large local disk.
 
 If a checksum-bound fixture manifest already exists, validate and resolve it
 directly with:
@@ -156,6 +157,11 @@ scripts/resolve-installed-runtime-fixture \
 
 Neither command manufactures placeholder disks; the disk and ESP tree should
 come from the real install-to-runtime flow.
+
+The generated kubeadm-ready wrapper boots the installed runtime with the vmtest
+agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
+`/etc/kubernetes` projection, kubeadm tooling, and container runtime readiness.
+It does not run `kubeadm init` or the API-server smoke.
 
 To run the opt-in first-install target-disk fixture contract smoke, provide the
 installer UKI, runtime artifact, runtime ESP artifacts, and install manifest:
