@@ -22,6 +22,11 @@ import (
 )
 
 func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
+	if run, ok := threeControlPlaneWorldSmokeRun(t); ok {
+		runThreeControlPlaneStackedEtcdSmoke(t, run)
+		return
+	}
+
 	options := vmtest.DefaultOptions()
 	options.Missing = vmtest.MissingSkips
 	if !options.Enabled {
@@ -31,11 +36,114 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	scenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
 	result := planStartedVMResult(t, runner, scenario)
 	inputs := requireThreeControlPlaneSmokeInputs(t, runner, scenario, result)
+	runThreeControlPlaneStackedEtcdSmoke(t, threeControlPlaneSmokeRun{
+		Options:  options,
+		Runner:   runner,
+		Scenario: scenario,
+		Result:   result,
+		Inputs:   inputs,
+	})
+}
+
+type threeControlPlaneSmokeRun struct {
+	WorldScenario *vmtest.WorldScenario
+	Options       vmtest.Options
+	Runner        vmtest.Runner
+	Scenario      vmtest.Scenario
+	Result        vmtest.Result
+	Inputs        threeControlPlaneSmokeInputs
+	Bridge        string
+}
+
+func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bool) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
+		return threeControlPlaneSmokeRun{}, false
+	}
+	world := vmtest.RequireWorld(t)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, katlRepoRoot(t), firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), vmtest.DefaultOptions().KVM)
+	if err != nil {
+		failTwoNodeWorldSetup(t, run.WorldScenario, err)
+	}
+	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
+	return run, true
+}
+
+func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (threeControlPlaneSmokeRun, error) {
+	scenario, err := world.PlanScenario("installed-runtime-three-control-plane-stacked-etcd")
+	if err != nil {
+		return threeControlPlaneSmokeRun{}, err
+	}
+	run := threeControlPlaneSmokeRun{WorldScenario: scenario}
+	nodes := make(map[string]vmtest.InstalledRuntimeWorldNode, 3)
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		node, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: name, Role: vmtest.ControlPlane})
+		if err != nil {
+			_ = scenario.WriteSetupFailure(err)
+			return run, err
+		}
+		nodes[name] = node
+	}
+	options := vmtest.Options{
+		Enabled:   true,
+		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
+		Keep:      vmtest.KeepFailed,
+		KVM:       kvm,
+		Missing:   vmtest.MissingSkips,
+	}
+	runner := vmtest.NewRunner(options)
+	vmScenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
+	result, err := runner.Plan(vmScenario)
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	result.Started = time.Now().UTC()
+	return threeControlPlaneSmokeRun{
+		WorldScenario: scenario,
+		Options:       options,
+		Runner:        runner,
+		Scenario:      vmScenario,
+		Result:        result,
+		Bridge:        world.Network.Bridge,
+		Inputs: threeControlPlaneSmokeInputs{
+			CP1Disk:           nodes["cp-1"].Config.Disk,
+			CP1DiskFormat:     string(nodes["cp-1"].Config.DiskFormat),
+			CP1ESP:            nodes["cp-1"].Config.ESPArtifacts,
+			CP1Fixture:        nodes["cp-1"].Config.FixtureManifest,
+			CP1Metadata:       nodes["cp-1"].Config.NodeMetadata,
+			CP1Address:        nodes["cp-1"].Node.Address,
+			CP2Disk:           nodes["cp-2"].Config.Disk,
+			CP2DiskFormat:     string(nodes["cp-2"].Config.DiskFormat),
+			CP2ESP:            nodes["cp-2"].Config.ESPArtifacts,
+			CP2Fixture:        nodes["cp-2"].Config.FixtureManifest,
+			CP2Metadata:       nodes["cp-2"].Config.NodeMetadata,
+			CP2Address:        nodes["cp-2"].Node.Address,
+			CP3Disk:           nodes["cp-3"].Config.Disk,
+			CP3DiskFormat:     string(nodes["cp-3"].Config.DiskFormat),
+			CP3ESP:            nodes["cp-3"].Config.ESPArtifacts,
+			CP3Fixture:        nodes["cp-3"].Config.FixtureManifest,
+			CP3Metadata:       nodes["cp-3"].Config.NodeMetadata,
+			CP3Address:        nodes["cp-3"].Node.Address,
+			KubernetesVersion: firstString(kubernetesVersion, "v1.36.1"),
+		},
+	}, nil
+}
+
+func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneSmokeRun) {
+	t.Helper()
+	options := smoke.Options
+	runner := smoke.Runner
+	scenario := smoke.Scenario
+	result := smoke.Result
+	inputs := smoke.Inputs
 	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
 		QEMU:         true,
 		OVMF:         true,
 		KVM:          options.KVM,
 		SharedBridge: true,
+		Bridge:       smoke.Bridge,
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	etcdTranscriptDir := filepath.Join(result.RunDir, "etcd-transcripts")
@@ -61,14 +169,14 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), options.KVM, 43201), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), 43201), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), options.KVM, 43202), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), 43202), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -76,7 +184,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), options.KVM, 43203), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), 43203), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -226,6 +334,12 @@ func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata 
 			VM:              twoNodeVMConfig(kvm, cid),
 		},
 	}
+}
+
+func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, cid uint32) vmtest.InstalledRuntimeNodeConfig {
+	config := threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata, format, run.Options.KVM, cid)
+	config.Runtime.VM.Network.Bridge = run.Bridge
+	return config
 }
 
 func writeThreeControlPlaneInventory(path string, kubernetesVersion string, nodes []vmtest.RunningInstalledRuntimeNode) error {
@@ -819,6 +933,31 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
 		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
+	}
+}
+
+func TestPlanThreeControlPlaneWorldSmokeRunWritesSetupFailureForMissingPublishedFixture(t *testing.T) {
+	world := twoNodeTestWorld(t)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, t.TempDir(), "v1.36.1", vmtest.KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
+		t.Fatalf("planThreeControlPlaneWorldSmokeRun() error = %v, want missing published fixture", err)
+	}
+	if run.WorldScenario == nil {
+		t.Fatal("planThreeControlPlaneWorldSmokeRun() did not return world scenario on setup failure")
+	}
+	data, err := os.ReadFile(run.WorldScenario.ResultPath)
+	if err != nil {
+		t.Fatalf("read world setup result: %v", err)
+	}
+	var result struct {
+		Status         vmtest.WorldStatus `json:"status"`
+		FailureSummary string             `json:"failureSummary"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode world setup result: %v", err)
+	}
+	if result.Status != vmtest.WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
+		t.Fatalf("world setup result = %#v", result)
 	}
 }
 
