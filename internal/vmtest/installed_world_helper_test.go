@@ -196,6 +196,48 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *test
 	}
 }
 
+func TestEnsurePublishedFirstInstallRuntimeFixturesIsolatesSeparateWorlds(t *testing.T) {
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	worldA := testWorld(t)
+	worldB := testWorld(t)
+
+	ensureWithPublishedFixture := func(world World, name string) PublishedFirstInstallRuntimeFixture {
+		t.Helper()
+		err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+			Input: input,
+			KVM:   KVMOff,
+			Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+				manifest := writePublishedInstalledRuntimeFixture(t, contract.WorldScenario.World.RunDir, name, contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+				return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures(%s) error = %v", name, err)
+		}
+		published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, spec)
+		if err != nil {
+			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%s) error = %v", name, err)
+		}
+		return published
+	}
+
+	publishedA := ensureWithPublishedFixture(worldA, "world-a")
+	publishedB := ensureWithPublishedFixture(worldB, "world-b")
+	if publishedA.FixtureManifest == publishedB.FixtureManifest {
+		t.Fatalf("separate worlds reused fixture manifest %q", publishedA.FixtureManifest)
+	}
+	if !pathUnder(publishedA.FixtureManifest, worldA.RunDir) || !pathUnder(publishedB.FixtureManifest, worldB.RunDir) {
+		t.Fatalf("published fixtures escaped their worlds: a=%q b=%q", publishedA.FixtureManifest, publishedB.FixtureManifest)
+	}
+}
+
+func pathUnder(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".." && !filepath.IsAbs(rel)
+}
+
 func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	world := testWorld(t)
 	scenario, err := world.PlanScenario("first-install-installed-runtime-fixture-cp-1-control-plane")
