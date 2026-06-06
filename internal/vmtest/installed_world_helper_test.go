@@ -88,6 +88,38 @@ func TestPublishedFirstInstallRuntimeFixtureUsesBuildRootPriority(t *testing.T) 
 	}
 }
 
+func TestEnsureInstalledRuntimeWorldFixtureProducesMissingFixture(t *testing.T) {
+	world := testWorld(t)
+	produced := false
+	err := ensureInstalledRuntimeWorldFixture(world, NodeSpec{Name: "cp-1", Role: ControlPlane}, func() error {
+		produced = true
+		writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ensureInstalledRuntimeWorldFixture() error = %v", err)
+	}
+	if !produced {
+		t.Fatal("ensureInstalledRuntimeWorldFixture() did not produce missing fixture")
+	}
+}
+
+func TestEnsureInstalledRuntimeWorldFixtureUsesExistingWorldFixture(t *testing.T) {
+	world := testWorld(t)
+	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	produced := false
+	err := ensureInstalledRuntimeWorldFixture(world, NodeSpec{Name: "cp-1", Role: ControlPlane}, func() error {
+		produced = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ensureInstalledRuntimeWorldFixture() error = %v", err)
+	}
+	if produced {
+		t.Fatal("ensureInstalledRuntimeWorldFixture() produced despite existing world fixture")
+	}
+}
+
 func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := t.TempDir()

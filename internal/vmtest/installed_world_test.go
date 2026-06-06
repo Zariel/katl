@@ -20,11 +20,36 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 		return installedRuntimeWorldRun{}, false
 	}
 	world := RequireWorld(t)
-	run, err := planInstalledRuntimeWorldRun(world, name, repoRoot(t), spec, DefaultOptions().KVM)
+	repo := repoRoot(t)
+	if err := ensureInstalledRuntimeWorldFixture(world, spec, func() error {
+		produceFirstInstallRuntimeFixture(t, firstInstallFixtureContractRunForWorld(t, world, repo, spec))
+		return nil
+	}); err != nil {
+		t.Fatalf("prepare installed runtime world fixture: %v", err)
+	}
+	run, err := planInstalledRuntimeWorldRun(world, name, repo, spec, DefaultOptions().KVM)
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
 	return run, true
+}
+
+func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func() error) error {
+	buildRoot := filepath.Join(world.RunDir, "build")
+	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
+		return nil
+	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
+		return err
+	}
+	if err := produce(); err != nil {
+		return err
+	}
+	_, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec)
+	return err
+}
+
+func isMissingPublishedFirstInstallRuntimeFixture(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "published installed runtime fixture is missing")
 }
 
 func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec, kvm KVMPolicy) (installedRuntimeWorldRun, error) {

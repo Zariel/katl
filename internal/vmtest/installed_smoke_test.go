@@ -11,143 +11,43 @@ import (
 	"time"
 )
 
-func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
-	options := DefaultOptions()
-	if !options.Enabled {
-		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install fixture smoke")
-	}
-	options.Missing = MissingSkips
-	options.Keep = KeepAlways
-	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	var runner Runner
-	var worldScenario *WorldScenario
-	var installerBoot InstallerBootConfig
-	var runtimeArtifact, runtimeESP, nodeMetadata, manifestPath, repo string
-	targetDiskFixture := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
-	if worldRun, ok := firstInstallWorldRunFor(t, "first-install-installed-runtime-fixture", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP); ok {
-		runner = worldRun.Runner
-		worldScenario = worldRun.Scenario
-		installerBoot = worldRun.Config.Installer
-		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
-		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
-		nodeMetadata = worldRun.Config.Runtime.NodeMetadata
-		manifestPath = worldRun.Config.ManifestPath
-		targetDiskFixture = worldRun.Config.TargetDisk
-		repo = worldRun.Repo
-	} else {
-		installerBoot = firstInstallInstallerBoot(t)
-		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
-		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-		if runtimeESP == "" && !useInstalledESP {
-			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
-		}
-		nodeMetadata = first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
-		if nodeMetadata != "" {
-			if _, err := os.Stat(nodeMetadata); err != nil {
-				t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
-			}
-		}
-		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
-		repo = repoRoot(t)
-		runner = NewRunner(options)
-	}
-	requiredTools := []string{"jq", "sha256sum"}
-	if useInstalledESP {
-		requiredTools = append(requiredTools, "sfdisk", "mcopy")
-	}
-	for _, tool := range requiredTools {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("%s is required to package installed runtime fixtures: %v", tool, err)
-		}
-	}
+type firstInstallFixtureContractRun struct {
+	Runner          Runner
+	WorldScenario   *WorldScenario
+	InstallerBoot   InstallerBootConfig
+	RuntimeArtifact string
+	RuntimeESP      string
+	NodeMetadata    string
+	ManifestPath    string
+	Repo            string
+	TargetDisk      DiskFixture
+	UseInstalledESP bool
+}
 
-	runner.RequireHost(t, HostRequirements{
-		QEMU:    true,
-		QEMUImg: true,
-		OVMF:    true,
-		KVM:     runner.options().KVM,
-		MTools:  true,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+type producedInstalledRuntimeFixture struct {
+	ManifestPath string
+	Disk         string
+	ESPArtifacts string
+}
+
+func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
+	contract := firstInstallFixtureContractRunFor(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	fixture := produceFirstInstallRuntimeFixture(t, contract)
+
+	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixture.ManifestPath)
+	runner := contract.Runner
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	vm := VMConfig{
-		KVM:     runner.options().KVM,
-		RAMMiB:  4096,
-		CPUs:    2,
-		Timeout: 12 * time.Minute,
-		VSock: VSockConfig{
-			Enabled: true,
-		},
-		Agent: AgentControlConfig{
-			RequireHealth: true,
-			Timeout:       30 * time.Second,
-		},
-	}
-	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-installed-runtime-fixture"}, FirstInstallConfig{
-		Installer: InstallerBootConfig{
-			InstallerUKI:    installerBoot.InstallerUKI,
-			InstallerKernel: installerBoot.InstallerKernel,
-			InstallerInitrd: installerBoot.InstallerInitrd,
-			CommandLine:     installerBoot.CommandLine,
-			RuntimeArtifact: runtimeArtifact,
-			VM:              vm,
-		},
-		Runtime: InstalledRuntimeConfig{
-			ESPArtifacts:       runtimeESP,
-			RequireVMTestAgent: true,
-			VM:                 vm,
-		},
-		UseInstalledESP: useInstalledESP,
-		ManifestPath:    manifestPath,
-		PreseedManifest: true,
-		TargetDisk:      targetDiskFixture,
-	})
-	if err != nil {
-		t.Fatalf("RunFirstInstall() error = %v", err)
-	}
-	if firstResult.Status != StatusPassed {
-		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
-	}
-	installedDisk := targetDiskPath(t, firstResult)
-	fixtureESP := runtimeESP
-	if useInstalledESP {
-		fixtureESP = firstResult.Artifacts.InstalledESP
-		if _, err := os.Stat(fixtureESP); err != nil {
-			t.Fatalf("installed ESP artifacts %s are unavailable: %v", fixtureESP, err)
-		}
-	}
-	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	createFixture := createInstalledRuntimeFixtureCommand(ctx, repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
-	output, err := createFixture.CombinedOutput()
-	if err != nil {
-		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
-	}
-
-	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
-	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
-	packagedESP := filepath.Join(fixtureDir, "esp")
-	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, nodeMetadata))
-	output, err = checkFixture.CombinedOutput()
-	if err != nil {
-		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
-	}
-	if worldScenario != nil {
-		if _, err := WritePublishedFirstInstallRuntimeFixture(worldScenario.World.RunDir, "first-install-installed-runtime-fixture", fixtureManifest, DiskQCOW2); err != nil {
-			t.Fatalf("publish first-install runtime fixture: %v", err)
-		}
-	}
-
-	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixtureManifest)
 	runtimeResult, err := runner.Plan(Scenario{Name: "first-install-packaged-runtime-agent"})
 	if err != nil {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	runtimeResult.start(runner.time())
 	runtimeResult = RunInstalledRuntime(ctx, runtimeResult, InstalledRuntimeConfig{
-		Disk:               packagedDisk,
+		Disk:               fixture.Disk,
 		DiskFormat:         DiskQCOW2,
-		ESPArtifacts:       packagedESP,
+		ESPArtifacts:       fixture.ESPArtifacts,
 		RequireVMTestAgent: true,
 		VM: VMConfig{
 			KVM:     runner.options().KVM,
@@ -184,9 +84,9 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	readyResult.start(runner.time())
 	readyResult = RunInstalledKubeadmReadySmoke(ctx, readyResult, KubeadmReadySmokeConfig{
 		Runtime: InstalledRuntimeConfig{
-			Disk:         packagedDisk,
+			Disk:         fixture.Disk,
 			DiskFormat:   DiskQCOW2,
-			ESPArtifacts: packagedESP,
+			ESPArtifacts: fixture.ESPArtifacts,
 			VM: VMConfig{
 				KVM:     runner.options().KVM,
 				RAMMiB:  4096,
@@ -203,6 +103,167 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 	if readyResult.Status != StatusPassed {
 		t.Fatalf("packaged runtime ready status = %q, failure = %q, run dir = %s", readyResult.Status, readyResult.FailureSummary, readyResult.RunDir)
+	}
+}
+
+func firstInstallFixtureContractRunFor(t *testing.T, spec NodeSpec) firstInstallFixtureContractRun {
+	t.Helper()
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install fixture smoke")
+	}
+	options.Missing = MissingSkips
+	options.Keep = KeepAlways
+	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	targetDiskFixture := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
+	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) != "" {
+		world := RequireWorld(t)
+		return firstInstallFixtureContractRunForWorld(t, world, repoRoot(t), spec)
+	}
+	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+	if runtimeESP == "" && !useInstalledESP {
+		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
+	}
+	nodeMetadata := first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
+	if nodeMetadata != "" {
+		if _, err := os.Stat(nodeMetadata); err != nil {
+			t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
+		}
+	}
+	return firstInstallFixtureContractRun{
+		Runner:          NewRunner(options),
+		InstallerBoot:   firstInstallInstallerBoot(t),
+		RuntimeArtifact: RequireEnv(t, "KATL_RUNTIME_ARTIFACT"),
+		RuntimeESP:      runtimeESP,
+		NodeMetadata:    nodeMetadata,
+		ManifestPath:    RequireEnv(t, "KATL_INSTALL_MANIFEST"),
+		Repo:            repoRoot(t),
+		TargetDisk:      targetDiskFixture,
+		UseInstalledESP: useInstalledESP,
+	}
+}
+
+func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo string, spec NodeSpec) firstInstallFixtureContractRun {
+	t.Helper()
+	worldRun, err := planFirstInstallWorldRun(world, "first-install-installed-runtime-fixture", repo, spec, firstInstallWorldInput{
+		Installer:       firstInstallInstallerBootFromEnv(),
+		RuntimeArtifact: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
+		RuntimeESP:      strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))),
+		NodeMetadata:    strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))),
+		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
+		UseInstalledESP: envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"),
+		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"),
+	}, DefaultOptions().KVM)
+	if err != nil {
+		failWorldSetup(t, worldRun.Scenario, err)
+	}
+	return firstInstallFixtureContractRun{
+		Runner:          worldRun.Runner,
+		WorldScenario:   worldRun.Scenario,
+		InstallerBoot:   worldRun.Config.Installer,
+		RuntimeArtifact: worldRun.Config.Installer.RuntimeArtifact,
+		RuntimeESP:      worldRun.Config.Runtime.ESPArtifacts,
+		NodeMetadata:    worldRun.Config.Runtime.NodeMetadata,
+		ManifestPath:    worldRun.Config.ManifestPath,
+		Repo:            worldRun.Repo,
+		TargetDisk:      worldRun.Config.TargetDisk,
+		UseInstalledESP: worldRun.Config.UseInstalledESP,
+	}
+}
+
+func produceFirstInstallRuntimeFixture(t *testing.T, contract firstInstallFixtureContractRun) producedInstalledRuntimeFixture {
+	t.Helper()
+	requiredTools := []string{"jq", "sha256sum"}
+	if contract.UseInstalledESP {
+		requiredTools = append(requiredTools, "sfdisk", "mcopy")
+	}
+	for _, tool := range requiredTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is required to package installed runtime fixtures: %v", tool, err)
+		}
+	}
+
+	runner := contract.Runner
+	runner.RequireHost(t, HostRequirements{
+		QEMU:    true,
+		QEMUImg: true,
+		OVMF:    true,
+		KVM:     runner.options().KVM,
+		MTools:  true,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	vm := VMConfig{
+		KVM:     runner.options().KVM,
+		RAMMiB:  4096,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+		VSock: VSockConfig{
+			Enabled: true,
+		},
+		Agent: AgentControlConfig{
+			RequireHealth: true,
+			Timeout:       30 * time.Second,
+		},
+	}
+	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-installed-runtime-fixture"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    contract.InstallerBoot.InstallerUKI,
+			InstallerKernel: contract.InstallerBoot.InstallerKernel,
+			InstallerInitrd: contract.InstallerBoot.InstallerInitrd,
+			CommandLine:     contract.InstallerBoot.CommandLine,
+			RuntimeArtifact: contract.RuntimeArtifact,
+			VM:              vm,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts:       contract.RuntimeESP,
+			RequireVMTestAgent: true,
+			VM:                 vm,
+		},
+		UseInstalledESP: contract.UseInstalledESP,
+		ManifestPath:    contract.ManifestPath,
+		PreseedManifest: true,
+		TargetDisk:      contract.TargetDisk,
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if firstResult.Status != StatusPassed {
+		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
+	}
+	installedDisk := targetDiskPath(t, firstResult)
+	fixtureESP := contract.RuntimeESP
+	if contract.UseInstalledESP {
+		fixtureESP = firstResult.Artifacts.InstalledESP
+		if _, err := os.Stat(fixtureESP); err != nil {
+			t.Fatalf("installed ESP artifacts %s are unavailable: %v", fixtureESP, err)
+		}
+	}
+	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
+	createFixture := createInstalledRuntimeFixtureCommand(ctx, contract.Repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, contract.NodeMetadata)
+	output, err := createFixture.CombinedOutput()
+	if err != nil {
+		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
+	}
+
+	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
+	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
+	packagedESP := filepath.Join(fixtureDir, "esp")
+	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, contract.Repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, contract.NodeMetadata))
+	output, err = checkFixture.CombinedOutput()
+	if err != nil {
+		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
+	}
+	if contract.WorldScenario != nil {
+		if _, err := WritePublishedFirstInstallRuntimeFixture(contract.WorldScenario.World.RunDir, "first-install-installed-runtime-fixture", fixtureManifest, DiskQCOW2); err != nil {
+			t.Fatalf("publish first-install runtime fixture: %v", err)
+		}
+	}
+	return producedInstalledRuntimeFixture{
+		ManifestPath: fixtureManifest,
+		Disk:         packagedDisk,
+		ESPArtifacts: packagedESP,
 	}
 }
 
