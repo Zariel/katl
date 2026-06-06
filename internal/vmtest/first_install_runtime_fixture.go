@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -110,7 +111,7 @@ func FirstInstallRuntimeFixtureScenarioName(spec NodeSpec) string {
 }
 
 func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
-	requiredTools := []string{"jq", "sha256sum"}
+	var requiredTools []string
 	if contract.UseInstalledESP {
 		requiredTools = append(requiredTools, "sfdisk", "mcopy")
 	}
@@ -182,7 +183,7 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 	if contract.WorldScenario != nil {
 		return publishFirstInstallRuntimeWorldFixture(contract, installedDisk, fixtureESP)
 	}
-	return packageFirstInstallRuntimeFixture(ctx, contract, firstResult, installedDisk, fixtureESP)
+	return packageFirstInstallRuntimeFixture(contract, firstResult, installedDisk, fixtureESP)
 }
 
 func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureContract, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
@@ -219,24 +220,145 @@ func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureC
 	}, nil
 }
 
-func packageFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstallRuntimeFixtureContract, firstResult Result, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
+func packageFirstInstallRuntimeFixture(contract FirstInstallRuntimeFixtureContract, firstResult Result, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	output, err := createInstalledRuntimeFixtureCmd(ctx, contract.Repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, contract.NodeMetadata).CombinedOutput()
-	if err != nil {
-		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("create installed runtime fixture failed: %w\n%s", err, output)
-	}
-
 	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
 	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
 	packagedESP := filepath.Join(fixtureDir, "esp")
-	output, err = resolveInstalledRuntimeFixtureCmd(ctx, contract.Repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, contract.NodeMetadata)).CombinedOutput()
+	packagedMetadata := ""
+	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	if err := copyFile(installedDisk, packagedDisk, 0o644); err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("copy installed runtime disk: %w", err)
+	}
+	if err := copyDir(fixtureESP, packagedESP); err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("copy installed runtime ESP artifacts: %w", err)
+	}
+	if err := CheckESP(packagedESP); err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	if strings.TrimSpace(contract.NodeMetadata) != "" {
+		packagedMetadata = filepath.Join(fixtureDir, "node.json")
+		if err := copyFile(contract.NodeMetadata, packagedMetadata, 0o644); err != nil {
+			return ProducedInstalledRuntimeFixture{}, fmt.Errorf("copy installed runtime node metadata: %w", err)
+		}
+	}
+	nodeName, systemRole, err := packagedFirstInstallRuntimeFixtureIdentity(contract, packagedMetadata)
 	if err != nil {
-		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("check installed runtime fixture failed: %w\n%s", err, output)
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	diskSHA, err := fileSHA256(packagedDisk)
+	if err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("hash installed runtime disk: %w", err)
+	}
+	espSHA, err := espTreeSHA256(packagedESP)
+	if err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("hash installed runtime ESP artifacts: %w", err)
+	}
+	record := installedRuntimeFixtureRecord{
+		APIVersion: "katl.dev/v1alpha1",
+		Kind:       "InstalledRuntimeVMTestFixture",
+		NodeName:   nodeName,
+		SystemRole: string(systemRole),
+		Disk: installedRuntimeFixtureDisk{
+			Path:   relFrom(filepath.Dir(fixtureManifest), packagedDisk),
+			Format: string(DiskQCOW2),
+			SHA256: diskSHA,
+		},
+		ESPArtifacts: installedRuntimeFixtureESP{
+			Path:       relFrom(filepath.Dir(fixtureManifest), packagedESP),
+			TreeSHA256: espSHA,
+		},
+	}
+	if packagedMetadata != "" {
+		metadataSHA, err := fileSHA256(packagedMetadata)
+		if err != nil {
+			return ProducedInstalledRuntimeFixture{}, fmt.Errorf("hash installed runtime node metadata: %w", err)
+		}
+		record.NodeMetadata = &installedRuntimeFixtureFile{
+			Path:   relFrom(filepath.Dir(fixtureManifest), packagedMetadata),
+			SHA256: metadataSHA,
+		}
+	}
+	if err := writeJSON(fixtureManifest, record); err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
+	if err := validateInstalledRuntimeFixture(fixtureManifest, record, InstalledRuntimeConfig{
+		Disk:         packagedDisk,
+		DiskFormat:   DiskQCOW2,
+		ESPArtifacts: packagedESP,
+	}, packagedMetadata); err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
 	}
 	return ProducedInstalledRuntimeFixture{
 		ManifestPath: fixtureManifest,
 		Disk:         packagedDisk,
 		ESPArtifacts: packagedESP,
+	}, nil
+}
+
+func packagedFirstInstallRuntimeFixtureIdentity(contract FirstInstallRuntimeFixtureContract, nodeMetadata string) (string, NodeRole, error) {
+	nodeName := strings.TrimSpace(contract.Node.Name)
+	systemRole := contract.Node.Role
+	if nodeMetadata != "" {
+		metadata, err := readNodeMetadataIdentity(nodeMetadata)
+		if err != nil {
+			return "", "", err
+		}
+		if metadata.hostname != "" {
+			if nodeName != "" && nodeName != metadata.hostname {
+				return "", "", fmt.Errorf("node metadata hostname %q does not match node %q", metadata.hostname, nodeName)
+			}
+			nodeName = metadata.hostname
+		}
+		if metadata.systemRole != "" {
+			metadataRole := NodeRole(metadata.systemRole)
+			if systemRole != "" && systemRole != metadataRole {
+				return "", "", fmt.Errorf("node metadata systemRole %q does not match node role %q", metadata.systemRole, systemRole)
+			}
+			systemRole = metadataRole
+		}
+	}
+	if nodeName == "" {
+		nodeName = "node-1"
+	}
+	if systemRole == "" {
+		systemRole = ControlPlane
+	}
+	if systemRole != ControlPlane && systemRole != Worker {
+		return "", "", fmt.Errorf("system role must be %q or %q", ControlPlane, Worker)
+	}
+	if nodeMetadata != "" {
+		if err := validateNodeMetadata(nodeMetadata, Node{Name: nodeName, Role: systemRole}); err != nil {
+			return "", "", err
+		}
+	}
+	return nodeName, systemRole, nil
+}
+
+type nodeMetadataIdentity struct {
+	hostname   string
+	systemRole string
+}
+
+func readNodeMetadataIdentity(path string) (nodeMetadataIdentity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nodeMetadataIdentity{}, err
+	}
+	var metadata struct {
+		Identity struct {
+			Hostname string `json:"hostname"`
+		} `json:"identity"`
+		SystemRole string `json:"systemRole"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nodeMetadataIdentity{}, fmt.Errorf("decode node metadata: %w", err)
+	}
+	return nodeMetadataIdentity{
+		hostname:   strings.TrimSpace(metadata.Identity.Hostname),
+		systemRole: strings.TrimSpace(metadata.SystemRole),
 	}, nil
 }
 
@@ -254,39 +376,4 @@ func targetDiskPathFromResult(result Result) (string, error) {
 
 func isMissingPublishedFirstInstallRuntimeFixture(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "published installed runtime fixture is missing")
-}
-
-func createInstalledRuntimeFixtureCmd(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {
-	args := []string{
-		"--disk", disk,
-		"--esp-artifacts", esp,
-		"--format", format,
-		"--state-dir", stateDir,
-	}
-	if nodeMetadata != "" {
-		args = append(args, "--node-metadata", nodeMetadata)
-	}
-	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "create-installed-runtime-fixture"), args...)
-}
-
-func resolveInstalledRuntimeFixtureCmd(ctx context.Context, repoRoot, disk, esp, fixture, format, stateDir, nodeMetadata string) *exec.Cmd {
-	args := []string{
-		"--disk", disk,
-		"--esp-artifacts", esp,
-		"--fixture", fixture,
-		"--format", format,
-		"--state-dir", stateDir,
-		"--check-only",
-	}
-	if nodeMetadata != "" {
-		args = append(args, "--node-metadata", nodeMetadata)
-	}
-	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"), args...)
-}
-
-func packagedNodeMetadata(fixtureDir, nodeMetadata string) string {
-	if nodeMetadata == "" {
-		return ""
-	}
-	return filepath.Join(fixtureDir, "node.json")
 }

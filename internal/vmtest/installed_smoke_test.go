@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -377,71 +376,6 @@ func firstInstallInstallerBoot(t *testing.T) InstallerBootConfig {
 	}
 	boot.InstallerUKI = RequireEnv(t, "KATL_INSTALLER_UKI")
 	return boot
-}
-
-func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {
-	args := []string{
-		"--disk", disk,
-		"--esp-artifacts", esp,
-		"--format", format,
-		"--state-dir", stateDir,
-	}
-	if nodeMetadata != "" {
-		args = append(args, "--node-metadata", nodeMetadata)
-	}
-	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "create-installed-runtime-fixture"), args...)
-}
-
-func resolveInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, fixture, format, stateDir, nodeMetadata string) *exec.Cmd {
-	args := []string{
-		"--disk", disk,
-		"--esp-artifacts", esp,
-		"--fixture", fixture,
-		"--format", format,
-		"--state-dir", stateDir,
-		"--check-only",
-	}
-	if nodeMetadata != "" {
-		args = append(args, "--node-metadata", nodeMetadata)
-	}
-	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"), args...)
-}
-
-func TestFirstInstallFixtureCommandsCarryNodeMetadata(t *testing.T) {
-	create := createInstalledRuntimeFixtureCommand(context.Background(), "/repo", "target.qcow2", "esp", "qcow2", "fixture", "node.json")
-	if !hasArgPair(create.Args, "--node-metadata", "node.json") {
-		t.Fatalf("create args missing node metadata: %#v", create.Args)
-	}
-	resolve := resolveInstalledRuntimeFixtureCommand(context.Background(), "/repo", "fixture/installed-runtime.qcow2", "fixture/esp", "fixture/installed-runtime-fixture.json", "qcow2", "fixture/recheck", packagedNodeMetadata("fixture", "node.json"))
-	if !hasArgPair(resolve.Args, "--node-metadata", filepath.Join("fixture", "node.json")) {
-		t.Fatalf("resolve args missing packaged node metadata: %#v", resolve.Args)
-	}
-	createWithoutMetadata := createInstalledRuntimeFixtureCommand(context.Background(), "/repo", "target.qcow2", "esp", "qcow2", "fixture", "")
-	if hasSmokeArg(createWithoutMetadata.Args, "--node-metadata") {
-		t.Fatalf("create args unexpectedly include node metadata: %#v", createWithoutMetadata.Args)
-	}
-	resolveWithoutMetadata := resolveInstalledRuntimeFixtureCommand(context.Background(), "/repo", "disk", "esp", "fixture.json", "qcow2", "recheck", "")
-	if hasSmokeArg(resolveWithoutMetadata.Args, "--node-metadata") {
-		t.Fatalf("resolve args unexpectedly include node metadata: %#v", resolveWithoutMetadata.Args)
-	}
-}
-
-func hasArgPair(args []string, name, value string) bool {
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == name && args[i+1] == value {
-			return true
-		}
-	}
-	return false
-}
-
-func hasSmokeArg(args []string, name string) bool {
-	for _, arg := range args {
-		if arg == name {
-			return true
-		}
-	}
-	return false
 }
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
