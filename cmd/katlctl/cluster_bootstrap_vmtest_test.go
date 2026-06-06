@@ -90,6 +90,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	}
 	defer stopNode(t, workerNode)
 
+	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
 	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
@@ -103,6 +104,10 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	if err := writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
 		ControlPlaneRunDir:     cpNode.Result.RunDir,
 		WorkerRunDir:           workerNode.Result.RunDir,
+		NodeResults:            nodeResultPaths(nodes),
+		QEMUCommands:           qemuCommandPaths(nodes),
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
 		FixtureInputs:          twoNodeFixtureInputs(cpDisk, workerDisk, cpESP, workerESP, cpFixture, workerFixture, cpMetadata, workerMetadata),
 		PublishedFixtures:      twoNodePublishedFixtureDirs(),
 		Inventory:              inventoryPath,
@@ -115,8 +120,8 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
 		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
 		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
-		SerialLogs:             serialLogPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
-		Diagnostics:            diagnosticSummaryPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
+		SerialLogs:             serialLogPaths(nodes),
+		Diagnostics:            diagnosticSummaryPaths(nodes),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +232,10 @@ nodes:
 type twoNodeArtifactManifest struct {
 	ControlPlaneRunDir     string                      `json:"controlPlaneRunDir"`
 	WorkerRunDir           string                      `json:"workerRunDir"`
+	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
+	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
+	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts       map[string]string           `json:"vsockTranscripts,omitempty"`
 	FixtureInputs          map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
 	PublishedFixtures      map[string]string           `json:"publishedFixtures,omitempty"`
 	Inventory              string                      `json:"inventory"`
@@ -778,13 +787,44 @@ func diagnosticSummaryPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[stri
 	return out
 }
 
+func nodeResultPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.Result
+	})
+}
+
+func qemuCommandPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.QEMUCommand
+	})
+}
+
+func installedRuntimeInputPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.InstalledRuntime
+	})
+}
+
+func vsockTranscriptPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.VSockTranscript
+	})
+}
+
 func serialLogPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.RuntimeSerial
+	})
+}
+
+func nodeArtifactPaths(nodes []vmtest.RunningInstalledRuntimeNode, path func(vmtest.ArtifactPaths) string) map[string]string {
 	out := make(map[string]string, len(nodes))
 	for _, node := range nodes {
-		if node.Name == "" || node.Result.Artifacts.RuntimeSerial == "" {
+		value := path(node.Result.Artifacts)
+		if node.Name == "" || value == "" {
 			continue
 		}
-		out[node.Name] = node.Result.Artifacts.RuntimeSerial
+		out[node.Name] = value
 	}
 	if len(out) == 0 {
 		return nil
@@ -810,6 +850,22 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if err := writeTwoNodeArtifactManifest(path, twoNodeArtifactManifest{
 		ControlPlaneRunDir: "/tmp/cp-run",
 		WorkerRunDir:       "/tmp/worker-run",
+		NodeResults: map[string]string{
+			"cp-1":     "/tmp/cp-run/result.json",
+			"worker-1": "/tmp/worker-run/result.json",
+		},
+		QEMUCommands: map[string]string{
+			"cp-1":     "/tmp/cp-run/qemu/qemu-command.txt",
+			"worker-1": "/tmp/worker-run/qemu/qemu-command.txt",
+		},
+		InstalledRuntimeInputs: map[string]string{
+			"cp-1":     "/tmp/cp-run/manifests/installed-runtime.json",
+			"worker-1": "/tmp/worker-run/manifests/installed-runtime.json",
+		},
+		VSockTranscripts: map[string]string{
+			"cp-1":     "/tmp/cp-run/qemu/vsock-transcript.jsonl",
+			"worker-1": "/tmp/worker-run/qemu/vsock-transcript.jsonl",
+		},
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
 		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
@@ -843,6 +899,12 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if manifest.SerialLogs["cp-1"] != "/tmp/cp-run/qemu/runtime-serial.log" || manifest.SerialLogs["worker-1"] != "/tmp/worker-run/qemu/runtime-serial.log" {
 		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
 	}
+	if manifest.NodeResults["cp-1"] != "/tmp/cp-run/result.json" || manifest.QEMUCommands["worker-1"] != "/tmp/worker-run/qemu/qemu-command.txt" {
+		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.QEMUCommands)
+	}
+	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["worker-1"] != "/tmp/worker-run/qemu/vsock-transcript.jsonl" {
+		t.Fatalf("artifact manifest runtime artifacts = %#v %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
+	}
 	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
 		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)
 	}
@@ -851,6 +913,56 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.KubectlDiagnostics["nodesWide"] != "/tmp/run/kubectl-get-nodes-wide.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
+	}
+}
+
+func TestNodeArtifactPaths(t *testing.T) {
+	nodes := []vmtest.RunningInstalledRuntimeNode{
+		{
+			Name: "cp-1",
+			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
+				Result:           "/tmp/cp-1/result.json",
+				QEMUCommand:      "/tmp/cp-1/qemu/qemu-command.txt",
+				InstalledRuntime: "/tmp/cp-1/manifests/installed-runtime.json",
+				RuntimeSerial:    "/tmp/cp-1/qemu/runtime-serial.log",
+				VSockTranscript:  "/tmp/cp-1/qemu/vsock-transcript.jsonl",
+			}},
+		},
+		{
+			Name: "",
+			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
+				Result: "/tmp/ignored/result.json",
+			}},
+		},
+		{
+			Name: "worker-1",
+			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
+				Result:           "/tmp/worker-1/result.json",
+				QEMUCommand:      "/tmp/worker-1/qemu/qemu-command.txt",
+				InstalledRuntime: "/tmp/worker-1/manifests/installed-runtime.json",
+				RuntimeSerial:    "/tmp/worker-1/qemu/runtime-serial.log",
+				VSockTranscript:  "/tmp/worker-1/qemu/vsock-transcript.jsonl",
+			}},
+		},
+	}
+
+	if got := nodeResultPaths(nodes); got["cp-1"] != "/tmp/cp-1/result.json" || got["worker-1"] != "/tmp/worker-1/result.json" || len(got) != 2 {
+		t.Fatalf("node result paths = %#v", got)
+	}
+	if got := qemuCommandPaths(nodes); got["cp-1"] != "/tmp/cp-1/qemu/qemu-command.txt" || got["worker-1"] != "/tmp/worker-1/qemu/qemu-command.txt" || len(got) != 2 {
+		t.Fatalf("qemu command paths = %#v", got)
+	}
+	if got := installedRuntimeInputPaths(nodes); got["cp-1"] != "/tmp/cp-1/manifests/installed-runtime.json" || got["worker-1"] != "/tmp/worker-1/manifests/installed-runtime.json" || len(got) != 2 {
+		t.Fatalf("installed runtime input paths = %#v", got)
+	}
+	if got := serialLogPaths(nodes); got["cp-1"] != "/tmp/cp-1/qemu/runtime-serial.log" || got["worker-1"] != "/tmp/worker-1/qemu/runtime-serial.log" || len(got) != 2 {
+		t.Fatalf("serial log paths = %#v", got)
+	}
+	if got := vsockTranscriptPaths(nodes); got["cp-1"] != "/tmp/cp-1/qemu/vsock-transcript.jsonl" || got["worker-1"] != "/tmp/worker-1/qemu/vsock-transcript.jsonl" || len(got) != 2 {
+		t.Fatalf("vsock transcript paths = %#v", got)
+	}
+	if got := qemuCommandPaths([]vmtest.RunningInstalledRuntimeNode{{Name: "cp-1"}}); got != nil {
+		t.Fatalf("empty qemu command paths = %#v", got)
 	}
 }
 

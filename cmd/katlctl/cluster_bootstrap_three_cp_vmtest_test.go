@@ -101,22 +101,26 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		NodeRunDirs:        nodeRunDirs(nodes),
-		FixtureInputs:      threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
-		PublishedFixtures:  threeControlPlanePublishedFixtureDirs(),
-		Inventory:          inventoryPath,
-		Kubeconfig:         kubeconfigPath,
-		KubeconfigMetadata: kubeconfigMetadataPath,
-		BootstrapStdout:    stdoutPath,
-		BootstrapStderr:    stderrPath,
-		BootstrapFixture:   bootstrapFixture.manifestValue(),
-		KubectlOutput:      kubectlOut,
-		KubectlDiagnostics: kubectlDiagnosticPaths(result.RunDir),
-		EtcdReport:         etcdReportPath,
-		Transcripts:        transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts:    transcriptPaths(etcdTranscriptDir, nodes),
-		SerialLogs:         serialLogPaths(nodes),
-		Diagnostics:        diagnosticSummaryPaths(nodes),
+		NodeRunDirs:            nodeRunDirs(nodes),
+		NodeResults:            nodeResultPaths(nodes),
+		QEMUCommands:           qemuCommandPaths(nodes),
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
+		FixtureInputs:          threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
+		PublishedFixtures:      threeControlPlanePublishedFixtureDirs(),
+		Inventory:              inventoryPath,
+		Kubeconfig:             kubeconfigPath,
+		KubeconfigMetadata:     kubeconfigMetadataPath,
+		BootstrapStdout:        stdoutPath,
+		BootstrapStderr:        stderrPath,
+		BootstrapFixture:       bootstrapFixture.manifestValue(),
+		KubectlOutput:          kubectlOut,
+		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
+		EtcdReport:             etcdReportPath,
+		Transcripts:            transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:        transcriptPaths(etcdTranscriptDir, nodes),
+		SerialLogs:             serialLogPaths(nodes),
+		Diagnostics:            diagnosticSummaryPaths(nodes),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -222,22 +226,26 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
-	NodeRunDirs        map[string]string           `json:"nodeRunDirs"`
-	FixtureInputs      map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	PublishedFixtures  map[string]string           `json:"publishedFixtures,omitempty"`
-	Inventory          string                      `json:"inventory"`
-	Kubeconfig         string                      `json:"kubeconfig"`
-	KubeconfigMetadata string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout    string                      `json:"bootstrapStdout"`
-	BootstrapStderr    string                      `json:"bootstrapStderr"`
-	BootstrapFixture   *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
-	KubectlOutput      string                      `json:"kubectlOutput"`
-	KubectlDiagnostics map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	EtcdReport         string                      `json:"etcdReport"`
-	Transcripts        map[string]string           `json:"transcripts"`
-	EtcdTranscripts    map[string]string           `json:"etcdTranscripts"`
-	SerialLogs         map[string]string           `json:"serialLogs,omitempty"`
-	Diagnostics        map[string]string           `json:"diagnostics,omitempty"`
+	NodeRunDirs            map[string]string           `json:"nodeRunDirs"`
+	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
+	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
+	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts       map[string]string           `json:"vsockTranscripts,omitempty"`
+	FixtureInputs          map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	PublishedFixtures      map[string]string           `json:"publishedFixtures,omitempty"`
+	Inventory              string                      `json:"inventory"`
+	Kubeconfig             string                      `json:"kubeconfig"`
+	KubeconfigMetadata     string                      `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout        string                      `json:"bootstrapStdout"`
+	BootstrapStderr        string                      `json:"bootstrapStderr"`
+	BootstrapFixture       *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
+	KubectlOutput          string                      `json:"kubectlOutput"`
+	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
+	EtcdReport             string                      `json:"etcdReport"`
+	Transcripts            map[string]string           `json:"transcripts"`
+	EtcdTranscripts        map[string]string           `json:"etcdTranscripts"`
+	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
+	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -746,7 +754,21 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
 	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
-		NodeRunDirs:        map[string]string{"cp-1": "/tmp/cp-1-run"},
+		NodeRunDirs: map[string]string{
+			"cp-1": "/tmp/cp-1-run",
+		},
+		NodeResults: map[string]string{
+			"cp-1": "/tmp/cp-1-run/result.json",
+		},
+		QEMUCommands: map[string]string{
+			"cp-1": "/tmp/cp-1-run/qemu/qemu-command.txt",
+		},
+		InstalledRuntimeInputs: map[string]string{
+			"cp-1": "/tmp/cp-1-run/manifests/installed-runtime.json",
+		},
+		VSockTranscripts: map[string]string{
+			"cp-1": "/tmp/cp-1-run/qemu/vsock-transcript.jsonl",
+		},
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
 		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
@@ -779,6 +801,12 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.SerialLogs["cp-1"] != "/tmp/cp-1-run/qemu/runtime-serial.log" {
 		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
+	}
+	if manifest.NodeResults["cp-1"] != "/tmp/cp-1-run/result.json" || manifest.QEMUCommands["cp-1"] != "/tmp/cp-1-run/qemu/qemu-command.txt" {
+		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.QEMUCommands)
+	}
+	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-1-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["cp-1"] != "/tmp/cp-1-run/qemu/vsock-transcript.jsonl" {
+		t.Fatalf("artifact manifest runtime artifacts = %#v %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
 	}
 	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
 		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)
