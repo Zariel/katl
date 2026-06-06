@@ -74,18 +74,23 @@ func TestApplyInputSkipsMissingSeedDevice(t *testing.T) {
 	writeTestFile(t, filepath.Join(preseed, "install-input.json"), `{"waitForConfig":true}`)
 
 	commands := &NoopCommandRunner{}
+	var stdout bytes.Buffer
 	if err := ApplyInput(InputApplyRequest{
 		PreseedDirs: []string{preseed},
 		SeedDevices: []string{filepath.Join(root, "missing-seed-device")},
 		SeedMount:   filepath.Join(root, "missing-mount"),
 		Commands:    commands,
 		RunDir:      runDir,
+		Stdout:      &stdout,
 	}); err != nil {
 		t.Fatalf("ApplyInput() error = %v", err)
 	}
 	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"waitForConfig":true}`)
 	if len(commands.Calls) != 0 {
 		t.Fatalf("commands = %#v, want no seed mount", commands.Calls)
+	}
+	if got := stdout.String(); !strings.Contains(got, "seed device not found") || !strings.Contains(got, "missing-seed-device") || !strings.Contains(got, "seed device directory "+root+" exists=true") {
+		t.Fatalf("stdout = %q", got)
 	}
 }
 

@@ -1,12 +1,13 @@
 [Unit]
 Description=Apply Katl installer preseed input
 DefaultDependencies=no
-Wants=systemd-udev-trigger.service
-After=systemd-udev-trigger.service
-Before=initrd.target
+Wants=systemd-udevd.service systemd-udev-trigger.service
+After=systemd-udevd.service systemd-udev-trigger.service
+Before=katlos-install.service initrd.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/bin/udevadm settle --timeout=10
 ExecStart=/usr/bin/katlos-install --apply-input
 StandardOutput=journal+console
 StandardError=journal+console

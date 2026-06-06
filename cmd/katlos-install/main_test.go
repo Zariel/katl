@@ -54,6 +54,7 @@ func TestApplyInput(t *testing.T) {
 	err := run(context.Background(), []string{
 		"--apply-input",
 		"--preseed-dir", preseed,
+		"--seed-wait", "0s",
 		"--run-dir", runDir,
 		"--etc-dir", etcDir,
 	}, &stdout, &stderr)

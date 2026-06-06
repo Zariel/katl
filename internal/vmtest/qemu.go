@@ -187,7 +187,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	if err := <-done; err != nil {
 		summary := fmt.Sprintf("qemu exited: %v", err)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			summary = "qemu timed out"
+			summary = qemuTimeoutSummary(plan.SerialLog)
 		}
 		return finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC())
 	}
@@ -242,10 +242,42 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return finishVM(result, phaseName(config), StatusFailed, "qemu timed out", started, time.Now().UTC())
+			return finishVM(result, phaseName(config), StatusFailed, qemuTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
 		case <-ticker.C:
 		}
 	}
+}
+
+func qemuTimeoutSummary(serialLog string) string {
+	const prefix = "qemu timed out"
+	tail := serialTail(serialLog, 12, 4000)
+	if tail == "" {
+		return prefix
+	}
+	return prefix + "; serial tail:\n" + tail
+}
+
+func serialTail(path string, maxLines int, maxBytes int) string {
+	if maxLines <= 0 || maxBytes <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	tail := strings.TrimSpace(strings.Join(lines, "\n"))
+	if len(tail) <= maxBytes {
+		return tail
+	}
+	return tail[len(tail)-maxBytes:]
 }
 
 func (r VMRunner) runSerialHooks(ctx context.Context, result Result, config VMConfig, plan VMPlan, serialText string, hooksRun []bool) error {

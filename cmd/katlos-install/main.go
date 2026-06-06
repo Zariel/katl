@@ -239,6 +239,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	applyInput := flags.Bool("apply-input", false, "copy preseeded installer input and exit")
 	boot := flags.Bool("boot", false, "run installer boot entrypoint")
 	preseedDir := flags.String("preseed-dir", "", "additional installer preseed directory")
+	seedWait := flags.Duration("seed-wait", 15*time.Second, "time to wait for installer seed devices")
 	runDir := flags.String("run-dir", "/run/katl", "runtime installer input directory")
 	etcDir := flags.String("etc-dir", "/etc/katl", "persistent installer input directory")
 	handoffAddr := flags.String("handoff-addr", "0.0.0.0:8080", "installer handoff listen address")
@@ -262,7 +263,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			PreseedDirs: preseedDirs,
 			SeedDevices: installer.DefaultSeedDevices,
 			SeedMount:   installer.DefaultSeedMount,
-			SeedWait:    2 * time.Second,
+			SeedWait:    *seedWait,
 			Commands:    installer.NewExecCommandRunner(),
 			RunDir:      *runDir,
 			EtcDir:      *etcDir,

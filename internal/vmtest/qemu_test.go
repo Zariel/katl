@@ -542,7 +542,7 @@ func TestVMFailure(t *testing.T) {
 func TestVMTimeout(t *testing.T) {
 	result, config := vmFixture(t)
 	runner := VMRunner{
-		Executor: vmExec{err: context.DeadlineExceeded},
+		Executor: vmExec{write: "boot line 1\nboot line 2\n", err: context.DeadlineExceeded},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,
@@ -553,8 +553,14 @@ func TestVMTimeout(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q", result.Status)
 	}
-	if result.FailureSummary != "qemu timed out" {
+	if !strings.Contains(result.FailureSummary, "qemu timed out; serial tail:") || !strings.Contains(result.FailureSummary, "boot line 2") {
 		t.Fatalf("FailureSummary = %q", result.FailureSummary)
+	}
+}
+
+func TestQEMUTimeoutSummaryWithoutSerial(t *testing.T) {
+	if got := qemuTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "qemu timed out" {
+		t.Fatalf("qemuTimeoutSummary() = %q", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -84,6 +85,7 @@ func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.W
 		return err
 	}
 	if device == "" {
+		writeMissingSeedDevice(stdout, devices, request.SeedWait)
 		return nil
 	}
 	mountPoint := request.SeedMount
@@ -102,6 +104,58 @@ func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.W
 	}
 	fmt.Fprintf(stdout, "katl input: mounted seed device %s at %s\n", device, mountPoint)
 	return nil
+}
+
+func writeMissingSeedDevice(stdout io.Writer, devices []string, wait time.Duration) {
+	checked := compactDeviceList(devices)
+	if len(checked) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "katl input: seed device not found after %s; checked %s\n", wait, joinComma(checked))
+	for _, dir := range seedDeviceParents(checked) {
+		exists := true
+		if _, err := os.Stat(dir); err != nil {
+			exists = false
+		}
+		fmt.Fprintf(stdout, "katl input: seed device directory %s exists=%t\n", dir, exists)
+	}
+}
+
+func compactDeviceList(devices []string) []string {
+	out := make([]string, 0, len(devices))
+	for _, device := range devices {
+		if device == "" {
+			continue
+		}
+		out = append(out, device)
+	}
+	return out
+}
+
+func seedDeviceParents(devices []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, device := range devices {
+		dir := filepath.Dir(device)
+		if dir == "." || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func joinComma(values []string) string {
+	out := ""
+	for i, value := range values {
+		if i > 0 {
+			out += ", "
+		}
+		out += value
+	}
+	return out
 }
 
 func waitSeedDevice(ctx context.Context, devices []string, wait time.Duration) (string, error) {
