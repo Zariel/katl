@@ -204,7 +204,7 @@ The first artifact source is the existing mkosi path:
 scripts/mkosi build-installer
 scripts/mkosi build-runtime
 scripts/mkosi build-kubernetes-sysext
-scripts/mkosi-artifacts write build/mkosi/artifacts.json
+go run ./cmd/katl-mkosi-artifacts write build/mkosi/artifacts.json
 ```
 
 The Go harness should read the artifact index instead of scraping filenames.

@@ -34,6 +34,14 @@ need_file() {
     fi
 }
 
+mkosi_artifacts() {
+    if command -v katl-mkosi-artifacts >/dev/null 2>&1; then
+        katl-mkosi-artifacts "$@"
+        return
+    fi
+    (cd "$repo_root" && go run ./cmd/katl-mkosi-artifacts "$@")
+}
+
 save_index() {
     mkdir -p "$state_dir"
     {
@@ -75,12 +83,12 @@ echo "building installer-image profile"
 echo "building runtime profile"
 "$repo_root/scripts/mkosi" build-runtime
 
-"$repo_root/scripts/mkosi-artifacts" write "$build_index"
-installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$build_index")"
-installer_kernel="$("$repo_root/scripts/mkosi-artifacts" path installer-kernel "$build_index")"
-installer_initrd="$("$repo_root/scripts/mkosi-artifacts" path installer-initrd "$build_index")"
-runtime_uki="$("$repo_root/scripts/mkosi-artifacts" path runtime-uki "$build_index")"
-runtime_artifact="$("$repo_root/scripts/mkosi-artifacts" path runtime-root "$build_index")"
+mkosi_artifacts write "$build_index"
+installer_uki="$(mkosi_artifacts path installer-uki "$build_index")"
+installer_kernel="$(mkosi_artifacts path installer-kernel "$build_index")"
+installer_initrd="$(mkosi_artifacts path installer-initrd "$build_index")"
+runtime_uki="$(mkosi_artifacts path runtime-uki "$build_index")"
+runtime_artifact="$(mkosi_artifacts path runtime-root "$build_index")"
 need_file "installer UKI" "$installer_uki"
 need_file "installer kernel" "$installer_kernel"
 need_file "installer initrd" "$installer_initrd"

@@ -275,8 +275,8 @@ run first-install VM setup and publish installed-runtime fixtures
 exec go test with the caller's arguments and resource-test strict mode
 ```
 
-The script can call smaller existing scripts such as `scripts/mkosi` and
-`scripts/mkosi-artifacts`. Existing fixture resolvers and publishers are
+The script can call the existing mkosi wrapper and narrow Go helpers such as
+`cmd/katl-mkosi-artifacts`. Existing fixture resolvers and publishers are
 transitional; once world fixture factories exist, their policy should move
 behind `scripts/vmtest-run` or be deleted. Argument interpretation, result
 aggregation, lock validation, and scenario status classification belong in

@@ -40,7 +40,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 	writeJSONFile(t, katlosImage+".json", map[string]any{"kind": "katlos-image"})
 
 	index := filepath.Join(workDir, "artifacts.json")
-	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi-artifacts"), "write", index)
+	cmd := exec.Command("go", "run", "./cmd/katl-mkosi-artifacts", "write", index)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"KATL_VERSION=0.1.\"quoted\"\\version",
@@ -61,7 +61,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("mkosi-artifacts write failed: %v\n%s", err, output)
+		t.Fatalf("katl-mkosi-artifacts write failed: %v\n%s", err, output)
 	}
 
 	var artifactIndex struct {

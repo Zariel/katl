@@ -228,11 +228,6 @@ KatlOS image indexes, and writes outer KatlOS image artifact metadata. Shell
 wrappers may invoke this command during scaffolding, but they should not
 assemble these JSON documents themselves.
 
-`scripts/mkosi-artifacts` is a compatibility wrapper for
-`cmd/katl-mkosi-artifacts`. Existing smoke scripts may keep using the wrapper
-until they can call the Go command directly or until the command is installed in
-the developer environment.
-
 `scripts/build-katlos-install-image` remains temporary file assembly glue. It
 copies already-built runtime, boot, and sysext artifacts into the KatlOS image
 root and invokes `mksquashfs`; validation, component indexes, checksums, and
@@ -259,7 +254,6 @@ surface for build-side artifact metadata policy.
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/katl-vm` | Direct QEMU debug wrapper | Keep temporarily for focused boot debugging. Do not add multi-node orchestration or installer policy; migrate stable QEMU behavior into `internal/vmtest`. |
 | `scripts/check-mkosi-smoke` | Build-artifact boot smoke around direct QEMU | Replace with `scripts/vmtest-run` scenarios or a Go VM smoke command once the world runner covers the same proof. |
-| `scripts/mkosi-artifacts` | Compatibility wrapper for local build artifact metadata | Keep temporarily as a wrapper over `cmd/katl-mkosi-artifacts`; delete once callers use the Go command or an installed command surface directly. |
 | `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; move the remaining packaging flow behind `katlc` when the compiler exists. |
 | `scripts/bind-install-manifest-image` | Mutates install manifest image references | Replace with `katlc` compile/bind behavior because it performs structured manifest mutation. |
 | `scripts/check-katlos-install-image` | Validates install-image metadata and host-path hygiene | Move to a Go verifier shared with `katlc` and resource tests. |

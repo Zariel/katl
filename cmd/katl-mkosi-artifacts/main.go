@@ -93,8 +93,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 }
 
-const usage = `Usage: scripts/mkosi-artifacts [write [INDEX]]
-       scripts/mkosi-artifacts path KIND [INDEX]
+const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts path KIND [INDEX]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION
