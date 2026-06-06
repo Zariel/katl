@@ -106,6 +106,7 @@ rerun strict verification so the resource manifest records the new lock digest.
 The initial command surface is:
 
 ```text
+katl-resource-lock prepare-mkosi --manifest build/resource-tests/<run-id>/manifest.json --mode strict
 katl-resource-lock add-artifact --manifest build/resource-tests/<run-id>/manifest.json --name runtime-root --kind squashfs --path build/mkosi/katl-runtime-root.squashfs
 katl-resource-lock add-rpm-package-set --manifest build/resource-tests/<run-id>/manifest.json --name runtime --root build/mkosi/katl-runtime-root
 katl-resource-lock refresh --manifest build/resource-tests/<run-id>/manifest.json
@@ -115,9 +116,9 @@ katl-resource-lock verify --manifest build/resource-tests/<run-id>/manifest.json
 The lock commands default to `mkosi.profiles/resource-package-lock.json`. The refresh
 command writes that lock from the manifest's generated mkosi profile and package
 records and prints the lock digest. The resource-test preparation path should
-use `add-artifact` for mkosi output digests and `add-rpm-package-set` to record
-actual package NEVRAs, repository identity, and `packageSets[].lockSHA256`
-before strict verification.
+use `prepare-mkosi` for the standard build outputs. The lower-level
+`add-artifact` and `add-rpm-package-set` commands remain available for focused
+resource preparation and custom suites.
 
 ## Resource Graph
 

@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/zariel/katl/internal/resourcetest"
 )
@@ -27,13 +29,15 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("command is required: add-rpm-package-set, refresh, or verify")
+		return fmt.Errorf("command is required: add-artifact, add-rpm-package-set, prepare-mkosi, refresh, or verify")
 	}
 	switch args[0] {
 	case "add-artifact":
 		return runAddArtifact(args[1:], stdout, stderr)
 	case "add-rpm-package-set":
 		return runAddRPMPackageSet(args[1:], stdout, stderr)
+	case "prepare-mkosi":
+		return runPrepareMkosi(args[1:], stdout, stderr)
 	case "refresh":
 		return runRefresh(args[1:], stdout, stderr)
 	case "verify":
@@ -197,6 +201,97 @@ func runAddRPMPackageSet(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-resource-lock prepare-mkosi", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	manifestPath := flags.String("manifest", "", "resource-test manifest output path")
+	lockPath := flags.String("lock", defaultLockPath, "package lock path")
+	mkosiDir := flags.String("mkosi-dir", "build/mkosi", "mkosi output directory")
+	runtimeRoot := flags.String("runtime-root", "", "runtime root directory containing an RPM database")
+	mode := flags.String("mode", "strict", "lock mode: strict or refresh")
+	runID := flags.String("run-id", "", "resource-test run id")
+	gitRevision := flags.String("git-revision", "", "git revision to record")
+	fedoraRepo := flags.String("fedora-repository", "fedora=", "Fedora repository in id=baseURL form")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*manifestPath) == "" {
+		return fmt.Errorf("--manifest is required")
+	}
+	if *runtimeRoot == "" {
+		*runtimeRoot = filepath.Join(*mkosiDir, "katl-runtime-root")
+	}
+	if *runID == "" {
+		*runID = "resource-" + time.Now().UTC().Format("20060102T150405Z")
+	}
+	if *gitRevision == "" {
+		*gitRevision = "unknown"
+	}
+
+	manifest := resourcetest.NewManifest(*runID, resourcetest.GitState{Revision: *gitRevision})
+	if err := addMkosiArtifacts(&manifest, *mkosiDir); err != nil {
+		return err
+	}
+	repo, err := parseRepository(*fedoraRepo)
+	if err != nil {
+		return err
+	}
+	if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
+		return err
+	}
+	lockDigest := ""
+	switch *mode {
+	case "refresh":
+		lock, err := resourcetest.PackageLockFromManifest(manifest)
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(lock, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal package lock: %w", err)
+		}
+		data = append(data, '\n')
+		if err := os.MkdirAll(filepath.Dir(*lockPath), 0o755); err != nil {
+			return fmt.Errorf("create package-lock directory: %w", err)
+		}
+		if err := os.WriteFile(*lockPath, data, 0o644); err != nil {
+			return fmt.Errorf("write package lock %s: %w", *lockPath, err)
+		}
+		lockDigest = resourcetest.PackageLockDigest(data)
+		manifest.PackageSets = setLockDigest(manifest.PackageSets, lockDigest)
+	case "strict":
+		lockData, err := os.ReadFile(*lockPath)
+		if err != nil {
+			return fmt.Errorf("read package lock %s: %w", *lockPath, err)
+		}
+		lockDigest = resourcetest.PackageLockDigest(lockData)
+		manifest.PackageSets = setLockDigest(manifest.PackageSets, lockDigest)
+		lock, err := resourcetest.DecodePackageLock(strings.NewReader(string(lockData)))
+		if err != nil {
+			return fmt.Errorf("decode package lock %s: %w", *lockPath, err)
+		}
+		if err := resourcetest.VerifyPackageLock(resourcetest.PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: lockDigest}); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("--mode must be strict or refresh, got %q", *mode)
+	}
+	if err := writeManifest(*manifestPath, manifest); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "manifest: %s\n", *manifestPath)
+	fmt.Fprintf(stdout, "mode: %s\n", *mode)
+	fmt.Fprintf(stdout, "artifacts: %d\n", len(manifest.Artifacts))
+	fmt.Fprintf(stdout, "packageSets: %d\n", len(manifest.PackageSets))
+	if lockDigest != "" {
+		fmt.Fprintf(stdout, "lockSHA256: %s\n", lockDigest)
+	}
+	return nil
+}
+
 func runRefresh(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katl-resource-lock refresh", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -282,6 +377,115 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
+	candidates := []struct {
+		Name string
+		Kind string
+		Path string
+	}{
+		{Name: "installer-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
+		{Name: "installer-kernel", Kind: "linux-kernel", Path: filepath.Join(mkosiDir, "katl-installer.vmlinuz")},
+		{Name: "installer-initrd", Kind: "initrd", Path: filepath.Join(mkosiDir, "katl-installer.initrd")},
+		{Name: "runtime-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-runtime.efi")},
+		{Name: "runtime-root", Kind: "squashfs", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
+		{Name: "kubernetes-sysext", Kind: "sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw")},
+	}
+	if katlos, err := findKatlOSImage(mkosiDir); err == nil && katlos != "" {
+		candidates = append(candidates, struct {
+			Name string
+			Kind string
+			Path string
+		}{Name: "katlos-install-image", Kind: "squashfs", Path: katlos})
+	} else if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		artifact, ok, err := artifactFromPath(candidate.Name, candidate.Kind, candidate.Path)
+		if err != nil {
+			return err
+		}
+		if ok {
+			manifest.Artifacts = upsertArtifact(manifest.Artifacts, artifact)
+		}
+	}
+	return nil
+}
+
+func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, repo resourcetest.PackageRepository, lockDigest string) error {
+	packages, err := queryRPMPackages(runtimeRoot)
+	if err != nil {
+		return err
+	}
+	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
+		Name:         "runtime",
+		Source:       "mkosi.profiles/runtime",
+		LockDigest:   lockDigest,
+		Distribution: "fedora",
+		Release:      "44",
+		Architecture: "x86_64",
+		Repositories: []resourcetest.PackageRepository{repo},
+		Packages:     packages,
+	})
+	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
+		Name:          "runtime",
+		Path:          "mkosi.profiles/runtime",
+		PackageSetRef: "runtime",
+	})
+	return nil
+}
+
+func artifactFromPath(name, kind, path string) (resourcetest.Artifact, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return resourcetest.Artifact{}, false, nil
+		}
+		return resourcetest.Artifact{}, false, fmt.Errorf("stat artifact %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return resourcetest.Artifact{}, false, fmt.Errorf("artifact path is not a regular file: %s", path)
+	}
+	digest, err := fileSHA256(path)
+	if err != nil {
+		return resourcetest.Artifact{}, false, err
+	}
+	return resourcetest.Artifact{
+		Name:      name,
+		Kind:      kind,
+		Path:      path,
+		Digest:    digest,
+		SizeBytes: info.Size(),
+		Created:   info.ModTime().UTC(),
+	}, true, nil
+}
+
+func findKatlOSImage(mkosiDir string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(mkosiDir, "katlos-install-*.squashfs"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	slices.Sort(matches)
+	return matches[len(matches)-1], nil
+}
+
+func setLockDigest(sets []resourcetest.PackageSet, digest string) []resourcetest.PackageSet {
+	for i := range sets {
+		sets[i].LockDigest = digest
+	}
+	return sets
+}
+
+func parseRepository(value string) (resourcetest.PackageRepository, error) {
+	var flags repositoryFlags
+	if err := flags.Set(value); err != nil {
+		return resourcetest.PackageRepository{}, err
+	}
+	return flags[0], nil
+}
+
 type repositoryFlags []resourcetest.PackageRepository
 
 func (f *repositoryFlags) String() string {
@@ -336,6 +540,9 @@ func upsertArtifact(artifacts []resourcetest.Artifact, artifact resourcetest.Art
 }
 
 func writeManifest(path string, manifest resourcetest.Manifest) error {
+	if err := resourcetest.ValidateManifest(manifest); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal resource manifest: %w", err)

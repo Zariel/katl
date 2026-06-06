@@ -161,6 +161,124 @@ func TestRunAddRPMPackageSet(t *testing.T) {
 	}
 }
 
+func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		if !strings.HasSuffix(root, "katl-runtime-root") {
+			t.Fatalf("root = %q", root)
+		}
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime.efi"), "runtime-uki")
+	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
+	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	var stdout bytes.Buffer
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--fedora-repository", "fedora=https://example.invalid/fedora/44",
+	}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 1 || manifest.PackageSets[0].LockDigest == "" {
+		t.Fatalf("manifest artifacts=%d packageSets=%#v", len(manifest.Artifacts), manifest.PackageSets)
+	}
+
+	stdout.Reset()
+	err = run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--fedora-repository", "fedora=https://example.invalid/fedora/44",
+	}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare strict error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "mode: strict") {
+		t.Fatalf("stdout = %q, want strict mode", stdout.String())
+	}
+}
+
+func TestRunPrepareMkosiStrictRejectsDrift(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	packages := []resourcetest.Package{{
+		Name:  "systemd",
+		NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+	}}
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return append([]resourcetest.Package(nil), packages...), nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	refreshArgs := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+	}
+	if err := run(refreshArgs, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	packages[0].NEVRA = "systemd-0:259.7-1.fc44.x86_64"
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
+		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)
+	}
+}
+
 func commandManifest(lockDigest string) resourcetest.Manifest {
 	manifest := commandManifestSkeleton()
 	manifest.PackageSets = []resourcetest.PackageSet{{
@@ -223,5 +341,15 @@ func writeTestManifest(t *testing.T, path string, manifest resourcetest.Manifest
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
