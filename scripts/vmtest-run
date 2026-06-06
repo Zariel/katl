@@ -136,6 +136,17 @@ probe_capabilities() {
         missing_capabilities+=("sfdisk")
         cap_sfdisk="$(missing_status missing)"
     fi
+    if have_command systemd-nspawn; then
+        if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
+            cap_systemd_nspawn="passed"
+        else
+            missing_capabilities+=("nspawn-privileges")
+            cap_systemd_nspawn="$(missing_status missing)"
+        fi
+    else
+        missing_capabilities+=("systemd-nspawn")
+        cap_systemd_nspawn="$(missing_status missing)"
+    fi
 }
 
 ipv4_to_int() {

@@ -428,6 +428,9 @@ func normalizeOptions(options Options) Options {
 	if options.Missing == "" {
 		options.Missing = MissingFails
 	}
+	if envBool("KATL_VMTEST_WORLD_STRICT") {
+		options.Missing = MissingFails
+	}
 	return options
 }
 

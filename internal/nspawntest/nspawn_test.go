@@ -93,6 +93,38 @@ func TestRunMissingPrerequisitesCanSkip(t *testing.T) {
 	}
 }
 
+func TestStrictWorldFailsMissingPrerequisites(t *testing.T) {
+	t.Setenv("KATL_VMTEST_WORLD_STRICT", "1")
+	tb := &fakeTB{}
+	runner := Runner{
+		Options: Options{
+			Enabled:   true,
+			StateRoot: t.TempDir(),
+			RunID:     "run-strict",
+			Missing:   MissingSkips,
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) {
+				return "", errors.New("missing")
+			},
+			stat: func(string) (os.FileInfo, error) {
+				return nil, os.ErrNotExist
+			},
+			euid: func() int { return 0 },
+		},
+	}
+	result := runner.Run(tb, Scenario{Name: "confext", Root: "/missing"})
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFailed)
+	}
+	if !tb.failed || tb.skipped {
+		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
+	}
+	if len(result.Missing) != 2 {
+		t.Fatalf("missing = %#v", result.Missing)
+	}
+}
+
 func TestPrepareDefaultRootRunsFixtureScript(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fixture requires POSIX execution")
