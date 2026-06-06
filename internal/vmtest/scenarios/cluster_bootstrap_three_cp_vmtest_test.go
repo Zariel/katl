@@ -1,4 +1,4 @@
-package main
+package scenarios
 
 import (
 	"bytes"
@@ -204,7 +204,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = run(ctx, appendBootstrapFixtureArgs([]string{
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
