@@ -31,15 +31,57 @@ make_metadata() {
     local path="$1"
     local node="$2"
     local role="$3"
+    local config_path="/etc/katl/kubeadm/$role/config.yaml"
     mkdir -p "$(dirname "$path")"
     cat >"$path" <<EOF
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "NodeMetadata",
   "identity": {"hostname": "$node"},
-  "systemRole": "$role"
+  "systemRole": "$role",
+  "kubeadm": {
+    "configRef": "$role",
+    "configPath": "$config_path",
+    "intent": "$role"
+  },
+  "kubernetes": {
+    "payloadVersion": "v1.36.1",
+    "activationPath": "/run/extensions/selected-kubernetes.raw"
+  }
 }
 EOF
+}
+
+publish_fixture() {
+    local node="$1"
+    local role="$2"
+    local source_run="$tmpdir/vmtest-state/first-install-installed-runtime-fixture-$node"
+    local fixture_dir="$source_run/manifests/installed-runtime-fixture"
+    local source_disk="$tmpdir/$node/source.raw"
+    local source_esp="$tmpdir/$node/source-esp"
+    local source_metadata="$tmpdir/$node/source-node.json"
+    local published_dir="$tmpdir/published-$node"
+
+    mkdir -p "$(dirname "$source_disk")"
+    printf 'disk %s\n' "$node" >"$source_disk"
+    make_esp "$source_esp"
+    make_metadata "$source_metadata" "$node" "$role"
+
+    "$repo_root/scripts/create-installed-runtime-fixture" \
+        --disk "$source_disk" \
+        --esp-artifacts "$source_esp" \
+        --node-metadata "$source_metadata" \
+        --format raw \
+        --state-dir "$fixture_dir" >/dev/null
+
+    "$repo_root/scripts/publish-first-install-runtime-fixture" \
+        --vmtest-state-root "$tmpdir/vmtest-state" \
+        --state-dir "$published_dir" \
+        --format raw \
+        --node-name "$node" \
+        --system-role "$role" >/dev/null
+
+    printf '%s\n' "$published_dir"
 }
 
 expect_failure() {
@@ -55,30 +97,10 @@ expect_failure() {
     }
 }
 
-source_run="$tmpdir/vmtest-state/first-install-installed-runtime-fixture-1"
-fixture_dir="$source_run/manifests/installed-runtime-fixture"
-source_disk="$tmpdir/source.raw"
-source_esp="$tmpdir/source-esp"
-source_metadata="$tmpdir/source-node.json"
-
-printf 'disk\n' >"$source_disk"
-make_esp "$source_esp"
-make_metadata "$source_metadata" "cp-1" "control-plane"
-
-"$repo_root/scripts/create-installed-runtime-fixture" \
-    --disk "$source_disk" \
-    --esp-artifacts "$source_esp" \
-    --node-metadata "$source_metadata" \
-    --format raw \
-    --state-dir "$fixture_dir" >/dev/null
-
-published_dir="$tmpdir/published-cp-1"
-"$repo_root/scripts/publish-first-install-runtime-fixture" \
-    --vmtest-state-root "$tmpdir/vmtest-state" \
-    --state-dir "$published_dir" \
-    --format raw \
-    --node-name cp-1 \
-    --system-role control-plane >/dev/null
+published_dir="$(publish_fixture cp-1 control-plane)"
+worker_published_dir="$(publish_fixture worker-1 worker)"
+cp2_published_dir="$(publish_fixture cp-2 control-plane)"
+cp3_published_dir="$(publish_fixture cp-3 control-plane)"
 
 published_manifest="$published_dir/published-first-install-runtime-fixture.json"
 jq -e '
@@ -89,6 +111,28 @@ jq -e '
     ' "$published_manifest" >/dev/null ||
     fail "published fixture manifest did not record cp-1 control-plane identity"
 
+env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-two-node-kubeadm-fixtures" \
+    --control-plane-published-dir "$published_dir" \
+    --worker-published-dir "$worker_published_dir" \
+    --control-plane-address 10.44.0.10 \
+    --worker-address 10.44.0.11 \
+    --bridge katlbr0 \
+    --state-dir "$tmpdir/two-node-valid" \
+    --check-only >/dev/null
+
+env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-three-control-plane-kubeadm-fixtures" \
+    --cp1-published-dir "$published_dir" \
+    --cp2-published-dir "$cp2_published_dir" \
+    --cp3-published-dir "$cp3_published_dir" \
+    --cp1-address 10.44.0.10 \
+    --cp2-address 10.44.0.11 \
+    --cp3-address 10.44.0.12 \
+    --bridge katlbr0 \
+    --state-dir "$tmpdir/three-cp-valid" \
+    --check-only >/dev/null
+
 wrong_two_node="$tmpdir/wrong-two-node"
 mkdir -p "$wrong_two_node"
 jq '.nodeName = "worker-1" | .systemRole = "worker"' "$published_manifest" >"$wrong_two_node/published-first-install-runtime-fixture.json"
@@ -97,8 +141,9 @@ expect_failure "control-plane published fixture manifest is invalid for cp-1 rol
     env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
     "$repo_root/scripts/resolve-two-node-kubeadm-fixtures" \
     --control-plane-published-dir "$wrong_two_node" \
-    --control-plane-address 192.0.2.10 \
-    --worker-address 192.0.2.11 \
+    --control-plane-address 10.44.0.10 \
+    --worker-address 10.44.0.11 \
+    --bridge katlbr0 \
     --check-only
 
 wrong_three_cp="$tmpdir/wrong-three-cp"
@@ -109,9 +154,10 @@ expect_failure "cp-1 published fixture manifest is invalid for cp-1 role=control
     env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
     "$repo_root/scripts/resolve-three-control-plane-kubeadm-fixtures" \
     --cp1-published-dir "$wrong_three_cp" \
-    --cp1-address 192.0.2.10 \
-    --cp2-address 192.0.2.11 \
-    --cp3-address 192.0.2.12 \
+    --cp1-address 10.44.0.10 \
+    --cp2-address 10.44.0.11 \
+    --cp3-address 10.44.0.12 \
+    --bridge katlbr0 \
     --check-only
 
 echo "ok: kubeadm fixture contracts valid"
