@@ -268,6 +268,21 @@ func TestDecodeWorldCapabilityStatuses(t *testing.T) {
 	}
 }
 
+func TestDecodeWorldRunIndex(t *testing.T) {
+	world := validWorld()
+	world.RunIndex = filepath.Join(world.RunDir, "run.json")
+	decodedErr := decodeWorldValue(world)
+	if decodedErr != nil {
+		t.Fatalf("DecodeWorld() error = %v", decodedErr)
+	}
+
+	world.RunIndex = "relative/run.json"
+	err := decodeWorldValue(world)
+	if err == nil || !strings.Contains(err.Error(), "runIndex must be an absolute path") {
+		t.Fatalf("DecodeWorld() error = %v, want runIndex path rejection", err)
+	}
+}
+
 func TestDecodeWorldRejectsUnknownFieldsAndExtraDocuments(t *testing.T) {
 	_, err := DecodeWorld(strings.NewReader(`{"apiVersion":"katl.dev/v1alpha1","kind":"VMTestWorld","extra":true}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {

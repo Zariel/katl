@@ -417,6 +417,7 @@ write_world() {
         --arg runDir "$run_dir" \
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
+        --arg runIndex "$run_index" \
         --arg bridge "$network_bridge" \
         --arg cidr "$network_cidr" \
         --arg gateway "$network_gateway" \
@@ -441,6 +442,7 @@ write_world() {
           runDir: $runDir,
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
+          runIndex: $runIndex,
           network: {
             backend: "bridge",
             bridge: $bridge,

@@ -24,6 +24,7 @@ type World struct {
 	RunDir       string                 `json:"runDir"`
 	ArtifactDir  string                 `json:"artifactDir"`
 	ScenarioDir  string                 `json:"scenarioDir"`
+	RunIndex     string                 `json:"runIndex,omitempty"`
 	Network      WorldNetwork           `json:"network"`
 	Capabilities map[string]WorldStatus `json:"capabilities"`
 }
@@ -124,6 +125,9 @@ func ValidateWorld(world World) error {
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("%s must be an absolute path: %s", name, path)
 		}
+	}
+	if strings.TrimSpace(world.RunIndex) != "" && !filepath.IsAbs(world.RunIndex) {
+		return fmt.Errorf("runIndex must be an absolute path: %s", world.RunIndex)
 	}
 	if err := validateWorldNetwork(world.Network); err != nil {
 		return err

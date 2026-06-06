@@ -317,7 +317,7 @@ type multiNodeWorldProvenancePaths struct {
 
 func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) multiNodeWorldProvenancePaths {
 	provenance := multiNodeWorldProvenancePaths{
-		VMTestRun:          filepath.Join(world.RunDir, "run.json"),
+		VMTestRun:          firstString(world.RunIndex, filepath.Join(world.RunDir, "run.json")),
 		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
 		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
 		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
@@ -1225,6 +1225,7 @@ func TestPlanTwoNodeWorldSmokeRunWritesSetupFailureForMissingPublishedFixture(t 
 
 func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	world := twoNodeTestWorld(t)
+	world.RunIndex = filepath.Join(world.RunDir, "custom-run.json")
 	repo := t.TempDir()
 	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", vmtest.ControlPlane)
 	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-worker", "worker-1", vmtest.Worker)
@@ -1240,7 +1241,7 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	if !hasPathPrefix(run.Inputs.ControlPlaneFixture, run.WorldScenario.Dir) || !hasPathPrefix(run.Inputs.WorkerFixture, run.WorldScenario.Dir) {
 		t.Fatalf("fixtures were not staged into world scenario: cp=%q worker=%q", run.Inputs.ControlPlaneFixture, run.Inputs.WorkerFixture)
 	}
-	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "custom-run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-1"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-1-control-plane", "result.json") {

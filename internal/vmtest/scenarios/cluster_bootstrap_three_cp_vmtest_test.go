@@ -912,6 +912,7 @@ func TestPlanThreeControlPlaneWorldSmokeRunWritesSetupFailureForMissingPublished
 
 func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	world := twoNodeTestWorld(t)
+	world.RunIndex = filepath.Join(world.RunDir, "custom-run.json")
 	repo := t.TempDir()
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-"+name, name, vmtest.ControlPlane)
@@ -925,7 +926,7 @@ func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *test
 	assertFileContent(t, run.Inputs.CP1Disk, "disk-world-cp-1")
 	assertFileContent(t, run.Inputs.CP2Disk, "disk-world-cp-2")
 	assertFileContent(t, run.Inputs.CP3Disk, "disk-world-cp-3")
-	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "custom-run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-3"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-3-control-plane", "result.json") {

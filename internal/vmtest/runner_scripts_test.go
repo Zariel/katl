@@ -54,6 +54,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.RunID != "run-1" || world.RunDir != runDir {
 		t.Fatalf("world = %#v", world)
 	}
+	if world.RunIndex != filepath.Join(runDir, "run.json") {
+		t.Fatalf("world run index = %q", world.RunIndex)
+	}
 	if world.Network.Backend != NetworkBridge || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
 		t.Fatalf("world network = %#v", world.Network)
 	}
