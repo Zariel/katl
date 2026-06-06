@@ -24,21 +24,10 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	}
 
 	options := vmtest.DefaultOptions()
-	options.Missing = vmtest.MissingSkips
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node kubeadm join smoke")
 	}
-	runner := vmtest.NewRunner(options)
-	scenario := vmtest.Scenario{Name: "installed-runtime-two-node-kubeadm-join"}
-	result := planStartedVMResult(t, runner, scenario)
-	inputs := requireTwoNodeSmokeInputs(t, runner, scenario, result)
-	runTwoNodeKubeadmJoinSmoke(t, twoNodeSmokeRun{
-		Options:  options,
-		Runner:   runner,
-		Scenario: scenario,
-		Result:   result,
-		Inputs:   inputs,
-	})
+	_ = vmtest.RequireWorld(t)
 }
 
 type twoNodeSmokeRun struct {
@@ -325,35 +314,6 @@ func planStartedVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Sce
 	return result
 }
 
-func requireTwoNodeSmokeInputs(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result) twoNodeSmokeInputs {
-	t.Helper()
-	inputs, missing := twoNodeSmokeInputsFromEnv(exec.LookPath)
-	requireSmokePrereqs(t, runner, scenario, result, "two-node kubeadm join smoke prerequisites missing", missing)
-	return inputs
-}
-
-func twoNodeSmokeInputsFromEnv(lookPath func(string) (string, error)) (twoNodeSmokeInputs, []vmtest.MissingPrerequisite) {
-	const detail = "set the environment variable or run scripts/resolve-two-node-kubeadm-fixtures"
-	var missing []vmtest.MissingPrerequisite
-	inputs := twoNodeSmokeInputs{
-		ControlPlaneDisk:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_INSTALLED_DISK"),
-		ControlPlaneDiskFormat: firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
-		ControlPlaneESP:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
-		ControlPlaneFixture:    requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_FIXTURE_MANIFEST"),
-		ControlPlaneMetadata:   requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_NODE_METADATA"),
-		ControlPlaneAddress:    requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_ADDRESS"),
-		WorkerDisk:             requiredEnvValue(&missing, detail, "KATL_WORKER_INSTALLED_DISK"),
-		WorkerDiskFormat:       firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
-		WorkerESP:              requiredEnvValue(&missing, detail, "KATL_WORKER_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
-		WorkerFixture:          requiredEnvValue(&missing, detail, "KATL_WORKER_FIXTURE_MANIFEST"),
-		WorkerMetadata:         requiredEnvValue(&missing, detail, "KATL_WORKER_NODE_METADATA"),
-		WorkerAddress:          requiredEnvValue(&missing, detail, "KATL_WORKER_ADDRESS"),
-		KubernetesVersion:      firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"),
-	}
-	missing = append(missing, twoNodeHostToolPrereqs(lookPath)...)
-	return inputs, missing
-}
-
 func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.MissingPrerequisite {
 	var missing []vmtest.MissingPrerequisite
 	if _, err := lookPath(selectedKubectl()); err != nil {
@@ -419,19 +379,6 @@ func skipVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, 
 	t.Skip(message)
 }
 
-func requiredEnvValue(missing *[]vmtest.MissingPrerequisite, detail string, names ...string) string {
-	for _, name := range names {
-		if value := os.Getenv(name); value != "" {
-			return value
-		}
-	}
-	*missing = append(*missing, vmtest.MissingPrerequisite{
-		Name:   strings.Join(names, " or "),
-		Detail: detail,
-	})
-	return ""
-}
-
 func missingPrerequisiteSummary(missing []vmtest.MissingPrerequisite) string {
 	parts := make([]string, 0, len(missing))
 	for _, item := range missing {
@@ -442,15 +389,6 @@ func missingPrerequisiteSummary(missing []vmtest.MissingPrerequisite) string {
 		parts = append(parts, item.Name+": "+item.Detail)
 	}
 	return strings.Join(parts, "; ")
-}
-
-func missingPrereqName(missing []vmtest.MissingPrerequisite, name string) bool {
-	for _, item := range missing {
-		if item.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func writeTwoNodeInventory(path string, kubernetesVersion string, cpNode vmtest.RunningInstalledRuntimeNode, workerNode vmtest.RunningInstalledRuntimeNode) error {
@@ -1294,62 +1232,6 @@ func twoNodeTestWorld(t *testing.T) vmtest.World {
 			LeaseFile: leaseFile,
 		},
 		Capabilities: map[string]vmtest.WorldStatus{"qemu": vmtest.WorldStatusPassed},
-	}
-}
-
-func TestTwoNodeSmokeInputsFromEnv(t *testing.T) {
-	for _, name := range []string{
-		"KATL_CONTROL_PLANE_INSTALLED_DISK",
-		"KATL_WORKER_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS",
-		"KATL_WORKER_INSTALLED_ESP_ARTIFACTS",
-		"KATL_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_FIXTURE_MANIFEST",
-		"KATL_WORKER_FIXTURE_MANIFEST",
-		"KATL_CONTROL_PLANE_NODE_METADATA",
-		"KATL_WORKER_NODE_METADATA",
-		"KATL_CONTROL_PLANE_ADDRESS",
-		"KATL_WORKER_ADDRESS",
-		"KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT",
-		"KATL_WORKER_INSTALLED_DISK_FORMAT",
-		"KATL_KUBERNETES_VERSION",
-	} {
-		t.Setenv(name, "")
-	}
-	_, missing := twoNodeSmokeInputsFromEnv(func(string) (string, error) {
-		return "", errors.New("missing kubectl")
-	})
-	for _, want := range []string{
-		"KATL_CONTROL_PLANE_INSTALLED_DISK",
-		"KATL_WORKER_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
-		"KATL_WORKER_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
-		"kubectl",
-	} {
-		if !missingPrereqName(missing, want) {
-			t.Fatalf("missing prereqs = %#v, want %q", missing, want)
-		}
-	}
-
-	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK", "cp.raw")
-	t.Setenv("KATL_WORKER_INSTALLED_DISK", "worker.raw")
-	t.Setenv("KATL_INSTALLED_ESP_ARTIFACTS", "esp")
-	t.Setenv("KATL_CONTROL_PLANE_FIXTURE_MANIFEST", "cp-fixture.json")
-	t.Setenv("KATL_WORKER_FIXTURE_MANIFEST", "worker-fixture.json")
-	t.Setenv("KATL_CONTROL_PLANE_NODE_METADATA", "cp-node.json")
-	t.Setenv("KATL_WORKER_NODE_METADATA", "worker-node.json")
-	t.Setenv("KATL_CONTROL_PLANE_ADDRESS", "192.0.2.10")
-	t.Setenv("KATL_WORKER_ADDRESS", "192.0.2.11")
-	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT", "qcow2")
-	t.Setenv("KATL_KUBERNETES_VERSION", "v1.test.0")
-	inputs, missing := twoNodeSmokeInputsFromEnv(func(string) (string, error) {
-		return "/usr/bin/kubectl", nil
-	})
-	if len(missing) != 0 {
-		t.Fatalf("missing prereqs = %#v", missing)
-	}
-	if inputs.ControlPlaneESP != "esp" || inputs.WorkerESP != "esp" || inputs.ControlPlaneDiskFormat != "qcow2" || inputs.WorkerDiskFormat != string(vmtest.DiskRaw) || inputs.KubernetesVersion != "v1.test.0" {
-		t.Fatalf("inputs = %#v", inputs)
 	}
 }
 

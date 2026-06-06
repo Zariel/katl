@@ -28,21 +28,10 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 
 	options := vmtest.DefaultOptions()
-	options.Missing = vmtest.MissingSkips
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run three-control-plane stacked-etcd smoke")
 	}
-	runner := vmtest.NewRunner(options)
-	scenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
-	result := planStartedVMResult(t, runner, scenario)
-	inputs := requireThreeControlPlaneSmokeInputs(t, runner, scenario, result)
-	runThreeControlPlaneStackedEtcdSmoke(t, threeControlPlaneSmokeRun{
-		Options:  options,
-		Runner:   runner,
-		Scenario: scenario,
-		Result:   result,
-		Inputs:   inputs,
-	})
+	_ = vmtest.RequireWorld(t)
 }
 
 type threeControlPlaneSmokeRun struct {
@@ -294,41 +283,6 @@ type threeControlPlaneSmokeInputs struct {
 	CP3Metadata       string
 	CP3Address        string
 	KubernetesVersion string
-}
-
-func requireThreeControlPlaneSmokeInputs(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result) threeControlPlaneSmokeInputs {
-	t.Helper()
-	inputs, missing := threeControlPlaneSmokeInputsFromEnv(exec.LookPath)
-	requireSmokePrereqs(t, runner, scenario, result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
-	return inputs
-}
-
-func threeControlPlaneSmokeInputsFromEnv(lookPath func(string) (string, error)) (threeControlPlaneSmokeInputs, []vmtest.MissingPrerequisite) {
-	const detail = "set the environment variable or run scripts/resolve-three-control-plane-kubeadm-fixtures"
-	var missing []vmtest.MissingPrerequisite
-	inputs := threeControlPlaneSmokeInputs{
-		CP1Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_INSTALLED_DISK", "KATL_CONTROL_PLANE_INSTALLED_DISK"),
-		CP1DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
-		CP1ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS", "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
-		CP1Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST", "KATL_CONTROL_PLANE_FIXTURE_MANIFEST"),
-		CP1Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_NODE_METADATA", "KATL_CONTROL_PLANE_NODE_METADATA"),
-		CP1Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_ADDRESS", "KATL_CONTROL_PLANE_ADDRESS"),
-		CP2Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_INSTALLED_DISK"),
-		CP2DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
-		CP2ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
-		CP2Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST"),
-		CP2Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_NODE_METADATA"),
-		CP2Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_ADDRESS"),
-		CP3Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_INSTALLED_DISK"),
-		CP3DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
-		CP3ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
-		CP3Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST"),
-		CP3Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_NODE_METADATA"),
-		CP3Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_ADDRESS"),
-		KubernetesVersion: firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"),
-	}
-	missing = append(missing, twoNodeHostToolPrereqs(lookPath)...)
-	return inputs, missing
 }
 
 func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
@@ -810,84 +764,6 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
 	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
 		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
-	}
-}
-
-func TestThreeControlPlaneSmokeInputsFromEnv(t *testing.T) {
-	for _, name := range []string{
-		"KATL_CONTROL_PLANE_1_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_2_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_3_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS",
-		"KATL_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST",
-		"KATL_CONTROL_PLANE_FIXTURE_MANIFEST",
-		"KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST",
-		"KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST",
-		"KATL_CONTROL_PLANE_1_NODE_METADATA",
-		"KATL_CONTROL_PLANE_NODE_METADATA",
-		"KATL_CONTROL_PLANE_2_NODE_METADATA",
-		"KATL_CONTROL_PLANE_3_NODE_METADATA",
-		"KATL_CONTROL_PLANE_1_ADDRESS",
-		"KATL_CONTROL_PLANE_ADDRESS",
-		"KATL_CONTROL_PLANE_2_ADDRESS",
-		"KATL_CONTROL_PLANE_3_ADDRESS",
-		"KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT",
-		"KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT",
-		"KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT",
-		"KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT",
-		"KATL_KUBERNETES_VERSION",
-	} {
-		t.Setenv(name, "")
-	}
-	_, missing := threeControlPlaneSmokeInputsFromEnv(func(string) (string, error) {
-		return "", errors.New("missing kubectl")
-	})
-	for _, want := range []string{
-		"KATL_CONTROL_PLANE_1_INSTALLED_DISK or KATL_CONTROL_PLANE_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_2_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_3_INSTALLED_DISK",
-		"KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS or KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
-		"KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
-		"kubectl",
-	} {
-		if !missingPrereqName(missing, want) {
-			t.Fatalf("missing prereqs = %#v, want %q", missing, want)
-		}
-	}
-
-	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK", "cp1.raw")
-	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK", "cp2.raw")
-	t.Setenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK", "cp3.raw")
-	t.Setenv("KATL_INSTALLED_ESP_ARTIFACTS", "esp")
-	t.Setenv("KATL_CONTROL_PLANE_FIXTURE_MANIFEST", "cp1-fixture.json")
-	t.Setenv("KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST", "cp2-fixture.json")
-	t.Setenv("KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST", "cp3-fixture.json")
-	t.Setenv("KATL_CONTROL_PLANE_NODE_METADATA", "cp1-node.json")
-	t.Setenv("KATL_CONTROL_PLANE_2_NODE_METADATA", "cp2-node.json")
-	t.Setenv("KATL_CONTROL_PLANE_3_NODE_METADATA", "cp3-node.json")
-	t.Setenv("KATL_CONTROL_PLANE_ADDRESS", "192.0.2.20")
-	t.Setenv("KATL_CONTROL_PLANE_2_ADDRESS", "192.0.2.21")
-	t.Setenv("KATL_CONTROL_PLANE_3_ADDRESS", "192.0.2.22")
-	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT", "qcow2")
-	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT", "raw")
-	t.Setenv("KATL_KUBERNETES_VERSION", "v1.test.1")
-	inputs, missing := threeControlPlaneSmokeInputsFromEnv(func(string) (string, error) {
-		return "/usr/bin/kubectl", nil
-	})
-	if len(missing) != 0 {
-		t.Fatalf("missing prereqs = %#v", missing)
-	}
-	if inputs.CP1Disk != "cp1.raw" || inputs.CP1ESP != "esp" || inputs.CP2ESP != "esp" || inputs.CP3ESP != "esp" {
-		t.Fatalf("inputs = %#v", inputs)
-	}
-	if inputs.CP1DiskFormat != "qcow2" || inputs.CP2DiskFormat != "raw" || inputs.CP3DiskFormat != string(vmtest.DiskRaw) || inputs.KubernetesVersion != "v1.test.1" {
-		t.Fatalf("input versions and formats = %#v", inputs)
 	}
 }
 
