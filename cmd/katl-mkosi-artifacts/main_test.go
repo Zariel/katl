@@ -189,6 +189,55 @@ func TestMetadataWriters(t *testing.T) {
 	if sysextMetadata.PackageVersions["cri-tools"] != "1.36.0-1" {
 		t.Fatalf("packageVersions = %#v", sysextMetadata.PackageVersions)
 	}
+
+	indexPath := filepath.Join(workDir, "katlos-root", "katlos", "image.json")
+	stdout.Reset()
+	if err := run([]string{
+		"write-katlos-index",
+		"--output", indexPath,
+		"--image-role", "install",
+		"--version", "0.1.0",
+		"--build-id", "test-build",
+		"--architecture", "x86_64",
+		"--runtime-interface", "katl-runtime-1",
+		"--runtime-root", runtimeRoot,
+		"--runtime-root-metadata", runtimeRoot + ".json",
+		"--runtime-uki", runtimeUKI,
+		"--runtime-uki-metadata", runtimeUKI + ".json",
+		"--kubernetes-sysext", sysext,
+		"--kubernetes-sysext-metadata", sysext + ".json",
+	}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-katlos-index error = %v", err)
+	}
+	var index katlosIndex
+	readTestJSON(t, indexPath, &index)
+	if index.Kind != "KatlOSImage" || len(index.Components) != 3 {
+		t.Fatalf("KatlOS index = %#v", index)
+	}
+	if index.Components[0].Compatibility.Boot == nil || index.Components[1].Compatibility.RuntimeRoot == nil {
+		t.Fatalf("KatlOS component compatibility = %#v", index.Components)
+	}
+	assertFileContains(t, filepath.Join(workDir, "katlos-root", "components", "metadata", "runtime-root.sha256"), runtimeSHA+"  ../runtime/root.squashfs\n")
+
+	image := writeTestFile(t, workDir, "katlos-install.squashfs", "katlos image")
+	stdout.Reset()
+	if err := run([]string{
+		"write-katlos-artifact",
+		"--artifact", image,
+		"--image-role", "install",
+		"--version", "0.1.0",
+		"--build-id", "test-build",
+		"--architecture", "x86_64",
+		"--runtime-interface", "katl-runtime-1",
+	}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-katlos-artifact error = %v", err)
+	}
+	var artifact katlosArtifactMetadata
+	readTestJSON(t, image+".json", &artifact)
+	if artifact.Kind != "KatlOSImageArtifact" || artifact.SHA256 != strings.TrimSpace(stdout.String()) {
+		t.Fatalf("KatlOS artifact metadata = %#v, stdout %q", artifact, stdout.String())
+	}
+	assertFileContains(t, image+".sha256", artifact.SHA256+"  "+filepath.Base(image)+"\n")
 }
 
 func testRepoRoot(t *testing.T) string {
@@ -259,5 +308,16 @@ func readTestJSON(t *testing.T, path string, value any) {
 	}
 	if err := json.Unmarshal(data, value); err != nil {
 		t.Fatalf("Unmarshal(%s) error = %v\n%s", path, err, data)
+	}
+}
+
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s = %q, want %q", path, data, want)
 	}
 }

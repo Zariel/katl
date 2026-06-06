@@ -78,6 +78,10 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runWriteRuntimeUKI(args, stdout, stderr, cfg)
 	case "write-kubernetes-sysext":
 		return runWriteKubernetesSysext(args, stdout, stderr, cfg)
+	case "write-katlos-index":
+		return runWriteKatlOSIndex(args, stdout, stderr, cfg)
+	case "write-katlos-artifact":
+		return runWriteKatlOSArtifact(args, stdout, stderr, cfg)
 	case "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -91,6 +95,8 @@ const usage = `Usage: scripts/mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION
+       katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH --kubernetes-sysext PATH --kubernetes-sysext-metadata PATH
+       katl-mkosi-artifacts write-katlos-artifact --artifact PATH
 
 Write or query the local mkosi artifact index.
 
@@ -229,6 +235,67 @@ type sourceRepo struct {
 	ID      string `json:"id"`
 	BaseURL string `json:"baseURL"`
 	Minor   string `json:"minor"`
+}
+
+type katlosIndex struct {
+	APIVersion       string            `json:"apiVersion"`
+	Kind             string            `json:"kind"`
+	ImageRole        string            `json:"imageRole"`
+	Format           string            `json:"format"`
+	Version          string            `json:"version"`
+	BuildID          string            `json:"buildID"`
+	Architecture     string            `json:"architecture"`
+	RuntimeInterface string            `json:"runtimeInterface"`
+	CreatedAt        string            `json:"createdAt"`
+	Components       []katlosComponent `json:"components"`
+}
+
+type katlosComponent struct {
+	Name            string              `json:"name"`
+	Role            string              `json:"role"`
+	Path            string              `json:"path"`
+	Format          string              `json:"format"`
+	SizeBytes       int64               `json:"sizeBytes"`
+	SHA256          string              `json:"sha256"`
+	Version         string              `json:"version"`
+	PayloadVersion  string              `json:"payloadVersion,omitempty"`
+	Architecture    string              `json:"architecture"`
+	Compatibility   katlosCompatibility `json:"compatibility"`
+	SourceRepo      *sourceRepo         `json:"sourceRepo,omitempty"`
+	PackageVersions map[string]string   `json:"packageVersions,omitempty"`
+	InstallTarget   installTarget       `json:"installTarget"`
+}
+
+type katlosCompatibility struct {
+	RuntimeInterface  string         `json:"runtimeInterface"`
+	Boot              *bootCompat    `json:"boot,omitempty"`
+	RuntimeRoot       *runtimeCompat `json:"runtimeRoot,omitempty"`
+	KernelCommandLine []string       `json:"kernelCommandLine,omitempty"`
+}
+
+type installTarget struct {
+	Kind         string `json:"kind"`
+	Filesystem   string `json:"filesystem,omitempty"`
+	MinSizeBytes int64  `json:"minSizeBytes,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	Name         string `json:"name,omitempty"`
+}
+
+type katlosArtifactMetadata struct {
+	APIVersion        string `json:"apiVersion"`
+	Kind              string `json:"kind"`
+	ImageRole         string `json:"imageRole"`
+	Format            string `json:"format"`
+	Version           string `json:"version"`
+	BuildID           string `json:"buildID"`
+	Architecture      string `json:"architecture"`
+	RuntimeInterface  string `json:"runtimeInterface"`
+	Path              string `json:"path"`
+	SizeBytes         int64  `json:"sizeBytes"`
+	SHA256            string `json:"sha256"`
+	ChecksumPath      string `json:"checksumPath"`
+	EmbeddedIndexPath string `json:"embeddedIndexPath"`
+	CreatedAt         string `json:"createdAt"`
 }
 
 func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) error {
@@ -415,6 +482,192 @@ func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg confi
 	return nil
 }
 
+func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-katlos-index", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	output := flags.String("output", filepath.Join("build", "mkosi", "katlos-install-root", "katlos", "image.json"), "embedded KatlOS image index output")
+	imageRole := flags.String("image-role", "install", "KatlOS image role")
+	version := flags.String("version", cfg.Version, "KatlOS image version")
+	buildID := flags.String("build-id", cfg.Generation, "KatlOS image build ID")
+	architecture := flags.String("architecture", cfg.Architecture, "KatlOS image architecture")
+	runtimeInterface := flags.String("runtime-interface", "katl-runtime-1", "KatlOS runtime interface")
+	runtimeRoot := flags.String("runtime-root", cfg.RuntimeRoot, "runtime root artifact")
+	runtimeRootMetadata := flags.String("runtime-root-metadata", cfg.RuntimeMetadata, "runtime root metadata")
+	runtimeUKI := flags.String("runtime-uki", cfg.RuntimeUKI, "runtime UKI artifact")
+	runtimeUKIMetadata := flags.String("runtime-uki-metadata", cfg.RuntimeUKIMetadata, "runtime UKI metadata")
+	kubernetesSysext := flags.String("kubernetes-sysext", filepath.Join("build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
+	kubernetesSysextMetadata := flags.String("kubernetes-sysext-metadata", filepath.Join("build", "mkosi", "katl-kubernetes.raw.json"), "Kubernetes sysext metadata")
+	rootPath := flags.String("root-path", "components/runtime/root.squashfs", "embedded runtime root component path")
+	ukiPath := flags.String("uki-path", "components/boot/katl.efi", "embedded runtime UKI component path")
+	sysextPath := flags.String("sysext-path", "components/sysext/kubernetes.raw", "embedded Kubernetes sysext component path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *imageRole != "install" {
+		return fmt.Errorf("unsupported KatlOS image role: %s", *imageRole)
+	}
+	if strings.TrimSpace(*runtimeInterface) == "" {
+		return fmt.Errorf("--runtime-interface is required")
+	}
+
+	rootArtifact := absPath(cfg.RepoRoot, *runtimeRoot)
+	ukiArtifact := absPath(cfg.RepoRoot, *runtimeUKI)
+	sysextArtifact := absPath(cfg.RepoRoot, *kubernetesSysext)
+	rootMeta, err := readAndValidateLocalMetadata("runtime root", absPath(cfg.RepoRoot, *runtimeRootMetadata), rootArtifact)
+	if err != nil {
+		return err
+	}
+	ukiMeta, err := readAndValidateLocalMetadata("runtime UKI", absPath(cfg.RepoRoot, *runtimeUKIMetadata), ukiArtifact)
+	if err != nil {
+		return err
+	}
+	sysextMeta, err := readAndValidateLocalMetadata("Kubernetes sysext", absPath(cfg.RepoRoot, *kubernetesSysextMetadata), sysextArtifact)
+	if err != nil {
+		return err
+	}
+	if err := validateKatlOSComponents(rootMeta, ukiMeta, sysextMeta, *architecture, *runtimeInterface); err != nil {
+		return err
+	}
+
+	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "runtime-root.sha256"), rootMeta.SHA256, "../runtime/root.squashfs"); err != nil {
+		return err
+	}
+	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "runtime-uki.sha256"), ukiMeta.SHA256, "../boot/katl.efi"); err != nil {
+		return err
+	}
+	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "kubernetes-sysext.sha256"), sysextMeta.SHA256, "../sysext/kubernetes.raw"); err != nil {
+		return err
+	}
+
+	index := katlosIndex{
+		APIVersion:       "katl.dev/v1alpha1",
+		Kind:             "KatlOSImage",
+		ImageRole:        *imageRole,
+		Format:           "squashfs",
+		Version:          *version,
+		BuildID:          *buildID,
+		Architecture:     *architecture,
+		RuntimeInterface: *runtimeInterface,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		Components: []katlosComponent{
+			{
+				Name:         "runtime-root",
+				Role:         "runtime-root",
+				Path:         *rootPath,
+				Format:       rootMeta.Format,
+				SizeBytes:    rootMeta.SizeBytes,
+				SHA256:       rootMeta.SHA256,
+				Version:      firstNonEmpty(rootMeta.Generation, rootMeta.Version, *buildID),
+				Architecture: rootMeta.Architecture,
+				Compatibility: katlosCompatibility{
+					RuntimeInterface: rootMeta.RuntimeInterface,
+					Boot:             rootMeta.CompatibleBoot,
+				},
+				InstallTarget: installTarget{
+					Kind:         "root-slot",
+					Filesystem:   rootMeta.Format,
+					MinSizeBytes: rootMeta.SizeBytes,
+				},
+			},
+			{
+				Name:         "runtime-uki",
+				Role:         "runtime-uki",
+				Path:         *ukiPath,
+				Format:       ukiMeta.Format,
+				SizeBytes:    ukiMeta.SizeBytes,
+				SHA256:       ukiMeta.SHA256,
+				Version:      ukiMeta.Version,
+				Architecture: ukiMeta.Architecture,
+				Compatibility: katlosCompatibility{
+					RuntimeInterface:  ukiMeta.RuntimeInterface,
+					RuntimeRoot:       ukiMeta.CompatibleRuntime,
+					KernelCommandLine: ukiMeta.KernelCommandLine,
+				},
+				InstallTarget: installTarget{
+					Kind:     "esp-or-xbootldr",
+					Filename: "katl.efi",
+				},
+			},
+			{
+				Name:            "kubernetes",
+				Role:            "kubernetes-sysext",
+				Path:            *sysextPath,
+				Format:          sysextMeta.Format,
+				SizeBytes:       sysextMeta.SizeBytes,
+				SHA256:          sysextMeta.SHA256,
+				Version:         sysextMeta.Version,
+				PayloadVersion:  sysextMeta.PayloadVersion,
+				Architecture:    sysextMeta.Architecture,
+				SourceRepo:      sysextMeta.SourceRepo,
+				PackageVersions: sysextMeta.PackageVersions,
+				Compatibility: katlosCompatibility{
+					RuntimeInterface: sysextMeta.RuntimeInterface,
+					RuntimeRoot:      sysextMeta.CompatibleRuntime,
+				},
+				InstallTarget: installTarget{
+					Kind: "systemd-sysext",
+					Name: "kubernetes.raw",
+				},
+			},
+		},
+	}
+	if err := writeJSON(absPath(cfg.RepoRoot, *output), index, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "katlos index: %s\n", relPath(cfg.RepoRoot, absPath(cfg.RepoRoot, *output)))
+	return nil
+}
+
+func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-katlos-artifact", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifact := flags.String("artifact", cfg.KatlOSImage, "KatlOS image artifact")
+	imageRole := flags.String("image-role", "install", "KatlOS image role")
+	version := flags.String("version", cfg.Version, "KatlOS image version")
+	buildID := flags.String("build-id", cfg.Generation, "KatlOS image build ID")
+	architecture := flags.String("architecture", cfg.Architecture, "KatlOS image architecture")
+	runtimeInterface := flags.String("runtime-interface", "katl-runtime-1", "KatlOS runtime interface")
+	embeddedIndexPath := flags.String("embedded-index-path", "katlos/image.json", "embedded KatlOS image index path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return err
+	}
+	if err := writeChecksum(artifactPath); err != nil {
+		return err
+	}
+	metadata := katlosArtifactMetadata{
+		APIVersion:        "katl.dev/v1alpha1",
+		Kind:              "KatlOSImageArtifact",
+		ImageRole:         *imageRole,
+		Format:            "squashfs",
+		Version:           *version,
+		BuildID:           *buildID,
+		Architecture:      *architecture,
+		RuntimeInterface:  *runtimeInterface,
+		Path:              filepath.Base(artifactPath),
+		SizeBytes:         size,
+		SHA256:            digest,
+		ChecksumPath:      filepath.Base(artifactPath) + ".sha256",
+		EmbeddedIndexPath: *embeddedIndexPath,
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
 func writeIndex(indexPath string, cfg config) error {
 	for _, input := range []struct {
 		label string
@@ -557,6 +810,9 @@ func writeJSON(path string, value any, repoRoot string) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create %s directory: %w", relPath(repoRoot, path), err)
+	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath(repoRoot, path), err)
 	}
@@ -585,6 +841,82 @@ func resolveRuntimeSHA(repoRoot, explicit, metadataPath string) (string, error) 
 		return "", fmt.Errorf("runtime metadata missing sha256: %s", relPath(repoRoot, path))
 	}
 	return metadata.SHA256, nil
+}
+
+func readAndValidateLocalMetadata(label, metadataPath, artifactPath string) (localMetadata, error) {
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return localMetadata{}, fmt.Errorf("read %s metadata %s: %w", label, metadataPath, err)
+	}
+	var metadata localMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return localMetadata{}, fmt.Errorf("decode %s metadata %s: %w", label, metadataPath, err)
+	}
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return localMetadata{}, err
+	}
+	if metadata.SizeBytes != size {
+		return localMetadata{}, fmt.Errorf("%s metadata sizeBytes %d does not match artifact %d", label, metadata.SizeBytes, size)
+	}
+	if metadata.SHA256 != digest {
+		return localMetadata{}, fmt.Errorf("%s metadata sha256 %s does not match artifact %s", label, metadata.SHA256, digest)
+	}
+	return metadata, nil
+}
+
+func validateKatlOSComponents(root, uki, sysext localMetadata, architecture, runtimeInterface string) error {
+	if root.Architecture != architecture {
+		return fmt.Errorf("runtime root architecture %s does not match image architecture %s", root.Architecture, architecture)
+	}
+	if uki.Architecture != architecture {
+		return fmt.Errorf("runtime UKI architecture %s does not match image architecture %s", uki.Architecture, architecture)
+	}
+	if sysext.Architecture != architecture {
+		return fmt.Errorf("Kubernetes sysext architecture %s does not match image architecture %s", sysext.Architecture, architecture)
+	}
+	if root.RuntimeInterface != runtimeInterface {
+		return fmt.Errorf("runtime root interface %s does not match image interface %s", root.RuntimeInterface, runtimeInterface)
+	}
+	if uki.RuntimeInterface != runtimeInterface {
+		return fmt.Errorf("runtime UKI interface %s does not match image interface %s", uki.RuntimeInterface, runtimeInterface)
+	}
+	if sysext.RuntimeInterface != runtimeInterface {
+		return fmt.Errorf("Kubernetes sysext interface %s does not match image interface %s", sysext.RuntimeInterface, runtimeInterface)
+	}
+	if uki.CompatibleRuntime == nil {
+		return fmt.Errorf("runtime UKI metadata missing compatibleRuntime")
+	}
+	if uki.CompatibleRuntime.ArtifactSHA256 != root.SHA256 {
+		return fmt.Errorf("runtime UKI was built for root %s, want %s", uki.CompatibleRuntime.ArtifactSHA256, root.SHA256)
+	}
+	if sysext.CompatibleRuntime == nil {
+		return fmt.Errorf("Kubernetes sysext metadata missing compatibleRuntime")
+	}
+	if sysext.CompatibleRuntime.ArtifactSHA256 != root.SHA256 {
+		return fmt.Errorf("Kubernetes sysext was built for root %s, want %s", sysext.CompatibleRuntime.ArtifactSHA256, root.SHA256)
+	}
+	return nil
+}
+
+func writeComponentChecksum(path, digest, componentPath string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create component checksum directory: %w", err)
+	}
+	content := fmt.Sprintf("%s  %s\n", digest, componentPath)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write component checksum %s: %w", path, err)
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func newEntry(kind, format, path, metadata, checksum, repoRoot string) (artifactEntry, error) {

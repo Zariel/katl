@@ -30,49 +30,24 @@ need() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-need_file() {
-    local label="$1"
-    local path="$2"
-    [[ -f "$path" ]] || fail "$label not found: ${path#"$repo_root"/}"
-}
-
 under_repo() {
     local label="$1"
     local path="$2"
     [[ "$path" == "$repo_root"/* ]] || fail "$label must be under repository root: $path"
 }
 
-sha() {
-    sha256sum "$1" | awk '{print $1}'
+mkosi_artifacts() {
+    if command -v katl-mkosi-artifacts >/dev/null 2>&1; then
+        katl-mkosi-artifacts "$@"
+        return
+    fi
+    (cd "$repo_root" && go run ./cmd/katl-mkosi-artifacts "$@")
 }
 
-metadata_string() {
-    local path="$1"
-    local query="$2"
-    jq -er "$query" "$path"
-}
-
-metadata_matches() {
-    local label="$1"
-    local metadata="$2"
-    local artifact="$3"
-    local digest size
-    digest="$(sha "$artifact")"
-    size="$(stat -c %s "$artifact")"
-    jq -e --arg sha "$digest" --argjson size "$size" \
-        '.sha256 == $sha and .sizeBytes == $size' "$metadata" >/dev/null ||
-        fail "$label metadata does not match artifact bytes"
-}
-
-need awk
 need cp
-need date
-need jq
 need mkdir
 need mksquashfs
 need rm
-need sha256sum
-need stat
 
 case "$image_role" in
     install)
@@ -85,43 +60,6 @@ under_repo "KatlOS image output" "$output"
 under_repo "KatlOS image assembly root" "$work_root"
 [[ "$work_root" == "$build_dir"/* ]] || fail "KatlOS image assembly root must be under build/mkosi: $work_root"
 
-need_file "runtime root" "$runtime_root"
-need_file "runtime root metadata" "$runtime_root_metadata"
-need_file "runtime root checksum" "$runtime_root_checksum"
-need_file "runtime UKI" "$runtime_uki"
-need_file "runtime UKI metadata" "$runtime_uki_metadata"
-need_file "runtime UKI checksum" "$runtime_uki_checksum"
-need_file "Kubernetes sysext" "$kubernetes_sysext"
-need_file "Kubernetes sysext metadata" "$kubernetes_sysext_metadata"
-need_file "Kubernetes sysext checksum" "$kubernetes_sysext_checksum"
-
-(cd "$(dirname "$runtime_root")" && sha256sum -c "$(basename "$runtime_root_checksum")")
-(cd "$(dirname "$runtime_uki")" && sha256sum -c "$(basename "$runtime_uki_checksum")")
-(cd "$(dirname "$kubernetes_sysext")" && sha256sum -c "$(basename "$kubernetes_sysext_checksum")")
-metadata_matches "runtime root" "$runtime_root_metadata" "$runtime_root"
-metadata_matches "runtime UKI" "$runtime_uki_metadata" "$runtime_uki"
-metadata_matches "Kubernetes sysext" "$kubernetes_sysext_metadata" "$kubernetes_sysext"
-
-root_sha="$(sha "$runtime_root")"
-root_arch="$(metadata_string "$runtime_root_metadata" '.architecture')"
-root_interface="$(metadata_string "$runtime_root_metadata" '.runtimeInterface')"
-uki_arch="$(metadata_string "$runtime_uki_metadata" '.architecture')"
-uki_interface="$(metadata_string "$runtime_uki_metadata" '.runtimeInterface')"
-uki_runtime_sha="$(metadata_string "$runtime_uki_metadata" '.compatibleRuntime.artifactSHA256')"
-sysext_arch="$(metadata_string "$kubernetes_sysext_metadata" '.architecture')"
-sysext_interface="$(metadata_string "$kubernetes_sysext_metadata" '.runtimeInterface')"
-sysext_runtime_sha="$(metadata_string "$kubernetes_sysext_metadata" '.compatibleRuntime.artifactSHA256')"
-
-[[ "$root_arch" == "$architecture" ]] || fail "runtime root architecture $root_arch does not match image architecture $architecture"
-[[ "$uki_arch" == "$architecture" ]] || fail "runtime UKI architecture $uki_arch does not match image architecture $architecture"
-[[ "$sysext_arch" == "$architecture" ]] || fail "Kubernetes sysext architecture $sysext_arch does not match image architecture $architecture"
-[[ "$root_interface" == "$runtime_interface" ]] || fail "runtime root interface $root_interface does not match image interface $runtime_interface"
-[[ "$uki_interface" == "$runtime_interface" ]] || fail "runtime UKI interface $uki_interface does not match image interface $runtime_interface"
-[[ "$sysext_interface" == "$runtime_interface" ]] || fail "Kubernetes sysext interface $sysext_interface does not match image interface $runtime_interface"
-[[ "$uki_runtime_sha" == "$root_sha" ]] || fail "runtime UKI was built for root $uki_runtime_sha, want $root_sha"
-[[ "$sysext_runtime_sha" == "$root_sha" ]] || fail "Kubernetes sysext was built for root $sysext_runtime_sha, want $root_sha"
-
-created="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 rm -rf -- "$work_root"
 mkdir -p \
     "$work_root/katlos" \
@@ -136,137 +74,29 @@ cp "$kubernetes_sysext" "$work_root/components/sysext/kubernetes.raw"
 cp "$runtime_root_metadata" "$work_root/components/metadata/runtime-root.json"
 cp "$runtime_uki_metadata" "$work_root/components/metadata/runtime-uki.json"
 cp "$kubernetes_sysext_metadata" "$work_root/components/metadata/kubernetes-sysext.json"
-printf "%s  %s\n" "$root_sha" "../runtime/root.squashfs" >"$work_root/components/metadata/runtime-root.sha256"
-printf "%s  %s\n" "$(sha "$runtime_uki")" "../boot/katl.efi" >"$work_root/components/metadata/runtime-uki.sha256"
-printf "%s  %s\n" "$(sha "$kubernetes_sysext")" "../sysext/kubernetes.raw" >"$work_root/components/metadata/kubernetes-sysext.sha256"
-
-jq -n \
-    --arg apiVersion "katl.dev/v1alpha1" \
-    --arg kind "KatlOSImage" \
-    --arg imageRole "$image_role" \
-    --arg format "squashfs" \
-    --arg version "$version" \
-    --arg buildID "$build_id" \
-    --arg architecture "$architecture" \
-    --arg runtimeInterface "$runtime_interface" \
-    --arg createdAt "$created" \
-    --arg rootPath "components/runtime/root.squashfs" \
-    --arg ukiPath "components/boot/katl.efi" \
-    --arg sysextPath "components/sysext/kubernetes.raw" \
-    --slurpfile root "$runtime_root_metadata" \
-    --slurpfile uki "$runtime_uki_metadata" \
-    --slurpfile sysext "$kubernetes_sysext_metadata" '
-    $root[0] as $rootMeta |
-    $uki[0] as $ukiMeta |
-    $sysext[0] as $sysextMeta |
-    {
-      apiVersion: $apiVersion,
-      kind: $kind,
-      imageRole: $imageRole,
-      format: $format,
-      version: $version,
-      buildID: $buildID,
-      architecture: $architecture,
-      runtimeInterface: $runtimeInterface,
-      createdAt: $createdAt,
-      components: [
-        {
-          name: "runtime-root",
-          role: "runtime-root",
-          path: $rootPath,
-          format: $rootMeta.format,
-          sizeBytes: $rootMeta.sizeBytes,
-          sha256: $rootMeta.sha256,
-          version: ($rootMeta.generation // $rootMeta.version // $buildID),
-          architecture: $rootMeta.architecture,
-          compatibility: {
-            runtimeInterface: $rootMeta.runtimeInterface,
-            boot: $rootMeta.compatibleBoot
-          },
-          installTarget: {
-            kind: "root-slot",
-            filesystem: $rootMeta.format,
-            minSizeBytes: $rootMeta.sizeBytes
-          }
-        },
-        {
-          name: "runtime-uki",
-          role: "runtime-uki",
-          path: $ukiPath,
-          format: $ukiMeta.format,
-          sizeBytes: $ukiMeta.sizeBytes,
-          sha256: $ukiMeta.sha256,
-          version: $ukiMeta.version,
-          architecture: $ukiMeta.architecture,
-          compatibility: {
-            runtimeInterface: $ukiMeta.runtimeInterface,
-            runtimeRoot: $ukiMeta.compatibleRuntime,
-            kernelCommandLine: $ukiMeta.kernelCommandLine
-          },
-          installTarget: {
-            kind: "esp-or-xbootldr",
-            filename: "katl.efi"
-          }
-        },
-        {
-          name: "kubernetes",
-          role: "kubernetes-sysext",
-          path: $sysextPath,
-          format: $sysextMeta.format,
-          sizeBytes: $sysextMeta.sizeBytes,
-          sha256: $sysextMeta.sha256,
-          version: $sysextMeta.version,
-          payloadVersion: $sysextMeta.payloadVersion,
-          architecture: $sysextMeta.architecture,
-          compatibility: {
-            runtimeInterface: $sysextMeta.runtimeInterface,
-            runtimeRoot: $sysextMeta.compatibleRuntime
-          },
-          sourceRepo: $sysextMeta.sourceRepo,
-          packageVersions: $sysextMeta.packageVersions,
-          installTarget: {
-            kind: "systemd-sysext",
-            name: "kubernetes.raw"
-          }
-        }
-      ]
-    }' >"$work_root/katlos/image.json"
+mkosi_artifacts write-katlos-index \
+    --output "$work_root/katlos/image.json" \
+    --image-role "$image_role" \
+    --version "$version" \
+    --build-id "$build_id" \
+    --architecture "$architecture" \
+    --runtime-interface "$runtime_interface" \
+    --runtime-root "$runtime_root" \
+    --runtime-root-metadata "$runtime_root_metadata" \
+    --runtime-uki "$runtime_uki" \
+    --runtime-uki-metadata "$runtime_uki_metadata" \
+    --kubernetes-sysext "$kubernetes_sysext" \
+    --kubernetes-sysext-metadata "$kubernetes_sysext_metadata" >/dev/null
 
 mkdir -p "$(dirname "$output")"
 rm -f -- "$output" "$output.sha256" "$output.json"
 mksquashfs "$work_root" "$output" -noappend -all-root -comp zstd >/dev/null
-image_size="$(stat -c %s "$output")"
-image_sha="$(sha "$output")"
-printf "%s  %s\n" "$image_sha" "$(basename "$output")" >"$output.sha256"
-jq -n \
-    --arg apiVersion "katl.dev/v1alpha1" \
-    --arg kind "KatlOSImageArtifact" \
-    --arg imageRole "$image_role" \
-    --arg format "squashfs" \
-    --arg version "$version" \
-    --arg buildID "$build_id" \
-    --arg architecture "$architecture" \
-    --arg runtimeInterface "$runtime_interface" \
-    --arg path "$(basename "$output")" \
-    --arg checksumPath "$(basename "$output").sha256" \
-    --arg sha256 "$image_sha" \
-    --arg createdAt "$created" \
-    --argjson sizeBytes "$image_size" \
-    '{
-      apiVersion: $apiVersion,
-      kind: $kind,
-      imageRole: $imageRole,
-      format: $format,
-      version: $version,
-      buildID: $buildID,
-      architecture: $architecture,
-      runtimeInterface: $runtimeInterface,
-      path: $path,
-      sizeBytes: $sizeBytes,
-      sha256: $sha256,
-      checksumPath: $checksumPath,
-      embeddedIndexPath: "katlos/image.json",
-      createdAt: $createdAt
-    }' >"$output.json"
+mkosi_artifacts write-katlos-artifact \
+    --artifact "$output" \
+    --image-role "$image_role" \
+    --version "$version" \
+    --build-id "$build_id" \
+    --architecture "$architecture" \
+    --runtime-interface "$runtime_interface" >/dev/null
 
 echo "katlos image: ${output#"$repo_root"/}"
