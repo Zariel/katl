@@ -27,6 +27,14 @@ func TestDiskExecutorDryRunOutput(t *testing.T) {
 	if result.Operations[0].Name != "wipe-target-signatures" || result.Operations[0].Command != "wipefs" {
 		t.Fatalf("first operation = %#v", result.Operations[0])
 	}
+	createGPT := findOp(result.Operations, "create-gpt")
+	if createGPT.Command != "sfdisk" || !strings.Contains(createGPT.Stdin, `type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, name="KATL_ESP"`) {
+		t.Fatalf("create-gpt operation = %#v", createGPT)
+	}
+	formatESP := findOp(result.Operations, "format-esp")
+	if !strings.HasSuffix(strings.Join(formatESP.Args, " "), "/dev/disk/by-partlabel/KATL_ESP") {
+		t.Fatalf("format ESP args = %#v", formatESP.Args)
+	}
 	if countOps(result.Operations, "write-root-a") != 1 || countOps(result.Operations, "write-root-b") != 0 {
 		t.Fatalf("root write operations = %#v", result.Operations)
 	}
@@ -62,6 +70,9 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	}
 	if len(commands.Calls) == 0 {
 		t.Fatalf("expected command calls")
+	}
+	if commands.Inputs["create-gpt"] == "" || !strings.Contains(commands.Inputs["create-gpt"], `name="KATL_ROOT_A"`) {
+		t.Fatalf("create-gpt input = %q", commands.Inputs["create-gpt"])
 	}
 	if recorded != 1 {
 		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
@@ -240,10 +251,10 @@ func executorPlan() DiskLayoutPlan {
 	return DiskLayoutPlan{
 		TargetDiskPath: "/dev/nvme0n1",
 		Partitions: []PartitionPlan{
-			{Name: "esp", GPTLabel: GPTLabelESP, Filesystem: "vfat", MountPath: "/efi"},
-			{Name: "root-a", GPTLabel: GPTLabelRootA, Filesystem: "squashfs", MountPath: "/", SizeMiB: 1024},
-			{Name: "root-b", GPTLabel: GPTLabelRootB, Filesystem: "squashfs", SizeMiB: 1024},
-			{Name: "state", GPTLabel: GPTLabelState, Filesystem: "ext4", MountPath: "/var"},
+			{Name: "esp", GPTLabel: GPTLabelESP, Type: "esp", Filesystem: "vfat", MountPath: "/efi", SizeMiB: 512},
+			{Name: "root-a", GPTLabel: GPTLabelRootA, Type: "root-x86-64", Filesystem: "squashfs", MountPath: "/", SizeMiB: 1024},
+			{Name: "root-b", GPTLabel: GPTLabelRootB, Type: "root-x86-64", Filesystem: "squashfs", SizeMiB: 1024},
+			{Name: "state", GPTLabel: GPTLabelState, Type: "var", Filesystem: "ext4", MountPath: "/var", Remaining: true},
 		},
 		ExtraMounts: []ExtraDiskPlan{
 			{Name: "data", DevicePath: "/dev/sdb", Filesystem: "xfs", MountPath: "/srv/data", Wipe: true},
@@ -270,6 +281,15 @@ func countOps(operations []DiskOperation, name string) int {
 	return count
 }
 
+func findOp(operations []DiskOperation, name string) DiskOperation {
+	for _, operation := range operations {
+		if operation.Name == name {
+			return operation
+		}
+	}
+	return DiskOperation{}
+}
+
 func countCalls(calls []CommandCall, name string) int {
 	count := 0
 	for _, call := range calls {
@@ -281,7 +301,8 @@ func countCalls(calls []CommandCall, name string) int {
 }
 
 type NoopCommandRunner struct {
-	Calls []CommandCall
+	Calls  []CommandCall
+	Inputs map[string]string
 }
 
 type CommandCall struct {
@@ -291,6 +312,15 @@ type CommandCall struct {
 
 func (r *NoopCommandRunner) Run(_ context.Context, name string, args ...string) error {
 	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	return nil
+}
+
+func (r *NoopCommandRunner) RunInput(_ context.Context, input string, name string, args ...string) error {
+	if r.Inputs == nil {
+		r.Inputs = make(map[string]string)
+	}
+	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	r.Inputs["create-gpt"] = input
 	return nil
 }
 

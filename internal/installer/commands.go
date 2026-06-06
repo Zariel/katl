@@ -3,6 +3,7 @@ package installer
 import (
 	"context"
 	"os/exec"
+	"strings"
 )
 
 // CommandRunner is the boundary between typed installer state and host tools.
@@ -22,6 +23,12 @@ func NewExecCommandRunner() ExecCommandRunner {
 
 func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.Run()
+}
+
+func (ExecCommandRunner) RunInput(ctx context.Context, input string, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(input)
 	return cmd.Run()
 }
 

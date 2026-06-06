@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
+}
+
+type InputCommandRunner interface {
+	CommandRunner
+	RunInput(ctx context.Context, input string, name string, args ...string) error
 }
 
 type RootSlotInstaller func(context.Context, RootSlotInstallRequest) (RootSlotInstallResult, error)
@@ -39,6 +45,7 @@ type DiskOperation struct {
 	Name        string
 	Command     string
 	Args        []string
+	Stdin       string
 	Destructive bool
 }
 
@@ -101,7 +108,15 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 			result.Boot = &boot
 			continue
 		}
-		if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
+		if operation.Stdin != "" {
+			commands, ok := e.Commands.(InputCommandRunner)
+			if !ok {
+				return DiskExecutionResult{}, fmt.Errorf("%s: command runner must support stdin", operation.Name)
+			}
+			if err := commands.RunInput(ctx, operation.Stdin, operation.Command, operation.Args...); err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
+		} else if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
 			return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 		}
 		if operation.Name == "mount-state" && e.RecordStateMounted != nil {
@@ -121,7 +136,9 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 
 	operations := []DiskOperation{
 		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", plan.TargetDiskPath}, Destructive: true},
-		{Name: "create-gpt", Command: "sfdisk", Args: []string{plan.TargetDiskPath}, Destructive: true},
+		{Name: "create-gpt", Command: "sfdisk", Args: []string{plan.TargetDiskPath}, Stdin: sfdiskScript(plan), Destructive: true},
+		{Name: "reread-partitions", Command: "partprobe", Args: []string{plan.TargetDiskPath}},
+		{Name: "settle-partitions", Command: "udevadm", Args: []string{"settle"}},
 	}
 
 	for _, partition := range plan.Partitions {
@@ -131,7 +148,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 				operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true})
 			}
 		default:
-			operations = append(operations, DiskOperation{Name: "format-" + partition.Name, Command: "mkfs." + partition.Filesystem, Args: []string{"-L", partition.GPTLabel}, Destructive: true})
+			operations = append(operations, DiskOperation{Name: "format-" + partition.Name, Command: "mkfs." + partition.Filesystem, Args: formatArgs(partition), Destructive: true})
 		}
 		if partition.MountPath != "" && partition.Name != "root-a" {
 			name := "mount-" + partition.Name
@@ -155,6 +172,50 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	}
 
 	return operations
+}
+
+func sfdiskScript(plan DiskLayoutPlan) string {
+	var builder strings.Builder
+	builder.WriteString("label: gpt\n")
+	builder.WriteString("unit: MiB\n\n")
+	for _, partition := range plan.Partitions {
+		fields := []string{"type=" + partitionTypeGUID(partition.Type), "name=\"" + partition.GPTLabel + "\""}
+		if !partition.Remaining {
+			fields = append([]string{"size=" + fmt.Sprintf("%dMiB", partition.SizeMiB)}, fields...)
+		}
+		builder.WriteString(strings.Join(fields, ", "))
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
+func partitionTypeGUID(kind string) string {
+	switch kind {
+	case "esp":
+		return "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+	case "xbootldr":
+		return "bc13c2ff-59e6-4262-a352-b275fd6f7172"
+	case "root-x86-64":
+		return "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+	case "var":
+		return "4d21b016-b534-45c2-a9fb-5c16e091fd2d"
+	default:
+		return "0fc63daf-8483-4772-8e79-3d69d8477de4"
+	}
+}
+
+func formatArgs(partition PartitionPlan) []string {
+	device := partLabelDevice(partition.GPTLabel)
+	switch partition.Filesystem {
+	case "vfat":
+		return []string{"-n", partition.GPTLabel, device}
+	default:
+		return []string{"-L", partition.GPTLabel, device}
+	}
+}
+
+func partLabelDevice(label string) string {
+	return "/dev/disk/by-partlabel/" + label
 }
 
 func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
