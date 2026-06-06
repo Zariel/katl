@@ -253,12 +253,16 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
 	if err != nil {
+		etcdReport.FailureSummary = err.Error()
+		if writeErr := writeThreeControlPlaneEtcdReport(etcdReportPath, etcdReport); writeErr != nil {
+			t.Fatalf("write failed etcd report: %v; original error: %v", writeErr, err)
+		}
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("verify stacked etcd: %v", err)
 	}
-	if err := writeTwoNodeDiagnosticJSON(etcdReportPath, etcdReport); err != nil {
+	if err := writeThreeControlPlaneEtcdReport(etcdReportPath, etcdReport); err != nil {
 		t.Fatalf("write etcd report: %v", err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
@@ -555,10 +559,15 @@ func transcriptHasCommandArgAfterPrefix(entries []transcriptEntry, prefix []stri
 }
 
 type threeControlPlaneEtcdReport struct {
-	StaticPods []controlPlaneStaticPodReport `json:"staticPods"`
-	Health     cluster.EtcdReport            `json:"health"`
-	Snapshot   cluster.EtcdSnapshotReport    `json:"snapshot"`
-	Transcript string                        `json:"transcript"`
+	FailureSummary string                        `json:"failureSummary,omitempty"`
+	StaticPods     []controlPlaneStaticPodReport `json:"staticPods"`
+	Health         cluster.EtcdReport            `json:"health"`
+	Snapshot       cluster.EtcdSnapshotReport    `json:"snapshot"`
+	Transcript     string                        `json:"transcript"`
+}
+
+func writeThreeControlPlaneEtcdReport(path string, report threeControlPlaneEtcdReport) error {
+	return writeTwoNodeDiagnosticJSON(path, report)
 }
 
 type controlPlaneStaticPodReport struct {
@@ -576,7 +585,7 @@ func verifyThreeControlPlaneEtcd(ctx context.Context, transcriptDir string, node
 	checker := cluster.EtcdChecker{Transport: transport}
 	report, err := checker.Check(ctx, planned["cp-1"])
 	if err != nil {
-		return threeControlPlaneEtcdReport{}, err
+		return threeControlPlaneEtcdReport{StaticPods: staticPods, Transcript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1")}, err
 	}
 	if !report.Healthy {
 		return threeControlPlaneEtcdReport{StaticPods: staticPods, Health: report, Transcript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1")}, fmt.Errorf("etcd health failed: %s", report.Diagnostics)
@@ -830,6 +839,47 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if manifest.WorldManifest != "/tmp/world.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
 		t.Fatalf("planned provenance = %#v", manifest)
+	}
+}
+
+func TestWriteThreeControlPlaneEtcdReportPreservesFailureEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etcd-report.json")
+	if err := writeThreeControlPlaneEtcdReport(path, threeControlPlaneEtcdReport{
+		FailureSummary: "etcd member cp-3 missing",
+		StaticPods: []controlPlaneStaticPodReport{{
+			Node:      "cp-1",
+			Container: map[string]string{"etcd": "container-1"},
+		}},
+		Health: cluster.EtcdReport{
+			Node:    "cp-1",
+			Healthy: true,
+			Members: []cluster.EtcdMember{
+				{Name: "cp-1"},
+				{Name: "cp-2"},
+			},
+			Quorum: 2,
+		},
+		Transcript: "/tmp/run/etcd-transcripts/cp-1.jsonl",
+	}); err != nil {
+		t.Fatalf("writeThreeControlPlaneEtcdReport() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read etcd report: %v", err)
+	}
+	var report threeControlPlaneEtcdReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("decode etcd report: %v", err)
+	}
+	if report.FailureSummary != "etcd member cp-3 missing" || report.Transcript != "/tmp/run/etcd-transcripts/cp-1.jsonl" {
+		t.Fatalf("failure evidence = %#v", report)
+	}
+	if len(report.StaticPods) != 1 || report.StaticPods[0].Container["etcd"] != "container-1" {
+		t.Fatalf("static pod evidence = %#v", report.StaticPods)
+	}
+	if report.Health.Quorum != 2 || report.Health.HasMember("cp-3") {
+		t.Fatalf("health evidence = %#v", report.Health)
 	}
 }
 
