@@ -119,295 +119,50 @@ in the NixOS host configuration.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
 - `/dev/net/tun` and `vhost_net`: useful once tests need richer VM networking.
 
-## Installed Runtime VM Fixture
+## VM And Nspawn Test Worlds
 
-The opt-in installed-runtime vmtest-agent smoke expects a real installed runtime
-disk, a rendered ESP artifact tree, and a fixture manifest that binds those
-artifacts by checksum. Package completed install-to-runtime outputs into that
-fixture contract and generate a sourceable smoke-test environment with:
-
-```sh
-scripts/create-installed-runtime-fixture \
-  --disk build/local/cp-1.qcow2 \
-  --esp-artifacts build/local/cp-1-esp \
-  --node-metadata build/local/cp-1-node.json \
-  --format qcow2
-```
-
-The command copies the disk, ESP tree, and optional node metadata under
-`build/installed-runtime-fixture/`, writes an
-`InstalledRuntimeVMTestFixture` manifest with disk and ESP checksums, preflights
-the ESP loader entries through `scripts/check-installed-disk-smoke
---preflight-only`, and writes generated files under the same directory. Source
-the generated `vmtest.env` or run the generated wrappers to execute
-`TestInstalledRuntimeVMTestAgentSmoke` and
-`TestInstalledRuntimeKubeadmReadySmoke`. Use `--artifact-mode reference` when
-the fixture should bind existing paths instead of copying a large local disk.
-
-If a checksum-bound fixture manifest already exists, validate and resolve it
-directly with:
+Enabled nspawn, VM, first-install, installed-runtime, and multinode kubeadm
+smokes run through one runner-created world. Use `scripts/vmtest-run` instead of
+preparing fixture environment files or invoking `scripts/vmtest-exec` directly:
 
 ```sh
-scripts/resolve-installed-runtime-fixture \
-  --disk build/local/cp-1.qcow2 \
-  --esp-artifacts build/local/cp-1-esp \
-  --fixture build/local/cp-1-fixture.json \
-  --format qcow2
+scripts/vmtest-run ./internal/vmtest -run Nspawn
+scripts/vmtest-run ./internal/vmtest \
+  -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply'
+scripts/vmtest-run ./cmd/katlctl \
+  -run 'TwoNodeKubeadmJoin|ThreeControlPlaneStackedEtcd' \
+  -timeout 60m
 ```
 
-Neither command manufactures placeholder disks; the disk and ESP tree should
-come from the real install-to-runtime flow.
+The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
+host capabilities, records `world.json`, runs package test binaries through
+`go test -exec scripts/vmtest-exec`, and writes `summary.json` plus
+`go-test.log`. Pass normal `go test` flags to the runner; add `-json` only when
+JSON event output is wanted.
 
-The generated kubeadm-ready wrapper boots the installed runtime with the vmtest
-agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
-`/etc/kubernetes` projection, kubeadm tooling, and container runtime readiness.
-It does not run `kubeadm init` or the API-server smoke.
+Plain `go test ./...` keeps VM and nspawn scenarios disabled. If an enabled
+smoke is invoked directly without the world manifest, it fails with a setup
+error naming `scripts/vmtest-run`.
 
-## Nspawn Userspace Fixtures
+World-backed smokes derive their fixture inputs from repo-controlled artifacts:
+mkosi artifact indexes, KatlOS install images, runtime roots, generated install
+manifests, per-node metadata, target disks, ESP artifact trees, nspawn userspace
+roots, and installed-runtime fixtures. First-install smokes publish installed
+runtime fixtures inside the world; installed-runtime and multinode kubeadm
+smokes consume those world-published fixtures instead of asking the developer to
+export disk, ESP, metadata, fixture, or node-address variables.
 
-Nspawn-backed checks use a repo-owned userspace root prepared from built Katl
-runtime artifacts. Build the runtime first, then prepare and enable the fixture:
+Build artifacts first when the local world cannot discover suitable outputs:
 
 ```sh
 scripts/mkosi build-runtime
-scripts/prepare-nspawn-userspace-fixture
-source build/nspawn/nspawn.env
-KATL_NSPAWN_RUN=1 go test ./internal/vmtest ./internal/installer/generation -run 'Nspawn' -count=1
+scripts/mkosi build-installer
+scripts/mkosi build-katlos-image
 ```
 
-When `KATL_NSPAWN_RUN=1` is set and no explicit `KATL_NSPAWN_ROOT` or
-`KATL_NSPAWN_IMAGE` override is supplied, the nspawn smoke tests invoke the same
-preparer before assertions. Missing runtime build outputs are fixture
-preparation failures; missing `systemd-nspawn` or host privileges remain host
-capability skips recorded by the harness. The preparer overlays the current
-repo-built Katl runtime helper binaries into the managed fixture root and records
-their digests in `build/nspawn/nspawn-fixture.json`.
-
-To run the opt-in first-install target-disk fixture contract smoke, resolve
-the mkosi artifact index, optional node metadata, and an install manifest bound
-to the local KatlOS image into a sourceable environment with:
-
-```sh
-scripts/bind-install-manifest-image \
-  --artifact-index build/mkosi/artifacts.json \
-  --template docs/internal/examples/minimal-install-manifest.json \
-  --target-disk-by-id /dev/disk/by-id/virtio-katl-root \
-  --output build/local/cp-1-install.json
-
-scripts/resolve-first-install-katlos-image-fixture \
-  --artifact-index build/mkosi/artifacts.json \
-  --node-metadata build/local/cp-1-node.json \
-  --install-manifest build/local/cp-1-install.json
-```
-
-The manifest binding step keeps the user-facing install fields from the
-template, rewrites `katlosImage` to the indexed local image, and applies the
-explicit VM target disk selector. The resolver discovers the installer UKI and
-KatlOS install image from the artifact index, verifies the KatlOS image contract
-and manifest image binding, extracts the runtime-root component for the
-host-side VM harness, records SHA-256 bindings, and writes generated files under
-`build/first-install-katlos-image-fixture/`. The generated smoke runs in
-installed-ESP mode: it extracts the ESP from the target disk written by the
-installer and uses that tree for the packaged runtime boot. Source the generated
-`vmtest.env` or run the generated wrappers to revalidate inputs and execute the
-serial-only smoke before the stronger fixture contract:
-
-```sh
-build/first-install-katlos-image-fixture/<run>/run-first-install-katlos-image-serial-smoke.sh
-build/first-install-katlos-image-fixture/<run>/run-first-install-katlos-image-fixture.sh
-```
-
-The serial smoke runs installer boot, guest handoff, target disk install,
-installed ESP extraction, and runtime boot up to the deterministic state
-projection console signal. It does not require the vmtest agent or vsock. The
-fixture contract then adds the packaged-runtime agent and kubeadm-ready checks
-when the host supports them.
-
-If you already have a loose runtime root and rendered runtime ESP tree from a
-lower-level development loop, `scripts/resolve-first-install-runtime-fixture`
-can still resolve those inputs directly.
-
-The smoke keeps the target disk from the first-install harness, packages it with
-`scripts/create-installed-runtime-fixture`, includes node metadata when
-`KATL_RUNTIME_NODE_METADATA` or `KATL_INSTALLED_NODE_METADATA` is set,
-revalidates the generated fixture manifest, then boots the packaged fixture with
-`RequireVMTestAgent=true` and records the vsock health transcript. The current
-harness still owns whether the target disk was actually written by the in-guest
-installer; this smoke fails if that path does not leave a bootable installed
-runtime disk.
-
-After the generated first-install wrapper passes, it publishes a packaged copy of
-the installed runtime under `<state-dir>/published-installed-runtime/`. Source
-that directory's `vmtest.env` to run the direct installed-runtime smokes. The
-top-level KatlOS-image fixture manifest also records that published runtime
-directory, so later multi-node resolvers can consume either the top-level
-`katlos-image-fixture.json` or the published runtime directory directly. The
-published directory keeps the installed disk, disk format, ESP tree, fixture
-manifest, optional `node.json`, and their checksum bindings together so later VM
-smokes do not depend on the source run layout.
-
-## Two-Node Kubeadm VM Fixtures
-
-The opt-in two-node kubeadm join smoke expects two already installed runtime
-disks, rendered per-node ESP artifact trees, per-node `/etc/katl/node.json`
-metadata files, per-node fixture manifests that bind those artifacts by checksum,
-and bridge-reachable addresses for the guests. The control-plane disk must be
-installed from `cp-1` materials, and the worker disk must be installed from
-`worker-1` materials.
-
-If each node came from a published first-install fixture directory, resolve the
-two-node inputs with:
-
-```sh
-scripts/resolve-two-node-kubeadm-fixtures \
-  --control-plane-published-dir build/first-install-cp-1/published-installed-runtime \
-  --worker-published-dir build/first-install-worker-1/published-installed-runtime \
-  --control-plane-address 10.88.0.11 \
-  --worker-address 10.88.0.12 \
-  --bridge katlbr0
-```
-
-If each node came from `scripts/resolve-first-install-katlos-image-fixture`, you
-can pass those top-level fixture manifests directly and let the resolver expand
-their published installed-runtime directories:
-
-```sh
-scripts/resolve-two-node-kubeadm-fixtures \
-  --control-plane-katlos-fixture build/first-install-cp-1/katlos-image-fixture.json \
-  --worker-katlos-fixture build/first-install-worker-1/katlos-image-fixture.json \
-  --control-plane-address 10.88.0.11 \
-  --worker-address 10.88.0.12 \
-  --bridge katlbr0
-```
-
-To resolve loose local inputs instead, pass the disk, ESP, metadata, and fixture
-manifest paths directly:
-
-```sh
-scripts/resolve-two-node-kubeadm-fixtures \
-  --control-plane-disk build/local/cp-1.qcow2 \
-  --worker-disk build/local/worker-1.qcow2 \
-  --control-plane-esp build/local/cp-1-esp \
-  --worker-esp build/local/worker-1-esp \
-  --control-plane-metadata build/local/cp-1-node.json \
-  --worker-metadata build/local/worker-1-node.json \
-  --control-plane-fixture build/local/cp-1-fixture.json \
-  --worker-fixture build/local/worker-1-fixture.json \
-  --control-plane-address 10.88.0.11 \
-  --worker-address 10.88.0.12 \
-  --control-plane-format qcow2 \
-  --worker-format qcow2 \
-  --bridge katlbr0
-```
-
-The command preflights each disk against its ESP tree, verifies the node metadata
-matches `cp-1` and `worker-1`, rejects shared disk, ESP, metadata, or address
-inputs, checks fixture manifest checksums, checks that the bridge exists with an
-IPv4 subnet containing both node addresses, and writes generated files under
-`build/two-node-kubeadm-fixtures/`. Source the generated `vmtest.env` or run the
-generated wrapper to revalidate the fixture inputs and execute
-`TestInstalledRuntimeTwoNodeKubeadmJoinSmoke`.
-
-Each fixture manifest binds one installed node's artifacts:
-
-```json
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "InstalledRuntimeVMTestFixture",
-  "nodeName": "cp-1",
-  "systemRole": "control-plane",
-  "disk": {"path": "cp-1.qcow2", "format": "qcow2", "sha256": "..."},
-  "espArtifacts": {"path": "cp-1-esp", "treeSHA256": "..."},
-  "nodeMetadata": {"path": "cp-1-node.json", "sha256": "..."}
-}
-```
-
-## Three-Control-Plane Stacked-Etcd VM Smoke
-
-The opt-in three-control-plane stacked-etcd smoke expects three already
-installed control-plane runtime disks, rendered per-node ESP artifact trees,
-per-node `/etc/katl/node.json` metadata files, per-node fixture manifests that
-bind those artifacts by checksum, and bridge-reachable addresses. It uses the
-operator bootstrap path to run `kubeadm init` on `cp-1`, join `cp-2` and `cp-3`
-serially, verify the resulting node objects, verify stacked-etcd health and
-membership, and create a restricted etcd snapshot artifact.
-
-Resolve those local inputs into a sourceable environment with:
-
-```sh
-scripts/resolve-three-control-plane-kubeadm-fixtures \
-  --cp1-published-dir build/first-install-cp-1/published-installed-runtime \
-  --cp2-published-dir build/first-install-cp-2/published-installed-runtime \
-  --cp3-published-dir build/first-install-cp-3/published-installed-runtime \
-  --cp1-address 10.88.0.11 \
-  --cp2-address 10.88.0.12 \
-  --cp3-address 10.88.0.13 \
-  --bridge katlbr0
-```
-
-If the three installed control-plane nodes came from KatlOS-image first-install
-fixtures, pass the top-level fixture manifests directly:
-
-```sh
-scripts/resolve-three-control-plane-kubeadm-fixtures \
-  --cp1-katlos-fixture build/first-install-cp-1/katlos-image-fixture.json \
-  --cp2-katlos-fixture build/first-install-cp-2/katlos-image-fixture.json \
-  --cp3-katlos-fixture build/first-install-cp-3/katlos-image-fixture.json \
-  --cp1-address 10.88.0.11 \
-  --cp2-address 10.88.0.12 \
-  --cp3-address 10.88.0.13 \
-  --bridge katlbr0
-```
-
-To resolve loose local inputs instead, pass each node's disk, ESP, metadata, and
-fixture manifest paths directly:
-
-```sh
-scripts/resolve-three-control-plane-kubeadm-fixtures \
-  --cp1-disk build/local/cp-1.qcow2 \
-  --cp2-disk build/local/cp-2.qcow2 \
-  --cp3-disk build/local/cp-3.qcow2 \
-  --cp1-esp build/local/cp-1-esp \
-  --cp2-esp build/local/cp-2-esp \
-  --cp3-esp build/local/cp-3-esp \
-  --cp1-metadata build/local/cp-1-node.json \
-  --cp2-metadata build/local/cp-2-node.json \
-  --cp3-metadata build/local/cp-3-node.json \
-  --cp1-fixture build/local/cp-1-fixture.json \
-  --cp2-fixture build/local/cp-2-fixture.json \
-  --cp3-fixture build/local/cp-3-fixture.json \
-  --cp1-address 10.88.0.11 \
-  --cp2-address 10.88.0.12 \
-  --cp3-address 10.88.0.13 \
-  --cp1-format qcow2 \
-  --cp2-format qcow2 \
-  --cp3-format qcow2 \
-  --bridge katlbr0
-```
-
-The command preflights each disk against its ESP tree, verifies each node
-metadata file matches `cp-1`, `cp-2`, or `cp-3`, rejects shared disk, metadata,
-fixture, or address inputs, checks fixture manifest checksums, checks that the
-bridge exists with an IPv4 subnet containing all three node addresses, and
-writes generated files under `build/three-control-plane-kubeadm-fixtures/`.
-Source the generated `vmtest.env` or run the generated wrapper to revalidate the
-fixture inputs and execute `TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke`.
-
-To run the smoke directly after sourcing the generated env:
-
-```sh
-GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./cmd/katlctl \
-  -run '^TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke$' \
-  -count=1 -timeout 60m -katl.vmtest.run
-```
-
-If all three nodes share one ESP artifact tree, set
-`KATL_INSTALLED_ESP_ARTIFACTS` instead of the per-node ESP variables. The
-legacy `KATL_CONTROL_PLANE_INSTALLED_DISK`,
-`KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS`,
-`KATL_CONTROL_PLANE_NODE_METADATA`, `KATL_CONTROL_PLANE_FIXTURE_MANIFEST`,
-`KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT`, and `KATL_CONTROL_PLANE_ADDRESS`
-variables may be used for `cp-1` only.
+The lower-level resolver and fixture scripts remain useful for inspecting or
+validating already-produced artifacts during harness development. They are not
+the supported way to run enabled VM or kubeadm suites.
 
 ## Sanity Checks
 
