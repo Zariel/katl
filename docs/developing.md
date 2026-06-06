@@ -163,21 +163,24 @@ agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
 `/etc/kubernetes` projection, kubeadm tooling, and container runtime readiness.
 It does not run `kubeadm init` or the API-server smoke.
 
-To run the opt-in first-install target-disk fixture contract smoke, provide the
-installer UKI, runtime artifact, runtime ESP artifacts, and install manifest:
+To run the opt-in first-install target-disk fixture contract smoke, resolve
+the installer UKI, runtime artifact, runtime ESP artifacts, optional node
+metadata, and install manifest into a sourceable environment with:
 
 ```sh
-export KATL_VMTEST_RUN=1
-export KATL_INSTALLER_UKI=build/mkosi/katl-installer.efi
-export KATL_RUNTIME_ARTIFACT=build/mkosi/katl-runtime-root.squashfs
-export KATL_RUNTIME_ESP_ARTIFACTS=build/local/cp-1-esp
-export KATL_RUNTIME_NODE_METADATA=build/local/cp-1-node.json
-export KATL_INSTALL_MANIFEST=docs/internal/examples/minimal-install-manifest.json
-
-GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest \
-  -run '^TestFirstInstallTargetDiskFixtureContract$' \
-  -count=1 -timeout 35m -katl.vmtest.run
+scripts/resolve-first-install-runtime-fixture \
+  --installer-uki build/mkosi/katl-installer.efi \
+  --runtime-artifact build/mkosi/katl-runtime-root.squashfs \
+  --runtime-esp build/local/cp-1-esp \
+  --node-metadata build/local/cp-1-node.json \
+  --install-manifest docs/internal/examples/minimal-install-manifest.json
 ```
+
+The command verifies that all referenced inputs exist, checks the runtime ESP
+loader-entry contract, and writes generated files under
+`build/first-install-runtime-fixture/`. Source the generated `vmtest.env` or run
+the generated wrapper to revalidate inputs and execute
+`TestFirstInstallTargetDiskFixtureContract`.
 
 The smoke keeps the target disk from the first-install harness, packages it with
 `scripts/create-installed-runtime-fixture`, includes node metadata when
