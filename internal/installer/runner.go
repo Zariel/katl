@@ -122,7 +122,7 @@ func NewPlan(options PlanOptions) Plan {
 		installBootArtifactsStep{},
 		installExtensionsStep{},
 		installSeedStep{},
-		stubStep{id: InstallMountUnits},
+		installMountUnitsStep{},
 		writeInstallRecordStep{},
 		verifyTargetStep{},
 		stubStep{id: Reboot},
@@ -693,6 +693,29 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, InstallSeed)
+}
+
+type installMountUnitsStep struct{}
+
+func (installMountUnitsStep) ID() StepID {
+	return InstallMountUnits
+}
+
+func (installMountUnitsStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.LoaderRecord == nil {
+		return fmt.Errorf("loader generation record is required to install mount units")
+	}
+	if _, err := generation.WriteState(install.TargetRoot, generation.StateRequest{
+		PartitionUUID: install.LoaderRecord.Root.PartitionUUID,
+	}); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, InstallMountUnits)
 }
 
 type writeInstallRecordStep struct{}

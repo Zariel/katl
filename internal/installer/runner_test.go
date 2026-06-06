@@ -737,6 +737,54 @@ func TestRunnerInstallsIdentity(t *testing.T) {
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 }
 
+func TestRunnerInstallsMountUnits(t *testing.T) {
+	store := &MemoryStateStore{}
+	targetRoot := t.TempDir()
+	record := generation.Record{
+		GenerationID: "2026.06.06-001",
+		Root: generation.RootSelection{
+			Slot:          "root-a",
+			PartitionUUID: "11111111-2222-3333-4444-555555555555",
+		},
+		Boot: generation.BootSelection{
+			UKIPath: "/efi/EFI/Linux/katl.efi",
+		},
+	}
+	install := &Context{
+		TargetRoot:   targetRoot,
+		LoaderRecord: &record,
+		Commands:     &NoopCommandRunner{},
+		Store:        store,
+	}
+
+	if err := NewRunner(Plan{installMountUnitsStep{}}, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount")
+	assertSymlink(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"), "../katl-kubeadm-ready.target")
+	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -")
+	assertDir(t, filepath.Join(targetRoot, "etc/kubernetes"), 0o755)
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallMountUnits}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerRejectsMountUnitsWithoutGenerationRecord(t *testing.T) {
+	install := &Context{
+		TargetRoot: t.TempDir(),
+		Commands:   &NoopCommandRunner{},
+		Store:      &MemoryStateStore{},
+	}
+
+	err := NewRunner(Plan{installMountUnitsStep{}}, install).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "loader generation record is required") {
+		t.Fatalf("Run() error = %v, want generation record failure", err)
+	}
+}
+
 func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	store := &MemoryStateStore{}
 	targetRoot := t.TempDir()
@@ -1302,5 +1350,30 @@ func assertContains(t *testing.T, path string, want string) {
 	}
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("%s missing %q:\n%s", path, want, data)
+	}
+}
+
+func assertSymlink(t *testing.T, path string, want string) {
+	t.Helper()
+	got, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", path, err)
+	}
+	if got != want {
+		t.Fatalf("%s link = %q, want %q", path, got, want)
+	}
+}
+
+func assertDir(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", path)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %v, want %v", path, got, want)
 	}
 }
