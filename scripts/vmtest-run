@@ -615,10 +615,11 @@ write_go_test_events() {
         --slurpfile skips "$go_test_skips_json" \
         --slurpfile scenarios "$scenario_summary_json" \
         '
-          if any($scenarios[0][]; .status == "host-skipped") then
+          ($scenarios[0] | map(select(.status == "host-skipped")) | length) as $declaredHostSkips |
+          if (($skips[0] | length) <= $declaredHostSkips) then
             []
           else
-            $skips[0]
+            $skips[0][$declaredHostSkips:]
           end
         ' >"$unexpected_go_test_skips_json"
 }

@@ -509,6 +509,44 @@ func TestVMTestRunAllowsGoTestJSONSkipForHostSkippedScenario(t *testing.T) {
 	}
 }
 
+func TestVMTestRunFailsExtraGoTestJSONSkipWithHostSkippedScenario(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "-json", "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=json host skipped scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=skipped",
+		"KATL_FAKE_CHILD_WORLD_MISSING=qemu",
+		"KATL_FAKE_GO_JSON_ACTION=skip",
+		"KATL_FAKE_GO_JSON_EXTRA_SKIP=1",
+		"KATL_VMTEST_QEMU=/missing/qemu-system-x86_64",
+		"KATL_VMTEST_RUN_ID=run-json-extra-skip",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "failed" || summary.ExitCode != 1 || summary.ChildExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(summary.GoTestSkips) != 2 || len(summary.UnexpectedGoTestSkips) != 1 {
+		t.Fatalf("go test skips = %#v unexpected = %#v", summary.GoTestSkips, summary.UnexpectedGoTestSkips)
+	}
+}
+
 func TestVMTestRunFailsMissingGoTestJSONPackageResult(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -1446,6 +1484,9 @@ if [[ "$json_output" == 1 ]]; then
     fi
     json_action="${KATL_FAKE_GO_JSON_ACTION:-pass}"
     printf '{"Action":"%s","Package":"fake/vmtest"}\n' "$json_action"
+    if [[ "${KATL_FAKE_GO_JSON_EXTRA_SKIP:-0}" == "1" ]]; then
+        printf '{"Action":"skip","Package":"fake/vmtest","Test":"TestUnexpectedSkip"}\n'
+    fi
 else
     printf -- '--- PASS: TestForwarded (0.00s)\n'
     printf 'ok  \tfake/vmtest\t0.001s\n'
