@@ -14,10 +14,6 @@ need() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-json_has() {
-    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
-}
-
 has_path() {
     local path="${1#/}"
     local output
@@ -52,6 +48,7 @@ root_locked() {
 
 need awk
 need grep
+need jq
 need sha256sum
 need stat
 need unsquashfs
@@ -64,17 +61,20 @@ need unsquashfs
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
-json_has '"name": "runtime-root"'
-json_has '"kind": "runtime-root"'
-json_has '"format": "squashfs"'
-json_has '"compression": "zstd"'
-json_has '"runtimeInterface": "katl-runtime-1"'
-json_has '"compatibleBoot"'
-json_has '"kind": "uki"'
-json_has '"rootfstype=squashfs"'
-json_has '"ro"'
-json_has "\"sizeBytes\": $size"
-json_has "\"sha256\": \"$sha256\""
+jq -e \
+    --arg sha "$sha256" \
+    --argjson size "$size" \
+    '.name == "runtime-root"
+      and .kind == "runtime-root"
+      and .format == "squashfs"
+      and .compression == "zstd"
+      and .runtimeInterface == "katl-runtime-1"
+      and .compatibleBoot.kind == "uki"
+      and ((.compatibleBoot.kernelCommandLine // []) | index("rootfstype=squashfs") != null)
+      and ((.compatibleBoot.kernelCommandLine // []) | index("ro") != null)
+      and .sizeBytes == $size
+      and .sha256 == $sha' "$metadata" >/dev/null ||
+    fail "runtime root metadata does not match artifact"
 
 superblock="$(unsquashfs -s "$artifact")"
 grep -Fq "Compression zstd" <<<"$superblock" || fail "runtime root is not zstd-compressed SquashFS"

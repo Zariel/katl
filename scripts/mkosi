@@ -218,6 +218,10 @@ fi
             return 1
         fi
     }
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "error: jq is required to emit mkosi metadata" >&2
+        exit 1
+    fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=build/mkosi/katl-runtime-root
         artifact=build/mkosi/katl-runtime-root.squashfs
@@ -241,29 +245,39 @@ fi
                 created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
                 arch=$(uname -m)
                 printf "%s  %s\n" "$sha256" "$(basename "$artifact")" > "$artifact.sha256"
-                cat > "$artifact.json" <<EOF
-{
-  "name": "runtime-root",
-  "kind": "runtime-root",
-  "format": "squashfs",
-  "path": "$(basename "$artifact")",
-  "sizeBytes": $size,
-  "sha256": "$sha256",
-  "compression": "zstd",
-  "generation": "${KATL_BUILD_COMMIT:-unknown}",
-  "architecture": "$arch",
-  "runtimeInterface": "katl-runtime-1",
-  "compatibleBoot": {
-    "kind": "uki",
-    "runtimeInterface": "katl-runtime-1",
-    "kernelCommandLine": [
-      "rootfstype=squashfs",
-      "ro"
-    ]
-  },
-  "created": "$created"
-}
-EOF
+                jq -n \
+                    --arg name "runtime-root" \
+                    --arg kind "runtime-root" \
+                    --arg format "squashfs" \
+                    --arg path "$(basename "$artifact")" \
+                    --arg sha256 "$sha256" \
+                    --arg compression "zstd" \
+                    --arg generation "${KATL_BUILD_COMMIT:-unknown}" \
+                    --arg architecture "$arch" \
+                    --arg runtimeInterface "katl-runtime-1" \
+                    --arg bootKind "uki" \
+                    --arg cmdRoot "rootfstype=squashfs" \
+                    --arg cmdRO "ro" \
+                    --arg created "$created" \
+                    --argjson sizeBytes "$size" \
+                    "{
+                      name: \$name,
+                      kind: \$kind,
+                      format: \$format,
+                      path: \$path,
+                      sizeBytes: \$sizeBytes,
+                      sha256: \$sha256,
+                      compression: \$compression,
+                      generation: \$generation,
+                      architecture: \$architecture,
+                      runtimeInterface: \$runtimeInterface,
+                      compatibleBoot: {
+                        kind: \$bootKind,
+                        runtimeInterface: \$runtimeInterface,
+                        kernelCommandLine: [\$cmdRoot, \$cmdRO]
+                      },
+                      created: \$created
+                    }" > "$artifact.json"
                 kernel_dir=$(find "$root/boot" -type f -name linux -printf "%h\n" | sort | head -n 1)
                 if [[ -z "$kernel_dir" ]]; then
                     echo "error: runtime kernel not found under $root/boot" >&2
@@ -298,30 +312,41 @@ EOF
                             boot_size=$(stat -c %s "$boot_artifact")
                             boot_sha256=$(sha256sum "$boot_artifact" | awk "{print \$1}")
                             printf "%s  %s\n" "$boot_sha256" "$(basename "$boot_artifact")" > "$boot_artifact.sha256"
-                            cat > "$boot_artifact.json" <<EOF
-{
-  "name": "runtime-uki",
-  "kind": "runtime-uki",
-  "format": "uki",
-  "path": "$(basename "$boot_artifact")",
-  "sizeBytes": $boot_size,
-  "sha256": "$boot_sha256",
-  "version": "${KATL_BUILD_COMMIT:-unknown}",
-  "architecture": "$arch",
-  "runtimeInterface": "katl-runtime-1",
-  "compatibleRuntime": {
-    "interface": "katl-runtime-1",
-    "artifactPath": "$(basename "$artifact")",
-    "artifactSHA256": "$sha256"
-  },
-  "kernelVersion": "$kernel_version",
-  "kernelCommandLine": [
-    "rootfstype=squashfs",
-    "ro"
-  ],
-  "created": "$created"
-}
-EOF
+                            jq -n \
+                                --arg name "runtime-uki" \
+                                --arg kind "runtime-uki" \
+                                --arg format "uki" \
+                                --arg path "$(basename "$boot_artifact")" \
+                                --arg sha256 "$boot_sha256" \
+                                --arg version "${KATL_BUILD_COMMIT:-unknown}" \
+                                --arg architecture "$arch" \
+                                --arg runtimeInterface "katl-runtime-1" \
+                                --arg runtimeArtifactPath "$(basename "$artifact")" \
+                                --arg runtimeArtifactSHA256 "$sha256" \
+                                --arg kernelVersion "$kernel_version" \
+                                --arg cmdRoot "rootfstype=squashfs" \
+                                --arg cmdRO "ro" \
+                                --arg created "$created" \
+                                --argjson sizeBytes "$boot_size" \
+                                "{
+                                  name: \$name,
+                                  kind: \$kind,
+                                  format: \$format,
+                                  path: \$path,
+                                  sizeBytes: \$sizeBytes,
+                                  sha256: \$sha256,
+                                  version: \$version,
+                                  architecture: \$architecture,
+                                  runtimeInterface: \$runtimeInterface,
+                                  compatibleRuntime: {
+                                    interface: \$runtimeInterface,
+                                    artifactPath: \$runtimeArtifactPath,
+                                    artifactSHA256: \$runtimeArtifactSHA256
+                                  },
+                                  kernelVersion: \$kernelVersion,
+                                  kernelCommandLine: [\$cmdRoot, \$cmdRO],
+                                  created: \$created
+                                }" > "$boot_artifact.json"
                         fi
                     fi
                 fi
@@ -357,44 +382,69 @@ EOF
                 exit 1
             fi
             if [[ -f "$runtime_meta" ]]; then
-                runtime_sha=$(sed -n "s/.*\"sha256\": \"\\([^\"]*\\)\".*/\\1/p" "$runtime_meta" | head -n 1)
+                if ! runtime_sha=$(jq -er ".sha256" "$runtime_meta"); then
+                    echo "error: runtime metadata missing sha256: $runtime_meta" >&2
+                    status=1
+                fi
+            fi
+            if [[ "$status" -ne 0 ]]; then
+                exit "$status"
             fi
             size=$(stat -c %s "$artifact")
             sha256=$(sha256sum "$artifact" | awk "{print \$1}")
             created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             arch=$(uname -m)
             printf "%s  %s\n" "$sha256" "$(basename "$artifact")" > "$artifact.sha256"
-            cat > "$artifact.json" <<EOF
-{
-  "name": "kubernetes",
-  "kind": "sysext",
-  "format": "sysext",
-  "path": "$(basename "$artifact")",
-  "sizeBytes": $size,
-  "sha256": "$sha256",
-  "version": "${KATL_BUILD_COMMIT:-unknown}",
-  "payloadVersion": "$payload_version",
-  "architecture": "$arch",
-  "sourceRepo": {
-    "id": "${KATL_KUBERNETES_REPO_ID:?}",
-    "baseURL": "${KATL_KUBERNETES_REPO_BASEURL:?}",
-    "minor": "${KATL_KUBERNETES_MINOR:?}"
-  },
-  "packageVersions": {
-    "kubeadm": "$kubeadm_version",
-    "kubelet": "$kubelet_version",
-    "kubectl": "$kubectl_version",
-    "cri-tools": "$critools_version"
-  },
-  "runtimeInterface": "katl-runtime-1",
-  "compatibleRuntime": {
-    "interface": "katl-runtime-1",
-    "artifactPath": "katl-runtime-root.squashfs",
-    "artifactSHA256": "$runtime_sha"
-  },
-  "created": "$created"
-}
-EOF
+            jq -n \
+                --arg name "kubernetes" \
+                --arg kind "sysext" \
+                --arg format "sysext" \
+                --arg path "$(basename "$artifact")" \
+                --arg sha256 "$sha256" \
+                --arg version "${KATL_BUILD_COMMIT:-unknown}" \
+                --arg payloadVersion "$payload_version" \
+                --arg architecture "$arch" \
+                --arg repoID "${KATL_KUBERNETES_REPO_ID:?}" \
+                --arg repoBaseURL "${KATL_KUBERNETES_REPO_BASEURL:?}" \
+                --arg repoMinor "${KATL_KUBERNETES_MINOR:?}" \
+                --arg kubeadmVersion "$kubeadm_version" \
+                --arg kubeletVersion "$kubelet_version" \
+                --arg kubectlVersion "$kubectl_version" \
+                --arg criToolsVersion "$critools_version" \
+                --arg runtimeInterface "katl-runtime-1" \
+                --arg runtimeArtifactPath "katl-runtime-root.squashfs" \
+                --arg runtimeArtifactSHA256 "$runtime_sha" \
+                --arg created "$created" \
+                --argjson sizeBytes "$size" \
+                "{
+                  name: \$name,
+                  kind: \$kind,
+                  format: \$format,
+                  path: \$path,
+                  sizeBytes: \$sizeBytes,
+                  sha256: \$sha256,
+                  version: \$version,
+                  payloadVersion: \$payloadVersion,
+                  architecture: \$architecture,
+                  sourceRepo: {
+                    id: \$repoID,
+                    baseURL: \$repoBaseURL,
+                    minor: \$repoMinor
+                  },
+                  packageVersions: {
+                    kubeadm: \$kubeadmVersion,
+                    kubelet: \$kubeletVersion,
+                    kubectl: \$kubectlVersion,
+                    \"cri-tools\": \$criToolsVersion
+                  },
+                  runtimeInterface: \$runtimeInterface,
+                  compatibleRuntime: {
+                    interface: \$runtimeInterface,
+                    artifactPath: \$runtimeArtifactPath,
+                    artifactSHA256: \$runtimeArtifactSHA256
+                  },
+                  created: \$created
+                }" > "$artifact.json"
         fi
     fi
     if [[ -d build ]]; then

@@ -46,7 +46,7 @@ sha() {
     sha256sum "$1" | awk '{print $1}'
 }
 
-json_string() {
+metadata_string() {
     local path="$1"
     local query="$2"
     jq -er "$query" "$path"
@@ -103,14 +103,14 @@ metadata_matches "runtime UKI" "$runtime_uki_metadata" "$runtime_uki"
 metadata_matches "Kubernetes sysext" "$kubernetes_sysext_metadata" "$kubernetes_sysext"
 
 root_sha="$(sha "$runtime_root")"
-root_arch="$(json_string "$runtime_root_metadata" '.architecture')"
-root_interface="$(json_string "$runtime_root_metadata" '.runtimeInterface')"
-uki_arch="$(json_string "$runtime_uki_metadata" '.architecture')"
-uki_interface="$(json_string "$runtime_uki_metadata" '.runtimeInterface')"
-uki_runtime_sha="$(json_string "$runtime_uki_metadata" '.compatibleRuntime.artifactSHA256')"
-sysext_arch="$(json_string "$kubernetes_sysext_metadata" '.architecture')"
-sysext_interface="$(json_string "$kubernetes_sysext_metadata" '.runtimeInterface')"
-sysext_runtime_sha="$(json_string "$kubernetes_sysext_metadata" '.compatibleRuntime.artifactSHA256')"
+root_arch="$(metadata_string "$runtime_root_metadata" '.architecture')"
+root_interface="$(metadata_string "$runtime_root_metadata" '.runtimeInterface')"
+uki_arch="$(metadata_string "$runtime_uki_metadata" '.architecture')"
+uki_interface="$(metadata_string "$runtime_uki_metadata" '.runtimeInterface')"
+uki_runtime_sha="$(metadata_string "$runtime_uki_metadata" '.compatibleRuntime.artifactSHA256')"
+sysext_arch="$(metadata_string "$kubernetes_sysext_metadata" '.architecture')"
+sysext_interface="$(metadata_string "$kubernetes_sysext_metadata" '.runtimeInterface')"
+sysext_runtime_sha="$(metadata_string "$kubernetes_sysext_metadata" '.compatibleRuntime.artifactSHA256')"
 
 [[ "$root_arch" == "$architecture" ]] || fail "runtime root architecture $root_arch does not match image architecture $architecture"
 [[ "$uki_arch" == "$architecture" ]] || fail "runtime UKI architecture $uki_arch does not match image architecture $architecture"

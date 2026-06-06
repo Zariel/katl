@@ -69,13 +69,6 @@ abs() {
     fi
 }
 
-json() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    printf "%s" "$value"
-}
-
 need_file() {
     local label="$1"
     local path="$2"
@@ -118,59 +111,73 @@ write_boot_metadata() {
     digest="$(sha "$path")"
     rel_path="$(artifact_rel "$path")"
 
-    cat >"$metadata" <<EOF
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "InstallerBootArtifact",
-  "artifactRole": "$(json "$role")",
-  "format": "$(json "$format")",
-  "version": "$(json "$version")",
-  "buildID": "$(json "$generation")",
-  "architecture": "$(json "$architecture")",
-  "path": "$(json "$rel_path")",
-  "sizeBytes": $size,
-  "sha256": "$digest",
-  "createdAt": "$(json "$created")",
-  "installerInterface": "$(json "$installer_interface")",
-  "defaultKernelCommandLine": [
-    "console=ttyS0,115200n8",
-    "systemd.log_target=console",
-    "loglevel=6"
-  ],
-  "supportedInputModes": [
-    "pxe-preseed",
-    "local-handoff",
-    "offline-media"
-  ]
-}
-EOF
+    jq -n \
+        --arg apiVersion "katl.dev/v1alpha1" \
+        --arg kind "InstallerBootArtifact" \
+        --arg artifactRole "$role" \
+        --arg format "$format" \
+        --arg version "$version" \
+        --arg buildID "$generation" \
+        --arg architecture "$architecture" \
+        --arg path "$rel_path" \
+        --arg sha256 "$digest" \
+        --arg createdAt "$created" \
+        --arg installerInterface "$installer_interface" \
+        --argjson sizeBytes "$size" \
+        '{
+          apiVersion: $apiVersion,
+          kind: $kind,
+          artifactRole: $artifactRole,
+          format: $format,
+          version: $version,
+          buildID: $buildID,
+          architecture: $architecture,
+          path: $path,
+          sizeBytes: $sizeBytes,
+          sha256: $sha256,
+          createdAt: $createdAt,
+          installerInterface: $installerInterface,
+          defaultKernelCommandLine: [
+            "console=ttyS0,115200n8",
+            "systemd.log_target=console",
+            "loglevel=6"
+          ],
+          supportedInputModes: [
+            "pxe-preseed",
+            "local-handoff",
+            "offline-media"
+          ]
+        }' >"$metadata"
 }
 
 entry() {
     local kind="$1"
     local format="$2"
     local path="$3"
-    local comma="$4"
-    local metadata="$5"
-    local checksum="$6"
+    local metadata="$4"
+    local checksum="$5"
     local size digest rel_path
     size="$(stat -c %s "$path")"
     digest="$(sha "$path")"
     rel_path="$(artifact_rel "$path")"
 
-    printf '    {\n'
-    printf '      "kind": "%s",\n' "$(json "$kind")"
-    printf '      "path": "%s",\n' "$(json "$rel_path")"
-    printf '      "format": "%s",\n' "$(json "$format")"
-    printf '      "sizeBytes": %s,\n' "$size"
-    printf '      "sha256": "%s"' "$digest"
-    if [[ -n "$metadata" ]]; then
-        printf ',\n      "metadataPath": "%s"' "$(json "$(rel "$metadata")")"
-    fi
-    if [[ -n "$checksum" ]]; then
-        printf ',\n      "checksumPath": "%s"' "$(json "$(rel "$checksum")")"
-    fi
-    printf '\n    }%s\n' "$comma"
+    jq -n \
+        --arg kind "$kind" \
+        --arg path "$rel_path" \
+        --arg format "$format" \
+        --arg sha256 "$digest" \
+        --arg metadataPath "$(rel "$metadata")" \
+        --arg checksumPath "$(rel "$checksum")" \
+        --argjson sizeBytes "$size" \
+        '{
+          kind: $kind,
+          path: $path,
+          format: $format,
+          sizeBytes: $sizeBytes,
+          sha256: $sha256
+        }
+        | if $metadataPath == "" then . else .metadataPath = $metadataPath end
+        | if $checksumPath == "" then . else .checksumPath = $checksumPath end'
 }
 
 write_index() {
@@ -178,6 +185,7 @@ write_index() {
     local created
     need awk
     need date
+    need jq
     need sha256sum
     need stat
     need_file "installer UKI" "$installer_uki"
@@ -203,25 +211,26 @@ write_index() {
     write_checksum "$installer_initrd"
     write_boot_metadata installer-initrd initrd "$installer_initrd" "$created"
     mkdir -p "$(dirname "$index")"
-    {
-        printf '{\n'
-        printf '  "schemaVersion": 1,\n'
-        printf '  "generatedAt": "%s",\n' "$(json "$created")"
-        printf '  "generation": "%s",\n' "$(json "$generation")"
-        printf '  "artifacts": [\n'
-        entry installer-uki uki "$installer_uki" , "$(metadata_path "$installer_uki")" "$(checksum_path "$installer_uki")"
-        entry installer-kernel linux-kernel "$installer_kernel" , "$(metadata_path "$installer_kernel")" "$(checksum_path "$installer_kernel")"
-        entry installer-initrd initrd "$installer_initrd" , "$(metadata_path "$installer_initrd")" "$(checksum_path "$installer_initrd")"
-        entry runtime-uki uki "$runtime_uki" , "$runtime_uki_metadata" "$runtime_uki_checksum"
-        if katlos_image_available; then
-            entry runtime-root squashfs "$runtime_artifact" , "$runtime_metadata" "$runtime_checksum"
-            entry katlos-install-image squashfs "$katlos_image" "" "$katlos_image_metadata" "$katlos_image_checksum"
-        else
-            entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
-        fi
-        printf '  ]\n'
-        printf '}\n'
-    } >"$index"
+    artifacts=(
+        "$(entry installer-uki uki "$installer_uki" "$(metadata_path "$installer_uki")" "$(checksum_path "$installer_uki")")"
+        "$(entry installer-kernel linux-kernel "$installer_kernel" "$(metadata_path "$installer_kernel")" "$(checksum_path "$installer_kernel")")"
+        "$(entry installer-initrd initrd "$installer_initrd" "$(metadata_path "$installer_initrd")" "$(checksum_path "$installer_initrd")")"
+        "$(entry runtime-uki uki "$runtime_uki" "$runtime_uki_metadata" "$runtime_uki_checksum")"
+        "$(entry runtime-root squashfs "$runtime_artifact" "$runtime_metadata" "$runtime_checksum")"
+    )
+    if katlos_image_available; then
+        artifacts+=("$(entry katlos-install-image squashfs "$katlos_image" "$katlos_image_metadata" "$katlos_image_checksum")")
+    fi
+    jq -n \
+        --arg generatedAt "$created" \
+        --arg generation "$generation" \
+        --argjson artifacts "$(printf '%s\n' "${artifacts[@]}" | jq -s '.')" \
+        '{
+          schemaVersion: 1,
+          generatedAt: $generatedAt,
+          generation: $generation,
+          artifacts: $artifacts
+        }' >"$index"
     echo "artifact index: $(rel "$index")"
 }
 

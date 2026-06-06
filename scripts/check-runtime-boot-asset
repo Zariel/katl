@@ -14,10 +14,7 @@ need() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-json_has() {
-    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
-}
-
+need jq
 need grep
 need sha256sum
 need stat
@@ -30,16 +27,20 @@ need stat
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
-json_has '"name": "runtime-uki"'
-json_has '"kind": "runtime-uki"'
-json_has '"format": "uki"'
-json_has '"runtimeInterface": "katl-runtime-1"'
-json_has '"compatibleRuntime"'
-json_has '"artifactPath": "katl-runtime-root.squashfs"'
-json_has '"rootfstype=squashfs"'
-json_has '"ro"'
-json_has "\"sizeBytes\": $size"
-json_has "\"sha256\": \"$sha256\""
+jq -e \
+    --arg sha "$sha256" \
+    --argjson size "$size" \
+    '.name == "runtime-uki"
+      and .kind == "runtime-uki"
+      and .format == "uki"
+      and .runtimeInterface == "katl-runtime-1"
+      and (.compatibleRuntime | type == "object")
+      and .compatibleRuntime.artifactPath == "katl-runtime-root.squashfs"
+      and ((.kernelCommandLine // []) | index("rootfstype=squashfs") != null)
+      and ((.kernelCommandLine // []) | index("ro") != null)
+      and .sizeBytes == $size
+      and .sha256 == $sha' "$metadata" >/dev/null ||
+    fail "runtime UKI metadata does not match artifact"
 
 if command -v ukify >/dev/null 2>&1; then
     inspection="$(ukify inspect "$artifact")"

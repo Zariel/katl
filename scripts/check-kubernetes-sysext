@@ -24,30 +24,21 @@ need() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-json_has() {
-    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
-}
-
-json_string() {
-    local key="$1"
-    sed -n "s/.*\"$key\": \"\\([^\"]*\\)\".*/\\1/p" "$metadata" | head -n 1
-}
-
-json_string_nonempty() {
-    local key="$1"
+metadata_string_nonempty() {
+    local query="$1"
     local value
-    value="$(json_string "$key")"
-    [[ -n "$value" ]] || fail "metadata missing non-empty $key"
+    value="$(jq -er "$query" "$metadata")" || fail "metadata missing non-empty $query"
+    [[ -n "$value" ]] || fail "metadata missing non-empty $query"
     printf "%s" "$value"
 }
 
-json_expect_or_nonempty() {
-    local key="$1"
+metadata_expect_or_nonempty() {
+    local query="$1"
     local want="$2"
     local value
-    value="$(json_string_nonempty "$key")"
+    value="$(metadata_string_nonempty "$query")"
     if [[ -n "$want" && "$value" != "$want" ]]; then
-        fail "metadata $key = $value, want $want"
+        fail "metadata $query = $value, want $want"
     fi
 }
 
@@ -83,6 +74,7 @@ need dump.erofs
 need fdisk
 need fsck.erofs
 need grep
+need jq
 need sha256sum
 need stat
 
@@ -96,11 +88,8 @@ grep -Fq "SYSEXT_LEVEL=katl-runtime-1" "$runtime_root/usr/lib/os-release" || fai
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
-json_has '"name": "kubernetes"'
-json_has '"kind": "sysext"'
-json_has '"format": "sysext"'
-payload_version="$(json_string_nonempty payloadVersion)"
-kubeadm_metadata="$(json_string_nonempty kubeadm)"
+payload_version="$(metadata_string_nonempty '.payloadVersion')"
+kubeadm_metadata="$(metadata_string_nonempty '.packageVersions.kubeadm')"
 resolved_payload="$(payload_version_from_package "$kubeadm_metadata")"
 if [[ "$payload_version" != "$resolved_payload" ]]; then
     fail "payloadVersion = $payload_version, want $resolved_payload derived from kubeadm package"
@@ -110,21 +99,30 @@ if [[ -n "$expected_payload" && "$payload_version" != "$expected_payload" ]]; th
     fail "payloadVersion = $payload_version, want $expected_payload"
 fi
 [[ "$payload_version" == "$KATL_KUBERNETES_MINOR."* ]] || fail "payloadVersion $payload_version does not match selected minor $KATL_KUBERNETES_MINOR"
-json_has '"sourceRepo"'
-json_has "\"id\": \"$KATL_KUBERNETES_REPO_ID\""
-json_has "\"baseURL\": \"$KATL_KUBERNETES_REPO_BASEURL\""
-json_has "\"minor\": \"$KATL_KUBERNETES_MINOR\""
-json_has '"packageVersions"'
 if [[ -n "${KATL_KUBERNETES_KUBEADM_VERSION:-}" && "$kubeadm_metadata" != "$KATL_KUBERNETES_KUBEADM_VERSION" ]]; then
     fail "metadata kubeadm = $kubeadm_metadata, want $KATL_KUBERNETES_KUBEADM_VERSION"
 fi
-json_expect_or_nonempty kubelet "${KATL_KUBERNETES_KUBELET_VERSION:-}"
-json_expect_or_nonempty kubectl "${KATL_KUBERNETES_KUBECTL_VERSION:-}"
-json_expect_or_nonempty cri-tools "${KATL_KUBERNETES_CRITOOLS_VERSION:-}"
-json_has '"runtimeInterface": "katl-runtime-1"'
-json_has '"compatibleRuntime"'
-json_has "\"sizeBytes\": $size"
-json_has "\"sha256\": \"$sha256\""
+metadata_expect_or_nonempty '.packageVersions.kubelet' "${KATL_KUBERNETES_KUBELET_VERSION:-}"
+metadata_expect_or_nonempty '.packageVersions.kubectl' "${KATL_KUBERNETES_KUBECTL_VERSION:-}"
+metadata_expect_or_nonempty '.packageVersions["cri-tools"]' "${KATL_KUBERNETES_CRITOOLS_VERSION:-}"
+jq -e \
+    --arg sha "$sha256" \
+    --argjson size "$size" \
+    --arg repoID "$KATL_KUBERNETES_REPO_ID" \
+    --arg repoBaseURL "$KATL_KUBERNETES_REPO_BASEURL" \
+    --arg minor "$KATL_KUBERNETES_MINOR" \
+    '.name == "kubernetes"
+      and .kind == "sysext"
+      and .format == "sysext"
+      and .sourceRepo.id == $repoID
+      and .sourceRepo.baseURL == $repoBaseURL
+      and .sourceRepo.minor == $minor
+      and (.packageVersions | type == "object")
+      and .runtimeInterface == "katl-runtime-1"
+      and (.compatibleRuntime | type == "object")
+      and .sizeBytes == $size
+      and .sha256 == $sha' "$metadata" >/dev/null ||
+    fail "Kubernetes sysext metadata does not match artifact"
 
 read -r start sectors < <(fdisk -l "$artifact" | awk -v name="$(basename "$artifact")" '$1 ~ name "1$" {print $2, $4; exit}')
 [[ -n "${start:-}" && -n "${sectors:-}" ]] || fail "root partition not found in $artifact"

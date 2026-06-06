@@ -11,6 +11,7 @@ RUN dnf5 -y install \
         findutils \
         git-core \
         golang \
+        jq \
         kmod \
         mkosi \
         mtools \
