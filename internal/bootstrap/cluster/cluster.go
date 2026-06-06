@@ -957,8 +957,17 @@ func (r TransportRunner) CreateControlPlaneJoin(ctx context.Context, initNode in
 }
 
 func (r TransportRunner) RunControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error {
+	if node.SystemRole != inventory.RoleControlPlane {
+		return fmt.Errorf("control-plane join requires control-plane node, got %s", node.SystemRole)
+	}
 	if len(material.Argv) == 0 {
 		return errors.New("control-plane join material is required")
+	}
+	if !hasFlag(material.Argv, "--control-plane") {
+		return errors.New("control-plane join material must include --control-plane")
+	}
+	if flagValue(material.Argv, "--certificate-key") == "" {
+		return errors.New("control-plane join material must include --certificate-key")
 	}
 	argv := append([]string(nil), material.Argv...)
 	argv = append(argv, "--config", kubeadmConfigPath(node))
@@ -1000,8 +1009,17 @@ func parseJoinMaterial(output string) (JoinMaterial, error) {
 }
 
 func (r TransportRunner) RunWorkerJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error {
+	if node.SystemRole != inventory.RoleWorker {
+		return fmt.Errorf("worker join requires worker node, got %s", node.SystemRole)
+	}
 	if len(material.Argv) == 0 {
 		return errors.New("worker join material is required")
+	}
+	if hasFlag(material.Argv, "--control-plane") {
+		return errors.New("worker join material must not include --control-plane")
+	}
+	if flagValue(material.Argv, "--certificate-key") != "" {
+		return errors.New("worker join material must not include --certificate-key")
 	}
 	argv := append([]string(nil), material.Argv...)
 	argv = append(argv, "--config", kubeadmConfigPath(node))
@@ -1196,6 +1214,30 @@ func ensureFlag(argv []string, flag string) []string {
 		}
 	}
 	return append(argv, flag)
+}
+
+func hasFlag(argv []string, flag string) bool {
+	for _, arg := range argv {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func flagValue(argv []string, flag string) string {
+	for i, arg := range argv {
+		if arg == flag {
+			if i+1 >= len(argv) {
+				return ""
+			}
+			return argv[i+1]
+		}
+		if value, ok := strings.CutPrefix(arg, flag+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func ensureFlagValue(argv []string, flag, value string) []string {

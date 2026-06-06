@@ -646,6 +646,20 @@ func TestTransportRunnerRejectsAmbiguousJoinAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestTransportRunnerRejectsControlPlaneMaterialForWorkerJoin(t *testing.T) {
+	transport := newFakeTransport()
+	certificateKey := strings.Repeat("a", 64)
+	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not include --control-plane") {
+		t.Fatalf("RunWorkerJoin() error = %v, want control-plane material rejection", err)
+	}
+	if len(transport.commandCalls) != 0 {
+		t.Fatalf("commands = %#v, want no remote command before material validation", transport.commandCalls)
+	}
+}
+
 func TestTransportRunnerCreatesControlPlaneJoinMaterial(t *testing.T) {
 	transport := newFakeTransport()
 	certificateKey := strings.Repeat("a", 64)
@@ -675,6 +689,41 @@ func TestTransportRunnerRejectsUploadCertsWithoutStandaloneCertificateKey(t *tes
 	_, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
 	if err == nil || !strings.Contains(err.Error(), "certificate key") {
 		t.Fatalf("CreateControlPlaneJoin() error = %v, want missing certificate key", err)
+	}
+}
+
+func TestTransportRunnerRequiresControlPlaneJoinMaterialFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		material JoinMaterial
+		want     string
+	}{
+		{
+			name: "missing control-plane flag",
+			material: JoinMaterial{
+				Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--certificate-key", strings.Repeat("a", 64)},
+			},
+			want: "must include --control-plane",
+		},
+		{
+			name: "missing certificate key",
+			material: JoinMaterial{
+				Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane"},
+			},
+			want: "must include --certificate-key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := newFakeTransport()
+			err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), validPlannedNode("cp-2", inventory.ActionControlPlaneJoin), tt.material)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("RunControlPlaneJoin() error = %v, want %q", err, tt.want)
+			}
+			if len(transport.commandCalls) != 0 {
+				t.Fatalf("commands = %#v, want no remote command before material validation", transport.commandCalls)
+			}
+		})
 	}
 }
 
