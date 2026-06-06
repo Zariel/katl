@@ -60,6 +60,10 @@ Usage: scripts/vmtest-run [go test package patterns and flags...]
 Create a temporary Katl VM test world and run Go test binaries through
 scripts/vmtest-exec. Arguments are forwarded to go test after forcing -count=1.
 Pass the normal go test -json flag when JSON event output is wanted.
+With no package arguments, the runner preflights the full suite host
+capabilities before running tests. With explicit package or -run selections,
+host capability state is recorded and the selected tests enforce their own
+requirements under the strict world.
 
 Environment:
   KATL_VMTEST_HOST_POLICY=skip|fail        Host capability gap handling (default: fail)
@@ -481,7 +485,9 @@ filter_count_args() {
 filtered_args=()
 if [[ $# -eq 0 ]]; then
     filtered_args=("./...")
+    preflight_required=1
 else
+    preflight_required=0
     filter_count_args "$@"
 fi
 
@@ -508,10 +514,12 @@ if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
         write_summary "$final_status" 0 "${filtered_args[@]}"
         exit 0
     fi
-    final_status="setup-failed"
-    printf 'setup failed: missing required host capabilities: %s\n' "${missing_capabilities[*]}" >&2
-    write_summary "$final_status" 1 "${filtered_args[@]}"
-    exit 1
+    if [[ "$preflight_required" == 1 ]]; then
+        final_status="setup-failed"
+        printf 'setup failed: missing required host capabilities: %s\n' "${missing_capabilities[*]}" >&2
+        write_summary "$final_status" 1 "${filtered_args[@]}"
+        exit 1
+    fi
 fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"

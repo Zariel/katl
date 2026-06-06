@@ -266,7 +266,7 @@ func TestVMTestRunRequiredHostGapFails(t *testing.T) {
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
@@ -296,6 +296,53 @@ func TestVMTestRunRequiredHostGapFails(t *testing.T) {
 	}
 }
 
+func TestVMTestRunExplicitSelectionContinuesWithHostGap(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestDoesNotNeedQEMU$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
+		"KATL_VMTEST_RUN_ID=run-explicit-host-gap",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	goArgs := readLines(t, goArgsPath)
+	if !reflect.DeepEqual(goArgs, []string{
+		"test",
+		"-count=1",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"./internal/vmtest",
+		"-run",
+		"^TestDoesNotNeedQEMU$",
+	}) {
+		t.Fatalf("go args = %#v", goArgs)
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if !contains(caps.Missing, "qemu") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunKubectlGapFails(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -307,7 +354,7 @@ func TestVMTestRunKubectlGapFails(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
@@ -355,7 +402,7 @@ func TestVMTestRunBridgePrereqGapFails(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
@@ -399,7 +446,7 @@ func TestVMTestRunBridgeCreateFailureIsStructured(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
