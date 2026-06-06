@@ -102,6 +102,12 @@ KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
 compatible with the new runtime root. Kubernetes-only updates may keep the
 existing KatlOS runtime root when the new sysext is compatible with it.
 
+Katl uses `systemd-sysupdate` as the default resource transfer and staging
+primitive for KatlOS runtime root and UKI updates, but the Katl generation
+record remains authoritative for the complete selected runtime state. The
+mapping is defined in
+`docs/internal/systemd-sysupdate-update-decision.md`.
+
 Generation activation should use systemd-native functions where practical:
 systemd-boot for boot target selection, systemd-sysext and systemd-confext for
 extension activation, native mount units for state projections, tmpfiles for
