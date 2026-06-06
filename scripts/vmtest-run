@@ -625,10 +625,11 @@ write_go_test_events() {
 
 write_package_summary() {
     if ! has_go_test_json_arg "$@"; then
-        jq '
+        jq --arg runDir "$run_dir" '
           map({
             pattern: .,
             status: "not-collected",
+            runDir: $runDir,
             reason: "go test JSON was not requested"
           })
         ' "$selected_packages_json" >"$package_summary_json"
@@ -639,6 +640,7 @@ write_package_summary() {
         --slurpfile args "$selected_packages_json" \
         --slurpfile events "$go_test_events_json" \
         --slurpfile scenarios "$scenario_summary_json" \
+        --arg runDir "$run_dir" \
         '
           def status_for($action):
             if $action == "pass" then "passed"
@@ -658,6 +660,7 @@ write_package_summary() {
             | map({
                 package: .Package,
                 status: status_for(.Action),
+                runDir: $runDir,
                 action: .Action
               })
           else
@@ -665,6 +668,7 @@ write_package_summary() {
             | map({
                 pattern: .,
                 status: "missing",
+                runDir: $runDir,
                 failureSummary: "go test package result event is missing"
               })
           end

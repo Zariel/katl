@@ -113,7 +113,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if !reflect.DeepEqual(summary.SelectedPackageArgs, []string{"./internal/vmtest/scenarios"}) {
 		t.Fatalf("selected package args = %#v", summary.SelectedPackageArgs)
 	}
-	if len(summary.SelectedPackages) != 1 || summary.SelectedPackages[0].Pattern != "./internal/vmtest/scenarios" || summary.SelectedPackages[0].Status != "not-collected" {
+	if len(summary.SelectedPackages) != 1 || summary.SelectedPackages[0].Pattern != "./internal/vmtest/scenarios" || summary.SelectedPackages[0].Status != "not-collected" || summary.SelectedPackages[0].RunDir != runDir {
 		t.Fatalf("selected packages = %#v", summary.SelectedPackages)
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); err != nil {
@@ -1619,6 +1619,7 @@ type vmtestSelectedPackage struct {
 	Pattern        string `json:"pattern"`
 	Package        string `json:"package"`
 	Status         string `json:"status"`
+	RunDir         string `json:"runDir"`
 	Action         string `json:"action"`
 	Reason         string `json:"reason"`
 	FailureSummary string `json:"failureSummary"`
