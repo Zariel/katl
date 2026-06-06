@@ -164,20 +164,28 @@ agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
 It does not run `kubeadm init` or the API-server smoke.
 
 To run the opt-in first-install target-disk fixture contract smoke, resolve
-the mkosi artifact index, optional node metadata, and install manifest into a
-sourceable environment with:
+the mkosi artifact index, optional node metadata, and an install manifest bound
+to the local KatlOS image into a sourceable environment with:
 
 ```sh
+scripts/bind-install-manifest-image \
+  --artifact-index build/mkosi/artifacts.json \
+  --template docs/internal/examples/minimal-install-manifest.json \
+  --target-disk-by-id /dev/disk/by-id/virtio-katl-root \
+  --output build/local/cp-1-install.json
+
 scripts/resolve-first-install-katlos-image-fixture \
   --artifact-index build/mkosi/artifacts.json \
   --node-metadata build/local/cp-1-node.json \
-  --install-manifest docs/internal/examples/minimal-install-manifest.json
+  --install-manifest build/local/cp-1-install.json
 ```
 
-The command discovers the installer UKI and KatlOS install image from the
-artifact index, verifies the KatlOS image contract and manifest image binding,
-extracts the runtime-root component for the host-side VM harness, records
-SHA-256 bindings, and writes generated files under
+The manifest binding step keeps the user-facing install fields from the
+template, rewrites `katlosImage` to the indexed local image, and applies the
+explicit VM target disk selector. The resolver discovers the installer UKI and
+KatlOS install image from the artifact index, verifies the KatlOS image contract
+and manifest image binding, extracts the runtime-root component for the
+host-side VM harness, records SHA-256 bindings, and writes generated files under
 `build/first-install-katlos-image-fixture/`. The generated smoke runs in
 installed-ESP mode: it extracts the ESP from the target disk written by the
 installer and uses that tree for the packaged runtime boot. Source the generated
