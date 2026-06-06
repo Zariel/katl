@@ -20,6 +20,7 @@ go_test_log="$run_dir/go-test.log"
 summary_json="$run_dir/summary.json"
 scenario_summary_json="$run_dir/scenario-summary.json"
 selected_packages_json="$run_dir/selected-packages.json"
+package_summary_json="$run_dir/package-summary.json"
 setup_failures_json="$run_dir/setup-failures.json"
 go_test_events_json="$run_dir/go-test-events.json"
 go_test_failures_json="$run_dir/go-test-failures.json"
@@ -622,6 +623,54 @@ write_go_test_events() {
         ' >"$unexpected_go_test_skips_json"
 }
 
+write_package_summary() {
+    if ! has_go_test_json_arg "$@"; then
+        jq '
+          map({
+            pattern: .,
+            status: "not-collected",
+            reason: "go test JSON was not requested"
+          })
+        ' "$selected_packages_json" >"$package_summary_json"
+        return
+    fi
+
+    jq -n \
+        --slurpfile args "$selected_packages_json" \
+        --slurpfile events "$go_test_events_json" \
+        --slurpfile scenarios "$scenario_summary_json" \
+        '
+          def status_for($action):
+            if $action == "pass" then "passed"
+            elif $action == "fail" then "failed"
+            elif $action == "skip" then
+              if any($scenarios[0][]; .status == "host-skipped") then "host-skipped" else "setup-failed" end
+            else "missing"
+            end;
+
+          ($events[0]
+            | map(select((.Package // "") != "" and ((.Test // "") == "") and (.Action == "pass" or .Action == "fail" or .Action == "skip")))
+          ) as $terminal |
+          if ($terminal | length) > 0 then
+            $terminal
+            | group_by(.Package)
+            | map(.[-1])
+            | map({
+                package: .Package,
+                status: status_for(.Action),
+                action: .Action
+              })
+          else
+            $args[0]
+            | map({
+                pattern: .,
+                status: "missing",
+                failureSummary: "go test package result event is missing"
+              })
+          end
+        ' >"$package_summary_json"
+}
+
 append_scenario_summary() {
     local item_json="$1"
     local tmp="$scenario_summary_json.tmp"
@@ -638,6 +687,7 @@ scenario_status_from_result() {
       elif $status == "setup-failed" then "setup-failed"
       elif $status == "skipped" or $status == "skip" then
         if ((.missing // []) | length) > 0 then "host-skipped" else "setup-failed" end
+      elif $status == "disabled" then "disabled"
       elif $status == "planned" or $status == "" then "setup-failed"
       else "setup-failed"
       end
@@ -774,6 +824,7 @@ write_summary() {
     write_selected_packages "$@"
     collect_scenario_summaries
     write_go_test_events "$@"
+    write_package_summary "$@"
     write_setup_failures
     jq -n \
         --arg runID "$run_id" \
@@ -785,6 +836,7 @@ write_summary() {
         --argjson exitCode "$exit_code" \
         --slurpfile host "$host_capabilities_json" \
         --slurpfile packages "$selected_packages_json" \
+        --slurpfile packageSummary "$package_summary_json" \
         --slurpfile setupFailures "$setup_failures_json" \
         --slurpfile scenarios "$scenario_summary_json" \
         --slurpfile goTestFailures "$go_test_failures_json" \
@@ -805,6 +857,7 @@ write_summary() {
             elif (($setupFailures[0] | length) > 0) then "setup-failed"
             elif $exitCode != 0 then "failed"
             elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then "failed"
+            elif any($packageSummary[0][]; .status == "failed" or .status == "setup-failed" or .status == "missing") then "failed"
             elif (($goTestFailures[0] | length) > 0) then "failed"
             elif (($unexpectedGoTestSkips[0] | length) > 0) then "failed"
             else "passed"
@@ -816,6 +869,7 @@ write_summary() {
             elif (($setupFailures[0] | length) > 0) then 2
             elif $exitCode != 0 then $exitCode
             elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then 1
+            elif any($packageSummary[0][]; .status == "failed" or .status == "setup-failed" or .status == "missing") then 1
             elif (($goTestFailures[0] | length) > 0) then 1
             elif (($unexpectedGoTestSkips[0] | length) > 0) then 1
             else 0
@@ -823,7 +877,8 @@ write_summary() {
           ),
           childExitCode: $exitCode,
           args: $ARGS.positional,
-          selectedPackages: $packages[0],
+          selectedPackageArgs: $packages[0],
+          selectedPackages: $packageSummary[0],
           hostCapabilityGaps: ($host[0].missing // []),
           setupFailures: $setupFailures[0],
           goTestFailures: $goTestFailures[0],
