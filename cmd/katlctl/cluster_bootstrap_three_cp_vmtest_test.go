@@ -326,12 +326,18 @@ func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptE
 		if !transcriptHasCommand(entries, "kubeadm", "init") {
 			return errors.New("missing kubeadm init command")
 		}
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
+			return errors.New("kubeadm init command missing control-plane config path")
+		}
 	case "cp-2", "cp-3":
 		if transcriptHasCommand(entries, "kubeadm", "init") {
 			return errors.New("unexpected kubeadm init command on joining control-plane")
 		}
 		if !transcriptHasCommand(entries, "kubeadm", "join") {
 			return errors.New("missing kubeadm control-plane join command")
+		}
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "join", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
+			return errors.New("kubeadm control-plane join command missing control-plane config path")
 		}
 		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
 			return errors.New("kubeadm join command missing --control-plane")
@@ -613,7 +619,7 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 		writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, node), []transcriptEntry{
 			{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 			{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-			{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]"}, Redaction: "output", SensitiveOutput: true},
+			{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
 		})
 	}
 	if err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"}); err != nil {
@@ -627,6 +633,16 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
 	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on joining control-plane") {
 		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 init rejection", err)
+	}
+
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/worker/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+	})
+	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
+	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command missing control-plane config path") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 config path rejection", err)
 	}
 }
 
