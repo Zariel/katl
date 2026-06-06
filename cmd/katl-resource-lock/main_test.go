@@ -17,7 +17,7 @@ func TestRunRefreshAndVerify(t *testing.T) {
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
 	lockPath := filepath.Join(dir, "mkosi.profiles", "resource-package-lock.json")
 	manifest := commandManifest("")
-	writeManifest(t, manifestPath, manifest)
+	writeTestManifest(t, manifestPath, manifest)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -29,7 +29,7 @@ func TestRunRefreshAndVerify(t *testing.T) {
 		t.Fatalf("read lock: %v", err)
 	}
 	manifest.PackageSets[0].LockDigest = resourcetest.PackageLockDigest(lockData)
-	writeManifest(t, manifestPath, manifest)
+	writeTestManifest(t, manifestPath, manifest)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -46,7 +46,7 @@ func TestRunVerifyRejectsPackageDrift(t *testing.T) {
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
 	lockPath := filepath.Join(dir, "resource-package-lock.json")
 	manifest := commandManifest("")
-	writeManifest(t, manifestPath, manifest)
+	writeTestManifest(t, manifestPath, manifest)
 	if err := run([]string{"refresh", "--manifest", manifestPath, "--output", lockPath}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("refresh error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestRunVerifyRejectsPackageDrift(t *testing.T) {
 	}
 	manifest.PackageSets[0].LockDigest = resourcetest.PackageLockDigest(lockData)
 	manifest.PackageSets[0].Packages[0].NEVRA = "systemd-0:259.7-1.fc44.x86_64"
-	writeManifest(t, manifestPath, manifest)
+	writeTestManifest(t, manifestPath, manifest)
 
 	err = run([]string{"verify", "--manifest", manifestPath, "--lock", lockPath}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
@@ -71,7 +71,87 @@ func TestRunRequiresManifest(t *testing.T) {
 	}
 }
 
+func TestRunAddRPMPackageSet(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		if root != "build/mkosi/katl-runtime-root" {
+			t.Fatalf("root = %q", root)
+		}
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockManifestPath := filepath.Join(dir, "lock-source-manifest.json")
+	outputPath := filepath.Join(dir, "updated-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	writeTestManifest(t, lockManifestPath, commandManifest(""))
+	if err := run([]string{"refresh", "--manifest", lockManifestPath, "--output", lockPath}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("refresh error = %v", err)
+	}
+	writeTestManifest(t, manifestPath, commandManifestSkeleton())
+
+	var stdout bytes.Buffer
+	err := run([]string{
+		"add-rpm-package-set",
+		"--manifest", manifestPath,
+		"--output", outputPath,
+		"--name", "runtime",
+		"--source", "mkosi.profiles/runtime",
+		"--root", "build/mkosi/katl-runtime-root",
+		"--lock", lockPath,
+		"--distribution", "fedora",
+		"--release", "44",
+		"--architecture", "x86_64",
+		"--repository", "fedora=https://example.invalid/fedora/44",
+		"--profile-name", "runtime",
+		"--profile-path", "mkosi.profiles/runtime",
+		"--profile-config-sha256", strings.Repeat("a", 64),
+	}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("add-rpm-package-set error = %v", err)
+	}
+	updated, err := readManifest(outputPath)
+	if err != nil {
+		t.Fatalf("read updated manifest: %v", err)
+	}
+	if updated.PackageSets[0].LockDigest == "" || updated.PackageSets[0].Repositories[0].ID != "fedora" {
+		t.Fatalf("updated manifest package set = %#v", updated.PackageSets[0])
+	}
+	if !strings.Contains(stdout.String(), "packages: 1") {
+		t.Fatalf("stdout = %q, want package count", stdout.String())
+	}
+}
+
 func commandManifest(lockDigest string) resourcetest.Manifest {
+	manifest := commandManifestSkeleton()
+	manifest.PackageSets = []resourcetest.PackageSet{{
+		Name:         "runtime",
+		Source:       "mkosi.profiles/runtime",
+		Digest:       strings.Repeat("b", 64),
+		LockDigest:   lockDigest,
+		Distribution: "fedora",
+		Release:      "44",
+		Architecture: "x86_64",
+		Repositories: []resourcetest.PackageRepository{{
+			ID:      "fedora",
+			BaseURL: "https://example.invalid/fedora/44",
+		}},
+		Packages: []resourcetest.Package{{
+			Name:     "systemd",
+			NEVRA:    "systemd-0:259.6-1.fc44.x86_64",
+			Checksum: strings.Repeat("c", 64),
+		}},
+	},
+	}
+	return manifest
+}
+
+func commandManifestSkeleton() resourcetest.Manifest {
 	return resourcetest.Manifest{
 		APIVersion: resourcetest.APIVersion,
 		Kind:       resourcetest.Kind,
@@ -88,28 +168,10 @@ func commandManifest(lockDigest string) resourcetest.Manifest {
 			ConfigDigest:  strings.Repeat("a", 64),
 			PackageSetRef: "runtime",
 		}},
-		PackageSets: []resourcetest.PackageSet{{
-			Name:         "runtime",
-			Source:       "mkosi.profiles/runtime",
-			Digest:       strings.Repeat("b", 64),
-			LockDigest:   lockDigest,
-			Distribution: "fedora",
-			Release:      "44",
-			Architecture: "x86_64",
-			Repositories: []resourcetest.PackageRepository{{
-				ID:      "fedora",
-				BaseURL: "https://example.invalid/fedora/44",
-			}},
-			Packages: []resourcetest.Package{{
-				Name:     "systemd",
-				NEVRA:    "systemd-0:259.6-1.fc44.x86_64",
-				Checksum: strings.Repeat("c", 64),
-			}},
-		}},
 	}
 }
 
-func writeManifest(t *testing.T, path string, manifest resourcetest.Manifest) {
+func writeTestManifest(t *testing.T, path string, manifest resourcetest.Manifest) {
 	t.Helper()
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
