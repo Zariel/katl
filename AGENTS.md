@@ -34,6 +34,8 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Prefer unit tests for planning and validation logic, golden tests for generated assets, and QEMU/libvirt tests for boot/install/update flows.
 - Generated systemd units should be verifiable with `systemd-analyze verify` where practical.
 - Changes to disk layout, boot flow, update flow, or kubeadm state handling need tests or an explicit note explaining the remaining gap.
+- `go test ./...` is the baseline unit/golden gate, not proof that enabled nspawn, VM, boot, install, update, or kubeadm flows ran.
+- Changes that affect `scripts/vmtest-run`, `scripts/vmtest-exec`, VM test worlds, nspawn checks, QEMU scenarios, fixture generation, boot/install/update behavior, or kubeadm smoke behavior must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If the current host cannot run it, record the exact host capability gap and the exact `scripts/vmtest-run` command that still needs to run.
 
 ## Naming
 
@@ -68,7 +70,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 - Closing a Bead has a required order:
   1. Finish the scoped code/docs change.
-  2. Run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, QEMU/libvirt smoke tests, or docs review as applicable.
+  2. Run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, `scripts/vmtest-run ... -count=1` for enabled nspawn/VM/world scenarios, QEMU/libvirt smoke tests, or docs review as applicable.
   3. Run or request review when the change is broad, risky, security-sensitive, boot/update-related, disk-layout-related, or kubeadm-state-related.
   4. Review `git status --short` and stage only the files for the completed Bead with explicit paths.
   5. Commit those files with `git commit-wrapped`.
