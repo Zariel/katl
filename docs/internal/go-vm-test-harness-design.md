@@ -603,6 +603,15 @@ checks. Neither path replaces QEMU tests for boot selection, live service restar
 behavior, network continuity, kubelet startup, reboot rollback, disk layout, or
 kubeadm cluster behavior.
 
+Runtime configuration apply checks can also run through nspawn by binding a
+prepared runtime fixture and a test-only local request helper into the userspace
+root. This verifies request decoding, fail-closed audit persistence, absence of
+partial generation output on rejected input, generation-scoped confext rendering
+on accepted input, and preservation of selected Kubernetes sysext metadata. QEMU
+still owns assertions that require a real booted node: boot selection, service
+restart effects, network continuity during live apply, kubelet startup, reboot
+rollback, and kubeadm cluster mutation boundaries.
+
 ## Timeouts And Failure Behavior
 
 Timeouts are explicit at three levels:
