@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/discovery"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	installstatus "github.com/zariel/katl/internal/installer/status"
@@ -65,8 +68,12 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
-		InputMode:   inputMode,
-		InputSource: inputSource,
+		Discovery:      discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener: disk.FileRootSlotDeviceOpener{},
+		IdentityRandom: rand.Reader,
+		Chown:          os.Chown,
+		InputMode:      inputMode,
+		InputSource:    inputSource,
 	}, nil
 }
 

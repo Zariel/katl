@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/discovery"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
@@ -108,6 +110,18 @@ func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
 	}
 	if resolver.Commands == nil || install.Commands == nil {
 		t.Fatalf("command runners are not configured: resolver=%#v install=%#v", resolver.Commands, install.Commands)
+	}
+	if source, ok := install.Discovery.(discovery.CommandDiscoverySource); !ok || source.Commands == nil {
+		t.Fatalf("Discovery = %#v, want command-backed discovery", install.Discovery)
+	}
+	if _, ok := install.RootSlotOpener.(disk.FileRootSlotDeviceOpener); !ok {
+		t.Fatalf("RootSlotOpener = %T, want disk.FileRootSlotDeviceOpener", install.RootSlotOpener)
+	}
+	if install.IdentityRandom == nil {
+		t.Fatal("IdentityRandom is nil")
+	}
+	if install.Chown == nil {
+		t.Fatal("Chown is nil")
 	}
 }
 
