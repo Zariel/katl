@@ -31,7 +31,7 @@ func TestPlanInstalledRuntimeWorldRunWritesSetupFailureForMissingPublishedFixtur
 func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	sourceManifest := writePublishedInstalledRuntimeFixture(t, repo, "first", "cp-1", ControlPlane, time.Unix(10, 0))
+	sourceManifest := writePublishedInstalledRuntimeFixture(t, world.RunDir, "first", "cp-1", ControlPlane, time.Unix(10, 0))
 
 	run, err := planInstalledRuntimeWorldRun(world, "installed runtime", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
 	if err != nil {
@@ -49,6 +49,9 @@ func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 	record := readInstalledRuntimeFixtureForTest(t, run.Config.FixtureManifest)
 	if record.NodeName != "cp-1" || record.SystemRole != "control-plane" {
 		t.Fatalf("fixture = %#v", record)
+	}
+	if !pathUnder(run.Fixture.ManifestPath, world.RunDir) {
+		t.Fatalf("fixture = %q, want under world %q", run.Fixture.ManifestPath, world.RunDir)
 	}
 	if _, err := os.Stat(sourceManifest); err != nil {
 		t.Fatalf("source fixture missing: %v", err)

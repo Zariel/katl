@@ -60,7 +60,6 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	run := installedRuntimeWorldRun{Scenario: scenario}
 	node, err := AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
 		filepath.Join(world.RunDir, "build"),
-		filepath.Join(repo, "build"),
 	}, spec)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -77,4 +76,44 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	run.Fixture = node.Fixture
 	run.Config = node.Config
 	return run, nil
+}
+
+func TestPlanInstalledRuntimeWorldRunUsesWorldPublishedFixture(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	writePublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(20, 0))
+
+	run, err := planInstalledRuntimeWorldRun(world, "installed-runtime-kubeadm-api-smoke", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
+	if err != nil {
+		t.Fatalf("planInstalledRuntimeWorldRun() error = %v", err)
+	}
+	if !pathUnder(run.Fixture.ManifestPath, world.RunDir) {
+		t.Fatalf("installed runtime fixture = %q, want under world %q", run.Fixture.ManifestPath, world.RunDir)
+	}
+	if !pathUnder(run.Config.FixtureManifest, run.Scenario.Dir) {
+		t.Fatalf("staged fixture manifest = %q, want under scenario %q", run.Config.FixtureManifest, run.Scenario.Dir)
+	}
+	if run.Runner.options().Missing != MissingFails {
+		t.Fatalf("runner missing policy = %v, want MissingFails", run.Runner.options().Missing)
+	}
+}
+
+func TestPlanInstalledRuntimeWorldRunRejectsRepoOnlyPublishedFixture(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	writePublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+
+	run, err := planInstalledRuntimeWorldRun(world, "installed-runtime-kubeadm-api-smoke", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
+		t.Fatalf("planInstalledRuntimeWorldRun() error = %v, want missing world fixture", err)
+	}
+	if run.Scenario == nil {
+		t.Fatal("planInstalledRuntimeWorldRun() did not return scenario on setup failure")
+	}
+	var result scenarioResult
+	readJSONForTest(t, run.Scenario.ResultPath, &result)
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
+		t.Fatalf("result = %#v", result)
+	}
 }
