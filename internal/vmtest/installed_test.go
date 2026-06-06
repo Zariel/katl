@@ -98,7 +98,6 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	}
 	esp := espFixture(t)
 	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp)
-	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixtureManifest)
 	result, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -120,6 +119,7 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 		Disk:               disk,
 		DiskFormat:         DiskRaw,
 		ESPArtifacts:       esp,
+		FixtureManifest:    fixtureManifest,
 		RequireVMTestAgent: true,
 		VM:                 vmConfig,
 	}, runner)
@@ -177,7 +177,6 @@ func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte(`{"kind":"Wrong"}`), 0o644); err != nil {
 		t.Fatalf("write fixture manifest: %v", err)
 	}
-	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", manifest)
 	result, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -187,9 +186,10 @@ func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
 	}
 	result.start(time.Now().UTC())
 	result = RunInstalledRuntime(context.Background(), result, InstalledRuntimeConfig{
-		Disk:         disk,
-		DiskFormat:   DiskRaw,
-		ESPArtifacts: espFixture(t),
+		Disk:            disk,
+		DiskFormat:      DiskRaw,
+		ESPArtifacts:    espFixture(t),
+		FixtureManifest: manifest,
 	}, VMRunner{})
 	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installed runtime fixture manifest has") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
@@ -414,6 +414,33 @@ func TestInstalledRuntimeRecordIgnoresAmbientNodeMetadata(t *testing.T) {
 	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
 	if input.NodeMetadata != "" {
 		t.Fatalf("node metadata = %q, want empty", input.NodeMetadata)
+	}
+}
+
+func TestInstalledRuntimeRecordIgnoresAmbientFixtureManifest(t *testing.T) {
+	root := t.TempDir()
+	disk := writeFixtureFile(t, filepath.Join(root, "disk.raw"), "disk")
+	esp := espFixture(t)
+	ambientManifest := writeInstalledFixtureManifest(t, root, disk, esp)
+	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", ambientManifest)
+
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-no-env-fixture",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if err := writeInstalledRuntimeRecord(result, InstalledRuntimeConfig{
+		Disk:         disk,
+		DiskFormat:   DiskRaw,
+		ESPArtifacts: esp,
+	}); err != nil {
+		t.Fatalf("writeInstalledRuntimeRecord() error = %v", err)
+	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.FixtureManifest != "" || input.Fixture != nil {
+		t.Fatalf("installed runtime input used ambient fixture manifest: %#v", input)
 	}
 }
 

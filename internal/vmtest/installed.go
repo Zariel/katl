@@ -111,7 +111,7 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 	if err := os.MkdirAll(filepath.Dir(result.Artifacts.InstalledRuntime), 0o755); err != nil {
 		return err
 	}
-	fixtureManifest := first(config.FixtureManifest, os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST"))
+	fixtureManifest := strings.TrimSpace(config.FixtureManifest)
 	fixture, err := readInstalledRuntimeFixture(fixtureManifest)
 	if err != nil {
 		return err

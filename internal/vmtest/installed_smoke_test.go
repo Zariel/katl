@@ -16,7 +16,6 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	contract := firstInstallFixtureContractRunFor(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	fixture := produceFirstInstallRuntimeFixture(t, contract)
 
-	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixture.ManifestPath)
 	runner := contract.Runner
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -30,6 +29,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		Disk:               fixture.Disk,
 		DiskFormat:         DiskQCOW2,
 		ESPArtifacts:       fixture.ESPArtifacts,
+		FixtureManifest:    fixture.ManifestPath,
 		RequireVMTestAgent: true,
 		VM: VMConfig{
 			KVM:     runner.options().KVM,
