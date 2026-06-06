@@ -96,6 +96,98 @@ func TestAgentReadFile(t *testing.T) {
 	}
 }
 
+func TestAgentWriteFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "requests", "change.yaml")
+	server := NewAgentServer("test")
+	server.AllowedWritePaths = []string{root + string(os.PathSeparator)}
+	result, err := server.writeFile(&vmtestpb.WriteFileRequest{
+		Path:    path,
+		Content: []byte("apiVersion: katl.dev/v1alpha1\n"),
+		Mode:    0o600,
+	})
+	if err != nil {
+		t.Fatalf("writeFile() error = %v", err)
+	}
+	if result.SizeBytes != 30 || result.Redaction != "none" {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "apiVersion: katl.dev/v1alpha1\n" {
+		t.Fatalf("written data = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat written file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", info.Mode().Perm())
+	}
+	_, err = server.writeFile(&vmtestpb.WriteFileRequest{Path: filepath.Join(t.TempDir(), "blocked"), Content: []byte("x")})
+	if err == nil || !strings.Contains(err.Error(), "allowlisted") {
+		t.Fatalf("blocked write error = %v", err)
+	}
+}
+
+func TestAgentWriteFileDefaultAllowlistIsUploadOnly(t *testing.T) {
+	server := NewAgentServer("test")
+	for _, path := range []string{
+		"/var/lib/katl/config-requests/operator/1.json",
+		"/var/lib/katl/generations/2026.06.06-001/metadata.json",
+	} {
+		_, err := server.writeFile(&vmtestpb.WriteFileRequest{Path: path, Content: []byte("x")})
+		if err == nil || !strings.Contains(err.Error(), "allowlisted") {
+			t.Fatalf("writeFile(%s) error = %v, want allowlist rejection", path, err)
+		}
+	}
+}
+
+func TestAgentWriteFileRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	server := NewAgentServer("test")
+	server.AllowedWritePaths = []string{root + string(os.PathSeparator)}
+	_, err := server.writeFile(&vmtestpb.WriteFileRequest{Path: link, Content: []byte("new")})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFile() error = %v, want symlink rejection", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("target data = %q", data)
+	}
+}
+
+func TestAgentWriteFileRejectsSymlinkParentWithoutCreatingChild(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	server := NewAgentServer("test")
+	server.AllowedWritePaths = []string{root + string(os.PathSeparator)}
+	_, err := server.writeFile(&vmtestpb.WriteFileRequest{Path: filepath.Join(link, "child", "request.yaml"), Content: []byte("x")})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("writeFile() error = %v, want symlink parent rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "child")); !os.IsNotExist(err) {
+		t.Fatalf("writeFile created child through symlink: %v", err)
+	}
+}
+
 func TestAgentCommandAllowlist(t *testing.T) {
 	server := NewAgentServer("test")
 	_, err := server.runCommand(context.Background(), &vmtestpb.RunCommandRequest{

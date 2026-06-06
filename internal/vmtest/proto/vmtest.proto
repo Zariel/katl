@@ -13,6 +13,7 @@ message VmtestRequest {
     RunCommandRequest run_command = 11;
     ReadFileRequest read_file = 12;
     ExportJournalRequest export_journal = 13;
+    WriteFileRequest write_file = 14;
   }
 }
 
@@ -61,6 +62,18 @@ message FileResult {
   string redaction = 4;
 }
 
+message WriteFileRequest {
+  string path = 1;
+  bytes content = 2;
+  uint32 mode = 3;
+  bool sensitive = 4;
+}
+
+message WriteFileResult {
+  uint32 size_bytes = 1;
+  string redaction = 2;
+}
+
 message ExportJournalRequest {
   repeated string units = 1;
   string boot_id = 2;
@@ -89,6 +102,7 @@ message VmtestResponse {
     CommandResult command = 11;
     FileResult file = 12;
     JournalResult journal = 13;
+    WriteFileResult write_file = 14;
     VmtestError error = 100;
   }
 }

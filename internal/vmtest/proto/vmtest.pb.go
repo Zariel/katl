@@ -31,6 +31,7 @@ type VmtestRequest struct {
 	//	*VmtestRequest_RunCommand
 	//	*VmtestRequest_ReadFile
 	//	*VmtestRequest_ExportJournal
+	//	*VmtestRequest_WriteFile
 	Operation     isVmtestRequest_Operation `protobuf_oneof:"operation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -123,6 +124,15 @@ func (x *VmtestRequest) GetExportJournal() *ExportJournalRequest {
 	return nil
 }
 
+func (x *VmtestRequest) GetWriteFile() *WriteFileRequest {
+	if x != nil {
+		if x, ok := x.Operation.(*VmtestRequest_WriteFile); ok {
+			return x.WriteFile
+		}
+	}
+	return nil
+}
+
 type isVmtestRequest_Operation interface {
 	isVmtestRequest_Operation()
 }
@@ -143,6 +153,10 @@ type VmtestRequest_ExportJournal struct {
 	ExportJournal *ExportJournalRequest `protobuf:"bytes,13,opt,name=export_journal,json=exportJournal,proto3,oneof"`
 }
 
+type VmtestRequest_WriteFile struct {
+	WriteFile *WriteFileRequest `protobuf:"bytes,14,opt,name=write_file,json=writeFile,proto3,oneof"`
+}
+
 func (*VmtestRequest_Health) isVmtestRequest_Operation() {}
 
 func (*VmtestRequest_RunCommand) isVmtestRequest_Operation() {}
@@ -150,6 +164,8 @@ func (*VmtestRequest_RunCommand) isVmtestRequest_Operation() {}
 func (*VmtestRequest_ReadFile) isVmtestRequest_Operation() {}
 
 func (*VmtestRequest_ExportJournal) isVmtestRequest_Operation() {}
+
+func (*VmtestRequest_WriteFile) isVmtestRequest_Operation() {}
 
 type HealthRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -603,6 +619,126 @@ func (x *FileResult) GetRedaction() string {
 	return ""
 }
 
+type WriteFileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Content       []byte                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	Mode          uint32                 `protobuf:"varint,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	Sensitive     bool                   `protobuf:"varint,4,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteFileRequest) Reset() {
+	*x = WriteFileRequest{}
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteFileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteFileRequest) ProtoMessage() {}
+
+func (x *WriteFileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteFileRequest.ProtoReflect.Descriptor instead.
+func (*WriteFileRequest) Descriptor() ([]byte, []int) {
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *WriteFileRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *WriteFileRequest) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *WriteFileRequest) GetMode() uint32 {
+	if x != nil {
+		return x.Mode
+	}
+	return 0
+}
+
+func (x *WriteFileRequest) GetSensitive() bool {
+	if x != nil {
+		return x.Sensitive
+	}
+	return false
+}
+
+type WriteFileResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SizeBytes     uint32                 `protobuf:"varint,1,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Redaction     string                 `protobuf:"bytes,2,opt,name=redaction,proto3" json:"redaction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteFileResult) Reset() {
+	*x = WriteFileResult{}
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteFileResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteFileResult) ProtoMessage() {}
+
+func (x *WriteFileResult) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteFileResult.ProtoReflect.Descriptor instead.
+func (*WriteFileResult) Descriptor() ([]byte, []int) {
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *WriteFileResult) GetSizeBytes() uint32 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *WriteFileResult) GetRedaction() string {
+	if x != nil {
+		return x.Redaction
+	}
+	return ""
+}
+
 type ExportJournalRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Units         []string               `protobuf:"bytes,1,rep,name=units,proto3" json:"units,omitempty"`
@@ -614,7 +750,7 @@ type ExportJournalRequest struct {
 
 func (x *ExportJournalRequest) Reset() {
 	*x = ExportJournalRequest{}
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[8]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -626,7 +762,7 @@ func (x *ExportJournalRequest) String() string {
 func (*ExportJournalRequest) ProtoMessage() {}
 
 func (x *ExportJournalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[8]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -639,7 +775,7 @@ func (x *ExportJournalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportJournalRequest.ProtoReflect.Descriptor instead.
 func (*ExportJournalRequest) Descriptor() ([]byte, []int) {
-	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{8}
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ExportJournalRequest) GetUnits() []string {
@@ -674,7 +810,7 @@ type JournalResult struct {
 
 func (x *JournalResult) Reset() {
 	*x = JournalResult{}
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[9]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -686,7 +822,7 @@ func (x *JournalResult) String() string {
 func (*JournalResult) ProtoMessage() {}
 
 func (x *JournalResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[9]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -699,7 +835,7 @@ func (x *JournalResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JournalResult.ProtoReflect.Descriptor instead.
 func (*JournalResult) Descriptor() ([]byte, []int) {
-	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{9}
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *JournalResult) GetText() string {
@@ -735,7 +871,7 @@ type VmtestError struct {
 
 func (x *VmtestError) Reset() {
 	*x = VmtestError{}
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[10]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +883,7 @@ func (x *VmtestError) String() string {
 func (*VmtestError) ProtoMessage() {}
 
 func (x *VmtestError) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[10]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +896,7 @@ func (x *VmtestError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VmtestError.ProtoReflect.Descriptor instead.
 func (*VmtestError) Descriptor() ([]byte, []int) {
-	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{10}
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VmtestError) GetCode() string {
@@ -801,6 +937,7 @@ type VmtestResponse struct {
 	//	*VmtestResponse_Command
 	//	*VmtestResponse_File
 	//	*VmtestResponse_Journal
+	//	*VmtestResponse_WriteFile
 	//	*VmtestResponse_Error
 	Result        isVmtestResponse_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
@@ -809,7 +946,7 @@ type VmtestResponse struct {
 
 func (x *VmtestResponse) Reset() {
 	*x = VmtestResponse{}
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[11]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -821,7 +958,7 @@ func (x *VmtestResponse) String() string {
 func (*VmtestResponse) ProtoMessage() {}
 
 func (x *VmtestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[11]
+	mi := &file_internal_vmtest_proto_vmtest_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -834,7 +971,7 @@ func (x *VmtestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VmtestResponse.ProtoReflect.Descriptor instead.
 func (*VmtestResponse) Descriptor() ([]byte, []int) {
-	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{11}
+	return file_internal_vmtest_proto_vmtest_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *VmtestResponse) GetRequestId() string {
@@ -894,6 +1031,15 @@ func (x *VmtestResponse) GetJournal() *JournalResult {
 	return nil
 }
 
+func (x *VmtestResponse) GetWriteFile() *WriteFileResult {
+	if x != nil {
+		if x, ok := x.Result.(*VmtestResponse_WriteFile); ok {
+			return x.WriteFile
+		}
+	}
+	return nil
+}
+
 func (x *VmtestResponse) GetError() *VmtestError {
 	if x != nil {
 		if x, ok := x.Result.(*VmtestResponse_Error); ok {
@@ -923,6 +1069,10 @@ type VmtestResponse_Journal struct {
 	Journal *JournalResult `protobuf:"bytes,13,opt,name=journal,proto3,oneof"`
 }
 
+type VmtestResponse_WriteFile struct {
+	WriteFile *WriteFileResult `protobuf:"bytes,14,opt,name=write_file,json=writeFile,proto3,oneof"`
+}
+
 type VmtestResponse_Error struct {
 	Error *VmtestError `protobuf:"bytes,100,opt,name=error,proto3,oneof"`
 }
@@ -935,13 +1085,15 @@ func (*VmtestResponse_File) isVmtestResponse_Result() {}
 
 func (*VmtestResponse_Journal) isVmtestResponse_Result() {}
 
+func (*VmtestResponse_WriteFile) isVmtestResponse_Result() {}
+
 func (*VmtestResponse_Error) isVmtestResponse_Result() {}
 
 var File_internal_vmtest_proto_vmtest_proto protoreflect.FileDescriptor
 
 const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/vmtest/proto/vmtest.proto\x12\x0ekatl.vmtest.v1\"\xe8\x02\n" +
+	"\"internal/vmtest/proto/vmtest.proto\x12\x0ekatl.vmtest.v1\"\xab\x03\n" +
 	"\rVmtestRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1d\n" +
@@ -952,7 +1104,9 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\vrun_command\x18\v \x01(\v2!.katl.vmtest.v1.RunCommandRequestH\x00R\n" +
 	"runCommand\x12>\n" +
 	"\tread_file\x18\f \x01(\v2\x1f.katl.vmtest.v1.ReadFileRequestH\x00R\breadFile\x12M\n" +
-	"\x0eexport_journal\x18\r \x01(\v2$.katl.vmtest.v1.ExportJournalRequestH\x00R\rexportJournalB\v\n" +
+	"\x0eexport_journal\x18\r \x01(\v2$.katl.vmtest.v1.ExportJournalRequestH\x00R\rexportJournal\x12A\n" +
+	"\n" +
+	"write_file\x18\x0e \x01(\v2 .katl.vmtest.v1.WriteFileRequestH\x00R\twriteFileB\v\n" +
 	"\toperation\"\x0f\n" +
 	"\rHealthRequest\"j\n" +
 	"\x0eHealthResponse\x12#\n" +
@@ -988,7 +1142,16 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\rR\tsizeBytes\x12\x1c\n" +
-	"\tredaction\x18\x04 \x01(\tR\tredaction\"b\n" +
+	"\tredaction\x18\x04 \x01(\tR\tredaction\"r\n" +
+	"\x10WriteFileRequest\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\rR\x04mode\x12\x1c\n" +
+	"\tsensitive\x18\x04 \x01(\bR\tsensitive\"N\n" +
+	"\x0fWriteFileResult\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x01 \x01(\rR\tsizeBytes\x12\x1c\n" +
+	"\tredaction\x18\x02 \x01(\tR\tredaction\"b\n" +
 	"\x14ExportJournalRequest\x12\x14\n" +
 	"\x05units\x18\x01 \x03(\tR\x05units\x12\x17\n" +
 	"\aboot_id\x18\x02 \x01(\tR\x06bootId\x12\x1b\n" +
@@ -1005,7 +1168,7 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\adetails\x18\x04 \x03(\v2(.katl.vmtest.v1.VmtestError.DetailsEntryR\adetails\x1a:\n" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf1\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb3\x03\n" +
 	"\x0eVmtestResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1f\n" +
@@ -1015,7 +1178,9 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	" \x01(\v2\x1e.katl.vmtest.v1.HealthResponseH\x00R\x06health\x129\n" +
 	"\acommand\x18\v \x01(\v2\x1d.katl.vmtest.v1.CommandResultH\x00R\acommand\x120\n" +
 	"\x04file\x18\f \x01(\v2\x1a.katl.vmtest.v1.FileResultH\x00R\x04file\x129\n" +
-	"\ajournal\x18\r \x01(\v2\x1d.katl.vmtest.v1.JournalResultH\x00R\ajournal\x123\n" +
+	"\ajournal\x18\r \x01(\v2\x1d.katl.vmtest.v1.JournalResultH\x00R\ajournal\x12@\n" +
+	"\n" +
+	"write_file\x18\x0e \x01(\v2\x1f.katl.vmtest.v1.WriteFileResultH\x00R\twriteFile\x123\n" +
 	"\x05error\x18d \x01(\v2\x1b.katl.vmtest.v1.VmtestErrorH\x00R\x05errorB\b\n" +
 	"\x06resultB7Z5github.com/zariel/katl/internal/vmtest/proto;vmtestpbb\x06proto3"
 
@@ -1031,7 +1196,7 @@ func file_internal_vmtest_proto_vmtest_proto_rawDescGZIP() []byte {
 	return file_internal_vmtest_proto_vmtest_proto_rawDescData
 }
 
-var file_internal_vmtest_proto_vmtest_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_internal_vmtest_proto_vmtest_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_internal_vmtest_proto_vmtest_proto_goTypes = []any{
 	(*VmtestRequest)(nil),        // 0: katl.vmtest.v1.VmtestRequest
 	(*HealthRequest)(nil),        // 1: katl.vmtest.v1.HealthRequest
@@ -1041,29 +1206,33 @@ var file_internal_vmtest_proto_vmtest_proto_goTypes = []any{
 	(*CommandResult)(nil),        // 5: katl.vmtest.v1.CommandResult
 	(*ReadFileRequest)(nil),      // 6: katl.vmtest.v1.ReadFileRequest
 	(*FileResult)(nil),           // 7: katl.vmtest.v1.FileResult
-	(*ExportJournalRequest)(nil), // 8: katl.vmtest.v1.ExportJournalRequest
-	(*JournalResult)(nil),        // 9: katl.vmtest.v1.JournalResult
-	(*VmtestError)(nil),          // 10: katl.vmtest.v1.VmtestError
-	(*VmtestResponse)(nil),       // 11: katl.vmtest.v1.VmtestResponse
-	nil,                          // 12: katl.vmtest.v1.VmtestError.DetailsEntry
+	(*WriteFileRequest)(nil),     // 8: katl.vmtest.v1.WriteFileRequest
+	(*WriteFileResult)(nil),      // 9: katl.vmtest.v1.WriteFileResult
+	(*ExportJournalRequest)(nil), // 10: katl.vmtest.v1.ExportJournalRequest
+	(*JournalResult)(nil),        // 11: katl.vmtest.v1.JournalResult
+	(*VmtestError)(nil),          // 12: katl.vmtest.v1.VmtestError
+	(*VmtestResponse)(nil),       // 13: katl.vmtest.v1.VmtestResponse
+	nil,                          // 14: katl.vmtest.v1.VmtestError.DetailsEntry
 }
 var file_internal_vmtest_proto_vmtest_proto_depIdxs = []int32{
 	1,  // 0: katl.vmtest.v1.VmtestRequest.health:type_name -> katl.vmtest.v1.HealthRequest
 	3,  // 1: katl.vmtest.v1.VmtestRequest.run_command:type_name -> katl.vmtest.v1.RunCommandRequest
 	6,  // 2: katl.vmtest.v1.VmtestRequest.read_file:type_name -> katl.vmtest.v1.ReadFileRequest
-	8,  // 3: katl.vmtest.v1.VmtestRequest.export_journal:type_name -> katl.vmtest.v1.ExportJournalRequest
-	4,  // 4: katl.vmtest.v1.RunCommandRequest.environment:type_name -> katl.vmtest.v1.EnvVar
-	12, // 5: katl.vmtest.v1.VmtestError.details:type_name -> katl.vmtest.v1.VmtestError.DetailsEntry
-	2,  // 6: katl.vmtest.v1.VmtestResponse.health:type_name -> katl.vmtest.v1.HealthResponse
-	5,  // 7: katl.vmtest.v1.VmtestResponse.command:type_name -> katl.vmtest.v1.CommandResult
-	7,  // 8: katl.vmtest.v1.VmtestResponse.file:type_name -> katl.vmtest.v1.FileResult
-	9,  // 9: katl.vmtest.v1.VmtestResponse.journal:type_name -> katl.vmtest.v1.JournalResult
-	10, // 10: katl.vmtest.v1.VmtestResponse.error:type_name -> katl.vmtest.v1.VmtestError
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	10, // 3: katl.vmtest.v1.VmtestRequest.export_journal:type_name -> katl.vmtest.v1.ExportJournalRequest
+	8,  // 4: katl.vmtest.v1.VmtestRequest.write_file:type_name -> katl.vmtest.v1.WriteFileRequest
+	4,  // 5: katl.vmtest.v1.RunCommandRequest.environment:type_name -> katl.vmtest.v1.EnvVar
+	14, // 6: katl.vmtest.v1.VmtestError.details:type_name -> katl.vmtest.v1.VmtestError.DetailsEntry
+	2,  // 7: katl.vmtest.v1.VmtestResponse.health:type_name -> katl.vmtest.v1.HealthResponse
+	5,  // 8: katl.vmtest.v1.VmtestResponse.command:type_name -> katl.vmtest.v1.CommandResult
+	7,  // 9: katl.vmtest.v1.VmtestResponse.file:type_name -> katl.vmtest.v1.FileResult
+	11, // 10: katl.vmtest.v1.VmtestResponse.journal:type_name -> katl.vmtest.v1.JournalResult
+	9,  // 11: katl.vmtest.v1.VmtestResponse.write_file:type_name -> katl.vmtest.v1.WriteFileResult
+	12, // 12: katl.vmtest.v1.VmtestResponse.error:type_name -> katl.vmtest.v1.VmtestError
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_internal_vmtest_proto_vmtest_proto_init() }
@@ -1076,12 +1245,14 @@ func file_internal_vmtest_proto_vmtest_proto_init() {
 		(*VmtestRequest_RunCommand)(nil),
 		(*VmtestRequest_ReadFile)(nil),
 		(*VmtestRequest_ExportJournal)(nil),
+		(*VmtestRequest_WriteFile)(nil),
 	}
-	file_internal_vmtest_proto_vmtest_proto_msgTypes[11].OneofWrappers = []any{
+	file_internal_vmtest_proto_vmtest_proto_msgTypes[13].OneofWrappers = []any{
 		(*VmtestResponse_Health)(nil),
 		(*VmtestResponse_Command)(nil),
 		(*VmtestResponse_File)(nil),
 		(*VmtestResponse_Journal)(nil),
+		(*VmtestResponse_WriteFile)(nil),
 		(*VmtestResponse_Error)(nil),
 	}
 	type x struct{}
@@ -1090,7 +1261,7 @@ func file_internal_vmtest_proto_vmtest_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_vmtest_proto_vmtest_proto_rawDesc), len(file_internal_vmtest_proto_vmtest_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

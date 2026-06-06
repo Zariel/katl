@@ -21,6 +21,7 @@ type AgentServer struct {
 	Version            string
 	AllowedCommands    map[string]bool
 	AllowedFilePaths   []string
+	AllowedWritePaths  []string
 	CommandRunner      AgentCommandRunner
 	Hostname           func() (string, error)
 	BootID             func() string
@@ -93,6 +94,13 @@ func (s AgentServer) Handle(ctx context.Context, req *vmtestpb.VmtestRequest) *v
 			return resp
 		}
 		resp.Result = &vmtestpb.VmtestResponse_File{File: result}
+	case *vmtestpb.VmtestRequest_WriteFile:
+		result, err := s.writeFile(op.WriteFile)
+		if err != nil {
+			resp.Result = errorResult("write_file_failed", err, false)
+			return resp
+		}
+		resp.Result = &vmtestpb.VmtestResponse_WriteFile{WriteFile: result}
 	case *vmtestpb.VmtestRequest_ExportJournal:
 		result, err := s.exportJournal(opCtx, op.ExportJournal)
 		if err != nil {
@@ -177,6 +185,94 @@ func (s AgentServer) readFile(req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResu
 	}, nil
 }
 
+func (s AgentServer) writeFile(req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteFileResult, error) {
+	if req.Path == "" || !filepath.IsAbs(req.Path) {
+		return nil, errors.New("absolute file path is required")
+	}
+	path := filepath.Clean(req.Path)
+	if !pathAllowed(path, s.writeFiles()) {
+		return nil, fmt.Errorf("file path is not allowlisted: %s", path)
+	}
+	mode := os.FileMode(req.Mode)
+	if mode == 0 {
+		mode = 0o600
+	}
+	if mode&^os.FileMode(0o777) != 0 {
+		return nil, fmt.Errorf("file mode %04o contains unsupported bits", mode)
+	}
+	parent := filepath.Dir(path)
+	if err := prepareWriteParent(parent); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to write through symlink: %s", path)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := writeNoFollow(path, req.Content, mode.Perm()); err != nil {
+		return nil, err
+	}
+	redaction := "none"
+	if req.Sensitive {
+		redaction = "sensitive"
+	}
+	return &vmtestpb.WriteFileResult{
+		SizeBytes: uint32(len(req.Content)),
+		Redaction: redaction,
+	}, nil
+}
+
+func prepareWriteParent(parent string) error {
+	parent = filepath.Clean(parent)
+	existing := parent
+	var missing []string
+	for {
+		info, err := os.Lstat(existing)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write through symlink parent: %s", existing)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("write parent is not a directory: %s", existing)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, existing)
+		next := filepath.Dir(existing)
+		if next == existing {
+			return err
+		}
+		existing = next
+	}
+	if err := rejectSymlinkPath(existing); err != nil {
+		return err
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := rejectSymlinkPath(missing[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeNoFollow(path string, content []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|noFollowFlag(), mode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(content); err != nil {
+		return err
+	}
+	return file.Chmod(mode)
+}
+
 func (s AgentServer) exportJournal(ctx context.Context, req *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error) {
 	argv := []string{"journalctl", "--no-pager", "--output=short-monotonic"}
 	if req.BootId != "" {
@@ -212,6 +308,24 @@ func (s AgentServer) exportJournal(ctx context.Context, req *vmtestpb.ExportJour
 	}, nil
 }
 
+func rejectSymlinkPath(path string) error {
+	path = filepath.Clean(path)
+	for {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlink parent: %s", path)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil
+		}
+		path = parent
+	}
+}
+
 func (s AgentServer) commands() map[string]bool {
 	if len(s.AllowedCommands) == 0 {
 		return defaultAgentCommands()
@@ -224,6 +338,13 @@ func (s AgentServer) files() []string {
 		return defaultAgentFilePaths()
 	}
 	return s.AllowedFilePaths
+}
+
+func (s AgentServer) writeFiles() []string {
+	if len(s.AllowedWritePaths) == 0 {
+		return defaultAgentWritePaths()
+	}
+	return s.AllowedWritePaths
 }
 
 func (s AgentServer) outputLimit() uint32 {
@@ -319,15 +440,17 @@ func limitOrDefault(value, fallback uint32) uint32 {
 
 func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
-		"crictl":     true,
-		"findmnt":    true,
-		"journalctl": true,
-		"kubeadm":    true,
-		"kubectl":    true,
-		"systemctl":  true,
-		"test":       true,
-		"true":       true,
-		"uname":      true,
+		"crictl":            true,
+		"configapply-smoke": true,
+		"findmnt":           true,
+		"journalctl":        true,
+		"kubeadm":           true,
+		"kubectl":           true,
+		"readlink":          true,
+		"systemctl":         true,
+		"test":              true,
+		"true":              true,
+		"uname":             true,
 	}
 }
 
@@ -338,8 +461,15 @@ func defaultAgentFilePaths() []string {
 		"/etc/os-release",
 		"/proc/cmdline",
 		"/run/katl/",
+		"/var/lib/katl/config-requests/",
 		"/usr/lib/os-release",
 		"/var/lib/katl/generations/",
+		"/var/lib/katl/test-artifacts/",
+	}
+}
+
+func defaultAgentWritePaths() []string {
+	return []string{
 		"/var/lib/katl/test-artifacts/",
 	}
 }

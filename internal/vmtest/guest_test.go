@@ -100,6 +100,40 @@ func TestGuestFileContentExcludedByDefault(t *testing.T) {
 	}
 }
 
+func TestGuestWriteFileRecordsMetadataOnly(t *testing.T) {
+	result := guestResult(t)
+	client := &fakeGuestClient{
+		writeFile: &vmtestpb.WriteFileResult{
+			SizeBytes: 17,
+			Redaction: "sensitive",
+		},
+	}
+	guest := NewGuestControl(result, client)
+	record, err := guest.WriteFile(context.Background(), GuestFileRequest{
+		Name:      "request",
+		Path:      "/var/lib/katl/test-artifacts/request.yaml",
+		Content:   []byte("secret-token-value"),
+		Mode:      0o600,
+		Sensitive: true,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if client.writeFileReq.GetPath() != "/var/lib/katl/test-artifacts/request.yaml" || string(client.writeFileReq.GetContent()) != "secret-token-value" || client.writeFileReq.GetMode() != 0o600 {
+		t.Fatalf("write request = %#v", client.writeFileReq)
+	}
+	if record.SizeBytes != 17 || record.Redaction != "sensitive" || record.Artifact != "" {
+		t.Fatalf("record = %#v", record)
+	}
+	data, err := os.ReadFile(filepath.Join(record.Dir, "file.json"))
+	if err != nil {
+		t.Fatalf("read file record: %v", err)
+	}
+	if strings.Contains(string(data), "secret-token-value") {
+		t.Fatalf("record leaked written content: %s", data)
+	}
+}
+
 func TestGuestJournalRecordsArtifact(t *testing.T) {
 	result := guestResult(t)
 	client := &fakeGuestClient{
@@ -158,15 +192,18 @@ func TestGuestDiagnosticsAreBestEffort(t *testing.T) {
 }
 
 type fakeGuestClient struct {
-	command    *vmtestpb.CommandResult
-	commandErr error
-	commandReq *vmtestpb.RunCommandRequest
-	file       *vmtestpb.FileResult
-	fileErr    error
-	fileReq    *vmtestpb.ReadFileRequest
-	journal    *vmtestpb.JournalResult
-	journalErr error
-	journalReq *vmtestpb.ExportJournalRequest
+	command      *vmtestpb.CommandResult
+	commandErr   error
+	commandReq   *vmtestpb.RunCommandRequest
+	file         *vmtestpb.FileResult
+	fileErr      error
+	fileReq      *vmtestpb.ReadFileRequest
+	writeFile    *vmtestpb.WriteFileResult
+	writeFileErr error
+	writeFileReq *vmtestpb.WriteFileRequest
+	journal      *vmtestpb.JournalResult
+	journalErr   error
+	journalReq   *vmtestpb.ExportJournalRequest
 }
 
 func (c *fakeGuestClient) RunCommand(_ context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error) {
@@ -183,6 +220,14 @@ func (c *fakeGuestClient) ReadFile(_ context.Context, req *vmtestpb.ReadFileRequ
 		return nil, c.fileErr
 	}
 	return c.file, nil
+}
+
+func (c *fakeGuestClient) WriteFile(_ context.Context, req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteFileResult, error) {
+	c.writeFileReq = req
+	if c.writeFileErr != nil {
+		return nil, c.writeFileErr
+	}
+	return c.writeFile, nil
 }
 
 func (c *fakeGuestClient) ExportJournal(_ context.Context, req *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error) {

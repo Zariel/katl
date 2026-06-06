@@ -34,6 +34,7 @@ type transcriptEntry struct {
 	StdoutBytes     uint32 `json:"stdoutBytes,omitempty"`
 	StderrBytes     uint32 `json:"stderrBytes,omitempty"`
 	FileBytes       uint32 `json:"fileBytes,omitempty"`
+	WriteBytes      uint32 `json:"writeBytes,omitempty"`
 	JournalBytes    uint32 `json:"journalBytes,omitempty"`
 	SensitiveOutput bool   `json:"sensitiveOutput,omitempty"`
 	Redaction       string `json:"redaction,omitempty"`
@@ -99,6 +100,21 @@ func (c *AgentClient) ReadFile(ctx context.Context, req *vmtestpb.ReadFileReques
 		return nil, responseError(resp)
 	}
 	return result.File, nil
+}
+
+func (c *AgentClient) WriteFile(ctx context.Context, req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteFileResult, error) {
+	resp, err := c.Do(ctx, &vmtestpb.VmtestRequest{
+		TimeoutMs: requestTimeoutMS(ctx),
+		Operation: &vmtestpb.VmtestRequest_WriteFile{WriteFile: req},
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, ok := resp.Result.(*vmtestpb.VmtestResponse_WriteFile)
+	if !ok {
+		return nil, responseError(resp)
+	}
+	return result.WriteFile, nil
 }
 
 func (c *AgentClient) ExportJournal(ctx context.Context, req *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error) {
@@ -231,6 +247,8 @@ func requestMethod(req *vmtestpb.VmtestRequest) string {
 		return "ReadFile"
 	case *vmtestpb.VmtestRequest_ExportJournal:
 		return "ExportJournal"
+	case *vmtestpb.VmtestRequest_WriteFile:
+		return "WriteFile"
 	default:
 		return "Unknown"
 	}
@@ -282,6 +300,12 @@ func summaryForResponse(req *vmtestpb.VmtestRequest, resp *vmtestpb.VmtestRespon
 		entry.Redaction = result.File.Redaction
 		if file, ok := req.Operation.(*vmtestpb.VmtestRequest_ReadFile); ok {
 			entry.SensitiveOutput = file.ReadFile.Sensitive
+		}
+	case *vmtestpb.VmtestResponse_WriteFile:
+		entry.WriteBytes = result.WriteFile.SizeBytes
+		entry.Redaction = result.WriteFile.Redaction
+		if file, ok := req.Operation.(*vmtestpb.VmtestRequest_WriteFile); ok {
+			entry.SensitiveOutput = file.WriteFile.Sensitive
 		}
 	case *vmtestpb.VmtestResponse_Journal:
 		entry.JournalBytes = result.Journal.SizeBytes

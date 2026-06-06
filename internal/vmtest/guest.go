@@ -15,6 +15,7 @@ import (
 type GuestAgentClient interface {
 	RunCommand(ctx context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error)
 	ReadFile(ctx context.Context, req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResult, error)
+	WriteFile(ctx context.Context, req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteFileResult, error)
 	ExportJournal(ctx context.Context, req *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error)
 }
 
@@ -58,14 +59,18 @@ type GuestCommandArtifact struct {
 type GuestFileRequest struct {
 	Name         string
 	Path         string
+	Content      []byte
+	Mode         fs.FileMode
 	Timeout      time.Duration
 	MaxBytes     uint32
 	StoreContent bool
+	Sensitive    bool
 }
 
 type GuestFileArtifact struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
+	Dir       string `json:"dir"`
 	Artifact  string `json:"artifact,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
 	SizeBytes uint32 `json:"sizeBytes"`
@@ -197,6 +202,7 @@ func (g *GuestControl) ReadFile(ctx context.Context, req GuestFileRequest) (Gues
 	record := GuestFileArtifact{
 		Name: name,
 		Path: req.Path,
+		Dir:  dir,
 	}
 	ctx, cancel := g.withTimeout(ctx, req.Timeout)
 	defer cancel()
@@ -219,6 +225,44 @@ func (g *GuestControl) ReadFile(ctx context.Context, req GuestFileRequest) (Gues
 			return record, err
 		}
 	} else if record.Redaction == "" || record.Redaction == "none" {
+		record.Redaction = "content"
+	}
+	if err := g.writeRecord(filepath.Join(dir, "file.json"), record); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
+func (g *GuestControl) WriteFile(ctx context.Context, req GuestFileRequest) (GuestFileArtifact, error) {
+	if g.Client == nil {
+		return GuestFileArtifact{}, errors.New("vmtest guest client is nil")
+	}
+	if req.Path == "" {
+		return GuestFileArtifact{}, errors.New("guest file path is required")
+	}
+	name := first(req.Name, filepath.Base(req.Path))
+	dir := g.nextDir("files", name)
+	record := GuestFileArtifact{
+		Name: name,
+		Path: req.Path,
+		Dir:  dir,
+	}
+	ctx, cancel := g.withTimeout(ctx, req.Timeout)
+	defer cancel()
+	result, err := g.Client.WriteFile(ctx, &vmtestpb.WriteFileRequest{
+		Path:      req.Path,
+		Content:   req.Content,
+		Mode:      uint32(req.Mode.Perm()),
+		Sensitive: req.Sensitive,
+	})
+	if err != nil {
+		record.Error = err.Error()
+		_ = g.writeRecord(filepath.Join(dir, "file.json"), record)
+		return record, err
+	}
+	record.SizeBytes = result.SizeBytes
+	record.Redaction = result.Redaction
+	if record.Redaction == "" || record.Redaction == "none" {
 		record.Redaction = "content"
 	}
 	if err := g.writeRecord(filepath.Join(dir, "file.json"), record); err != nil {

@@ -278,6 +278,10 @@ func (c *scriptedGuestClient) ReadFile(_ context.Context, req *vmtestpb.ReadFile
 	return result, nil
 }
 
+func (c *scriptedGuestClient) WriteFile(_ context.Context, req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteFileResult, error) {
+	return nil, errors.New("unexpected file write: " + req.Path)
+}
+
 func (c *scriptedGuestClient) ExportJournal(context.Context, *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error) {
 	if c.journal == nil {
 		return &vmtestpb.JournalResult{}, nil
