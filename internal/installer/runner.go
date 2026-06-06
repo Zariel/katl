@@ -8,8 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/discovery"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
@@ -42,24 +45,32 @@ const (
 )
 
 type Context struct {
-	ManifestPath   string
-	StateDir       string
-	TargetRoot     string
-	BootRoot       string
-	Commands       CommandRunner
-	Store          StateStore
-	Manifest       manifest.Manifest
-	LoaderRecord   *generation.Record
-	KatlosImage    *katlosimage.Payload
-	KatlosResolver KatlosImageResolver
-	KubeadmConfigs map[string]kubeadmconfig.Plan
-	IdentityRandom io.Reader
-	Completed      []StepID
-	Chown          func(path string, uid int, gid int) error
-	InputMode      string
-	InputSource    string
-	RequestDigest  string
-	PreviousStatus *installstatus.Record
+	ManifestPath      string
+	StateDir          string
+	TargetRoot        string
+	BootRoot          string
+	Commands          CommandRunner
+	Store             StateStore
+	Manifest          manifest.Manifest
+	LoaderRecord      *generation.Record
+	KatlosImage       *katlosimage.Payload
+	KatlosResolver    KatlosImageResolver
+	Discovery         discovery.DiscoverySource
+	HardwareFacts     discovery.HardwareFacts
+	RootProfile       manifest.RootDiskProfile
+	DiskLayout        *disk.DiskLayoutPlan
+	RootSlotPlan      *disk.RootSlotWritePlan
+	CurrentRootSlot   disk.RootSlot
+	RootPartitionUUID string
+	GenerationID      string
+	KubeadmConfigs    map[string]kubeadmconfig.Plan
+	IdentityRandom    io.Reader
+	Completed         []StepID
+	Chown             func(path string, uid int, gid int) error
+	InputMode         string
+	InputSource       string
+	RequestDigest     string
+	PreviousStatus    *installstatus.Record
 }
 
 type Step interface {
@@ -95,9 +106,9 @@ func NewPlan(options PlanOptions) Plan {
 	plan = append(plan,
 		loadManifestStep{},
 		stubStep{id: SelectNode},
-		stubStep{id: CollectHardwareFacts},
+		collectHardwareFactsStep{},
 		verifyKatlosImageStep{},
-		stubStep{id: PlanInstall},
+		planInstallStep{},
 		stubStep{id: PrepareDisk},
 		stubStep{id: CreatePartitions},
 		stubStep{id: FormatFilesystems},
@@ -201,6 +212,28 @@ func (loadManifestStep) Run(ctx context.Context, install *Context) error {
 	return recordStep(ctx, install, LoadManifest)
 }
 
+type collectHardwareFactsStep struct{}
+
+func (collectHardwareFactsStep) ID() StepID {
+	return CollectHardwareFacts
+}
+
+func (collectHardwareFactsStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.Discovery != nil {
+		facts, err := install.Discovery.Discover(ctx)
+		if err != nil {
+			return err
+		}
+		install.HardwareFacts = facts
+	}
+	return recordStep(ctx, install, CollectHardwareFacts)
+}
+
 type verifyKatlosImageStep struct{}
 
 func (verifyKatlosImageStep) ID() StepID {
@@ -221,6 +254,107 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 		install.KatlosImage = &payload
 	}
 	return recordStep(ctx, install, VerifyTrust)
+}
+
+type planInstallStep struct{}
+
+func (planInstallStep) ID() StepID {
+	return PlanInstall
+}
+
+func (planInstallStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosImage != nil && len(install.HardwareFacts.BlockDevices) > 0 {
+		if err := planInstall(install); err != nil {
+			return err
+		}
+	}
+	return recordStep(ctx, install, PlanInstall)
+}
+
+func planInstall(install *Context) error {
+	profile := install.RootProfile
+	layoutRequest, err := manifest.BuildDiskLayoutRequest(install.Manifest, profile, runtimeRootSizeMiB(install.KatlosImage.Runtime.SizeBytes))
+	if err != nil {
+		return err
+	}
+	layout, err := disk.PlanDiskLayout(install.HardwareFacts, layoutRequest)
+	if err != nil {
+		return err
+	}
+	rootPlan, err := disk.PlanRootSlotWrite(layout, disk.RootSlotWriteRequest{
+		RuntimeArtifact: install.KatlosImage.RuntimeArtifact(),
+		CurrentSlot:     install.CurrentRootSlot,
+	})
+	if err != nil {
+		return err
+	}
+	install.DiskLayout = &layout
+	install.RootSlotPlan = &rootPlan
+
+	if strings.TrimSpace(install.RootPartitionUUID) != "" {
+		record, err := firstInstallRecordFromImage(*install.KatlosImage, rootPlan, install)
+		if err != nil {
+			return err
+		}
+		install.LoaderRecord = &record
+	}
+	return nil
+}
+
+func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.RootSlotWritePlan, install *Context) (generation.Record, error) {
+	generationID := strings.TrimSpace(install.GenerationID)
+	if generationID == "" {
+		generationID = payload.Index.Version
+	}
+	request, err := payload.FirstInstallRequest(katlosimage.FirstInstallRequest{
+		GenerationID:      generationID,
+		RootSlot:          string(rootPlan.Slot),
+		RootPartitionUUID: install.RootPartitionUUID,
+		UKIPath:           "/efi/EFI/Linux/katl-" + generationID + ".efi",
+		CreatedAt:         timeNow(),
+	})
+	if err != nil {
+		return generation.Record{}, err
+	}
+	record := generation.Record{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.Kind,
+		GenerationID:   request.GenerationID,
+		RuntimeVersion: request.RuntimeVersion,
+		Root: generation.RootSelection{
+			Slot:                  request.RootSlot,
+			PartitionUUID:         request.RootPartitionUUID,
+			RuntimeVersion:        request.RuntimeVersion,
+			RuntimeInterface:      request.RuntimeInterface,
+			Architecture:          request.RuntimeArchitecture,
+			RuntimeArtifactSHA256: request.RuntimeArtifactSHA256,
+		},
+		Boot:              generation.BootSelection{UKIPath: request.UKIPath},
+		Sysexts:           request.Sysexts,
+		KernelCommandLine: request.KernelCommandLine,
+		CreatedAt:         request.CreatedAt,
+		BootState:         "pending",
+		HealthState:       "unknown",
+	}
+	for _, sysext := range record.Sysexts {
+		if err := generation.ValidatePair(record.Root, sysext); err != nil {
+			return generation.Record{}, err
+		}
+	}
+	return record, nil
+}
+
+func runtimeRootSizeMiB(sizeBytes int64) uint64 {
+	if sizeBytes <= 0 {
+		return 0
+	}
+	const mib = 1024 * 1024
+	return uint64((sizeBytes + mib - 1) / mib)
 }
 
 type installSeedStep struct{}

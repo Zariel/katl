@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/discovery"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
@@ -252,6 +253,51 @@ func TestRunnerRejectsKatlosImageBeforeMutation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(install.TargetRoot, "var/lib/katl/install/status.json")); !os.IsNotExist(err) {
 		t.Fatalf("target status err = %v, want no target write before mutation", err)
+	}
+}
+
+func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	install := &Context{
+		ManifestPath:      writeManifest(t),
+		Commands:          &NoopCommandRunner{},
+		Store:             store,
+		KatlosResolver:    &recordingKatlosResolver{payload: payload},
+		Discovery:         discovery.StaticDiscoverySource{Facts: planningFacts()},
+		RootPartitionUUID: "11111111-2222-3333-4444-555555555555",
+		GenerationID:      "2026.06.06-001",
+	}
+
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if install.DiskLayout == nil || install.DiskLayout.TargetDiskPath != "/dev/nvme0n1" {
+		t.Fatalf("disk layout = %#v", install.DiskLayout)
+	}
+	if install.RootSlotPlan == nil || install.RootSlotPlan.Slot != "root-a" || install.RootSlotPlan.ArtifactDigest != payload.Runtime.SHA256 {
+		t.Fatalf("root slot plan = %#v", install.RootSlotPlan)
+	}
+	if install.LoaderRecord == nil {
+		t.Fatal("loader record is nil")
+	}
+	record := install.LoaderRecord
+	if record.GenerationID != "2026.06.06-001" || record.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
+		t.Fatalf("record root fields = %#v", record.Root)
+	}
+	if record.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" || record.Boot.UKIPath != "/efi/EFI/Linux/katl-2026.06.06-001.efi" {
+		t.Fatalf("record boot/root target = %#v %#v", record.Root, record.Boot)
+	}
+	if len(record.Sysexts) != 1 || record.Sysexts[0].SHA256 != payload.Kubernetes.SHA256 || record.Sysexts[0].PayloadVersion != "v1.34.8" {
+		t.Fatalf("record sysexts = %#v", record.Sysexts)
+	}
+	if record.Confexts != nil {
+		t.Fatalf("planned record should not include node confext before WriteInstallRecord: %#v", record.Confexts)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
 	}
 }
 
@@ -668,6 +714,70 @@ func kubeadmPlans() map[string]kubeadmconfig.Plan {
 				Mode:       0o644,
 			},
 			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"}},
+		},
+	}
+}
+
+func planningPayload() katlosimage.Payload {
+	runtimeSHA := strings.Repeat("a", 64)
+	bootSHA := strings.Repeat("b", 64)
+	kubernetesSHA := strings.Repeat("c", 64)
+	return katlosimage.Payload{
+		Root: "/payload",
+		Index: katlosimage.Index{
+			Version:          "2026.06.06",
+			BuildID:          "test-build",
+			Architecture:     "x86_64",
+			RuntimeInterface: "katl-runtime-1",
+		},
+		Runtime: katlosimage.Component{
+			Name:         "runtime-root",
+			Role:         katlosimage.ComponentRuntimeRoot,
+			Path:         "components/runtime/root.squashfs",
+			SizeBytes:    2 * 1024 * 1024,
+			SHA256:       runtimeSHA,
+			Version:      "2026.06.06",
+			Architecture: "x86_64",
+		},
+		Boot: katlosimage.Component{
+			Name:         "runtime-uki",
+			Role:         katlosimage.ComponentRuntimeUKI,
+			Path:         "components/boot/katl.efi",
+			SizeBytes:    4096,
+			SHA256:       bootSHA,
+			Version:      "2026.06.06",
+			Architecture: "x86_64",
+			Compatibility: katlosimage.Compatibility{
+				RuntimeInterface:  "katl-runtime-1",
+				KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
+			},
+		},
+		Kubernetes: katlosimage.Component{
+			Name:           "kubernetes",
+			Role:           katlosimage.ComponentKubernetes,
+			Path:           "components/sysext/kubernetes.raw",
+			SizeBytes:      8192,
+			SHA256:         kubernetesSHA,
+			Version:        "k8s-v1.34.8",
+			PayloadVersion: "v1.34.8",
+			Architecture:   "x86_64",
+			Compatibility: katlosimage.Compatibility{
+				RuntimeInterface: "katl-runtime-1",
+			},
+		},
+	}
+}
+
+func planningFacts() discovery.HardwareFacts {
+	return discovery.HardwareFacts{
+		BlockDevices: []discovery.BlockDevice{
+			{
+				Name:      "nvme0n1",
+				Path:      "/dev/nvme0n1",
+				Type:      discovery.DeviceDisk,
+				ByID:      []string{"/dev/disk/by-id/ata-root"},
+				SizeBytes: 64 * 1024 * 1024 * 1024,
+			},
 		},
 	}
 }

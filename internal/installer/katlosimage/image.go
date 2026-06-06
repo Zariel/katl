@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/artifact"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/manifest"
 )
@@ -42,6 +43,19 @@ type DirectoryResolver struct {
 
 func (r DirectoryResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
 	return ResolveDirectory(ctx, r.Root, expected)
+}
+
+func (p Payload) RuntimeArtifact() artifact.ArtifactVerification {
+	return componentArtifact(p.Runtime, artifact.ArtifactRuntimeRoot)
+}
+
+func componentArtifact(component Component, kind artifact.ArtifactKind) artifact.ArtifactVerification {
+	return artifact.ArtifactVerification{
+		Name:      component.Name,
+		Kind:      kind,
+		SHA256:    component.SHA256,
+		SizeBytes: component.SizeBytes,
+	}
 }
 
 type Index struct {
