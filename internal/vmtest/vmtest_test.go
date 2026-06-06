@@ -154,6 +154,33 @@ func TestHostCheck(t *testing.T) {
 	}
 }
 
+func TestRunnerCheckHostUsesRunnerProbe(t *testing.T) {
+	runner := Runner{
+		probe: probe{
+			env: func(name string) string {
+				switch name {
+				case "KATL_OVMF_CODE":
+					return "/runner/code.fd"
+				case "KATL_OVMF_VARS":
+					return "/runner/vars.fd"
+				default:
+					return ""
+				}
+			},
+			stat: func(path string) (fs.FileInfo, error) {
+				return nil, fmt.Errorf("runner stat missing: %s", path)
+			},
+		},
+	}
+	err := runner.CheckHost(HostRequirements{OVMF: true})
+	if err == nil {
+		t.Fatal("Runner.CheckHost() error = nil")
+	}
+	if !strings.Contains(err.Error(), "/runner/code.fd") || !strings.Contains(err.Error(), "runner stat missing") {
+		t.Fatalf("Runner.CheckHost() error = %v", err)
+	}
+}
+
 func TestHostCheckSharedBridge(t *testing.T) {
 	err := checkHost(HostRequirements{
 		SharedBridge: true,

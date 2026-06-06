@@ -228,7 +228,7 @@ func twoNodeSmokeInputsFromEnv(lookPath func(string) (string, error)) (twoNodeSm
 
 func requireVMHost(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result, requirements vmtest.HostRequirements) {
 	t.Helper()
-	err := vmtest.CheckHost(requirements)
+	err := runner.CheckHost(requirements)
 	if err == nil {
 		return
 	}

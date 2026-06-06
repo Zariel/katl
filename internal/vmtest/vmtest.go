@@ -204,6 +204,10 @@ func CheckHost(requirements HostRequirements) error {
 	return checkHost(requirements, systemProbe())
 }
 
+func (r Runner) CheckHost(requirements HostRequirements) error {
+	return r.check(requirements)
+}
+
 func (r Runner) Run(t testTB, scenario Scenario) Result {
 	t.Helper()
 	result, err := r.Plan(scenario)
@@ -253,7 +257,7 @@ func (r Runner) RequireHost(t testTB, requirements HostRequirements) {
 		t.Skipf("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run VM host checks")
 		return
 	}
-	if err := r.check(requirements); err != nil {
+	if err := r.CheckHost(requirements); err != nil {
 		if r.options().Missing == MissingSkips {
 			t.Skipf("%v", err)
 			return
