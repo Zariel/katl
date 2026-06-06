@@ -240,6 +240,7 @@ func requirePreseedInstallerEvidence(result Result) error {
 		"katl input: mounted seed device",
 		"katl input: copied",
 		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json",
+		"inputMode=offline-media",
 	} {
 		if !strings.Contains(text, signal) {
 			return fmt.Errorf("installer serial missing preseed signal %q", signal)

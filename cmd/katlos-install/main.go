@@ -100,7 +100,8 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 	for _, log := range input.Logs {
 		fmt.Fprintf(stdout, "katlos-install input: %s\n", log)
 	}
-	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s\n", input.Action, input.InstallMode, input.ManifestPath, input.ManifestURL)
+	inputMode := bootInputMode(input)
+	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s inputMode=%s\n", input.Action, input.InstallMode, input.ManifestPath, input.ManifestURL, inputMode)
 
 	switch input.Action {
 	case installer.InstallActionHoldForDebug:
@@ -113,9 +114,18 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 		if input.ManifestURL != "" && input.ManifestPath == "" {
 			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)
 		}
-		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), installstatus.InputModePXEPreseed, input.ManifestPath, stdout)
+		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), inputMode, input.ManifestPath, stdout)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
+	}
+}
+
+func bootInputMode(input installer.BootInput) string {
+	switch input.SelectedSources["manifestPath"] {
+	case installer.InputSourceRunKatl, installer.InputSourceEtcKatl, installer.InputSourceEmbeddedMedia, installer.InputSourceLocalFile:
+		return installstatus.InputModeOfflineMedia
+	default:
+		return installstatus.InputModePXEPreseed
 	}
 }
 

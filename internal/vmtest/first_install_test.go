@@ -421,7 +421,7 @@ func preseedInstallerEvidence() string {
 	return strings.Join([]string{
 		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
 		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL=",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL= inputMode=offline-media",
 		"",
 	}, "\n")
 }

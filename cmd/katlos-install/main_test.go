@@ -86,6 +86,58 @@ func TestBootInput(t *testing.T) {
 	if input.Action != installer.InstallActionRun || !input.CanMutateDisks() {
 		t.Fatalf("action = %s canMutate = %t, want run", input.Action, input.CanMutateDisks())
 	}
+	if got := bootInputMode(input); got != installstatus.InputModeOfflineMedia {
+		t.Fatalf("boot input mode = %q, want offline media", got)
+	}
+}
+
+func TestBootInputMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input installer.BootInput
+		want  string
+	}{
+		{
+			name: "run path",
+			input: installer.BootInput{SelectedSources: map[string]installer.InputSource{
+				"manifestPath": installer.InputSourceRunKatl,
+			}},
+			want: installstatus.InputModeOfflineMedia,
+		},
+		{
+			name: "etc path",
+			input: installer.BootInput{SelectedSources: map[string]installer.InputSource{
+				"manifestPath": installer.InputSourceEtcKatl,
+			}},
+			want: installstatus.InputModeOfflineMedia,
+		},
+		{
+			name: "embedded path",
+			input: installer.BootInput{SelectedSources: map[string]installer.InputSource{
+				"manifestPath": installer.InputSourceEmbeddedMedia,
+			}},
+			want: installstatus.InputModeOfflineMedia,
+		},
+		{
+			name: "kernel path",
+			input: installer.BootInput{SelectedSources: map[string]installer.InputSource{
+				"manifestPath": installer.InputSourceKernelCmdline,
+			}},
+			want: installstatus.InputModePXEPreseed,
+		},
+		{
+			name:  "manifest URL",
+			input: installer.BootInput{ManifestURL: "https://example.invalid/install.json"},
+			want:  installstatus.InputModePXEPreseed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bootInputMode(tt.input); got != tt.want {
+				t.Fatalf("bootInputMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
