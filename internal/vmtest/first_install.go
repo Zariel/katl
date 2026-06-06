@@ -441,40 +441,117 @@ func ExtractInstalledESPArtifacts(ctx context.Context, disk DiskPlan, outputDir 
 	if strings.TrimSpace(outputDir) == "" {
 		return "", errors.New("installed ESP output directory is required")
 	}
-	args := []string{
-		"--disk", disk.HostPath,
-		"--format", string(diskFormat(disk.Format)),
-		"--esp-dir", outputDir,
-		"--state-dir", filepath.Join(filepath.Dir(outputDir), "installed-esp-extract"),
+	if strings.TrimSpace(disk.HostPath) == "" {
+		return "", errors.New("installed runtime disk path is required")
 	}
-	script, err := findRepoScript("extract-installed-esp-artifacts")
+	if _, err := os.Stat(disk.HostPath); err != nil {
+		return "", fmt.Errorf("installed runtime disk not found: %w", err)
+	}
+	format := diskFormat(disk.Format)
+	switch format {
+	case DiskRaw, DiskQCOW2:
+	default:
+		return "", fmt.Errorf("installed runtime disk format %q is unsupported", format)
+	}
+	stateDir := filepath.Join(filepath.Dir(outputDir), "installed-esp-extract")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", err
+	}
+	rawDisk := disk.HostPath
+	if format == DiskQCOW2 {
+		rawDisk = filepath.Join(stateDir, "installed-runtime.raw")
+		if err := runTool(ctx, "qemu-img", "convert", "-f", string(DiskQCOW2), "-O", string(DiskRaw), disk.HostPath, rawDisk); err != nil {
+			return "", fmt.Errorf("convert installed runtime disk: %w", err)
+		}
+	}
+	tableJSON, err := runToolOutput(ctx, "sfdisk", "--json", rawDisk)
+	if err != nil {
+		return "", fmt.Errorf("inspect installed runtime disk partitions: %w", err)
+	}
+	partition, sectorSize, err := installedESPPartition(tableJSON)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, script, args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("extract installed ESP artifacts: %w\n%s", err, output)
+	offset := partition.Start * sectorSize
+	if err := os.RemoveAll(outputDir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return "", err
+	}
+	if err := runTool(ctx, "mcopy", "-s", "-i", fmt.Sprintf("%s@@%d", rawDisk, offset), "::*", outputDir+string(os.PathSeparator)); err != nil {
+		return "", fmt.Errorf("copy installed ESP artifacts: %w", err)
+	}
+	if err := checkExtractedESPArtifacts(outputDir); err != nil {
+		return "", err
 	}
 	return outputDir, nil
 }
 
-func findRepoScript(name string) (string, error) {
-	cwd, err := os.Getwd()
+type installedESPPartitionRecord struct {
+	Start int64
+	Size  int64
+}
+
+func installedESPPartition(data []byte) (installedESPPartitionRecord, int64, error) {
+	var record struct {
+		PartitionTable struct {
+			SectorSize int64 `json:"sectorsize"`
+			Partitions []struct {
+				Name  string `json:"name"`
+				Type  string `json:"type"`
+				Start int64  `json:"start"`
+				Size  int64  `json:"size"`
+			} `json:"partitions"`
+		} `json:"partitiontable"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return installedESPPartitionRecord{}, 0, fmt.Errorf("decode installed disk partition table: %w", err)
+	}
+	sectorSize := record.PartitionTable.SectorSize
+	if sectorSize == 0 {
+		sectorSize = 512
+	}
+	if sectorSize < 0 {
+		return installedESPPartitionRecord{}, 0, errors.New("disk sector size is invalid")
+	}
+	for _, partition := range record.PartitionTable.Partitions {
+		if partition.Name != "KATL_ESP" && strings.ToLower(partition.Type) != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {
+			continue
+		}
+		if partition.Start < 0 || partition.Size <= 0 {
+			return installedESPPartitionRecord{}, 0, errors.New("ESP partition geometry is invalid")
+		}
+		return installedESPPartitionRecord{Start: partition.Start, Size: partition.Size}, sectorSize, nil
+	}
+	return installedESPPartitionRecord{}, 0, errors.New("installed disk has no KATL_ESP partition")
+}
+
+func checkExtractedESPArtifacts(root string) error {
+	entriesDir := filepath.Join(root, "loader", "entries")
+	entries, err := os.ReadDir(entriesDir)
 	if err != nil {
-		return "", fmt.Errorf("find %s script: %w", name, err)
+		return fmt.Errorf("extracted ESP missing loader/entries: %w", err)
 	}
-	for dir := cwd; ; dir = filepath.Dir(dir) {
-		candidate := filepath.Join(dir, "scripts", name)
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			return candidate, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".conf") {
+			return nil
 		}
 	}
-	return "", fmt.Errorf("scripts/%s not found from %s", name, cwd)
+	return errors.New("extracted ESP contains no loader entries")
+}
+
+func runTool(ctx context.Context, name string, args ...string) error {
+	output, err := runToolOutput(ctx, name, args...)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, output)
+	}
+	return nil
+}
+
+func runToolOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
 }
 
 func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, hostPort int, serialText string) error {

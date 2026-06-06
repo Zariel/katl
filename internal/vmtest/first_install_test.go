@@ -358,6 +358,66 @@ func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
 	}
 }
 
+func TestInstalledESPPartitionSelectsNamedESP(t *testing.T) {
+	data := []byte(`{
+  "partitiontable": {
+    "sectorsize": 4096,
+    "partitions": [
+      {"name": "root", "type": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709", "start": 10, "size": 20},
+      {"name": "KATL_ESP", "type": "21686148-6449-6e6f-744e-656564454649", "start": 30, "size": 40}
+    ]
+  }
+}`)
+	partition, sectorSize, err := installedESPPartition(data)
+	if err != nil {
+		t.Fatalf("installedESPPartition() error = %v", err)
+	}
+	if partition.Start != 30 || partition.Size != 40 || sectorSize != 4096 {
+		t.Fatalf("partition = %#v sectorSize=%d", partition, sectorSize)
+	}
+}
+
+func TestInstalledESPPartitionSelectsEFIType(t *testing.T) {
+	data := []byte(`{
+  "partitiontable": {
+    "partitions": [
+      {"name": "ESP", "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "start": 2048, "size": 4096}
+    ]
+  }
+}`)
+	partition, sectorSize, err := installedESPPartition(data)
+	if err != nil {
+		t.Fatalf("installedESPPartition() error = %v", err)
+	}
+	if partition.Start != 2048 || partition.Size != 4096 || sectorSize != 512 {
+		t.Fatalf("partition = %#v sectorSize=%d", partition, sectorSize)
+	}
+}
+
+func TestInstalledESPPartitionRejectsMissingESP(t *testing.T) {
+	_, _, err := installedESPPartition([]byte(`{"partitiontable":{"partitions":[{"name":"root","start":1,"size":2}]}}`))
+	if err == nil || !strings.Contains(err.Error(), "no KATL_ESP partition") {
+		t.Fatalf("installedESPPartition() error = %v, want missing ESP", err)
+	}
+}
+
+func TestCheckExtractedESPArtifacts(t *testing.T) {
+	root := t.TempDir()
+	if err := checkExtractedESPArtifacts(root); err == nil || !strings.Contains(err.Error(), "loader/entries") {
+		t.Fatalf("checkExtractedESPArtifacts() error = %v, want missing entries", err)
+	}
+	entry := filepath.Join(root, "loader", "entries", "katl.conf")
+	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(entry, []byte("title Katl\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := checkExtractedESPArtifacts(root); err != nil {
+		t.Fatalf("checkExtractedESPArtifacts() error = %v", err)
+	}
+}
+
 func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
