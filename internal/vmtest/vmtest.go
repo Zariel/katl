@@ -57,6 +57,7 @@ type HostRequirements struct {
 	OVMFVars     string    `json:"ovmfVars,omitempty"`
 	MTools       bool      `json:"mtools,omitempty"`
 	SharedBridge bool      `json:"sharedBridge,omitempty"`
+	Bridge       string    `json:"bridge,omitempty"`
 }
 
 type Options struct {
@@ -421,11 +422,11 @@ func checkHost(requirements HostRequirements, probe probe) error {
 		}
 	}
 	if requirements.SharedBridge {
-		bridge := probe.env("KATL_VMTEST_BRIDGE")
+		bridge := first(requirements.Bridge, probe.env("KATL_VMTEST_BRIDGE"))
 		if bridge == "" {
 			missing = append(missing, MissingPrerequisite{
 				Name:   "KATL_VMTEST_BRIDGE",
-				Detail: "set KATL_VMTEST_BRIDGE for shared VM networking",
+				Detail: "set KATL_VMTEST_BRIDGE or Scenario.Host.Bridge for shared VM networking",
 			})
 		} else if err := validateBridgeName(bridge); err != nil {
 			missing = append(missing, MissingPrerequisite{

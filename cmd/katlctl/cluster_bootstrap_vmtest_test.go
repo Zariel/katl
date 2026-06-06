@@ -18,6 +18,11 @@ import (
 )
 
 func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
+	if run, ok := twoNodeWorldSmokeRun(t); ok {
+		runTwoNodeKubeadmJoinSmoke(t, run)
+		return
+	}
+
 	options := vmtest.DefaultOptions()
 	options.Missing = vmtest.MissingSkips
 	if !options.Enabled {
@@ -27,11 +32,120 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	scenario := vmtest.Scenario{Name: "installed-runtime-two-node-kubeadm-join"}
 	result := planStartedVMResult(t, runner, scenario)
 	inputs := requireTwoNodeSmokeInputs(t, runner, scenario, result)
+	runTwoNodeKubeadmJoinSmoke(t, twoNodeSmokeRun{
+		Options:  options,
+		Runner:   runner,
+		Scenario: scenario,
+		Result:   result,
+		Inputs:   inputs,
+	})
+}
+
+type twoNodeSmokeRun struct {
+	WorldScenario *vmtest.WorldScenario
+	Options       vmtest.Options
+	Runner        vmtest.Runner
+	Scenario      vmtest.Scenario
+	Result        vmtest.Result
+	Inputs        twoNodeSmokeInputs
+	Bridge        string
+}
+
+func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
+		return twoNodeSmokeRun{}, false
+	}
+	world := vmtest.RequireWorld(t)
+	run, err := planTwoNodeWorldSmokeRun(world, katlRepoRoot(t), firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), vmtest.DefaultOptions().KVM)
+	if err != nil {
+		failTwoNodeWorldSetup(t, run.WorldScenario, err)
+	}
+	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
+	return run, true
+}
+
+func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (twoNodeSmokeRun, error) {
+	scenario, err := world.PlanScenario("installed-runtime-two-node-kubeadm-join")
+	if err != nil {
+		return twoNodeSmokeRun{}, err
+	}
+	run := twoNodeSmokeRun{WorldScenario: scenario}
+	cp, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	worker, err := vmtest.AddPublishedInstalledRuntimeNode(scenario, repo, vmtest.NodeSpec{Name: "worker-1", Role: vmtest.Worker})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	options := vmtest.Options{
+		Enabled:   true,
+		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
+		Keep:      vmtest.KeepFailed,
+		KVM:       kvm,
+		Missing:   vmtest.MissingSkips,
+	}
+	runner := vmtest.NewRunner(options)
+	vmScenario := vmtest.Scenario{Name: "installed-runtime-two-node-kubeadm-join"}
+	result, err := runner.Plan(vmScenario)
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	result.Started = time.Now().UTC()
+	return twoNodeSmokeRun{
+		WorldScenario: scenario,
+		Options:       options,
+		Runner:        runner,
+		Scenario:      vmScenario,
+		Result:        result,
+		Bridge:        world.Network.Bridge,
+		Inputs: twoNodeSmokeInputs{
+			ControlPlaneDisk:       cp.Config.Disk,
+			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
+			ControlPlaneESP:        cp.Config.ESPArtifacts,
+			ControlPlaneFixture:    cp.Config.FixtureManifest,
+			ControlPlaneMetadata:   cp.Config.NodeMetadata,
+			ControlPlaneAddress:    cp.Node.Address,
+			WorkerDisk:             worker.Config.Disk,
+			WorkerDiskFormat:       string(worker.Config.DiskFormat),
+			WorkerESP:              worker.Config.ESPArtifacts,
+			WorkerFixture:          worker.Config.FixtureManifest,
+			WorkerMetadata:         worker.Config.NodeMetadata,
+			WorkerAddress:          worker.Node.Address,
+			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
+		},
+	}, nil
+}
+
+func failTwoNodeWorldSetup(t *testing.T, scenario *vmtest.WorldScenario, err error) {
+	t.Helper()
+	if scenario == nil {
+		t.Fatalf("%v", err)
+	}
+	if writeErr := scenario.WriteSetupFailure(err); writeErr != nil {
+		t.Fatalf("write VM world setup failure: %v; original error: %v", writeErr, err)
+	}
+	t.Fatalf("%v\nworld scenario dir: %s", err, scenario.Dir)
+}
+
+func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
+	t.Helper()
+	options := smoke.Options
+	runner := smoke.Runner
+	scenario := smoke.Scenario
+	result := smoke.Result
+	inputs := smoke.Inputs
 	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
 		QEMU:         true,
 		OVMF:         true,
 		KVM:          options.KVM,
 		SharedBridge: true,
+		Bridge:       smoke.Bridge,
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
@@ -67,7 +181,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 			ESPArtifacts:    inputs.ControlPlaneESP,
 			FixtureManifest: inputs.ControlPlaneFixture,
 			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              twoNodeVMConfig(options.KVM, 43101),
+			VM:              twoNodeVMConfigForRun(smoke, 43101),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -84,7 +198,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 			ESPArtifacts:    inputs.WorkerESP,
 			FixtureManifest: inputs.WorkerFixture,
 			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              twoNodeVMConfig(options.KVM, 43102),
+			VM:              twoNodeVMConfigForRun(smoke, 43102),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -166,6 +280,12 @@ func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 	}
 }
 
+func twoNodeVMConfigForRun(run twoNodeSmokeRun, cid uint32) vmtest.VMConfig {
+	config := twoNodeVMConfig(run.Options.KVM, cid)
+	config.Network.Bridge = run.Bridge
+	return config
+}
+
 type twoNodeSmokeInputs struct {
 	ControlPlaneDisk       string
 	ControlPlaneDiskFormat string
@@ -217,13 +337,29 @@ func twoNodeSmokeInputsFromEnv(lookPath func(string) (string, error)) (twoNodeSm
 		WorkerAddress:          requiredEnvValue(&missing, detail, "KATL_WORKER_ADDRESS"),
 		KubernetesVersion:      firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"),
 	}
+	missing = append(missing, twoNodeHostToolPrereqs(lookPath)...)
+	return inputs, missing
+}
+
+func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.MissingPrerequisite {
+	var missing []vmtest.MissingPrerequisite
 	if _, err := lookPath("kubectl"); err != nil {
 		missing = append(missing, vmtest.MissingPrerequisite{
 			Name:   "kubectl",
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
 		})
 	}
-	return inputs, missing
+	return missing
+}
+
+func katlRepoRoot(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func requireVMHost(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result, requirements vmtest.HostRequirements) {
@@ -1068,6 +1204,59 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.KubectlDiagnostics["nodesWide"] != "/tmp/run/kubectl-get-nodes-wide.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
+	}
+}
+
+func TestPlanTwoNodeWorldSmokeRunWritesSetupFailureForMissingPublishedFixture(t *testing.T) {
+	world := twoNodeTestWorld(t)
+	run, err := planTwoNodeWorldSmokeRun(world, t.TempDir(), "v1.36.1", vmtest.KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
+		t.Fatalf("planTwoNodeWorldSmokeRun() error = %v, want missing published fixture", err)
+	}
+	if run.WorldScenario == nil {
+		t.Fatal("planTwoNodeWorldSmokeRun() did not return world scenario on setup failure")
+	}
+	data, err := os.ReadFile(run.WorldScenario.ResultPath)
+	if err != nil {
+		t.Fatalf("read world setup result: %v", err)
+	}
+	var result struct {
+		Status         vmtest.WorldStatus `json:"status"`
+		FailureSummary string             `json:"failureSummary"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode world setup result: %v", err)
+	}
+	if result.Status != vmtest.WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
+		t.Fatalf("world setup result = %#v", result)
+	}
+}
+
+func twoNodeTestWorld(t *testing.T) vmtest.World {
+	t.Helper()
+	root := t.TempDir()
+	leaseFile := filepath.Join(root, "network", "leases.json")
+	if err := os.MkdirAll(filepath.Dir(leaseFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(leaseFile, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return vmtest.World{
+		APIVersion:  vmtest.WorldAPIVersion,
+		Kind:        vmtest.WorldKind,
+		RunID:       "run-1",
+		RunDir:      root,
+		ArtifactDir: filepath.Join(root, "artifacts"),
+		ScenarioDir: filepath.Join(root, "scenarios"),
+		Network: vmtest.WorldNetwork{
+			Backend:   vmtest.NetworkBridge,
+			Bridge:    "katlbr0",
+			CIDR:      "10.77.0.0/24",
+			Gateway:   "10.77.0.1",
+			LeaseFile: leaseFile,
+		},
+		Capabilities: map[string]vmtest.WorldStatus{"qemu": vmtest.WorldStatusPassed},
 	}
 }
 

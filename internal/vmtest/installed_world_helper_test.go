@@ -58,9 +58,9 @@ func TestFindPublishedFirstInstallRuntimeFixtureSelectsNewestMatch(t *testing.T)
 	newestWorker := writePublishedInstalledRuntimeFixture(t, repo, "new-worker", "worker-1", Worker, time.Unix(30, 0))
 	newestCP := writePublishedInstalledRuntimeFixture(t, repo, "new-cp", "cp-1", ControlPlane, time.Unix(20, 0))
 
-	published, err := findPublishedFirstInstallRuntimeFixture(repo, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	published, err := FindPublishedFirstInstallRuntimeFixture(repo, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
-		t.Fatalf("findPublishedFirstInstallRuntimeFixture() error = %v", err)
+		t.Fatalf("FindPublishedFirstInstallRuntimeFixture() error = %v", err)
 	}
 	if published.FixtureManifest != newestCP {
 		t.Fatalf("fixture = %q, want %q", published.FixtureManifest, newestCP)

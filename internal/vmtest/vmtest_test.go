@@ -286,6 +286,37 @@ func TestHostCheckSharedBridge(t *testing.T) {
 	}
 }
 
+func TestHostCheckSharedBridgeUsesExplicitBridge(t *testing.T) {
+	err := checkHost(HostRequirements{
+		SharedBridge: true,
+		Bridge:       "worldbr0",
+	}, probe{
+		stat: func(path string) (fs.FileInfo, error) {
+			switch path {
+			case "/sys/class/net/worldbr0", "/dev/net/tun", "/usr/lib/qemu/qemu-bridge-helper":
+				return nil, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		env: func(name string) string {
+			if name == "KATL_VMTEST_BRIDGE" {
+				return "wrongbr0"
+			}
+			return ""
+		},
+		readFile: func(path string) ([]byte, error) {
+			if path != "/etc/qemu/bridge.conf" {
+				return nil, os.ErrNotExist
+			}
+			return []byte("allow worldbr0\n"), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("checkHost() error = %v", err)
+	}
+}
+
 func TestPlanPaths(t *testing.T) {
 	result, err := NewRunner(Options{
 		StateRoot: "/tmp/katl-vmtest",
