@@ -302,10 +302,10 @@ setup_network() {
         cap_bridge="passed"
         return
     fi
-    if "$ip_bin" link add name "$network_bridge" type bridge; then
+    if "$ip_bin" link add name "$network_bridge" type bridge >/dev/null 2>&1; then
         bridge_created=1
-        if "$ip_bin" addr add "$network_gateway/$network_prefix" dev "$network_bridge" &&
-            "$ip_bin" link set "$network_bridge" up; then
+        if "$ip_bin" addr add "$network_gateway/$network_prefix" dev "$network_bridge" >/dev/null 2>&1 &&
+            "$ip_bin" link set "$network_bridge" up >/dev/null 2>&1; then
             if ! check_bridge_prerequisites; then
                 return 0
             fi

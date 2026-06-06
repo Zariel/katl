@@ -391,6 +391,47 @@ func TestVMTestRunBridgePrereqGapFails(t *testing.T) {
 	}
 }
 
+func TestVMTestRunBridgeCreateFailureIsStructured(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, false)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_IP_FAIL_ADD=1",
+		"KATL_VMTEST_RUN_ID=run-bridge-create-failure",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if strings.Contains(string(output), "synthetic netlink failure") {
+		t.Fatalf("vmtest-run leaked raw ip stderr:\n%s", output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if !contains(caps.Missing, "bridge") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "setup-failed" || summary.ExitCode != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -597,7 +638,14 @@ case "$*" in
         fi
         exit 1
         ;;
-    "link add name katl-vmtest0 type bridge"|"addr add 10.77.0.1/24 dev katl-vmtest0"|"link set katl-vmtest0 up"|"link del katl-vmtest0")
+    "link add name katl-vmtest0 type bridge")
+        if [[ "${KATL_FAKE_IP_FAIL_ADD:-0}" == "1" ]]; then
+            echo "synthetic netlink failure" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    "addr add 10.77.0.1/24 dev katl-vmtest0"|"link set katl-vmtest0 up"|"link del katl-vmtest0")
         exit 0
         ;;
     *)
