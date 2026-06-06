@@ -229,7 +229,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("bootstrap transcripts: %v", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
+	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	output, err := cmd.CombinedOutput()
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
@@ -313,12 +313,7 @@ func threeControlPlaneSmokeInputsFromEnv(lookPath func(string) (string, error)) 
 		CP3Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_ADDRESS"),
 		KubernetesVersion: firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"),
 	}
-	if _, err := lookPath("kubectl"); err != nil {
-		missing = append(missing, vmtest.MissingPrerequisite{
-			Name:   "kubectl",
-			Detail: "required for host-side kubeconfig verification: " + err.Error(),
-		})
-	}
+	missing = append(missing, twoNodeHostToolPrereqs(lookPath)...)
 	return inputs, missing
 }
 

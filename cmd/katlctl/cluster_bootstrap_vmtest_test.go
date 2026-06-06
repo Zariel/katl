@@ -243,7 +243,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 		t.Fatalf("bootstrap transcripts: %v", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
+	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 	output, err := cmd.CombinedOutput()
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
@@ -343,13 +343,17 @@ func twoNodeSmokeInputsFromEnv(lookPath func(string) (string, error)) (twoNodeSm
 
 func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.MissingPrerequisite {
 	var missing []vmtest.MissingPrerequisite
-	if _, err := lookPath("kubectl"); err != nil {
+	if _, err := lookPath(selectedKubectl()); err != nil {
 		missing = append(missing, vmtest.MissingPrerequisite{
 			Name:   "kubectl",
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
 		})
 	}
 	return missing
+}
+
+func selectedKubectl() string {
+	return firstString(os.Getenv("KATL_VMTEST_KUBECTL"), "kubectl")
 }
 
 func katlRepoRoot(t *testing.T) string {
@@ -864,11 +868,12 @@ func kubectlDiagnosticPaths(runDir string) map[string]string {
 }
 
 func kubectlDiagnosticCommands(kubeconfigPath string) []kubectlDiagnosticCommand {
+	kubectl := selectedKubectl()
 	return []kubectlDiagnosticCommand{
-		{Name: "nodesWide", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "wide"}},
-		{Name: "kubeSystemPods", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "-n", "kube-system", "get", "pods", "-o", "wide"}},
-		{Name: "events", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "get", "events", "-A", "--sort-by=.lastTimestamp"}},
-		{Name: "clusterInfo", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "cluster-info"}},
+		{Name: "nodesWide", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "wide"}},
+		{Name: "kubeSystemPods", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "-n", "kube-system", "get", "pods", "-o", "wide"}},
+		{Name: "events", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "get", "events", "-A", "--sort-by=.lastTimestamp"}},
+		{Name: "clusterInfo", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "cluster-info"}},
 	}
 }
 
@@ -1316,6 +1321,21 @@ func TestTwoNodeSmokeInputsFromEnv(t *testing.T) {
 	}
 }
 
+func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
+	t.Setenv("KATL_VMTEST_KUBECTL", "/tmp/selected-kubectl")
+	var checked string
+	missing := twoNodeHostToolPrereqs(func(name string) (string, error) {
+		checked = name
+		return name, nil
+	})
+	if len(missing) != 0 {
+		t.Fatalf("missing prereqs = %#v", missing)
+	}
+	if checked != "/tmp/selected-kubectl" {
+		t.Fatalf("checked kubectl = %q, want selected binary", checked)
+	}
+}
+
 func TestRequireSmokePrereqsWritesSkippedResult(t *testing.T) {
 	stateRoot := t.TempDir()
 	runner := vmtest.NewRunner(vmtest.Options{
@@ -1624,6 +1644,13 @@ func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
 	}
 	if !kubectlDiagnosticCommandHasArgs(commands, "clusterInfo", "cluster-info") {
 		t.Fatalf("clusterInfo diagnostic command missing expected args: %#v", commands)
+	}
+
+	t.Setenv("KATL_VMTEST_KUBECTL", "/tmp/selected-kubectl")
+	for _, command := range kubectlDiagnosticCommands("/tmp/kubeconfig.yaml") {
+		if len(command.Argv) == 0 || command.Argv[0] != "/tmp/selected-kubectl" {
+			t.Fatalf("kubectl diagnostic command %s argv = %#v, want selected kubectl", command.Name, command.Argv)
+		}
 	}
 }
 
