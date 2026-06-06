@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+state_dir="${KATL_NSPAWN_FIXTURE_STATE_DIR:-$repo_root/build/nspawn}"
+root="${KATL_NSPAWN_FIXTURE_ROOT:-$state_dir/root}"
+env_file="${KATL_NSPAWN_FIXTURE_ENV:-$state_dir/nspawn.env}"
+manifest="$state_dir/nspawn-fixture.json"
+source_root="${KATL_NSPAWN_SOURCE_ROOT:-${KATL_RUNTIME_ROOT:-}}"
+source_image="${KATL_NSPAWN_SOURCE_IMAGE:-${KATL_RUNTIME_ARTIFACT:-}}"
+force="${KATL_NSPAWN_FIXTURE_FORCE:-0}"
+check_only=0
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/prepare-nspawn-userspace-fixture [options]
+
+Prepare the repo-owned userspace root consumed by systemd-nspawn tests. The
+fixture is copied from a built Katl runtime root or extracted from a runtime
+root squashfs artifact; it does not synthesize OS package contents.
+
+Options:
+  --source-root DIR     Built runtime root tree (fallback: build/mkosi/katl-runtime-root)
+  --source-image PATH   Runtime root squashfs artifact (default: build/mkosi/katl-runtime-root.squashfs)
+  --root DIR            Output nspawn root (default: build/nspawn/root)
+  --state-dir DIR       Output state directory (default: build/nspawn)
+  --env-file PATH       Sourceable env output path (default: <state-dir>/nspawn.env)
+  --force               Replace an existing Katl-managed output root
+  --check-only          Validate the selected or prepared root without copying
+  -h, --help            Show this help
+
+After this command succeeds:
+  source <state-dir>/nspawn.env
+  KATL_NSPAWN_RUN=1 go test ./internal/vmtest -run 'Nspawn' -count=1
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+real() {
+    realpath -m "$1"
+}
+
+json() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    printf "%s" "$value"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source-root)
+            need_value "$1" "${2:-}"
+            source_root="$2"
+            shift 2
+            ;;
+        --source-image)
+            need_value "$1" "${2:-}"
+            source_image="$2"
+            shift 2
+            ;;
+        --root)
+            need_value "$1" "${2:-}"
+            root="$2"
+            shift 2
+            ;;
+        --state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            if [[ -z "${KATL_NSPAWN_FIXTURE_ROOT:-}" ]]; then
+                root="$state_dir/root"
+            fi
+            if [[ -z "${KATL_NSPAWN_FIXTURE_ENV:-}" ]]; then
+                env_file="$state_dir/nspawn.env"
+            fi
+            manifest="$state_dir/nspawn-fixture.json"
+            shift 2
+            ;;
+        --env-file)
+            need_value "$1" "${2:-}"
+            env_file="$2"
+            shift 2
+            ;;
+        --force)
+            force=1
+            shift
+            ;;
+        --check-only)
+            check_only=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+need realpath
+need sha256sum
+need mktemp
+
+state_dir="$(real "$state_dir")"
+root="$(real "$root")"
+env_file="$(real "$env_file")"
+manifest="$(real "$manifest")"
+
+default_source_image="$repo_root/build/mkosi/katl-runtime-root.squashfs"
+default_source_root="$repo_root/build/mkosi/katl-runtime-root"
+if [[ -z "$source_image" && -f "$default_source_image" ]]; then
+    source_image="$default_source_image"
+fi
+if [[ -z "$source_image" && -z "$source_root" && -d "$default_source_root" ]]; then
+    source_root="$default_source_root"
+fi
+if [[ -n "$source_root" ]]; then
+    source_root="$(real "$source_root")"
+fi
+if [[ -n "$source_image" ]]; then
+    source_image="$(real "$source_image")"
+fi
+
+guest_executable() {
+    local label="$1"
+    shift
+    local path
+    for path in "$@"; do
+        if [[ -x "$root/$path" ]]; then
+            return 0
+        fi
+    done
+    fail "nspawn root missing executable $label under $(rel "$root")"
+}
+
+validate_root() {
+    [[ -d "$root" ]] || fail "nspawn root not found: $(rel "$root")"
+    guest_executable sh usr/bin/sh bin/sh
+    guest_executable cp usr/bin/cp bin/cp
+    guest_executable grep usr/bin/grep bin/grep
+    guest_executable mktemp usr/bin/mktemp bin/mktemp
+    guest_executable systemd-analyze usr/bin/systemd-analyze bin/systemd-analyze
+    guest_executable katl-generation-activate usr/lib/katl/runtime/katl-generation-activate
+    guest_executable katl-runtime-status usr/lib/katl/runtime/katl-runtime-status
+}
+
+source_kind=""
+source_path=""
+source_sha=""
+
+if [[ "$check_only" -eq 0 ]]; then
+    if [[ -n "$source_root" ]]; then
+        [[ -d "$source_root" ]] || fail "source root not found: $(rel "$source_root")"
+        [[ "$root" != "$source_root" ]] || fail "output root must be different from source root"
+        case "$root/" in
+            "$source_root"/*) fail "output root must not be inside source root" ;;
+        esac
+        source_kind="directory"
+        source_path="$source_root"
+    elif [[ -n "$source_image" ]]; then
+        [[ -f "$source_image" ]] || fail "source image not found: $(rel "$source_image")"
+        need unsquashfs
+        source_kind="squashfs"
+        source_path="$source_image"
+        source_sha="$(sha256sum "$source_image" | awk '{print $1}')"
+    else
+        fail "no nspawn userspace source found; run scripts/mkosi build-runtime or pass --source-root/--source-image"
+    fi
+
+    if [[ -e "$root" && ! -e "$root/.katl-nspawn-fixture" ]]; then
+        fail "refusing to replace unmanaged nspawn root: $(rel "$root")"
+    fi
+    if [[ -e "$root" && "$force" != 1 ]]; then
+        validate_root
+    else
+        mkdir -p "$(dirname "$root")"
+        tmp="$(mktemp -d "$root.tmp.XXXXXX")"
+        trap 'chmod -R u+rwX "$tmp" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+        if [[ "$source_kind" == directory ]]; then
+            cp -a "$source_path/." "$tmp/"
+        else
+            unsquashfs -quiet -no-xattrs -dest "$tmp" "$source_path" >/dev/null
+        fi
+        touch "$tmp/.katl-nspawn-fixture"
+        rm -rf "$root"
+        mv "$tmp" "$root"
+        trap - EXIT
+    fi
+fi
+
+validate_root
+
+if [[ -z "$source_kind" ]]; then
+    source_kind="prepared"
+    source_path="$root"
+fi
+
+mkdir -p "$(dirname "$env_file")" "$(dirname "$manifest")"
+{
+    printf 'export KATL_NSPAWN_ROOT=%q\n' "$root"
+    printf 'export KATL_NSPAWN_STATE_ROOT=%q\n' "$state_dir"
+} >"$env_file"
+
+cat >"$manifest" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "NspawnUserspaceFixture",
+  "root": "$(json "$root")",
+  "source": {
+    "kind": "$(json "$source_kind")",
+    "path": "$(json "$source_path")"$(if [[ -n "$source_sha" ]]; then printf ',\n    "sha256": "%s"' "$(json "$source_sha")"; fi)
+  },
+  "envFile": "$(json "$env_file")"
+}
+EOF
+
+echo "nspawn root: $(rel "$root")"
+echo "env file: $(rel "$env_file")"
+echo "fixture manifest: $(rel "$manifest")"

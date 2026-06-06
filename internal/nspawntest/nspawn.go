@@ -194,6 +194,37 @@ func Run(t testing.TB, scenario Scenario) Result {
 	return NewRunner(DefaultOptions()).Run(t, scenario)
 }
 
+func PrepareDefaultRoot(ctx context.Context, options *Options, repoRoot string) error {
+	if options == nil {
+		return errors.New("nspawn options are required")
+	}
+	normalized := normalizeOptions(*options)
+	if !normalized.Enabled || strings.TrimSpace(normalized.Root) != "" || strings.TrimSpace(normalized.Image) != "" {
+		return nil
+	}
+	if strings.TrimSpace(repoRoot) == "" {
+		return errors.New("repo root is required to prepare nspawn userspace")
+	}
+	stateRoot := normalized.StateRoot
+	if !filepath.IsAbs(stateRoot) {
+		stateRoot = filepath.Join(repoRoot, stateRoot)
+	}
+	root := filepath.Join(stateRoot, "root")
+	cmd := exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "prepare-nspawn-userspace-fixture"),
+		"--state-dir", stateRoot,
+		"--root", root,
+		"--force",
+	)
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("prepare nspawn userspace fixture: %w\n%s", err, output)
+	}
+	options.StateRoot = stateRoot
+	options.Root = root
+	return nil
+}
+
 func CheckHost(root string, binds []Bind) error {
 	return checkHost(rootRef{Kind: rootKindDirectory, Path: root}, binds, systemProbe(), false)
 }

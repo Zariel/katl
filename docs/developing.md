@@ -163,6 +163,24 @@ agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
 `/etc/kubernetes` projection, kubeadm tooling, and container runtime readiness.
 It does not run `kubeadm init` or the API-server smoke.
 
+## Nspawn Userspace Fixtures
+
+Nspawn-backed checks use a repo-owned userspace root prepared from built Katl
+runtime artifacts. Build the runtime first, then prepare and enable the fixture:
+
+```sh
+scripts/mkosi build-runtime
+scripts/prepare-nspawn-userspace-fixture
+source build/nspawn/nspawn.env
+KATL_NSPAWN_RUN=1 go test ./internal/vmtest ./internal/installer/generation -run 'Nspawn' -count=1
+```
+
+When `KATL_NSPAWN_RUN=1` is set and no explicit `KATL_NSPAWN_ROOT` or
+`KATL_NSPAWN_IMAGE` override is supplied, the nspawn smoke tests invoke the same
+preparer before assertions. Missing runtime build outputs are fixture
+preparation failures; missing `systemd-nspawn` or host privileges remain host
+capability skips recorded by the harness.
+
 To run the opt-in first-install target-disk fixture contract smoke, resolve
 the mkosi artifact index, optional node metadata, and an install manifest bound
 to the local KatlOS image into a sourceable environment with:

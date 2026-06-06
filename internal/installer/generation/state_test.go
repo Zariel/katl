@@ -282,6 +282,9 @@ func TestStateUnitsVerifyNspawn(t *testing.T) {
 	const guestRoot = "/mnt/katl-generated-units"
 	options := nspawntest.DefaultOptions()
 	options.Missing = nspawntest.MissingSkips
+	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repoRoot(t)); err != nil {
+		t.Fatalf("prepare nspawn userspace fixture: %v", err)
+	}
 	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
 		Name: "state unit verify",
 		Binds: []nspawntest.Bind{{
@@ -321,6 +324,16 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
 	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func stateVerifyUnits() []string {

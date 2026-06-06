@@ -17,12 +17,12 @@ func TestConfigApplyNspawnSmoke(t *testing.T) {
 	options := nspawntest.DefaultOptions()
 	options.Missing = nspawntest.MissingSkips
 	options.StateRoot = filepath.Join(repo, "build", "nspawn")
-	if options.Root == "" && options.Image == "" {
-		options.Root = filepath.Join(repo, "build", "nspawn", "root")
-	}
 	if !options.Enabled {
 		nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{Name: "config apply smoke"})
 		return
+	}
+	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repo); err != nil {
+		t.Fatalf("prepare nspawn userspace fixture: %v", err)
 	}
 
 	runtimeFixture := runtimeUserspaceFixture(t)

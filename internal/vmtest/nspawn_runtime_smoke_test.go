@@ -18,6 +18,9 @@ func TestRuntimeUserspaceNspawnSmoke(t *testing.T) {
 	fixture := runtimeUserspaceFixture(t)
 	options := nspawntest.DefaultOptions()
 	options.Missing = nspawntest.MissingSkips
+	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repoRoot(t)); err != nil {
+		t.Fatalf("prepare nspawn userspace fixture: %v", err)
+	}
 	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
 		Name: "runtime userspace smoke",
 		Binds: []nspawntest.Bind{{

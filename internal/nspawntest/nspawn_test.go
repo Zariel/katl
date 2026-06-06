@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,56 @@ func TestRunMissingPrerequisitesCanSkip(t *testing.T) {
 	}
 	if len(result.Missing) != 2 {
 		t.Fatalf("missing = %#v", result.Missing)
+	}
+}
+
+func TestPrepareDefaultRootRunsFixtureScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX execution")
+	}
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repo, "scripts", "prepare-nspawn-userspace-fixture")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > prepare-args.txt\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options := Options{Enabled: true}
+	if err := PrepareDefaultRoot(context.Background(), &options, repo); err != nil {
+		t.Fatalf("PrepareDefaultRoot() error = %v", err)
+	}
+	wantState := filepath.Join(repo, "build", "nspawn")
+	wantRoot := filepath.Join(wantState, "root")
+	if options.StateRoot != wantState || options.Root != wantRoot {
+		t.Fatalf("options = %#v, want state %q root %q", options, wantState, wantRoot)
+	}
+	args, err := os.ReadFile(filepath.Join(repo, "prepare-args.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--state-dir\n" + wantState, "--root\n" + wantRoot, "--force"} {
+		if !strings.Contains(string(args), want) {
+			t.Fatalf("prepare args = %q, missing %q", args, want)
+		}
+	}
+}
+
+func TestPrepareDefaultRootLeavesOverridesAlone(t *testing.T) {
+	options := Options{Enabled: true, Root: "/custom/root"}
+	if err := PrepareDefaultRoot(context.Background(), &options, "/missing/repo"); err != nil {
+		t.Fatalf("PrepareDefaultRoot() with explicit root error = %v", err)
+	}
+	if options.Root != "/custom/root" {
+		t.Fatalf("Root = %q", options.Root)
+	}
+
+	options = Options{Enabled: true, Image: "/custom/root.raw"}
+	if err := PrepareDefaultRoot(context.Background(), &options, "/missing/repo"); err != nil {
+		t.Fatalf("PrepareDefaultRoot() with explicit image error = %v", err)
+	}
+	if options.Image != "/custom/root.raw" || options.Root != "" {
+		t.Fatalf("options = %#v", options)
 	}
 }
 
