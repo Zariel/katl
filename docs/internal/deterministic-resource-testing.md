@@ -1,0 +1,287 @@
+# Deterministic Resource Testing
+
+Status: proposed design.
+
+Katl has unit tests, nspawn userspace checks, and QEMU VM scenarios that all need
+different setup. The heavy tests should be agent-runnable without a developer
+hand-exporting fixture paths. When an enabled scenario reaches its assertions, a
+failure should point at the Katl behavior under test. Resource preparation,
+stale artifacts, package drift, and host capability gaps should be classified
+before that point.
+
+## Target Outcome
+
+The standard heavy-test entrypoint should:
+
+```text
+check host capabilities
+build or reuse locked mkosi artifacts
+generate deterministic install and node fixtures
+prepare nspawn userspace roots or images
+run first-install VM setup to publish installed-runtime fixtures
+run installed-runtime, config-apply, kubeadm, and multi-node scenarios
+summarize passed, failed, host-skipped, and setup-failed scenarios
+```
+
+The command should emit machine-readable artifacts under `build/resource-tests/`
+and exit nonzero when an enabled scenario was skipped because a repo-owned
+resource was missing or stale.
+
+## Determinism Boundary
+
+This design uses deterministic to mean that every enabled scenario runs from
+declared inputs whose identity is recorded before assertions start. It does not
+require byte-for-byte reproducible release images in the first implementation,
+though the same records are useful for later reproducibility work.
+
+Inputs to record:
+
+```text
+git revision and dirty-tree marker
+flake.lock revision for host tools
+mkosi version and profile names
+distribution release and enabled package repositories
+resolved package NEVRAs and package checksums
+Go module graph and generated binary digests
+manifest templates and rendered manifest digests
+installer, runtime, sysext, confext, disk, and ESP artifact digests
+host capability probe results
+```
+
+Scenario execution should consume immutable paths from this resource manifest.
+Tests must not rebuild or rediscover artifacts after QEMU or nspawn starts.
+
+## Build Inputs
+
+Mkosi remains the image builder. The deterministic resource layer should add a
+lock and verification step around mkosi rather than replace the builder.
+
+The first lock can be a JSON document generated from the build result:
+
+```text
+build locks
+  committed source of expected mkosi profiles, package repositories, package
+  names, selected versions, and checksums
+
+build manifests
+  per-run records under build/resource-tests/<run-id>/ that name the actual
+  mkosi outputs, package set, tool versions, and content digests
+```
+
+The heavy-test command should support two modes:
+
+```text
+strict
+  used by agents and CI; package drift, missing lock records, and stale artifacts
+  fail during resource preparation
+
+refresh
+  used by maintainers to intentionally update the package lock and review the
+  package/artifact diff
+```
+
+Fedora and Kubernetes repository updates should therefore show up as an explicit
+lock refresh with a reviewable package and artifact diff.
+
+## Resource Graph
+
+The resource graph should be typed and content-addressed enough that downstream
+scenarios can reuse outputs safely:
+
+```text
+toolchain
+  Go, mkosi, qemu, systemd-nspawn, systemd-analyze, qemu-img, OVMF
+
+mkosi artifacts
+  installer UKI or kernel/initrd pair, runtime root, KatlOS install image,
+  Kubernetes sysext image, and generated artifact index
+
+node inputs
+  cp-1, worker-1, cp-2, cp-3 metadata, install manifests, target disk selectors,
+  deterministic addresses, and optional network topology
+
+nspawn fixtures
+  prepared userspace root or image with the selected systemd userspace and Katl
+  runtime/config artifacts mounted or copied according to the scenario contract
+
+first-install fixtures
+  target disks produced by booting the installer and applying generated install
+  manifests through the same handoff path used by the VM tests
+
+installed-runtime fixtures
+  packaged disks, ESP artifact trees, node metadata, and checksum-bound fixture
+  manifests published from first-install runs
+```
+
+Manual fixture environment variables can remain as debug/cache overrides. The
+primary agent and CI path should generate these resources from repo-controlled
+inputs.
+
+## Failure Semantics
+
+The result schema should distinguish scenario assertion failures from setup and
+capability outcomes:
+
+```text
+passed
+  setup completed and assertions passed
+
+failed
+  setup completed and an assertion about Katl behavior failed
+
+setup-failed
+  repo-owned resource generation failed, an artifact was stale, a digest did not
+  match, a package lock check failed, or a required generated fixture was absent
+
+host-skipped
+  the host lacks a declared optional capability such as systemd-nspawn
+  privileges, QEMU, OVMF, KVM, vhost-vsock, or required bridge networking
+
+disabled
+  the scenario was outside the selected suite
+```
+
+Enabled suites should treat generic Go test skips as failures unless the skip is
+mapped to `host-skipped` by the resource-test summary. This prevents
+`KATL_VMTEST_RUN=1` or `KATL_NSPAWN_RUN=1` from returning a green result while
+all resource-backed tests skipped because fixtures were never prepared.
+
+## Manifest Schema
+
+The first typed schema lives in `internal/resourcetest`. It uses
+`apiVersion: katl.dev/v1alpha1` and `kind: ResourceTestManifest`.
+
+The manifest records:
+
+```text
+runID and creation time
+git revision and dirty state
+tool versions and optional tool digests
+mkosi profile paths, config digests, and package-set references
+package-set identity, package NEVRAs, and package checksums
+host capability probe results
+build artifacts with paths, sizes, and SHA-256 digests
+fixtures with artifact references and optional fixture manifests
+scenario result paths, run directories, fixture references, and required host capabilities
+```
+
+Scenario status values are:
+
+```text
+passed
+failed
+setup-failed
+host-skipped
+disabled
+```
+
+Generic Go test skips in an enabled resource suite classify as `setup-failed`
+unless the resource-test layer has already mapped them to a declared missing
+host capability. This keeps missing generated fixtures separate from real host
+capability gaps.
+
+## Standard Command
+
+The repo should grow one command, initially a thin script:
+
+```text
+scripts/check-resource-tests
+```
+
+Responsibilities:
+
+```text
+preflight host capabilities and write host-capabilities.json
+run mkosi builds through scripts/mkosi
+write and verify the mkosi artifact index
+generate node manifests and metadata under build/resource-tests/<run-id>/
+prepare the nspawn userspace fixture
+run first-install VM setup and publish installed-runtime fixtures
+run Go test packages with generated environment and resource-test strict mode
+collect result.json and scenario.json files from nspawn and VM test roots
+fail on setup-failed, failed, unexpected skipped, missing results, or stale locks
+```
+
+The script can call smaller existing scripts such as `scripts/mkosi`,
+`scripts/mkosi-artifacts`, fixture resolvers, and fixture publishers. Parsing,
+result aggregation, lock validation, and scenario status classification should
+move to Go when the shell starts carrying policy.
+
+## Test Layout
+
+The normal test commands should keep distinct purposes:
+
+```text
+go test ./...
+  pure unit, parser, planner, golden, and helper tests; no privileged resources
+
+scripts/check-resource-tests --suite nspawn
+  nspawn userspace and generated systemd/config checks
+
+scripts/check-resource-tests --suite vm
+  QEMU first-install and installed-runtime checks
+
+scripts/check-resource-tests --suite cluster
+  multi-node kubeadm and stacked-etcd checks
+```
+
+Each suite can still be focused during development, but the command owns setup
+and summary rules for the enabled suite.
+
+## Bazel Decision
+
+Use the mkosi plus resource-graph path first. The useful properties are an
+explicit action graph, stable inputs, content digests, and cacheable outputs; the
+project can implement those directly around the systemd-native build and test
+tools already in use.
+
+Bazel would add value after the graph stabilizes if Katl needs remote caching,
+cross-repository build graph integration, or stronger sandboxing for pure
+actions. It would still need local execution escapes for mkosi, nspawn, QEMU,
+KVM, OVMF, vhost-vsock, and bridge networking. Fedora and Kubernetes package
+repository contents still need an explicit lock. Package locks, fixture
+generation, and strict skip classification are the immediate sources of
+determinism.
+
+Revisit Bazel when these are true:
+
+```text
+resource inputs and outputs have stable schemas
+mkosi package locks are enforced
+resource tests have one strict command with reliable result summaries
+CI spends enough time rebuilding unchanged artifacts that remote caching matters
+privileged integration tests can be cleanly tagged as local-only actions
+```
+
+## Implementation Sequence
+
+1. Define the resource-test manifest schema and status taxonomy.
+2. Add strict result aggregation that fails on unexpected enabled-suite skips.
+3. Add the self-provisioning nspawn fixture path.
+4. Add the first-install installed-runtime fixture factory as the primary VM
+   setup path.
+5. Add package-set recording and strict lock verification around mkosi builds.
+6. Generate deterministic multi-node fixture inputs from source-controlled
+   templates.
+7. Wire GitHub Actions to call the same command, with QEMU suites on runners
+   that provide the declared host capabilities.
+
+## Open Questions
+
+1. Should host capability gaps fail in CI instead of being reported as
+   `host-skipped`?
+
+   Initial recommendation: CI jobs that advertise a resource suite should fail
+   when the required capability is absent. Local development can still report
+   `host-skipped` for optional suites.
+
+2. Should the package lock live next to mkosi profiles or under
+   `docs/internal/schemas`?
+
+   Initial recommendation: keep it near the mkosi profiles because it is an
+   executable build input.
+
+3. How much package drift is acceptable for local development?
+
+   Initial recommendation: local refresh mode may build against fresh metadata,
+   but strict mode should reject drift until the lock is intentionally updated.

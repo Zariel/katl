@@ -239,6 +239,12 @@ Tests must never rebuild artifacts implicitly after a scenario has started. A
 scenario plan resolves all required artifacts before QEMU boots, records their
 digests, and passes immutable paths into later phases.
 
+The cross-suite resource preparation contract is defined in
+`docs/internal/deterministic-resource-testing.md`. VM scenarios should consume
+the resource manifest produced by that layer when they run under the standard
+heavy-test command, while direct developer invocations may continue to pass
+explicit fixture paths for focused debugging.
+
 ## Disk Fixtures
 
 Disk fixtures are typed scenario inputs:
