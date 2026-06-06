@@ -242,8 +242,9 @@ digests, and passes immutable paths into later phases.
 The cross-suite resource preparation contract is defined in
 `docs/internal/deterministic-resource-testing.md`. VM scenarios should consume
 the resource manifest produced by that layer when they run under the standard
-heavy-test command, while direct developer invocations may continue to pass
-explicit fixture paths for focused debugging.
+heavy-test command. Direct fixture path invocation is transitional scaffolding;
+once the hermetic world runner exists, VM scenarios should not maintain a
+separate supported developer path for manually assembled fixtures.
 
 The hermetic world execution model is defined in
 `docs/internal/hermetic-vmtest-worlds.md`. That document narrows the standard VM
@@ -604,15 +605,15 @@ unless `-katl.vmtest.run` or a focused integration test command enables them.
 ## Nspawn Userspace Checks
 
 Some generated filesystem and systemd checks can run through `systemd-nspawn`
-before a full QEMU boot. These checks use `internal/nspawntest` and require an
-explicit prepared Katl or Fedora userspace root or image via `KATL_NSPAWN_ROOT`,
-`KATL_NSPAWN_IMAGE`, `-katl.nspawn.root`, or `-katl.nspawn.image`.
+before a full QEMU boot. Standard enabled checks run through
+`scripts/vmtest-run`, which creates a world manifest and supplies the prepared
+userspace fixture to `internal/nspawntest` instead of asking the developer to
+export a root or image path.
 
 Generated unit trees should be mounted read-only into the container and verified
-with the userspace root's `systemd-analyze`, for example by enabling
-`KATL_NSPAWN_RUN=1` for the generated state unit smoke. Missing nspawn,
-privileges, or prepared userspace roots should be reported as explicit skips for
-developer preflights.
+with the userspace root's `systemd-analyze`. Missing `systemd-nspawn` or
+privileges are host capability gaps. Missing generated userspace roots or bind
+inputs are setup failures in enabled world-backed runs.
 
 Host `systemd-analyze --root` remains a useful fallback for narrow local unit
 syntax checks when `KATL_VERIFY_SYSTEMD_UNITS=1` is set, but nspawn is preferred

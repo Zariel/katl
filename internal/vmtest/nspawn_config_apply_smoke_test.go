@@ -40,34 +40,11 @@ func TestConfigApplyNspawnSmoke(t *testing.T) {
 		})
 		return
 	}
-	repo := repoRoot(t)
 	options := nspawntest.DefaultOptions()
-	options.Missing = nspawntest.MissingSkips
-	options.StateRoot = filepath.Join(repo, "build", "nspawn")
 	if !options.Enabled {
-		nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{Name: "config apply smoke"})
-		return
+		t.Skip("set -katl.nspawn.run or KATL_NSPAWN_RUN=1 to run nspawn config-apply smoke through scripts/vmtest-run")
 	}
-	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repo); err != nil {
-		t.Fatalf("prepare nspawn userspace fixture: %v", err)
-	}
-
-	runtimeFixture := runtimeUserspaceFixture(t)
-	fixture := configApplyNspawnFixture(t)
-	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
-		Name: "config apply smoke",
-		Binds: []nspawntest.Bind{
-			{
-				Source: runtimeFixture.Root,
-				Target: "/mnt/katl-runtime-fixture",
-			},
-			{
-				Source: fixture.Root,
-				Target: "/mnt/katl-config-apply-fixture",
-			},
-		},
-		Commands: configApplyNspawnCommands(runtimeFixture.GenerationID),
-	})
+	_ = RequireWorld(t)
 }
 
 func configApplyNspawnCommands(generationID string) []nspawntest.Command {

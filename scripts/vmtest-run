@@ -104,6 +104,83 @@ have_command() {
     command -v "$1" >/dev/null 2>&1
 }
 
+capability_hint() {
+    case "$1" in
+        qemu)
+            printf "install qemu-system-x86_64 or set KATL_VMTEST_QEMU to the QEMU binary"
+            ;;
+        qemu-img)
+            printf "install qemu-img or set KATL_VMTEST_QEMU_IMG to the qemu-img binary"
+            ;;
+        ovmf)
+            printf "set KATL_OVMF_CODE and KATL_OVMF_VARS to readable OVMF pflash images"
+            ;;
+        kvm)
+            printf "%s is missing; enable KVM support or set KATL_VMTEST_KVM_DEVICE" "$kvm_device"
+            ;;
+        vsock)
+            printf "%s is missing; load vhost_vsock or set KATL_VMTEST_VSOCK_DEVICE" "$vsock_device"
+            ;;
+        mtools)
+            printf "install mtools and coreutils so mformat, mcopy, and truncate are available"
+            ;;
+        sfdisk)
+            printf "install util-linux so sfdisk is available"
+            ;;
+        sha256sum)
+            printf "install coreutils so sha256sum is available"
+            ;;
+        awk)
+            printf "install awk, such as gawk"
+            ;;
+        realpath)
+            printf "install coreutils so realpath is available"
+            ;;
+        kubectl)
+            printf "install kubectl or set KATL_VMTEST_KUBECTL to the kubectl binary"
+            ;;
+        systemd-nspawn)
+            printf "install systemd-nspawn"
+            ;;
+        nspawn-privileges)
+            printf "systemd-nspawn is installed, but this run is not privileged; run with sudo or set KATL_NSPAWN_ALLOW_UNPRIVILEGED=1 after configuring rootless systemd-nspawn"
+            ;;
+        tun)
+            printf "%s is missing; load the tun module or set KATL_VMTEST_TUN_DEVICE" "$tun_device"
+            ;;
+        qemu-bridge-helper)
+            printf "install qemu-bridge-helper or set KATL_QEMU_BRIDGE_HELPER to its path"
+            ;;
+        qemu-bridge-acl)
+            printf "%s must contain 'allow %s' or 'allow all'; override the ACL path with KATL_QEMU_BRIDGE_CONF" "$bridge_conf" "$network_bridge"
+            ;;
+        bridge)
+            printf "create or allow creation of bridge %s, or set KATL_VMTEST_BRIDGE to an existing bridge" "$network_bridge"
+            ;;
+        *)
+            printf "see %s for recorded host capability state" "$host_capabilities_json"
+            ;;
+    esac
+}
+
+print_missing_capabilities() {
+    local heading="$1"
+    local printed=""
+    local capability hint
+    printf '%s\n' "$heading" >&2
+    for capability in "${missing_capabilities[@]}"; do
+        case " $printed " in
+            *" $capability "*)
+                continue
+                ;;
+        esac
+        printed="${printed:+$printed }$capability"
+        hint="$(capability_hint "$capability")"
+        printf '  - %s: %s\n' "$capability" "$hint" >&2
+    done
+    printf 'vmtest run dir: %s\n' "$run_dir" >&2
+}
+
 probe_vm_capabilities() {
     if have_command "$qemu_bin"; then
         cap_qemu="passed"
@@ -271,7 +348,7 @@ find_bridge_helper() {
 bridge_acl_allows() {
     local bridge="$1"
     local line
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
@@ -645,13 +722,13 @@ write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
     if [[ "$host_policy" == "skip" ]]; then
         final_status="host-skipped"
-        printf 'host-skipped: missing %s\n' "${missing_capabilities[*]}" >&2
+        print_missing_capabilities "host-skipped: missing host capabilities"
         write_summary "$final_status" 0 "${filtered_args[@]}"
         exit 0
     fi
     if [[ "$preflight_required" == 1 || "$capability_scope" == "nspawn" ]]; then
         final_status="setup-failed"
-        printf 'setup failed: missing required host capabilities: %s\n' "${missing_capabilities[*]}" >&2
+        print_missing_capabilities "setup failed: missing required host capabilities"
         write_summary "$final_status" 1 "${filtered_args[@]}"
         exit 1
     fi

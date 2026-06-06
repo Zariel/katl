@@ -56,6 +56,7 @@
             export KATL_VMTEST_QEMU_IMG="''${KATL_VMTEST_QEMU_IMG:-${pkgs.qemu_kvm}/bin/qemu-img}"
             export KATL_VMTEST_IP="''${KATL_VMTEST_IP:-${pkgs.iproute2}/bin/ip}"
             export KATL_QEMU_BRIDGE_HELPER="''${KATL_QEMU_BRIDGE_HELPER:-${pkgs.qemu_kvm}/libexec/qemu-bridge-helper}"
+            export KATL_VMTEST_BRIDGE="''${KATL_VMTEST_BRIDGE:-virbr0}"
           '';
         };
     in

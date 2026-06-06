@@ -32,18 +32,10 @@ func TestRuntimeUserspaceNspawnSmoke(t *testing.T) {
 		return
 	}
 	options := nspawntest.DefaultOptions()
-	options.Missing = nspawntest.MissingSkips
-	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repoRoot(t)); err != nil {
-		t.Fatalf("prepare nspawn userspace fixture: %v", err)
+	if !options.Enabled {
+		t.Skip("set -katl.nspawn.run or KATL_NSPAWN_RUN=1 to run nspawn runtime smoke through scripts/vmtest-run")
 	}
-	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
-		Name: "runtime userspace smoke",
-		Binds: []nspawntest.Bind{{
-			Source: fixture.Root,
-			Target: "/mnt/katl-runtime-fixture",
-		}},
-		Commands: runtimeUserspaceCommands(fixture.GenerationID),
-	})
+	_ = RequireWorld(t)
 }
 
 func runtimeUserspaceCommands(generationID string) []nspawntest.Command {

@@ -129,7 +129,7 @@ preparing fixture environment files or invoking `scripts/vmtest-exec` directly:
 scripts/vmtest-run ./internal/vmtest -run Nspawn
 scripts/vmtest-run ./internal/vmtest \
   -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply'
-scripts/vmtest-run ./cmd/katlctl \
+scripts/vmtest-run ./internal/vmtest/scenarios \
   -run 'TwoNodeKubeadmJoin|ThreeControlPlaneStackedEtcd' \
   -timeout 60m
 ```

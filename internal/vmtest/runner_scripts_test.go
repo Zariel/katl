@@ -672,6 +672,96 @@ func TestVMTestRunBridgePrereqGapFails(t *testing.T) {
 	}
 }
 
+func TestVMTestRunBridgeACLAllowsFinalLineWithoutNewline(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	if err := os.WriteFile(host.bridgeConf, []byte("allow katl-vmtest0"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", host.bridgeConf, err)
+	}
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_RUN_ID=run-bridge-acl-no-newline",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if contains(caps.Missing, "qemu-bridge-acl") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestVMTestRunHostCapabilityDiagnostics(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	if err := os.WriteFile(host.bridgeConf, []byte("allow otherbr0\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", host.bridgeConf, err)
+	}
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=0",
+		"KATL_VMTEST_RUN_ID=run-host-diagnostics",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
+	}
+	for _, want := range []string{
+		"setup failed: missing required host capabilities",
+		"  - nspawn-privileges:",
+		"run with sudo",
+		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
+		"  - qemu-bridge-acl:",
+		host.bridgeConf,
+		"allow katl-vmtest0",
+		"KATL_QEMU_BRIDGE_CONF",
+		"vmtest run dir: " + runDir,
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	for _, want := range []string{"nspawn-privileges", "qemu-bridge-acl"} {
+		if !contains(caps.Missing, want) {
+			t.Fatalf("missing capabilities = %#v", caps.Missing)
+		}
+	}
+}
+
 func TestVMTestRunBridgeCreateFailureIsStructured(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()

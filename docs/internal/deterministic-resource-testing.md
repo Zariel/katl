@@ -157,9 +157,11 @@ installed-runtime fixtures
   manifests published from first-install runs
 ```
 
-Manual fixture environment variables can remain as debug/cache overrides. The
-primary agent and CI path should generate these resources from repo-controlled
-inputs.
+Manual fixture environment variables are transitional scaffolding for the
+pre-hermetic VM path. Once `scripts/vmtest-run` provides world fixture
+factories, VM-backed suites should not keep manually supplied fixture
+environment as a supported path. Any still-needed cache selection should be
+expressed through the world manifest and recorded with artifact digests.
 
 ## Failure Semantics
 
@@ -193,10 +195,11 @@ all resource-backed tests skipped because fixtures were never prepared.
 ## Strict Summary
 
 The first strict aggregation helper also lives in `internal/resourcetest`. It
-consumes the resource manifest, `go test -json` output, and nspawn or VM
-`result.json` artifacts. It writes `kind: ResourceTestSummary` with per-scenario
-status counts, scenario run directories, failure summaries, and Go test
-failures.
+consumes the resource manifest, Go test output, and nspawn or VM `result.json`
+artifacts. It writes `kind: ResourceTestSummary` with per-scenario status
+counts, scenario run directories, failure summaries, and Go test failures.
+Callers may request `go test -json` output from `scripts/vmtest-run`, but JSON
+event output is opt-in rather than the default runner contract.
 
 Enabled scenarios classify as `setup-failed` when their result artifact is
 missing, invalid, still `planned`, from another scenario or run, or when Go
@@ -239,20 +242,26 @@ unless the resource-test layer has already mapped them to a declared missing
 host capability. This keeps missing generated fixtures separate from real host
 capability gaps.
 
-## Standard Command
+## Standard Commands
 
-The repo should grow one command, initially a thin script:
+The repo should grow conventional entrypoints, initially as thin scripts:
 
 ```text
 scripts/check-resource-tests
+scripts/vmtest-run
 ```
 
-For VM-backed suites, the stronger execution contract is the hermetic world
-model in `docs/internal/hermetic-vmtest-worlds.md`: the command creates a
-tmpdir world, runs package test binaries through `go test -exec`, and lets each
-test allocate its own VMs and guest addresses inside that world. Resource
-checking remains an internal setup and summary concern, not a developer-facing
-requirement to pass fixture paths and IP addresses.
+For nspawn and VM-backed suites, the stronger execution contract is the
+hermetic world model in `docs/internal/hermetic-vmtest-worlds.md`:
+`scripts/vmtest-run` creates a tmpdir world, runs package test binaries through
+`go test -exec`, and lets each test allocate its own containers, VMs, and guest
+addresses inside that world. Resource checking remains an internal setup and
+summary concern, not a developer-facing requirement to pass fixture paths and IP
+addresses.
+
+`scripts/check-resource-tests` may delegate to `scripts/vmtest-run` for nspawn
+and VM suites, but `scripts/vmtest-run` is the direct developer entrypoint for
+those tests.
 
 Responsibilities:
 
@@ -268,10 +277,12 @@ collect result.json and scenario.json files from nspawn and VM test roots
 fail on setup-failed, failed, unexpected skipped, missing results, or stale locks
 ```
 
-The script can call smaller existing scripts such as `scripts/mkosi`,
-`scripts/mkosi-artifacts`, fixture resolvers, and fixture publishers. Parsing,
-result aggregation, lock validation, and scenario status classification should
-move to Go when the shell starts carrying policy.
+The script can call smaller existing scripts such as `scripts/mkosi` and
+`scripts/mkosi-artifacts`. Existing fixture resolvers and publishers are
+transitional; once world fixture factories exist, their policy should move
+behind `scripts/vmtest-run` or be deleted. Parsing, result aggregation, lock
+validation, and scenario status classification should move to Go when the shell
+starts carrying policy.
 
 ## Test Layout
 
@@ -281,13 +292,13 @@ The normal test commands should keep distinct purposes:
 go test ./...
   pure unit, parser, planner, golden, and helper tests; no privileged resources
 
-scripts/check-resource-tests --suite nspawn
+scripts/vmtest-run ./internal/vmtest -run Nspawn
   nspawn userspace and generated systemd/config checks
 
-scripts/check-resource-tests --suite vm
+scripts/vmtest-run ./internal/vmtest
   QEMU first-install and installed-runtime checks
 
-scripts/check-resource-tests --suite cluster
+scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane'
   multi-node kubeadm and stacked-etcd checks
 ```
 

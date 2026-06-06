@@ -4,13 +4,12 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 state_dir="${KATL_NSPAWN_FIXTURE_STATE_DIR:-$repo_root/build/nspawn}"
 root="${KATL_NSPAWN_FIXTURE_ROOT:-$state_dir/root}"
-env_file="${KATL_NSPAWN_FIXTURE_ENV:-$state_dir/nspawn.env}"
 manifest="$state_dir/nspawn-fixture.json"
 source_root="${KATL_NSPAWN_SOURCE_ROOT:-${KATL_RUNTIME_ROOT:-}}"
 source_image="${KATL_NSPAWN_SOURCE_IMAGE:-${KATL_RUNTIME_ARTIFACT:-}}"
 force="${KATL_NSPAWN_FIXTURE_FORCE:-0}"
 check_only=0
-helper_manifest=""
+helper_manifest_file=""
 helper_dir=""
 
 usage() {
@@ -26,14 +25,12 @@ Options:
   --source-image PATH   Runtime root squashfs artifact (default: build/mkosi/katl-runtime-root.squashfs)
   --root DIR            Output nspawn root (default: build/nspawn/root)
   --state-dir DIR       Output state directory (default: build/nspawn)
-  --env-file PATH       Sourceable env output path (default: <state-dir>/nspawn.env)
   --force               Replace an existing Katl-managed output root
   --check-only          Validate the selected or prepared root without copying
   -h, --help            Show this help
 
 After this command succeeds:
-  source <state-dir>/nspawn.env
-  KATL_NSPAWN_RUN=1 go test ./internal/vmtest -run 'Nspawn' -count=1
+  scripts/vmtest-run ./internal/vmtest -run 'Nspawn'
 USAGE
 }
 
@@ -63,14 +60,6 @@ real() {
     realpath -m "$1"
 }
 
-json() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    printf "%s" "$value"
-}
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source-root)
@@ -94,15 +83,7 @@ while [[ $# -gt 0 ]]; do
             if [[ -z "${KATL_NSPAWN_FIXTURE_ROOT:-}" ]]; then
                 root="$state_dir/root"
             fi
-            if [[ -z "${KATL_NSPAWN_FIXTURE_ENV:-}" ]]; then
-                env_file="$state_dir/nspawn.env"
-            fi
             manifest="$state_dir/nspawn-fixture.json"
-            shift 2
-            ;;
-        --env-file)
-            need_value "$1" "${2:-}"
-            env_file="$2"
             shift 2
             ;;
         --force)
@@ -127,10 +108,10 @@ done
 need realpath
 need sha256sum
 need mktemp
+need jq
 
 state_dir="$(real "$state_dir")"
 root="$(real "$root")"
-env_file="$(real "$env_file")"
 manifest="$(real "$manifest")"
 
 default_source_image="$repo_root/build/mkosi/katl-runtime-root.squashfs"
@@ -181,9 +162,10 @@ install_runtime_helpers() {
     need go
     helper_dir="$state_dir/helpers"
     mkdir -p "$root/usr/lib/katl/runtime"
-    local first=1
-    helper_manifest='  "provisionedHelpers": ['
-    local helper name package output target digest
+    helper_manifest_file="$state_dir/provisioned-helpers.json"
+    mkdir -p "$(dirname "$helper_manifest_file")"
+    jq -n '[]' >"$helper_manifest_file"
+    local helper name package output target digest tmp_manifest
     for helper in \
         "katl-generation-activate ./cmd/katl-generation-activate usr/lib/katl/runtime/katl-generation-activate" \
         "katl-runtime-status ./cmd/katl-runtime-status usr/lib/katl/runtime/katl-runtime-status"
@@ -192,19 +174,16 @@ install_runtime_helpers() {
         output="$(build_runtime_helper "$name" "$package")"
         install -m 0755 "$output" "$root/$target"
         digest="$(sha256sum "$root/$target" | awk '{print $1}')"
-        if [[ "$first" -eq 0 ]]; then
-            helper_manifest+=','
-        fi
-        helper_manifest+=$'\n'
-        helper_manifest+="    {"
-        helper_manifest+="\"name\": \"$(json "$name")\", "
-        helper_manifest+="\"path\": \"$(json "$target")\", "
-        helper_manifest+="\"source\": \"$(json "$package")\", "
-        helper_manifest+="\"sha256\": \"$(json "$digest")\""
-        helper_manifest+="}"
-        first=0
+        tmp_manifest="$helper_manifest_file.tmp"
+        jq \
+            --arg name "$name" \
+            --arg path "$target" \
+            --arg source "$package" \
+            --arg sha256 "$digest" \
+            '. + [{name: $name, path: $path, source: $source, sha256: $sha256}]' \
+            "$helper_manifest_file" >"$tmp_manifest"
+        mv "$tmp_manifest" "$helper_manifest_file"
     done
-    helper_manifest+=$'\n  ]'
 }
 
 remove_managed_root() {
@@ -279,25 +258,32 @@ if [[ -z "$source_kind" ]]; then
     source_path="$root"
 fi
 
-mkdir -p "$(dirname "$env_file")" "$(dirname "$manifest")"
-{
-    printf 'export KATL_NSPAWN_ROOT=%q\n' "$root"
-    printf 'export KATL_NSPAWN_STATE_ROOT=%q\n' "$state_dir"
-} >"$env_file"
+mkdir -p "$(dirname "$manifest")"
 
-cat >"$manifest" <<EOF
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "NspawnUserspaceFixture",
-  "root": "$(json "$root")",
-  "source": {
-    "kind": "$(json "$source_kind")",
-    "path": "$(json "$source_path")"$(if [[ -n "$source_sha" ]]; then printf ',\n    "sha256": "%s"' "$(json "$source_sha")"; fi)
-  },
-  "envFile": "$(json "$env_file")"$(if [[ -n "$helper_manifest" ]]; then printf ',\n%s' "$helper_manifest"; fi)
-}
-EOF
+jq_args=(
+    -n
+    --arg root "$root"
+    --arg sourceKind "$source_kind"
+    --arg sourcePath "$source_path"
+)
+jq_filter='{
+  apiVersion: "katl.dev/v1alpha1",
+  kind: "NspawnUserspaceFixture",
+  root: $root,
+  source: {
+    kind: $sourceKind,
+    path: $sourcePath
+  }
+}'
+if [[ -n "$source_sha" ]]; then
+    jq_args+=(--arg sourceSHA "$source_sha")
+    jq_filter="$jq_filter | .source.sha256 = \$sourceSHA"
+fi
+if [[ -n "$helper_manifest_file" && -f "$helper_manifest_file" ]]; then
+    jq_args+=(--slurpfile provisionedHelpers "$helper_manifest_file")
+    jq_filter="$jq_filter | .provisionedHelpers = \$provisionedHelpers[0]"
+fi
+jq "${jq_args[@]}" "$jq_filter" >"$manifest"
 
 echo "nspawn root: $(rel "$root")"
-echo "env file: $(rel "$env_file")"
 echo "fixture manifest: $(rel "$manifest")"
