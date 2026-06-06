@@ -350,6 +350,8 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf '%q "${recheck_args[@]}"\n' "$repo_root/scripts/resolve-first-install-runtime-fixture"
     # shellcheck disable=SC2016
     printf 'GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest -run '\''^TestFirstInstallTargetDiskFixtureContract$'\'' -count=1 -timeout 35m -katl.vmtest.run\n'
+    # shellcheck disable=SC2016
+    printf '%q --vmtest-state-root "$KATL_VMTEST_STATE_ROOT" --state-dir %q --format qcow2\n' "$repo_root/scripts/publish-first-install-runtime-fixture" "$state_dir/published-installed-runtime"
 } >"$run_script"
 chmod +x "$run_script"
 
@@ -368,6 +370,7 @@ cat >"$manifest" <<EOF
   "installManifest": "$(json "$install_manifest")",
   "installManifestSHA256": "$(json "$install_manifest_sha256")",
   "targetDiskSize": "$(json "$target_disk_size")",
+  "publishedInstalledRuntimeDir": "$(json "$state_dir/published-installed-runtime")",
   "envFile": "$(json "$env_file")",
   "runScript": "$(json "$run_script")"
 }

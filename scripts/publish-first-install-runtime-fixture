@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-}"
+state_dir="${KATL_FIRST_INSTALL_PUBLISHED_FIXTURE_DIR:-}"
+scenario="first-install-installed-runtime-fixture"
+disk_format="${KATL_INSTALLED_DISK_FORMAT:-qcow2}"
+env_file_set=0
+env_file=""
+manifest=""
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/publish-first-install-runtime-fixture [options]
+
+Find the installed-runtime fixture produced by the first-install target-disk
+smoke and publish stable resolver outputs for later installed-runtime or
+multi-node VM smokes.
+
+Options:
+  --vmtest-state-root DIR  State root used by TestFirstInstallTargetDiskFixtureContract
+  --state-dir DIR          Output directory for stable env, manifest, and wrappers
+  --env-file PATH          Sourceable env output path
+  --scenario NAME          First-install scenario name (default: first-install-installed-runtime-fixture)
+  --format F               Installed disk format: raw or qcow2 (default: qcow2)
+  -h, --help               Show this help
+
+After this command succeeds:
+  source <state-dir>/vmtest.env
+  <state-dir>/run-installed-runtime-vmtest-agent.sh
+  <state-dir>/run-installed-runtime-kubeadm-ready.sh
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+real() {
+    realpath -m "$1"
+}
+
+json() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    printf "%s" "$value"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --vmtest-state-root)
+            need_value "$1" "${2:-}"
+            vmtest_state_root="$2"
+            shift 2
+            ;;
+        --state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            if [[ "$env_file_set" -eq 0 ]]; then
+                env_file="$state_dir/vmtest.env"
+            fi
+            manifest="$state_dir/published-first-install-runtime-fixture.json"
+            shift 2
+            ;;
+        --env-file)
+            need_value "$1" "${2:-}"
+            env_file="$2"
+            env_file_set=1
+            shift 2
+            ;;
+        --scenario)
+            need_value "$1" "${2:-}"
+            scenario="$2"
+            shift 2
+            ;;
+        --format)
+            need_value "$1" "${2:-}"
+            disk_format="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+case "$disk_format" in
+    qcow2|raw) ;;
+    *) fail "--format must be raw or qcow2" ;;
+esac
+[[ -n "$vmtest_state_root" ]] || fail "--vmtest-state-root or KATL_VMTEST_STATE_ROOT is required"
+[[ -d "$vmtest_state_root" ]] || fail "vmtest state root not found: $(rel "$vmtest_state_root")"
+[[ -n "$state_dir" ]] || fail "--state-dir is required"
+[[ -n "$scenario" ]] || fail "--scenario is required"
+
+need jq
+need realpath
+
+vmtest_state_root="$(real "$vmtest_state_root")"
+state_dir="$(real "$state_dir")"
+if [[ -z "$env_file" ]]; then
+    env_file="$state_dir/vmtest.env"
+fi
+env_file="$(real "$env_file")"
+manifest="$state_dir/published-first-install-runtime-fixture.json"
+
+latest_fixture="$(
+    find "$vmtest_state_root" \
+        -path "*/manifests/installed-runtime-fixture/installed-runtime-fixture.json" \
+        -type f \
+        -printf '%T@ %p\n' |
+        sort -nr |
+        head -n 1 |
+        cut -d' ' -f2-
+)"
+[[ -n "$latest_fixture" ]] || fail "no first-install installed-runtime fixture found under $(rel "$vmtest_state_root")"
+latest_fixture="$(real "$latest_fixture")"
+case "$latest_fixture" in
+    "$vmtest_state_root"/"$scenario"-*/manifests/installed-runtime-fixture/installed-runtime-fixture.json)
+        ;;
+    *)
+        fail "latest installed-runtime fixture does not belong to scenario $scenario: $(rel "$latest_fixture")"
+        ;;
+esac
+
+fixture_dir="$(dirname "$latest_fixture")"
+source_run_dir="$(real "$fixture_dir/../../..")"
+disk="$(real "$fixture_dir/installed-runtime.$disk_format")"
+esp_artifacts="$(real "$fixture_dir/esp")"
+[[ -f "$disk" ]] || fail "published fixture disk not found: $(rel "$disk")"
+[[ -d "$esp_artifacts" ]] || fail "published fixture ESP not found: $(rel "$esp_artifacts")"
+
+node_metadata=""
+if jq -e 'has("nodeMetadata")' "$latest_fixture" >/dev/null; then
+    metadata_path="$(jq -er '.nodeMetadata.path' "$latest_fixture")"
+    if [[ "$metadata_path" == /* ]]; then
+        node_metadata="$(real "$metadata_path")"
+    else
+        node_metadata="$(real "$fixture_dir/$metadata_path")"
+    fi
+    [[ -f "$node_metadata" ]] || fail "published fixture node metadata not found: $(rel "$node_metadata")"
+fi
+
+resolver_args=(
+    --disk "$disk"
+    --esp-artifacts "$esp_artifacts"
+    --fixture "$latest_fixture"
+    --format "$disk_format"
+    --state-dir "$state_dir"
+    --env-file "$env_file"
+)
+if [[ -n "$node_metadata" ]]; then
+    resolver_args+=(--node-metadata "$node_metadata")
+fi
+"$repo_root/scripts/resolve-installed-runtime-fixture" "${resolver_args[@]}" >/dev/null
+
+cat >"$manifest" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "PublishedFirstInstallRuntimeFixture",
+  "sourceRunDir": "$(json "$source_run_dir")",
+  "sourceFixtureManifest": "$(json "$latest_fixture")",
+  "disk": "$(json "$disk")",
+  "diskFormat": "$(json "$disk_format")",
+  "espArtifacts": "$(json "$esp_artifacts")",
+  "nodeMetadata": "$(json "$node_metadata")",
+  "envFile": "$(json "$env_file")",
+  "resolverManifest": "$(json "$state_dir/fixture.json")",
+  "vmtestAgentRunScript": "$(json "$state_dir/run-installed-runtime-vmtest-agent.sh")",
+  "kubeadmReadyRunScript": "$(json "$state_dir/run-installed-runtime-kubeadm-ready.sh")"
+}
+EOF
+
+echo "published fixture env: $(rel "$env_file")"
+echo "published fixture manifest: $(rel "$manifest")"
+echo "source fixture: $(rel "$latest_fixture")"
+echo "next: source $(rel "$env_file")"
+echo "next: $(rel "$state_dir/run-installed-runtime-vmtest-agent.sh")"
+echo "next: $(rel "$state_dir/run-installed-runtime-kubeadm-ready.sh")"

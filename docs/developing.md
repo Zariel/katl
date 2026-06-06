@@ -197,6 +197,13 @@ harness still owns whether the target disk was actually written by the in-guest
 installer; this smoke fails if that path does not leave a bootable installed
 runtime disk.
 
+After the generated first-install wrapper passes, it publishes the packaged
+installed runtime under `<state-dir>/published-installed-runtime/`. Source that
+directory's `vmtest.env` to run the direct installed-runtime smokes, or use its
+`installed-runtime-fixture.json`, `installed-runtime.qcow2`, `esp/`, and
+`node.json` paths as inputs to the two-node and three-control-plane fixture
+resolvers.
+
 ## Two-Node Kubeadm VM Fixtures
 
 The opt-in two-node kubeadm join smoke expects two already installed runtime
