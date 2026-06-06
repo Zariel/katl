@@ -180,6 +180,78 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 }
 
+func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install serial smoke")
+	}
+	options.Missing = MissingSkips
+	options.Keep = KeepAlways
+	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	installerUKI := RequireEnv(t, "KATL_INSTALLER_UKI")
+	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
+	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+	if runtimeESP == "" && !useInstalledESP {
+		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install serial smoke")
+	}
+	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
+	var requiredTools []string
+	if useInstalledESP {
+		requiredTools = append(requiredTools, "sfdisk", "mcopy")
+	}
+	for _, tool := range requiredTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is required to run first-install serial smoke: %v", tool, err)
+		}
+	}
+
+	runner := NewRunner(options)
+	runner.RequireHost(t, HostRequirements{
+		QEMU:    true,
+		QEMUImg: true,
+		OVMF:    true,
+		KVM:     options.KVM,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	vm := VMConfig{
+		KVM:     options.KVM,
+		RAMMiB:  4096,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+	}
+	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-serial-runtime"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    installerUKI,
+			RuntimeArtifact: runtimeArtifact,
+			VM:              vm,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: runtimeESP,
+			VM:           vm,
+		},
+		UseInstalledESP: useInstalledESP,
+		ManifestPath:    manifestPath,
+		GuestHandoff:    true,
+		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("first install serial status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
+	}
+	serial, err := os.ReadFile(result.Artifacts.RuntimeSerial)
+	if err != nil {
+		t.Fatalf("read runtime serial: %v", err)
+	}
+	if !strings.Contains(string(serial), "Katl state projection ready") {
+		t.Fatalf("runtime serial did not record state projection: %s", serial)
+	}
+	_ = targetDiskPath(t, result)
+}
+
 func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {
 	args := []string{
 		"--disk", disk,

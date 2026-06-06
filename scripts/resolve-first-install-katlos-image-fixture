@@ -7,6 +7,7 @@ state_root="${KATL_FIRST_INSTALL_KATLOS_FIXTURE_STATE_ROOT:-$repo_root/build/fir
 state_dir="${KATL_FIRST_INSTALL_KATLOS_FIXTURE_STATE_DIR:-$state_root/$run_id}"
 env_file="${KATL_FIRST_INSTALL_FIXTURE_ENV:-$state_dir/vmtest.env}"
 run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
+serial_run_script="$state_dir/run-first-install-katlos-image-serial-smoke.sh"
 manifest="$state_dir/katlos-image-fixture.json"
 
 artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-}"
@@ -48,6 +49,7 @@ Options:
 
 After this command succeeds:
   source <state-dir>/vmtest.env
+  <state-dir>/run-first-install-katlos-image-serial-smoke.sh
   <state-dir>/run-first-install-katlos-image-fixture.sh
 USAGE
 }
@@ -160,6 +162,7 @@ while [[ $# -gt 0 ]]; do
                 env_file="$state_dir/vmtest.env"
             fi
             run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
+            serial_run_script="$state_dir/run-first-install-katlos-image-serial-smoke.sh"
             manifest="$state_dir/katlos-image-fixture.json"
             shift 2
             ;;
@@ -356,6 +359,7 @@ cat >"$manifest" <<EOF
   "publishedNodeName": "$(json "$published_node_name")",
   "publishedSystemRole": "$(json "$published_system_role")",
   "envFile": "$(json "$env_file")",
+  "serialRunScript": "$(json "$serial_run_script")",
   "runScript": "$(json "$run_script")"
 }
 EOF
@@ -389,8 +393,39 @@ EOF
 } >"$run_script"
 chmod +x "$run_script"
 
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf 'cd %q\n' "$repo_root"
+    printf 'source %q\n' "$env_file"
+    printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck-serial"
+    # shellcheck disable=SC2016
+    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--artifact-index "$KATL_MKOSI_ARTIFACT_INDEX")\n'
+    printf 'fi\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--node-metadata "$KATL_RUNTIME_NODE_METADATA")\n'
+    # shellcheck disable=SC2016
+    printf '    if [[ -n "${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '        recheck_args+=(--node-metadata-sha256 "$KATL_FIRST_INSTALL_NODE_METADATA_SHA256")\n'
+    printf '    fi\n'
+    printf 'fi\n'
+    # shellcheck disable=SC2016
+    printf '%q "${recheck_args[@]}"\n' "$repo_root/scripts/resolve-first-install-katlos-image-fixture"
+    printf '%q\n' "$state_dir/run-first-install-target-disk-serial-smoke.sh"
+} >"$serial_run_script"
+chmod +x "$serial_run_script"
+
 echo "fixture env: $(rel "$env_file")"
 echo "fixture manifest: $(rel "$manifest")"
+echo "serial run script: $(rel "$serial_run_script")"
 echo "run script: $(rel "$run_script")"
 echo "next: source $(rel "$env_file")"
+echo "next: $(rel "$serial_run_script")"
 echo "next: $(rel "$run_script")"

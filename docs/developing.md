@@ -189,8 +189,19 @@ host-side VM harness, records SHA-256 bindings, and writes generated files under
 `build/first-install-katlos-image-fixture/`. The generated smoke runs in
 installed-ESP mode: it extracts the ESP from the target disk written by the
 installer and uses that tree for the packaged runtime boot. Source the generated
-`vmtest.env` or run the generated wrapper to revalidate inputs and execute
-`TestFirstInstallTargetDiskFixtureContract`.
+`vmtest.env` or run the generated wrappers to revalidate inputs and execute the
+serial-only smoke before the stronger fixture contract:
+
+```sh
+build/first-install-katlos-image-fixture/<run>/run-first-install-katlos-image-serial-smoke.sh
+build/first-install-katlos-image-fixture/<run>/run-first-install-katlos-image-fixture.sh
+```
+
+The serial smoke runs installer boot, guest handoff, target disk install,
+installed ESP extraction, and runtime boot up to the deterministic state
+projection console signal. It does not require the vmtest agent or vsock. The
+fixture contract then adds the packaged-runtime agent and kubeadm-ready checks
+when the host supports them.
 
 If you already have a loose runtime root and rendered runtime ESP tree from a
 lower-level development loop, `scripts/resolve-first-install-runtime-fixture`
