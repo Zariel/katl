@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zariel/katl/internal/nspawntest"
 )
 
 const statePartUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -263,6 +265,42 @@ func TestStateUnitsVerify(t *testing.T) {
 		t.Skip("systemd-analyze not available")
 	}
 	root := t.TempDir()
+	writeStateVerifyFixture(t, root)
+
+	argv := append([]string{"systemd-analyze", "verify", "--root=" + root}, stateVerifyUnits()...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)
+	}
+}
+
+func TestStateUnitsVerifyNspawn(t *testing.T) {
+	root := t.TempDir()
+	writeStateVerifyFixture(t, root)
+
+	const guestRoot = "/mnt/katl-generated-units"
+	options := nspawntest.DefaultOptions()
+	options.Missing = nspawntest.MissingSkips
+	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
+		Name: "state unit verify",
+		Binds: []nspawntest.Bind{{
+			Source: root,
+			Target: guestRoot,
+		}},
+		Commands: []nspawntest.Command{{
+			Name: "systemd-analyze verify",
+			Argv: append([]string{
+				"systemd-analyze",
+				"verify",
+				"--root=" + guestRoot,
+			}, stateVerifyUnits()...),
+		}},
+	})
+}
+
+func writeStateVerifyFixture(t *testing.T, root string) {
+	t.Helper()
 	if _, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID}); err != nil {
 		t.Fatalf("WriteState() error = %v", err)
 	}
@@ -283,8 +321,10 @@ func TestStateUnitsVerify(t *testing.T) {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
 	}
+}
 
-	cmd := exec.Command("systemd-analyze", "verify", "--root="+root,
+func stateVerifyUnits() []string {
+	return []string{
 		"/etc/systemd/system/var.mount",
 		"/etc/systemd/system/etc-kubernetes.mount",
 		"/etc/systemd/system/katl-generation-activate.service",
@@ -292,10 +332,7 @@ func TestStateUnitsVerify(t *testing.T) {
 		"/etc/systemd/system/katl-state-projection-check.service",
 		"/etc/systemd/system/katl-runtime-handoff-status.service",
 		"/usr/lib/systemd/system/containerd.service",
-		"/usr/lib/systemd/system/kubelet.service")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)
+		"/usr/lib/systemd/system/kubelet.service",
 	}
 }
 

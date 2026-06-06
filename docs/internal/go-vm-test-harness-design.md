@@ -583,6 +583,26 @@ Useful test flags:
 By default, ordinary `go test ./...` should run unit tests and skip VM scenarios
 unless `-katl.vmtest.run` or a focused integration test command enables them.
 
+## Nspawn Userspace Checks
+
+Some generated filesystem and systemd checks can run through `systemd-nspawn`
+before a full QEMU boot. These checks use `internal/nspawntest` and require an
+explicit prepared Katl or Fedora userspace root or image via `KATL_NSPAWN_ROOT`,
+`KATL_NSPAWN_IMAGE`, `-katl.nspawn.root`, or `-katl.nspawn.image`.
+
+Generated unit trees should be mounted read-only into the container and verified
+with the userspace root's `systemd-analyze`, for example by enabling
+`KATL_NSPAWN_RUN=1` for the generated state unit smoke. Missing nspawn,
+privileges, or prepared userspace roots should be reported as explicit skips for
+developer preflights.
+
+Host `systemd-analyze --root` remains a useful fallback for narrow local unit
+syntax checks when `KATL_VERIFY_SYSTEMD_UNITS=1` is set, but nspawn is preferred
+when available because it uses the same systemd userspace selected for runtime
+checks. Neither path replaces QEMU tests for boot selection, live service restart
+behavior, network continuity, kubelet startup, reboot rollback, disk layout, or
+kubeadm cluster behavior.
+
 ## Timeouts And Failure Behavior
 
 Timeouts are explicit at three levels:
