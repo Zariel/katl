@@ -162,6 +162,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
 		}
 	}
+	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)

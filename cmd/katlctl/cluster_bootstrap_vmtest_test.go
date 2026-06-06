@@ -160,6 +160,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
 		}
 	}
+	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
