@@ -21,6 +21,10 @@ summary_json="$run_dir/summary.json"
 scenario_summary_json="$run_dir/scenario-summary.json"
 selected_packages_json="$run_dir/selected-packages.json"
 setup_failures_json="$run_dir/setup-failures.json"
+go_test_events_json="$run_dir/go-test-events.json"
+go_test_failures_json="$run_dir/go-test-failures.json"
+go_test_skips_json="$run_dir/go-test-skips.json"
+unexpected_go_test_skips_json="$run_dir/unexpected-go-test-skips.json"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
 host_policy="${KATL_VMTEST_HOST_POLICY:-}"
 network_backend="${KATL_VMTEST_NETWORK_BACKEND:-bridge}"
@@ -553,6 +557,71 @@ write_setup_failures() {
     jq -n --args '$ARGS.positional' -- "${setup_failures[@]}" >"$setup_failures_json"
 }
 
+has_go_test_json_arg() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -json|-json=true)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+write_go_test_events() {
+    if ! has_go_test_json_arg "$@" || [[ ! -f "$go_test_log" ]]; then
+        jq -n '[]' >"$go_test_events_json"
+        jq -n '[]' >"$go_test_failures_json"
+        jq -n '[]' >"$go_test_skips_json"
+        jq -n '[]' >"$unexpected_go_test_skips_json"
+        return
+    fi
+
+    if ! jq -Rs '
+      split("\n")
+      | map(select(length > 0) | fromjson)
+    ' "$go_test_log" >"$go_test_events_json"; then
+        setup_failures+=("go test JSON output is malformed")
+        jq -n '[]' >"$go_test_events_json"
+        jq -n '[]' >"$go_test_failures_json"
+        jq -n '[]' >"$go_test_skips_json"
+        jq -n '[]' >"$unexpected_go_test_skips_json"
+        return
+    fi
+
+    jq '
+      map(select(.Action == "fail"))
+      | map({
+          package: (.Package // ""),
+          test: (.Test // ""),
+          action: .Action,
+          output: (.Output // "")
+        })
+    ' "$go_test_events_json" >"$go_test_failures_json"
+
+    jq '
+      map(select(.Action == "skip"))
+      | map({
+          package: (.Package // ""),
+          test: (.Test // ""),
+          action: .Action,
+          output: (.Output // "")
+        })
+    ' "$go_test_events_json" >"$go_test_skips_json"
+
+    jq -n \
+        --slurpfile skips "$go_test_skips_json" \
+        --slurpfile scenarios "$scenario_summary_json" \
+        '
+          if any($scenarios[0][]; .status == "host-skipped") then
+            []
+          else
+            $skips[0]
+          end
+        ' >"$unexpected_go_test_skips_json"
+}
+
 append_scenario_summary() {
     local item_json="$1"
     local tmp="$scenario_summary_json.tmp"
@@ -703,8 +772,9 @@ write_summary() {
     local exit_code="$2"
     shift 2
     write_selected_packages "$@"
-    write_setup_failures
     collect_scenario_summaries
+    write_go_test_events "$@"
+    write_setup_failures
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
@@ -717,6 +787,9 @@ write_summary() {
         --slurpfile packages "$selected_packages_json" \
         --slurpfile setupFailures "$setup_failures_json" \
         --slurpfile scenarios "$scenario_summary_json" \
+        --slurpfile goTestFailures "$go_test_failures_json" \
+        --slurpfile goTestSkips "$go_test_skips_json" \
+        --slurpfile unexpectedGoTestSkips "$unexpected_go_test_skips_json" \
         --args \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -729,16 +802,22 @@ write_summary() {
           status: (
             if $requestedStatus == "host-skipped" then "host-skipped"
             elif $requestedStatus == "setup-failed" then "setup-failed"
+            elif (($setupFailures[0] | length) > 0) then "setup-failed"
             elif $exitCode != 0 then "failed"
             elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then "failed"
+            elif (($goTestFailures[0] | length) > 0) then "failed"
+            elif (($unexpectedGoTestSkips[0] | length) > 0) then "failed"
             else "passed"
             end
           ),
           exitCode: (
             if $requestedStatus == "host-skipped" then 0
             elif $requestedStatus == "setup-failed" then $exitCode
+            elif (($setupFailures[0] | length) > 0) then 2
             elif $exitCode != 0 then $exitCode
             elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then 1
+            elif (($goTestFailures[0] | length) > 0) then 1
+            elif (($unexpectedGoTestSkips[0] | length) > 0) then 1
             else 0
             end
           ),
@@ -747,9 +826,14 @@ write_summary() {
           selectedPackages: $packages[0],
           hostCapabilityGaps: ($host[0].missing // []),
           setupFailures: $setupFailures[0],
+          goTestFailures: $goTestFailures[0],
+          goTestSkips: $goTestSkips[0],
+          unexpectedGoTestSkips: $unexpectedGoTestSkips[0],
           counts: (reduce $scenarios[0][] as $scenario ({}; .[$scenario.status] += 1)),
           scenarios: $scenarios[0]
-        }' -- "$@" >"$summary_json"
+        } | if (.goTestFailures | length) == 0 then del(.goTestFailures) else . end
+          | if (.goTestSkips | length) == 0 then del(.goTestSkips) else . end
+          | if (.unexpectedGoTestSkips | length) == 0 then del(.unexpectedGoTestSkips) else . end' -- "$@" >"$summary_json"
 }
 
 cleanup_network() {
