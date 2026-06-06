@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,13 +30,33 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 		Input: DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
 		KVM:   DefaultOptions().KVM,
 	}); err != nil {
-		t.Fatalf("prepare installed runtime world fixture: %v", err)
+		failInstalledRuntimeWorldFixtureSetup(t, world, name, err)
 	}
 	run, err := planInstalledRuntimeWorldRun(world, name, repo, spec, DefaultOptions().KVM)
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
 	return run, true
+}
+
+func failInstalledRuntimeWorldFixtureSetup(t *testing.T, world World, name string, err error) {
+	t.Helper()
+	scenario, scenarioErr := writeInstalledRuntimeWorldFixtureSetupFailure(world, name, err)
+	if scenarioErr != nil {
+		t.Fatalf("write installed runtime world setup failure: %v; original error: %v", scenarioErr, err)
+	}
+	t.Fatalf("prepare installed runtime world fixture: %v\nworld scenario dir: %s", err, scenario.Dir)
+}
+
+func writeInstalledRuntimeWorldFixtureSetupFailure(world World, name string, err error) (*WorldScenario, error) {
+	scenario, scenarioErr := world.PlanScenario(name)
+	if scenarioErr != nil {
+		return nil, scenarioErr
+	}
+	if writeErr := scenario.WriteSetupFailure(fmt.Errorf("prepare installed runtime world fixture: %w", err)); writeErr != nil {
+		return scenario, writeErr
+	}
+	return scenario, nil
 }
 
 func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func() error) error {
@@ -115,5 +136,24 @@ func TestPlanInstalledRuntimeWorldRunRejectsRepoOnlyPublishedFixture(t *testing.
 	readJSONForTest(t, run.Scenario.ResultPath, &result)
 	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWriteInstalledRuntimeWorldFixtureSetupFailure(t *testing.T) {
+	world := testWorld(t)
+	scenario, err := writeInstalledRuntimeWorldFixtureSetupFailure(world, "installed-runtime-vmtest-agent", fmt.Errorf("missing fresh installer artifacts"))
+	if err != nil {
+		t.Fatalf("writeInstalledRuntimeWorldFixtureSetupFailure() error = %v", err)
+	}
+	if scenario.Name != "installed-runtime-vmtest-agent" {
+		t.Fatalf("scenario name = %q", scenario.Name)
+	}
+	var result scenarioResult
+	readJSONForTest(t, scenario.ResultPath, &result)
+	if result.Status != WorldStatusSetupFailed {
+		t.Fatalf("status = %q, want %q", result.Status, WorldStatusSetupFailed)
+	}
+	if !strings.Contains(result.FailureSummary, "prepare installed runtime world fixture: missing fresh installer artifacts") {
+		t.Fatalf("failure summary = %q", result.FailureSummary)
 	}
 }
