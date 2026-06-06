@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,6 +30,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("command is required: add-rpm-package-set, refresh, or verify")
 	}
 	switch args[0] {
+	case "add-artifact":
+		return runAddArtifact(args[1:], stdout, stderr)
 	case "add-rpm-package-set":
 		return runAddRPMPackageSet(args[1:], stdout, stderr)
 	case "refresh":
@@ -37,6 +41,72 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unsupported command %q", args[0])
 	}
+}
+
+func runAddArtifact(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-resource-lock add-artifact", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	manifestPath := flags.String("manifest", "", "resource-test manifest to update")
+	outputPath := flags.String("output", "", "updated manifest output path, default is --manifest")
+	name := flags.String("name", "", "artifact name")
+	kind := flags.String("kind", "", "artifact kind")
+	path := flags.String("path", "", "artifact path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*manifestPath) == "" {
+		return fmt.Errorf("--manifest is required")
+	}
+	if strings.TrimSpace(*name) == "" {
+		return fmt.Errorf("--name is required")
+	}
+	if strings.TrimSpace(*kind) == "" {
+		return fmt.Errorf("--kind is required")
+	}
+	if strings.TrimSpace(*path) == "" {
+		return fmt.Errorf("--path is required")
+	}
+	if *outputPath == "" {
+		*outputPath = *manifestPath
+	}
+
+	manifest, err := readManifestForUpdate(*manifestPath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(*path)
+	if err != nil {
+		return fmt.Errorf("stat artifact %s: %w", *path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("artifact path is not a regular file: %s", *path)
+	}
+	digest, err := fileSHA256(*path)
+	if err != nil {
+		return err
+	}
+	manifest.Artifacts = upsertArtifact(manifest.Artifacts, resourcetest.Artifact{
+		Name:      *name,
+		Kind:      *kind,
+		Path:      *path,
+		Digest:    digest,
+		SizeBytes: info.Size(),
+		Created:   info.ModTime().UTC(),
+	})
+	if err := resourcetest.ValidateManifest(manifest); err != nil {
+		return err
+	}
+	if err := writeManifest(*outputPath, manifest); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "manifest: %s\n", *outputPath)
+	fmt.Fprintf(stdout, "artifact: %s\n", *name)
+	fmt.Fprintf(stdout, "sha256: %s\n", digest)
+	fmt.Fprintf(stdout, "sizeBytes: %d\n", info.Size())
+	return nil
 }
 
 func runAddRPMPackageSet(args []string, stdout, stderr io.Writer) error {
@@ -255,6 +325,16 @@ func upsertMkosiProfile(profiles []resourcetest.MkosiProfile, profile resourcete
 	return append(profiles, profile)
 }
 
+func upsertArtifact(artifacts []resourcetest.Artifact, artifact resourcetest.Artifact) []resourcetest.Artifact {
+	for i := range artifacts {
+		if artifacts[i].Name == artifact.Name {
+			artifacts[i] = artifact
+			return artifacts
+		}
+	}
+	return append(artifacts, artifact)
+}
+
 func writeManifest(path string, manifest resourcetest.Manifest) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -286,6 +366,19 @@ func queryRootRPMPackages(root string) ([]resourcetest.Package, error) {
 		return nil, fmt.Errorf("parse rpm packages under %s: %w", root, err)
 	}
 	return packages, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read artifact %s: %w", path, err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("hash artifact %s: %w", path, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func readManifest(path string) (resourcetest.Manifest, error) {

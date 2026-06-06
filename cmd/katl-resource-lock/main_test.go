@@ -71,6 +71,40 @@ func TestRunRequiresManifest(t *testing.T) {
 	}
 }
 
+func TestRunAddArtifact(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	outputPath := filepath.Join(dir, "updated-manifest.json")
+	artifactPath := filepath.Join(dir, "katl-runtime-root.squashfs")
+	writeTestManifest(t, manifestPath, commandArtifactManifest())
+	if err := os.WriteFile(artifactPath, []byte("runtime-root"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := run([]string{
+		"add-artifact",
+		"--manifest", manifestPath,
+		"--output", outputPath,
+		"--name", "runtime-root",
+		"--kind", "squashfs",
+		"--path", artifactPath,
+	}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("add-artifact error = %v", err)
+	}
+	updated, err := readManifest(outputPath)
+	if err != nil {
+		t.Fatalf("read updated manifest: %v", err)
+	}
+	if len(updated.Artifacts) != 1 || updated.Artifacts[0].Digest == "" || updated.Artifacts[0].SizeBytes != int64(len("runtime-root")) {
+		t.Fatalf("updated artifacts = %#v", updated.Artifacts)
+	}
+	if !strings.Contains(stdout.String(), "artifact: runtime-root") {
+		t.Fatalf("stdout = %q, want artifact output", stdout.String())
+	}
+}
+
 func TestRunAddRPMPackageSet(t *testing.T) {
 	oldQuery := queryRPMPackages
 	t.Cleanup(func() { queryRPMPackages = oldQuery })
@@ -168,6 +202,16 @@ func commandManifestSkeleton() resourcetest.Manifest {
 			ConfigDigest:  strings.Repeat("a", 64),
 			PackageSetRef: "runtime",
 		}},
+	}
+}
+
+func commandArtifactManifest() resourcetest.Manifest {
+	return resourcetest.Manifest{
+		APIVersion: resourcetest.APIVersion,
+		Kind:       resourcetest.Kind,
+		RunID:      "resource-run",
+		Created:    time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC),
+		Git:        resourcetest.GitState{Revision: "baf1ac7"},
 	}
 }
 
