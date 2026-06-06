@@ -243,9 +243,9 @@ func threeControlPlanePublishedFixtureDirs() map[string]string {
 
 func threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
 	return map[string]nodeFixtureInput{
-		"cp-1": fixtureInput(cp1Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp1ESP, cp1Fixture, cp1Metadata, firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR"))),
-		"cp-2": fixtureInput(cp2Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp2ESP, cp2Fixture, cp2Metadata, os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR")),
-		"cp-3": fixtureInput(cp3Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp3ESP, cp3Fixture, cp3Metadata, os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR")),
+		"cp-1": fixtureInput(cp1Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp1ESP, cp1Fixture, cp1Metadata, firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR")), firstString(os.Getenv("KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST"), os.Getenv("KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST"))),
+		"cp-2": fixtureInput(cp2Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp2ESP, cp2Fixture, cp2Metadata, os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST")),
+		"cp-3": fixtureInput(cp3Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp3ESP, cp3Fixture, cp3Metadata, os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST")),
 	}
 }
 
@@ -565,6 +565,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	t.Setenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR", "/tmp/cp-1")
 	t.Setenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR", "/tmp/cp-2")
 	t.Setenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR", "/tmp/cp-3")
+	t.Setenv("KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-1-katlos.json")
+	t.Setenv("KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-2-katlos.json")
+	t.Setenv("KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-3-katlos.json")
 	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT", "qcow2")
 	got := threeControlPlanePublishedFixtureDirs()
 	if got["cp-1"] != "/tmp/cp-1" || got["cp-2"] != "/tmp/cp-2" || got["cp-3"] != "/tmp/cp-3" {
@@ -595,5 +598,8 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].PublishedFixtureDir != "/tmp/cp-3" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-1-katlos.json" || manifest.FixtureInputs["cp-3"].KatlOSFixtureManifest != "/tmp/cp-3-katlos.json" {
+		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
 	}
 }

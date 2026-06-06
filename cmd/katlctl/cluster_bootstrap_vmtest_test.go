@@ -227,12 +227,13 @@ type twoNodeArtifactManifest struct {
 }
 
 type nodeFixtureInput struct {
-	Disk                string `json:"disk"`
-	DiskFormat          string `json:"diskFormat"`
-	ESPArtifacts        string `json:"espArtifacts"`
-	FixtureManifest     string `json:"fixtureManifest"`
-	NodeMetadata        string `json:"nodeMetadata"`
-	PublishedFixtureDir string `json:"publishedFixtureDir,omitempty"`
+	Disk                  string `json:"disk"`
+	DiskFormat            string `json:"diskFormat"`
+	ESPArtifacts          string `json:"espArtifacts"`
+	FixtureManifest       string `json:"fixtureManifest"`
+	NodeMetadata          string `json:"nodeMetadata"`
+	PublishedFixtureDir   string `json:"publishedFixtureDir,omitempty"`
+	KatlOSFixtureManifest string `json:"katlosFixtureManifest,omitempty"`
 }
 
 func writeTwoNodeArtifactManifest(path string, manifest twoNodeArtifactManifest) error {
@@ -255,19 +256,20 @@ func twoNodePublishedFixtureDirs() map[string]string {
 
 func twoNodeFixtureInputs(cpDisk, workerDisk, cpESP, workerESP, cpFixture, workerFixture, cpMetadata, workerMetadata string) map[string]nodeFixtureInput {
 	return map[string]nodeFixtureInput{
-		"cp-1":     fixtureInput(cpDisk, firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cpESP, cpFixture, cpMetadata, os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR")),
-		"worker-1": fixtureInput(workerDisk, firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), workerESP, workerFixture, workerMetadata, os.Getenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR")),
+		"cp-1":     fixtureInput(cpDisk, firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cpESP, cpFixture, cpMetadata, os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST")),
+		"worker-1": fixtureInput(workerDisk, firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), workerESP, workerFixture, workerMetadata, os.Getenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_WORKER_KATLOS_FIXTURE_MANIFEST")),
 	}
 }
 
-func fixtureInput(disk, format, esp, fixture, metadata, published string) nodeFixtureInput {
+func fixtureInput(disk, format, esp, fixture, metadata, published, katlos string) nodeFixtureInput {
 	return nodeFixtureInput{
-		Disk:                disk,
-		DiskFormat:          format,
-		ESPArtifacts:        esp,
-		FixtureManifest:     fixture,
-		NodeMetadata:        metadata,
-		PublishedFixtureDir: strings.TrimSpace(published),
+		Disk:                  disk,
+		DiskFormat:            format,
+		ESPArtifacts:          esp,
+		FixtureManifest:       fixture,
+		NodeMetadata:          metadata,
+		PublishedFixtureDir:   strings.TrimSpace(published),
+		KatlOSFixtureManifest: strings.TrimSpace(katlos),
 	}
 }
 
@@ -506,6 +508,8 @@ func uint32String(value uint32) string {
 func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	t.Setenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR", "/tmp/cp")
 	t.Setenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR", "/tmp/worker")
+	t.Setenv("KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-katlos.json")
+	t.Setenv("KATL_WORKER_KATLOS_FIXTURE_MANIFEST", "/tmp/worker-katlos.json")
 	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT", "qcow2")
 	got := twoNodePublishedFixtureDirs()
 	if got["cp-1"] != "/tmp/cp" || got["worker-1"] != "/tmp/worker" {
@@ -537,5 +541,8 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp-fixture.json" || manifest.FixtureInputs["worker-1"].PublishedFixtureDir != "/tmp/worker" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-katlos.json" || manifest.FixtureInputs["worker-1"].KatlOSFixtureManifest != "/tmp/worker-katlos.json" {
+		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
 	}
 }
