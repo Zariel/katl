@@ -69,14 +69,6 @@ rel() {
     printf "%s" "${path#"$repo_root"/}"
 }
 
-json() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    printf "%s" "$value"
-}
-
 real() {
     realpath -m "$1"
 }
@@ -305,21 +297,29 @@ chmod +x "$run_script"
 } >"$ready_run_script"
 chmod +x "$ready_run_script"
 
-cat >"$manifest" <<EOF
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "InstalledRuntimeVMTestFixtureResolution",
-  "disk": "$(json "$disk")",
-  "diskFormat": "$(json "$disk_format")",
-  "espArtifacts": "$(json "$esp_artifacts")",
-  "fixtureManifest": "$(json "$fixture_manifest")",
-  "nodeMetadata": "$(json "$node_metadata")",
-  "preflightRunDir": "$(json "$state_dir/preflight")",
-  "envFile": "$(json "$env_file")",
-  "runScript": "$(json "$run_script")",
-  "kubeadmReadyRunScript": "$(json "$ready_run_script")"
-}
-EOF
+jq -n \
+    --arg disk "$disk" \
+    --arg diskFormat "$disk_format" \
+    --arg espArtifacts "$esp_artifacts" \
+    --arg fixtureManifest "$fixture_manifest" \
+    --arg nodeMetadata "$node_metadata" \
+    --arg preflightRunDir "$state_dir/preflight" \
+    --arg envFile "$env_file" \
+    --arg runScript "$run_script" \
+    --arg kubeadmReadyRunScript "$ready_run_script" \
+    '{
+      apiVersion: "katl.dev/v1alpha1",
+      kind: "InstalledRuntimeVMTestFixtureResolution",
+      disk: $disk,
+      diskFormat: $diskFormat,
+      espArtifacts: $espArtifacts,
+      fixtureManifest: $fixtureManifest,
+      nodeMetadata: $nodeMetadata,
+      preflightRunDir: $preflightRunDir,
+      envFile: $envFile,
+      runScript: $runScript,
+      kubeadmReadyRunScript: $kubeadmReadyRunScript
+    }' >"$manifest"
 
 echo "fixture env: $(rel "$env_file")"
 echo "fixture manifest: $(rel "$manifest")"

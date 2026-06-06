@@ -68,14 +68,6 @@ real() {
     realpath -m "$1"
 }
 
-json() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    printf "%s" "$value"
-}
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --disk)
@@ -248,23 +240,43 @@ fi
 
 disk_sha="$(file_sha "$staged_disk")"
 esp_sha="$(tree_sha "$staged_esp")"
-metadata_json=""
+metadata_path=""
+metadata_sha=""
 if [[ -n "$staged_metadata" ]]; then
     metadata_sha="$(file_sha "$staged_metadata")"
-    metadata_json=",
-  \"nodeMetadata\": {\"path\": \"$(json "$(manifest_path "$staged_metadata")")\", \"sha256\": \"$(json "$metadata_sha")\"}"
+    metadata_path="$(manifest_path "$staged_metadata")"
 fi
 
-cat >"$fixture_manifest" <<EOF
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "InstalledRuntimeVMTestFixture",
-  "nodeName": "$(json "$node_name")",
-  "systemRole": "$(json "$system_role")",
-  "disk": {"path": "$(json "$(manifest_path "$staged_disk")")", "format": "$(json "$disk_format")", "sha256": "$(json "$disk_sha")"},
-  "espArtifacts": {"path": "$(json "$(manifest_path "$staged_esp")")", "treeSHA256": "$(json "$esp_sha")"}$metadata_json
-}
-EOF
+jq -n \
+    --arg nodeName "$node_name" \
+    --arg systemRole "$system_role" \
+    --arg diskPath "$(manifest_path "$staged_disk")" \
+    --arg diskFormat "$disk_format" \
+    --arg diskSHA256 "$disk_sha" \
+    --arg espPath "$(manifest_path "$staged_esp")" \
+    --arg espTreeSHA256 "$esp_sha" \
+    --arg nodeMetadataPath "$metadata_path" \
+    --arg nodeMetadataSHA256 "$metadata_sha" \
+    '{
+      apiVersion: "katl.dev/v1alpha1",
+      kind: "InstalledRuntimeVMTestFixture",
+      nodeName: $nodeName,
+      systemRole: $systemRole,
+      disk: {
+        path: $diskPath,
+        format: $diskFormat,
+        sha256: $diskSHA256
+      },
+      espArtifacts: {
+        path: $espPath,
+        treeSHA256: $espTreeSHA256
+      }
+    } + if $nodeMetadataPath == "" then {} else {
+      nodeMetadata: {
+        path: $nodeMetadataPath,
+        sha256: $nodeMetadataSHA256
+      }
+    } end' >"$fixture_manifest"
 
 resolve_args=(
     --disk "$staged_disk"

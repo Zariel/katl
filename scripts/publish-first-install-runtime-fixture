@@ -63,14 +63,6 @@ real() {
     realpath -m "$1"
 }
 
-json() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    printf "%s" "$value"
-}
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vmtest-state-root)
@@ -265,28 +257,43 @@ if [[ -n "$node_metadata" ]]; then
 fi
 "$repo_root/scripts/resolve-installed-runtime-fixture" "${resolver_args[@]}" >/dev/null
 
-cat >"$manifest" <<EOF
-{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "PublishedFirstInstallRuntimeFixture",
-  "nodeName": "$(json "$node_name")",
-  "systemRole": "$(json "$system_role")",
-  "sourceRunDir": "$(json "$source_run_dir")",
-  "sourceFixtureManifest": "$(json "$latest_fixture")",
-  "fixtureManifest": "$(json "$fixture_manifest")",
-  "disk": "$(json "$disk")",
-  "diskFormat": "$(json "$disk_format")",
-  "diskSHA256": "$(json "$disk_sha256")",
-  "espArtifacts": "$(json "$esp_artifacts")",
-  "espArtifactsTreeSHA256": "$(json "$esp_tree_sha256")",
-  "nodeMetadata": "$(json "$node_metadata")",
-  "nodeMetadataSHA256": "$(json "$node_metadata_sha256")",
-  "envFile": "$(json "$env_file")",
-  "resolverManifest": "$(json "$state_dir/fixture.json")",
-  "vmtestAgentRunScript": "$(json "$state_dir/run-installed-runtime-vmtest-agent.sh")",
-  "kubeadmReadyRunScript": "$(json "$state_dir/run-installed-runtime-kubeadm-ready.sh")"
-}
-EOF
+jq -n \
+    --arg nodeName "$node_name" \
+    --arg systemRole "$system_role" \
+    --arg sourceRunDir "$source_run_dir" \
+    --arg sourceFixtureManifest "$latest_fixture" \
+    --arg fixtureManifest "$fixture_manifest" \
+    --arg disk "$disk" \
+    --arg diskFormat "$disk_format" \
+    --arg diskSHA256 "$disk_sha256" \
+    --arg espArtifacts "$esp_artifacts" \
+    --arg espArtifactsTreeSHA256 "$esp_tree_sha256" \
+    --arg nodeMetadata "$node_metadata" \
+    --arg nodeMetadataSHA256 "$node_metadata_sha256" \
+    --arg envFile "$env_file" \
+    --arg resolverManifest "$state_dir/fixture.json" \
+    --arg vmtestAgentRunScript "$state_dir/run-installed-runtime-vmtest-agent.sh" \
+    --arg kubeadmReadyRunScript "$state_dir/run-installed-runtime-kubeadm-ready.sh" \
+    '{
+      apiVersion: "katl.dev/v1alpha1",
+      kind: "PublishedFirstInstallRuntimeFixture",
+      nodeName: $nodeName,
+      systemRole: $systemRole,
+      sourceRunDir: $sourceRunDir,
+      sourceFixtureManifest: $sourceFixtureManifest,
+      fixtureManifest: $fixtureManifest,
+      disk: $disk,
+      diskFormat: $diskFormat,
+      diskSHA256: $diskSHA256,
+      espArtifacts: $espArtifacts,
+      espArtifactsTreeSHA256: $espArtifactsTreeSHA256,
+      nodeMetadata: $nodeMetadata,
+      nodeMetadataSHA256: $nodeMetadataSHA256,
+      envFile: $envFile,
+      resolverManifest: $resolverManifest,
+      vmtestAgentRunScript: $vmtestAgentRunScript,
+      kubeadmReadyRunScript: $kubeadmReadyRunScript
+    }' >"$manifest"
 
 echo "published fixture env: $(rel "$env_file")"
 echo "published fixture manifest: $(rel "$manifest")"
