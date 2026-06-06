@@ -202,8 +202,9 @@ the installed runtime under `<state-dir>/published-installed-runtime/`. Source
 that directory's `vmtest.env` to run the direct installed-runtime smokes, or use
 its `published-first-install-runtime-fixture.json` manifest as an input to the
 two-node and three-control-plane fixture resolvers. The published directory keeps
-the installed disk, disk format, ESP tree, fixture manifest, and optional
-`node.json` together so later VM smokes do not depend on the source run layout.
+the installed disk, disk format, ESP tree, fixture manifest, optional
+`node.json`, and their checksum bindings together so later VM smokes do not
+depend on the source run layout.
 
 ## Two-Node Kubeadm VM Fixtures
 

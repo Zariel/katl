@@ -189,9 +189,13 @@ fixture_manifest="$(real "$state_dir/installed-runtime-fixture.json")"
 [[ -f "$disk" ]] || fail "published fixture disk not found: $(rel "$disk")"
 [[ -d "$esp_artifacts" ]] || fail "published fixture ESP not found: $(rel "$esp_artifacts")"
 [[ -f "$fixture_manifest" ]] || fail "published fixture manifest not found: $(rel "$fixture_manifest")"
+disk_sha256="$(jq -er '.disk.sha256' "$fixture_manifest")"
+esp_tree_sha256="$(jq -er '.espArtifacts.treeSHA256' "$fixture_manifest")"
+node_metadata_sha256=""
 if [[ -n "$node_metadata" ]]; then
     node_metadata="$(real "$state_dir/node.json")"
     [[ -f "$node_metadata" ]] || fail "published fixture node metadata not found: $(rel "$node_metadata")"
+    node_metadata_sha256="$(jq -er '.nodeMetadata.sha256' "$fixture_manifest")"
 fi
 
 resolver_args=(
@@ -216,8 +220,11 @@ cat >"$manifest" <<EOF
   "fixtureManifest": "$(json "$fixture_manifest")",
   "disk": "$(json "$disk")",
   "diskFormat": "$(json "$disk_format")",
+  "diskSHA256": "$(json "$disk_sha256")",
   "espArtifacts": "$(json "$esp_artifacts")",
+  "espArtifactsTreeSHA256": "$(json "$esp_tree_sha256")",
   "nodeMetadata": "$(json "$node_metadata")",
+  "nodeMetadataSHA256": "$(json "$node_metadata_sha256")",
   "envFile": "$(json "$env_file")",
   "resolverManifest": "$(json "$state_dir/fixture.json")",
   "vmtestAgentRunScript": "$(json "$state_dir/run-installed-runtime-vmtest-agent.sh")",
