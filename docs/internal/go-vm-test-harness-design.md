@@ -54,9 +54,10 @@ the durable API should be a Go QEMU runner so tests can inspect process state,
 ports, serial streams, artifacts, and failures without parsing a shell wrapper's
 human output.
 
-Keep `scripts/check-mkosi-smoke` and `scripts/check-installed-disk-smoke` as
-operator-friendly smoke commands. They can migrate to calling the Go harness
-after the Go API is stable.
+Keep `scripts/check-mkosi-smoke` as an operator-friendly build and boot smoke
+command while early scaffolding is still in flux. Installed-runtime and
+multi-node VM checks should run through `scripts/vmtest-run` and the Go world
+harness instead of a parallel installed-disk smoke script.
 
 Use direct `qemu-system-x86_64` and OVMF for the required automated path.
 `mkosi vm` remains useful for manual inspection. Libvirt may be added later for
@@ -766,9 +767,9 @@ instead of changing the boot model.
 for build plus installer boot. The Go harness should keep the same diagnostic
 principle while replacing shell status with `result.json`.
 
-`scripts/check-installed-disk-smoke` already treats ESP files, loader entries,
-serial logs, and installed disks as artifacts. The Go harness should reuse that
-contract for runtime boot scenarios and then add guest assertions.
+Installed-runtime world scenarios treat ESP files, loader entries, serial logs,
+and installed disks as artifacts. The Go harness should keep that diagnostic
+contract for runtime boot scenarios while adding guest assertions.
 
 ## Open Questions
 
