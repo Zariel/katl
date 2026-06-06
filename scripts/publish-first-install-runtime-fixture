@@ -6,6 +6,8 @@ vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-}"
 state_dir="${KATL_FIRST_INSTALL_PUBLISHED_FIXTURE_DIR:-}"
 scenario="first-install-installed-runtime-fixture"
 disk_format="${KATL_INSTALLED_DISK_FORMAT:-qcow2}"
+expected_node_name="${KATL_FIRST_INSTALL_PUBLISHED_NODE_NAME:-}"
+expected_system_role="${KATL_FIRST_INSTALL_PUBLISHED_SYSTEM_ROLE:-}"
 env_file_set=0
 env_file=""
 manifest=""
@@ -24,6 +26,8 @@ Options:
   --env-file PATH          Sourceable env output path
   --scenario NAME          First-install scenario name (default: first-install-installed-runtime-fixture)
   --format F               Installed disk format: raw or qcow2 (default: qcow2)
+  --node-name NAME         Select the newest source fixture for this node name
+  --system-role ROLE       Select the newest source fixture for this role
   -h, --help               Show this help
 
 After this command succeeds:
@@ -99,6 +103,16 @@ while [[ $# -gt 0 ]]; do
             disk_format="$2"
             shift 2
             ;;
+        --node-name)
+            need_value "$1" "${2:-}"
+            expected_node_name="$2"
+            shift 2
+            ;;
+        --system-role)
+            need_value "$1" "${2:-}"
+            expected_system_role="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -113,6 +127,13 @@ done
 case "$disk_format" in
     qcow2|raw) ;;
     *) fail "--format must be raw or qcow2" ;;
+esac
+if [[ -n "$expected_node_name" ]]; then
+    [[ "$expected_node_name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "--node-name must contain only letters, digits, dot, underscore, or dash"
+fi
+case "$expected_system_role" in
+    ""|control-plane|worker) ;;
+    *) fail "--system-role must be control-plane or worker" ;;
 esac
 [[ -n "$vmtest_state_root" ]] || fail "--vmtest-state-root or KATL_VMTEST_STATE_ROOT is required"
 [[ -d "$vmtest_state_root" ]] || fail "vmtest state root not found: $(rel "$vmtest_state_root")"
@@ -130,24 +151,44 @@ fi
 env_file="$(real "$env_file")"
 manifest="$state_dir/published-first-install-runtime-fixture.json"
 
-latest_fixture="$(
+latest_fixture=""
+while IFS= read -r -d '' candidate; do
+    candidate="${candidate#*$'\t'}"
+    candidate="$(real "$candidate")"
+    case "$candidate" in
+        "$vmtest_state_root"/"$scenario"-*/manifests/installed-runtime-fixture/installed-runtime-fixture.json)
+            ;;
+        *)
+            continue
+            ;;
+    esac
+    if ! jq -e \
+        --arg node "$expected_node_name" \
+        --arg role "$expected_system_role" '
+        ($node == "" or .nodeName == $node) and
+        ($role == "" or .systemRole == $role)
+        ' "$candidate" >/dev/null; then
+        continue
+    fi
+    latest_fixture="$candidate"
+    break
+done < <(
     find "$vmtest_state_root" \
         -path "*/manifests/installed-runtime-fixture/installed-runtime-fixture.json" \
         -type f \
-        -printf '%T@ %p\n' |
-        sort -nr |
-        head -n 1 |
-        cut -d' ' -f2-
-)"
-[[ -n "$latest_fixture" ]] || fail "no first-install installed-runtime fixture found under $(rel "$vmtest_state_root")"
-latest_fixture="$(real "$latest_fixture")"
-case "$latest_fixture" in
-    "$vmtest_state_root"/"$scenario"-*/manifests/installed-runtime-fixture/installed-runtime-fixture.json)
-        ;;
-    *)
-        fail "latest installed-runtime fixture does not belong to scenario $scenario: $(rel "$latest_fixture")"
-        ;;
-esac
+        -printf '%T@\t%p\0' |
+        sort -z -nr
+)
+if [[ -z "$latest_fixture" ]]; then
+    source_desc="$(rel "$vmtest_state_root")"
+    if [[ -n "$expected_node_name" ]]; then
+        source_desc="$source_desc node=$expected_node_name"
+    fi
+    if [[ -n "$expected_system_role" ]]; then
+        source_desc="$source_desc role=$expected_system_role"
+    fi
+    fail "no first-install installed-runtime fixture found under $source_desc"
+fi
 
 fixture_dir="$(dirname "$latest_fixture")"
 source_run_dir="$(real "$fixture_dir/../../..")"
