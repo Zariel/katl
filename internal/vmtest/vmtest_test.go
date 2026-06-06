@@ -40,6 +40,14 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestStrictWorldForcesMissingFailures(t *testing.T) {
+	t.Setenv("KATL_VMTEST_WORLD_STRICT", "1")
+	options := normalizeOptions(Options{Missing: MissingSkips})
+	if options.Missing != MissingFails {
+		t.Fatalf("Missing = %q, want %q", options.Missing, MissingFails)
+	}
+}
+
 func TestOptIn(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -105,6 +113,49 @@ func TestOptIn(t *testing.T) {
 				t.Fatalf("message %q missing tool name", tb.message)
 			}
 		})
+	}
+}
+
+func TestRequireEnvFailsInStrictWorld(t *testing.T) {
+	t.Setenv("KATL_VMTEST_WORLD_STRICT", "1")
+	tb := &fakeTB{}
+	value := RequireEnv(tb, "KATL_REQUIRED_FIXTURE")
+	if value != "" {
+		t.Fatalf("RequireEnv() = %q, want empty after fatal", value)
+	}
+	if !tb.failed || tb.skipped {
+		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
+	}
+	if !strings.Contains(tb.message, "KATL_REQUIRED_FIXTURE") {
+		t.Fatalf("message %q missing env name", tb.message)
+	}
+}
+
+func TestStrictWorldFailsMissingPrerequisites(t *testing.T) {
+	t.Setenv("KATL_VMTEST_WORLD_STRICT", "1")
+	tb := &fakeTB{}
+	runner := Runner{
+		Options: Options{
+			Enabled:   true,
+			StateRoot: t.TempDir(),
+			RunID:     "run-strict",
+			Missing:   MissingSkips,
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) {
+				return "", errors.New("missing")
+			},
+		},
+	}
+	result := runner.Run(tb, Scenario{
+		Name: "boot",
+		Host: HostRequirements{QEMU: true},
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFailed)
+	}
+	if !tb.failed || tb.skipped {
+		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
 	}
 }
 

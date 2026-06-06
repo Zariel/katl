@@ -192,10 +192,14 @@ func RequireHost(t testing.TB, requirements HostRequirements) {
 	NewRunner(DefaultOptions()).RequireHost(t, requirements)
 }
 
-func RequireEnv(t testing.TB, name string) string {
+func RequireEnv(t testTB, name string) string {
 	t.Helper()
 	value := os.Getenv(name)
 	if value == "" {
+		if envBool("KATL_VMTEST_WORLD_STRICT") {
+			t.Fatalf("%s is required by this VM scenario", name)
+			return ""
+		}
 		t.Skipf("set %s to run this VM scenario", name)
 	}
 	return value
@@ -372,6 +376,9 @@ func normalizeOptions(options Options) Options {
 		options.KVM = KVMAuto
 	}
 	if options.Missing == "" {
+		options.Missing = MissingFails
+	}
+	if envBool("KATL_VMTEST_WORLD_STRICT") {
 		options.Missing = MissingFails
 	}
 	return options
