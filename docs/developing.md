@@ -164,18 +164,18 @@ agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
 It does not run `kubeadm init` or the API-server smoke.
 
 To run the opt-in first-install target-disk fixture contract smoke, resolve
-the installer UKI, KatlOS install image, optional node metadata, and install
-manifest into a sourceable environment with:
+the mkosi artifact index, optional node metadata, and install manifest into a
+sourceable environment with:
 
 ```sh
 scripts/resolve-first-install-katlos-image-fixture \
-  --installer-uki build/mkosi/katl-installer.efi \
-  --katlos-image build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs \
+  --artifact-index build/mkosi/artifacts.json \
   --node-metadata build/local/cp-1-node.json \
   --install-manifest docs/internal/examples/minimal-install-manifest.json
 ```
 
-The command verifies the KatlOS image contract and manifest image binding,
+The command discovers the installer UKI and KatlOS install image from the
+artifact index, verifies the KatlOS image contract and manifest image binding,
 extracts the runtime-root component for the host-side VM harness, records
 SHA-256 bindings, and writes generated files under
 `build/first-install-katlos-image-fixture/`. The generated smoke runs in

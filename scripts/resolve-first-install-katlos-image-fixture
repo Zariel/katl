@@ -9,6 +9,7 @@ env_file="${KATL_FIRST_INSTALL_FIXTURE_ENV:-$state_dir/vmtest.env}"
 run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
 manifest="$state_dir/katlos-image-fixture.json"
 
+artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-}"
 installer_uki="${KATL_INSTALLER_UKI:-}"
 installer_uki_sha256="${KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256:-}"
 katlos_image="${KATL_KATLOS_IMAGE:-}"
@@ -31,6 +32,7 @@ in installed-ESP mode, so runtime boot metadata comes from the disk written by
 the installer.
 
 Options:
+  --artifact-index PATH     mkosi artifact index for installer/image discovery
   --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
   --installer-uki-sha256 H   Expected installer UKI SHA-256
   --katlos-image PATH        KatlOS install image, or KATL_KATLOS_IMAGE
@@ -106,6 +108,11 @@ normal_image_path() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --artifact-index)
+            need_value "$1" "${2:-}"
+            artifact_index="$2"
+            shift 2
+            ;;
         --installer-uki)
             need_value "$1" "${2:-}"
             installer_uki="$2"
@@ -185,6 +192,17 @@ need sha256sum
 need stat
 need unsquashfs
 
+if [[ -n "$artifact_index" ]]; then
+    artifact_index="$(real "$artifact_index")"
+    [[ -f "$artifact_index" ]] || fail "artifact index not found: $(rel "$artifact_index")"
+    if [[ -z "$installer_uki" ]]; then
+        installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$artifact_index")"
+    fi
+    if [[ -z "$katlos_image" ]]; then
+        katlos_image="$("$repo_root/scripts/mkosi-artifacts" path katlos-install-image "$artifact_index")"
+    fi
+fi
+
 [[ -n "$installer_uki" ]] || fail "--installer-uki is required"
 [[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
 [[ -n "$katlos_image" ]] || fail "--katlos-image is required"
@@ -228,15 +246,15 @@ if [[ -n "$katlos_image_sha256" && "$image_sha256" != "$katlos_image_sha256" ]];
 fi
 image_size="$(stat -c %s "$katlos_image")"
 
-manifest_image_sha256="$(jq -er '.katlosImage.sha256 // empty' "$install_manifest")"
+manifest_image_sha256="$(jq -r '.katlosImage.sha256 // ""' "$install_manifest")"
 if [[ -n "$manifest_image_sha256" && "$manifest_image_sha256" != "$image_sha256" ]]; then
     fail "install manifest KatlOS image sha256 does not match $katlos_image"
 fi
-manifest_image_size="$(jq -er '.katlosImage.sizeBytes // empty' "$install_manifest")"
+manifest_image_size="$(jq -r '.katlosImage.sizeBytes // ""' "$install_manifest")"
 if [[ -n "$manifest_image_size" && "$manifest_image_size" != "$image_size" ]]; then
     fail "install manifest KatlOS image size does not match $katlos_image"
 fi
-manifest_local_ref="$(jq -er '.katlosImage.localRef // empty' "$install_manifest")"
+manifest_local_ref="$(jq -r '.katlosImage.localRef // ""' "$install_manifest")"
 if [[ -n "$manifest_local_ref" ]]; then
     normal_image_path "install manifest katlosImage.localRef" "$manifest_local_ref"
     manifest_ref_path="$(real "$(dirname "$install_manifest")/$manifest_local_ref")"
@@ -300,6 +318,9 @@ published_node_name="$(jq -er '.publishedNodeName // ""' "$runtime_fixture_manif
 published_system_role="$(jq -er '.publishedSystemRole // ""' "$runtime_fixture_manifest")"
 
 {
+    if [[ -n "$artifact_index" ]]; then
+        printf 'export KATL_MKOSI_ARTIFACT_INDEX=%q\n' "$artifact_index"
+    fi
     printf 'export KATL_KATLOS_IMAGE=%q\n' "$katlos_image"
     printf 'export KATL_KATLOS_IMAGE_SHA256=%q\n' "$image_sha256"
 } >>"$env_file"
@@ -308,6 +329,7 @@ cat >"$manifest" <<EOF
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "FirstInstallKatlOSImageFixtureResolution",
+  "artifactIndex": "$(json "$artifact_index")",
   "installerUKI": "$(json "$installer_uki")",
   "installerUKISHA256": "$(json "$installer_uki_sha256")",
   "katlosImage": "$(json "$katlos_image")",
