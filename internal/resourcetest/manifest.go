@@ -68,11 +68,15 @@ type MkosiProfile struct {
 }
 
 type PackageSet struct {
-	Name       string    `json:"name"`
-	Source     string    `json:"source,omitempty"`
-	Digest     string    `json:"sha256,omitempty"`
-	LockDigest string    `json:"lockSHA256,omitempty"`
-	Packages   []Package `json:"packages,omitempty"`
+	Name         string              `json:"name"`
+	Source       string              `json:"source,omitempty"`
+	Digest       string              `json:"sha256,omitempty"`
+	LockDigest   string              `json:"lockSHA256,omitempty"`
+	Distribution string              `json:"distribution,omitempty"`
+	Release      string              `json:"release,omitempty"`
+	Architecture string              `json:"architecture,omitempty"`
+	Repositories []PackageRepository `json:"repositories,omitempty"`
+	Packages     []Package           `json:"packages,omitempty"`
 }
 
 type Package struct {
@@ -210,6 +214,9 @@ func ValidateManifest(manifest Manifest) error {
 			return fmt.Errorf("packageSets[%d]: duplicate package set %q", i, set.Name)
 		}
 		packageSets[set.Name] = true
+		if err := validatePackageRepositories(set.Repositories); err != nil {
+			return fmt.Errorf("packageSets[%d]: %w", i, err)
+		}
 		for j, pkg := range set.Packages {
 			if strings.TrimSpace(pkg.Name) == "" || strings.TrimSpace(pkg.NEVRA) == "" {
 				return fmt.Errorf("packageSets[%d].packages[%d]: name and nevra are required", i, j)

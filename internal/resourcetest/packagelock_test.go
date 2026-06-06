@@ -43,6 +43,18 @@ func TestVerifyPackageLockRejectsPackageDrift(t *testing.T) {
 	}
 }
 
+func TestVerifyPackageLockRejectsRepositoryDrift(t *testing.T) {
+	lock := validPackageLock()
+	digest := digestForLock(t, lock)
+	manifest := manifestForPackageLock(digest)
+	manifest.PackageSets[0].Repositories[0].BaseURL = "https://example.invalid/changed"
+
+	err := VerifyPackageLock(PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: digest})
+	if err == nil || !strings.Contains(err.Error(), "baseURL drift") {
+		t.Fatalf("VerifyPackageLock() error = %v, want baseURL drift", err)
+	}
+}
+
 func TestVerifyPackageLockRejectsMissingLockData(t *testing.T) {
 	lock := validPackageLock()
 	lock.PackageSets = nil
@@ -73,6 +85,27 @@ func TestVerifyPackageLockRejectsMissingManifestLockDigest(t *testing.T) {
 	err := VerifyPackageLock(PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: digest})
 	if err == nil || !strings.Contains(err.Error(), "lock digest drift") {
 		t.Fatalf("VerifyPackageLock() error = %v, want lock digest drift", err)
+	}
+}
+
+func TestPackageLockFromManifest(t *testing.T) {
+	manifest := manifestForPackageLock("")
+	lock, err := PackageLockFromManifest(manifest)
+	if err != nil {
+		t.Fatalf("PackageLockFromManifest() error = %v", err)
+	}
+	if lock.Kind != PackageLockKind || lock.PackageSets[0].Repositories[0].ID != "fedora" {
+		t.Fatalf("lock = %#v", lock)
+	}
+}
+
+func TestPackageLockFromManifestRejectsMissingRepositoryData(t *testing.T) {
+	manifest := manifestForPackageLock("")
+	manifest.PackageSets[0].Repositories = nil
+
+	_, err := PackageLockFromManifest(manifest)
+	if err == nil || !strings.Contains(err.Error(), "repositories are required") {
+		t.Fatalf("PackageLockFromManifest() error = %v, want repository requirement", err)
 	}
 }
 
@@ -123,10 +156,17 @@ func validPackageLock() PackageLock {
 func manifestForPackageLock(lockDigest string) Manifest {
 	manifest := validManifest()
 	manifest.PackageSets[0] = PackageSet{
-		Name:       "runtime",
-		Source:     "mkosi.profiles/runtime",
-		Digest:     testSHA,
-		LockDigest: lockDigest,
+		Name:         "runtime",
+		Source:       "mkosi.profiles/runtime",
+		Digest:       testSHA,
+		LockDigest:   lockDigest,
+		Distribution: "fedora",
+		Release:      "44",
+		Architecture: "x86_64",
+		Repositories: []PackageRepository{{
+			ID:      "fedora",
+			BaseURL: "https://example.invalid/fedora/44",
+		}},
 		Packages: []Package{{
 			Name:     "systemd",
 			NEVRA:    "systemd-0:259.6-1.fc44.x86_64",

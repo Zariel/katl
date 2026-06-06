@@ -121,11 +121,67 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 		if lockedSet.Source != "" && manifestSet.Source != lockedSet.Source {
 			return fmt.Errorf("package set %q source drift: got %q, want %q", manifestSet.Name, manifestSet.Source, lockedSet.Source)
 		}
+		if err := compareRepositories(manifestSet.Name, manifestSet.Repositories, lockedSet.Repositories); err != nil {
+			return err
+		}
 		if err := comparePackages(manifestSet.Name, manifestSet.Packages, lockedSet.Packages); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func PackageLockFromManifest(manifest Manifest) (PackageLock, error) {
+	if err := ValidateManifest(manifest); err != nil {
+		return PackageLock{}, err
+	}
+	if len(manifest.MkosiProfiles) == 0 {
+		return PackageLock{}, errors.New("manifest mkosiProfiles is required")
+	}
+	if len(manifest.PackageSets) == 0 {
+		return PackageLock{}, errors.New("manifest packageSets is required")
+	}
+	sets := map[string]PackageSet{}
+	for _, set := range manifest.PackageSets {
+		if len(set.Repositories) == 0 {
+			return PackageLock{}, fmt.Errorf("package set %q repositories are required for lock refresh", set.Name)
+		}
+		if len(set.Packages) == 0 {
+			return PackageLock{}, fmt.Errorf("package set %q packages are required for lock refresh", set.Name)
+		}
+		sets[set.Name] = set
+	}
+	lock := PackageLock{
+		APIVersion: APIVersion,
+		Kind:       PackageLockKind,
+		Tools:      append([]Tool(nil), manifest.Tools...),
+	}
+	for _, profile := range manifest.MkosiProfiles {
+		if _, ok := sets[profile.PackageSetRef]; !ok {
+			return PackageLock{}, fmt.Errorf("mkosi profile %q package set %q is missing from manifest", profile.Name, profile.PackageSetRef)
+		}
+		lock.MkosiProfiles = append(lock.MkosiProfiles, PackageLockProfile{
+			Name:          profile.Name,
+			Path:          profile.Path,
+			ConfigDigest:  profile.ConfigDigest,
+			PackageSetRef: profile.PackageSetRef,
+		})
+	}
+	for _, set := range manifest.PackageSets {
+		lock.PackageSets = append(lock.PackageSets, PackageLockPackageSet{
+			Name:         set.Name,
+			Source:       set.Source,
+			Distribution: set.Distribution,
+			Release:      set.Release,
+			Architecture: set.Architecture,
+			Repositories: append([]PackageRepository(nil), set.Repositories...),
+			Packages:     append([]Package(nil), set.Packages...),
+		})
+	}
+	if err := ValidatePackageLock(lock); err != nil {
+		return PackageLock{}, err
+	}
+	return lock, nil
 }
 
 func ValidatePackageLock(lock PackageLock) error {
@@ -180,15 +236,8 @@ func validateLockedPackageSet(set PackageLockPackageSet) error {
 	if len(set.Repositories) == 0 {
 		return errors.New("repositories is required")
 	}
-	repositories := map[string]bool{}
-	for i, repo := range set.Repositories {
-		if strings.TrimSpace(repo.ID) == "" {
-			return fmt.Errorf("repositories[%d]: id is required", i)
-		}
-		if repositories[repo.ID] {
-			return fmt.Errorf("repositories[%d]: duplicate repository %q", i, repo.ID)
-		}
-		repositories[repo.ID] = true
+	if err := validatePackageRepositories(set.Repositories); err != nil {
+		return err
 	}
 	if len(set.Packages) == 0 {
 		return errors.New("packages is required")
@@ -199,6 +248,46 @@ func validateLockedPackageSet(set PackageLockPackageSet) error {
 		}
 		if pkg.Checksum != "" && !validSHA256(pkg.Checksum) {
 			return fmt.Errorf("packages[%d]: sha256 must be lowercase SHA-256", i)
+		}
+	}
+	return nil
+}
+
+func validatePackageRepositories(repositories []PackageRepository) error {
+	seen := map[string]bool{}
+	for i, repo := range repositories {
+		if strings.TrimSpace(repo.ID) == "" {
+			return fmt.Errorf("repositories[%d]: id is required", i)
+		}
+		if seen[repo.ID] {
+			return fmt.Errorf("repositories[%d]: duplicate repository %q", i, repo.ID)
+		}
+		seen[repo.ID] = true
+	}
+	return nil
+}
+
+func compareRepositories(name string, got, want []PackageRepository) error {
+	gotRepos := map[string]PackageRepository{}
+	for _, repo := range got {
+		gotRepos[repo.ID] = repo
+	}
+	for _, locked := range want {
+		actual, ok := gotRepos[locked.ID]
+		if !ok {
+			return fmt.Errorf("package set %q missing repository %q", name, locked.ID)
+		}
+		if locked.BaseURL != "" && actual.BaseURL != locked.BaseURL {
+			return fmt.Errorf("package set %q repository %q baseURL drift: got %q, want %q", name, locked.ID, actual.BaseURL, locked.BaseURL)
+		}
+		if locked.GPGKey != "" && actual.GPGKey != locked.GPGKey {
+			return fmt.Errorf("package set %q repository %q gpgKey drift", name, locked.ID)
+		}
+		delete(gotRepos, locked.ID)
+	}
+	if len(gotRepos) > 0 {
+		for id := range gotRepos {
+			return fmt.Errorf("package set %q contains unlocked repository %q", name, id)
 		}
 	}
 	return nil
