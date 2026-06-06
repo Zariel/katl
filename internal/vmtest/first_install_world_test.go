@@ -200,6 +200,13 @@ func resolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 		}
 		input.InstallManifest = manifestPath
 	}
+	if strings.TrimSpace(input.NodeMetadata) == "" {
+		metadataPath, err := writeFirstInstallWorldNodeMetadataSource(scenario, spec)
+		if err != nil {
+			return input, err
+		}
+		input.NodeMetadata = metadataPath
+	}
 	return input, nil
 }
 
@@ -311,6 +318,30 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		return "", err
 	}
 	return manifestPath, nil
+}
+
+func writeFirstInstallWorldNodeMetadataSource(scenario *WorldScenario, spec NodeSpec) (string, error) {
+	sourceDir := filepath.Join(scenario.Dir, "inputs", "node-metadata-source")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		return "", err
+	}
+	metadata := map[string]any{
+		"apiVersion": "katl.dev/v1alpha1",
+		"kind":       "NodeMetadata",
+		"identity": map[string]any{
+			"hostname": spec.Name,
+		},
+		"systemRole": string(spec.Role),
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	metadataPath := filepath.Join(sourceDir, "node.json")
+	if err := os.WriteFile(metadataPath, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	return metadataPath, nil
 }
 
 func discoverKatlOSInstallImage(repo string) (mkosiArtifact, error) {
@@ -474,6 +505,9 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if !run.Config.UseInstalledESP || run.Config.Runtime.ESPArtifacts != "" {
 		t.Fatalf("installed ESP fallback was not selected: %#v", run.Config)
 	}
+	if run.Config.Runtime.NodeMetadata == "" || strings.Contains(run.Config.Runtime.NodeMetadata, "node-metadata-source") {
+		t.Fatalf("node metadata was not staged: %#v", run.Config.Runtime)
+	}
 	if run.Config.ManifestPath == "" || strings.Contains(run.Config.ManifestPath, "install-manifest-source") {
 		t.Fatalf("install manifest was not staged: %q", run.Config.ManifestPath)
 	}
@@ -489,7 +523,14 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 		t.Fatalf("generated manifest = %s", manifestData)
 	}
 	scenarioManifest := readScenarioManifest(t, run.Scenario.ManifestPath)
-	for _, kind := range []string{FixtureInstallerUKI, FixtureRuntimeArtifact, FixtureInstallManifest, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
+	metadataData, err := os.ReadFile(run.Config.Runtime.NodeMetadata)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", run.Config.Runtime.NodeMetadata, err)
+	}
+	if !strings.Contains(string(metadataData), `"hostname": "cp-1"`) || !strings.Contains(string(metadataData), `"systemRole": "control-plane"`) {
+		t.Fatalf("generated node metadata = %s", metadataData)
+	}
+	for _, kind := range []string{FixtureInstallerUKI, FixtureRuntimeArtifact, FixtureNodeMetadata, FixtureInstallManifest, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
