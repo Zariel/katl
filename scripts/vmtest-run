@@ -472,9 +472,11 @@ write_run_index() {
     local status="$1"
     shift
     local setup_failure_text=""
+    local missing_capabilities_json
     if [[ "${#setup_failures[@]}" -gt 0 ]]; then
         setup_failure_text="$(printf '%s\n' "${setup_failures[@]}")"
     fi
+    missing_capabilities_json="$(jq -n '$ARGS.positional' --args -- "${missing_capabilities[@]}")"
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
@@ -485,6 +487,7 @@ write_run_index() {
         --arg leaseFile "$lease_file" \
         --arg status "$status" \
         --arg setupFailures "$setup_failure_text" \
+        --argjson missingCapabilities "$missing_capabilities_json" \
         --args \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -497,6 +500,7 @@ write_run_index() {
           hostCapabilities: $hostCapabilities,
           networkLeaseFile: $leaseFile,
           status: $status,
+          missingCapabilities: $missingCapabilities,
           goTestArgs: $ARGS.positional,
           setupFailures: ($setupFailures | split("\n") | map(select(length > 0)))
         }' -- "$@" >"$run_index"

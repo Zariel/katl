@@ -287,6 +287,10 @@ func TestVMTestRunRecordsHostGapsAndExecsGo(t *testing.T) {
 	if !contains(caps.Missing, "qemu") {
 		t.Fatalf("missing capabilities = %#v", caps.Missing)
 	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if !contains(runIndex.MissingCapabilities, "qemu") || runIndex.Status != "go-test" {
+		t.Fatalf("run index = %#v", runIndex)
+	}
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
@@ -465,6 +469,9 @@ func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	}
 	if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], "invalid CIDR prefix") {
 		t.Fatalf("run index setup failures = %#v", runIndex.SetupFailures)
+	}
+	if len(runIndex.MissingCapabilities) != 0 {
+		t.Fatalf("run index missing capabilities = %#v", runIndex.MissingCapabilities)
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
@@ -772,13 +779,14 @@ type vmtestHostCapabilities struct {
 }
 
 type vmtestRunIndex struct {
-	Kind             string   `json:"kind"`
-	RunID            string   `json:"runID"`
-	WorldManifest    string   `json:"worldManifest"`
-	HostCapabilities string   `json:"hostCapabilities"`
-	Status           string   `json:"status"`
-	GoTestArgs       []string `json:"goTestArgs"`
-	SetupFailures    []string `json:"setupFailures"`
+	Kind                string   `json:"kind"`
+	RunID               string   `json:"runID"`
+	WorldManifest       string   `json:"worldManifest"`
+	HostCapabilities    string   `json:"hostCapabilities"`
+	Status              string   `json:"status"`
+	MissingCapabilities []string `json:"missingCapabilities"`
+	GoTestArgs          []string `json:"goTestArgs"`
+	SetupFailures       []string `json:"setupFailures"`
 }
 
 func readRunIndex(t *testing.T, path string) vmtestRunIndex {
