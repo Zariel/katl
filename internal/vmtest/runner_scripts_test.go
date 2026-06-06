@@ -245,6 +245,9 @@ func TestVMTestRunFailsMissingScenarioResult(t *testing.T) {
 	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "scenario result missing") {
 		t.Fatalf("scenarios = %#v", summary.Scenarios)
 	}
+	if summary.Scenarios[0].RunDir == "" || summary.Scenarios[0].ManifestPath == "" || summary.Scenarios[0].ResultPath == "" {
+		t.Fatalf("scenario paths missing: %#v", summary.Scenarios[0])
+	}
 }
 
 func TestVMTestRunFailsFailedScenarioResult(t *testing.T) {
@@ -298,7 +301,8 @@ func TestVMTestRunAllowsHostSkippedScenarioResult(t *testing.T) {
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=host skipped scenario",
 		"KATL_FAKE_CHILD_WORLD_RESULT=skipped",
-		"KATL_FAKE_CHILD_WORLD_MISSING=systemd-nspawn",
+		"KATL_FAKE_CHILD_WORLD_MISSING=qemu",
+		"KATL_VMTEST_QEMU=/missing/qemu-system-x86_64",
 		"KATL_VMTEST_RUN_ID=run-host-skipped-scenario-result",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
@@ -311,7 +315,48 @@ func TestVMTestRunAllowsHostSkippedScenarioResult(t *testing.T) {
 	if summary.Status != "passed" || summary.ExitCode != 0 || summary.Counts["host-skipped"] != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}
+	if !contains(summary.HostCapabilityGaps, "qemu") {
+		t.Fatalf("host capability gaps = %#v", summary.HostCapabilityGaps)
+	}
 	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "host-skipped" {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
+func TestVMTestRunFailsUndeclaredHostSkippedScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=undeclared host skipped scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=skipped",
+		"KATL_FAKE_CHILD_WORLD_MISSING=qemu",
+		"KATL_VMTEST_RUN_ID=run-undeclared-host-skipped-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "failed" || summary.ExitCode != 1 || summary.ChildExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(summary.HostCapabilityGaps) != 0 {
+		t.Fatalf("host capability gaps = %#v", summary.HostCapabilityGaps)
+	}
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" {
 		t.Fatalf("scenarios = %#v", summary.Scenarios)
 	}
 }
@@ -443,6 +488,7 @@ func TestVMTestRunAllowsGoTestJSONSkipForHostSkippedScenario(t *testing.T) {
 		"KATL_FAKE_CHILD_WORLD_RESULT=skipped",
 		"KATL_FAKE_CHILD_WORLD_MISSING=qemu",
 		"KATL_FAKE_GO_JSON_ACTION=skip",
+		"KATL_VMTEST_QEMU=/missing/qemu-system-x86_64",
 		"KATL_VMTEST_RUN_ID=run-json-host-skip",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
@@ -563,6 +609,43 @@ func TestVMTestRunFailsMalformedScenarioResult(t *testing.T) {
 	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "invalid JSON") {
 		t.Fatalf("scenarios = %#v", summary.Scenarios)
 	}
+	if summary.Scenarios[0].RunDir == "" || summary.Scenarios[0].ManifestPath == "" || summary.Scenarios[0].ResultPath == "" {
+		t.Fatalf("scenario paths missing: %#v", summary.Scenarios[0])
+	}
+}
+
+func TestVMTestRunFailsMalformedScenarioManifest(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=malformed manifest scenario",
+		"KATL_FAKE_CHILD_WORLD_MANIFEST=malformed",
+		"KATL_VMTEST_RUN_ID=run-malformed-scenario-manifest",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "manifest is invalid JSON") {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+	if summary.Scenarios[0].RunDir == "" || summary.Scenarios[0].ManifestPath == "" || summary.Scenarios[0].ResultPath == "" {
+		t.Fatalf("scenario paths missing: %#v", summary.Scenarios[0])
+	}
 }
 
 func TestVMTestRunFailsStaleScenarioResult(t *testing.T) {
@@ -593,6 +676,9 @@ func TestVMTestRunFailsStaleScenarioResult(t *testing.T) {
 	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
 	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "another run") {
 		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+	if summary.Scenarios[0].RunDir == "" || summary.Scenarios[0].ManifestPath == "" || summary.Scenarios[0].ResultPath == "" {
+		t.Fatalf("scenario paths missing: %#v", summary.Scenarios[0])
 	}
 }
 
@@ -1383,6 +1469,10 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
     run_id="$(jq -r '.runID' "$KATL_VMTEST_WORLD_MANIFEST")"
     mkdir -p "$scenario_dir"
     result_path="$scenario_dir/result.json"
+    if [[ "${KATL_FAKE_CHILD_WORLD_MANIFEST:-}" == "malformed" ]]; then
+        printf '{' > "$scenario_dir/scenario.json"
+        exit "${KATL_FAKE_CHILD_EXIT:-0}"
+    fi
     jq -n \
         --arg name "$scenario_name" \
         --arg id "$scenario_id" \
@@ -1607,6 +1697,7 @@ type vmtestRunSummary struct {
 	Args                  []string                `json:"args"`
 	SelectedPackageArgs   []string                `json:"selectedPackageArgs"`
 	SelectedPackages      []vmtestSelectedPackage `json:"selectedPackages"`
+	HostCapabilityGaps    []string                `json:"hostCapabilityGaps"`
 	SetupFailures         []string                `json:"setupFailures"`
 	GoTestFailures        []vmtestGoTestEvent     `json:"goTestFailures"`
 	GoTestSkips           []vmtestGoTestEvent     `json:"goTestSkips"`
@@ -1628,6 +1719,7 @@ type vmtestSelectedPackage struct {
 type vmtestScenarioSummary struct {
 	Name           string `json:"name"`
 	Status         string `json:"status"`
+	RunDir         string `json:"runDir"`
 	ManifestPath   string `json:"manifestPath"`
 	ResultPath     string `json:"resultPath"`
 	FailureSummary string `json:"failureSummary"`

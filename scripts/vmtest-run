@@ -684,13 +684,21 @@ append_scenario_summary() {
 
 scenario_status_from_result() {
     local result_path="$1"
-    jq -r '
+    jq -r --slurpfile host "$host_capabilities_json" '
+      def missing_names:
+        (.missing // [])
+        | map(if type == "object" then (.name // "") else . end)
+        | map(select(. != ""));
+      def declared_host_gap($name):
+        (($host[0].missing // []) | index($name)) != null;
+
       (.status // "") as $status |
       if $status == "passed" or $status == "pass" then "passed"
       elif $status == "failed" or $status == "fail" then "failed"
       elif $status == "setup-failed" then "setup-failed"
       elif $status == "skipped" or $status == "skip" then
-        if ((.missing // []) | length) > 0 then "host-skipped" else "setup-failed" end
+        (missing_names) as $missing |
+        if (($missing | length) > 0 and all($missing[]; declared_host_gap(.))) then "host-skipped" else "setup-failed" end
       elif $status == "disabled" then "disabled"
       elif $status == "planned" or $status == "" then "setup-failed"
       else "setup-failed"
@@ -703,31 +711,46 @@ collect_scenario_summaries() {
     if [[ ! -d "$scenario_dir" ]]; then
         return
     fi
-    local scenario_manifest result_path item status failure tmp
+    local scenario_manifest scenario_run_dir result_path item status failure tmp
     while IFS= read -r -d '' scenario_manifest; do
+        scenario_run_dir="$(dirname "$scenario_manifest")"
         if ! jq -e . "$scenario_manifest" >/dev/null 2>&1; then
+            result_path="$scenario_run_dir/result.json"
             item="$(
                 jq -n \
                     --arg manifestPath "$scenario_manifest" \
+                    --arg resultPath "$result_path" \
+                    --arg runDir "$scenario_run_dir" \
                     --arg status "setup-failed" \
                     --arg failureSummary "scenario manifest is invalid JSON" \
-                    '{manifestPath: $manifestPath, status: $status, failureSummary: $failureSummary}'
+                    '{
+                      manifestPath: $manifestPath,
+                      resultPath: $resultPath,
+                      runDir: $runDir,
+                      status: $status,
+                      failureSummary: $failureSummary
+                    }'
             )"
             append_scenario_summary "$item"
             continue
         fi
         result_path="$(jq -r '.resultPath // empty' "$scenario_manifest")"
         if [[ -z "$result_path" ]]; then
+            result_path="$scenario_run_dir/result.json"
             item="$(
                 jq -n \
                     --slurpfile scenario "$scenario_manifest" \
                     --arg manifestPath "$scenario_manifest" \
+                    --arg resultPath "$result_path" \
+                    --arg runDir "$scenario_run_dir" \
                     --arg status "setup-failed" \
                     --arg failureSummary "scenario manifest is missing resultPath" \
                     '{
                       name: $scenario[0].name,
                       id: $scenario[0].id,
                       manifestPath: $manifestPath,
+                      resultPath: $resultPath,
+                      runDir: ($scenario[0].dir // $runDir),
                       status: $status,
                       failureSummary: $failureSummary,
                       nodes: ($scenario[0].nodes // []),
@@ -743,6 +766,7 @@ collect_scenario_summaries() {
                     --slurpfile scenario "$scenario_manifest" \
                     --arg manifestPath "$scenario_manifest" \
                     --arg resultPath "$result_path" \
+                    --arg runDir "$scenario_run_dir" \
                     --arg status "setup-failed" \
                     --arg failureSummary "scenario result missing" \
                     '{
@@ -750,6 +774,7 @@ collect_scenario_summaries() {
                       id: $scenario[0].id,
                       manifestPath: $manifestPath,
                       resultPath: $resultPath,
+                      runDir: ($scenario[0].dir // $runDir),
                       status: $status,
                       failureSummary: $failureSummary,
                       nodes: ($scenario[0].nodes // []),
@@ -765,6 +790,7 @@ collect_scenario_summaries() {
                     --slurpfile scenario "$scenario_manifest" \
                     --arg manifestPath "$scenario_manifest" \
                     --arg resultPath "$result_path" \
+                    --arg runDir "$scenario_run_dir" \
                     --arg status "setup-failed" \
                     --arg failureSummary "scenario result is invalid JSON" \
                     '{
@@ -772,6 +798,7 @@ collect_scenario_summaries() {
                       id: $scenario[0].id,
                       manifestPath: $manifestPath,
                       resultPath: $resultPath,
+                      runDir: ($scenario[0].dir // $runDir),
                       status: $status,
                       failureSummary: $failureSummary,
                       nodes: ($scenario[0].nodes // []),
