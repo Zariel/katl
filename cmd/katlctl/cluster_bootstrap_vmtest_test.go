@@ -438,7 +438,7 @@ func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInst
 			continue
 		}
 		guest := vmtest.NewGuestControl(node.Result, client)
-		report := guest.CollectDiagnostics(diagCtx, twoNodeBootstrapDiagnostics(node.Name))
+		report := guest.CollectDiagnostics(diagCtx, bootstrapDiagnostics(node.Name))
 		if len(report.Errors) > 0 {
 			summary.DiagnosticErrors = filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-errors.json")
 			summary.CollectionErrors = append(summary.CollectionErrors, report.Errors...)
@@ -449,7 +449,8 @@ func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInst
 	}
 }
 
-func twoNodeBootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
+func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
+	kubeadmRef := kubeadmRefForNode(node)
 	plan := vmtest.GuestDiagnostics{
 		Timeout: 20 * time.Second,
 		Commands: []vmtest.GuestCommandRequest{
@@ -462,7 +463,7 @@ func twoNodeBootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 		},
 		Files: []vmtest.GuestFileRequest{
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
-			{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRefForNode(node) + "/config.yaml"},
+			{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRef + "/config.yaml"},
 			{Name: "kubelet-kubeconfig", Path: "/etc/kubernetes/kubelet.conf"},
 		},
 		Journals: []vmtest.GuestJournalRequest{{
@@ -470,7 +471,7 @@ func twoNodeBootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"},
 		}},
 	}
-	if node == "cp-1" {
+	if kubeadmRef == "control-plane" {
 		plan.Files = append(plan.Files,
 			vmtest.GuestFileRequest{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
 			vmtest.GuestFileRequest{Name: "kube-apiserver-manifest", Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"},
@@ -631,8 +632,8 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 }
 
-func TestTwoNodeBootstrapDiagnosticsAreNodeAware(t *testing.T) {
-	cp := twoNodeBootstrapDiagnostics("cp-1")
+func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
+	cp := bootstrapDiagnostics("cp-1")
 	if !diagnosticCommand(cp, "etc-kubernetes-mount") || !diagnosticCommand(cp, "kubeadm-version") {
 		t.Fatalf("control-plane diagnostics commands = %#v", cp.Commands)
 	}
@@ -646,7 +647,15 @@ func TestTwoNodeBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 		t.Fatalf("control-plane diagnostics journals = %#v", cp.Journals)
 	}
 
-	worker := twoNodeBootstrapDiagnostics("worker-1")
+	joiningCP := bootstrapDiagnostics("cp-2")
+	if !diagnosticFile(joiningCP, "kubeadm-config", "/etc/katl/kubeadm/control-plane/config.yaml") {
+		t.Fatalf("joining control-plane diagnostics files = %#v, want control-plane kubeadm config", joiningCP.Files)
+	}
+	if !diagnosticFile(joiningCP, "admin-kubeconfig", "/etc/kubernetes/admin.conf") || !diagnosticFile(joiningCP, "etcd-manifest", "/etc/kubernetes/manifests/etcd.yaml") {
+		t.Fatalf("joining control-plane diagnostics files = %#v, want control-plane artifacts", joiningCP.Files)
+	}
+
+	worker := bootstrapDiagnostics("worker-1")
 	if !diagnosticFile(worker, "kubeadm-config", "/etc/katl/kubeadm/worker/config.yaml") {
 		t.Fatalf("worker diagnostics files = %#v, want worker kubeadm config", worker.Files)
 	}
