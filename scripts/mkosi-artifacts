@@ -16,6 +16,10 @@ generation="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/n
 version="${KATL_VERSION:-0.0.0-dev}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
 installer_interface="${KATL_INSTALLER_INTERFACE:-katl-installer-boot-1}"
+katlos_image_default="$repo_root/build/mkosi/katlos-install-${version}-${architecture}.squashfs"
+katlos_image="${KATL_KATLOS_IMAGE:-$katlos_image_default}"
+katlos_image_metadata="${KATL_KATLOS_IMAGE_METADATA:-$katlos_image.json}"
+katlos_image_checksum="${KATL_KATLOS_IMAGE_CHECKSUM:-$katlos_image.sha256}"
 
 usage() {
     cat <<'USAGE'
@@ -30,6 +34,7 @@ Kinds:
   installer-initrd
   runtime-uki
   runtime-root
+  katlos-install-image
 USAGE
 }
 
@@ -75,6 +80,10 @@ need_file() {
     local label="$1"
     local path="$2"
     [[ -f "$path" ]] || fail "$label not found: $(rel "$path")"
+}
+
+katlos_image_available() {
+    [[ -f "$katlos_image" ]] || [[ -n "${KATL_KATLOS_IMAGE:-}" ]]
 }
 
 sha() {
@@ -180,6 +189,11 @@ write_index() {
     need_file "runtime SquashFS" "$runtime_artifact"
     need_file "runtime metadata" "$runtime_metadata"
     need_file "runtime checksum" "$runtime_checksum"
+    if katlos_image_available; then
+        need_file "KatlOS install image" "$katlos_image"
+        need_file "KatlOS install image metadata" "$katlos_image_metadata"
+        need_file "KatlOS install image checksum" "$katlos_image_checksum"
+    fi
 
     created="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     write_checksum "$installer_uki"
@@ -199,7 +213,12 @@ write_index() {
         entry installer-kernel linux-kernel "$installer_kernel" , "$(metadata_path "$installer_kernel")" "$(checksum_path "$installer_kernel")"
         entry installer-initrd initrd "$installer_initrd" , "$(metadata_path "$installer_initrd")" "$(checksum_path "$installer_initrd")"
         entry runtime-uki uki "$runtime_uki" , "$runtime_uki_metadata" "$runtime_uki_checksum"
-        entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
+        if katlos_image_available; then
+            entry runtime-root squashfs "$runtime_artifact" , "$runtime_metadata" "$runtime_checksum"
+            entry katlos-install-image squashfs "$katlos_image" "" "$katlos_image_metadata" "$katlos_image_checksum"
+        else
+            entry runtime-root squashfs "$runtime_artifact" "" "$runtime_metadata" "$runtime_checksum"
+        fi
         printf '  ]\n'
         printf '}\n'
     } >"$index"
