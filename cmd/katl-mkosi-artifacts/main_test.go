@@ -111,6 +111,50 @@ func TestPathForKindRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestKubernetesSysextFromLog(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	runtimeRoot := writeTestFile(t, workDir, "katl-runtime-root.squashfs", "runtime root")
+	runtimeSHA := testFileSHA256(t, runtimeRoot)
+	writeTestJSON(t, runtimeRoot+".json", map[string]any{"sha256": runtimeSHA})
+	sysext := writeTestFile(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
+	logPath := filepath.Join(workDir, "mkosi.log")
+	if err := os.WriteFile(logPath, []byte(strings.Join([]string{
+		"kubeadm x86_64 1.36.0-1 kubernetes installed",
+		"kubelet x86_64 1.36.0-1 kubernetes installed",
+		"kubectl x86_64 1.36.0-1 kubernetes installed",
+		"cri-tools x86_64 1.36.0-1 kubernetes installed",
+		"",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", logPath, err)
+	}
+
+	var stdout bytes.Buffer
+	err := run([]string{
+		"write-kubernetes-sysext-from-log",
+		"--artifact", sysext,
+		"--log", logPath,
+		"--runtime-artifact", runtimeRoot,
+		"--runtime-metadata", runtimeRoot + ".json",
+		"--repo-id", "kubernetes",
+		"--repo-base-url", "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
+		"--repo-minor", "v1.36",
+		"--expected-payload-version", "v1.36.0",
+		"--expected-kubeadm-version", "1.36.0-1",
+	}, &stdout, &bytes.Buffer{}, []string{"KATL_BUILD_COMMIT=test-build", "KATL_ARCHITECTURE=x86_64"})
+	if err != nil {
+		t.Fatalf("write-kubernetes-sysext-from-log error = %v", err)
+	}
+	var metadata localMetadata
+	readTestJSON(t, sysext+".json", &metadata)
+	if metadata.PayloadVersion != "v1.36.0" || metadata.PackageVersions["kubeadm"] != "1.36.0-1" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if metadata.CompatibleRuntime == nil || metadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
+		t.Fatalf("compatibleRuntime = %#v", metadata.CompatibleRuntime)
+	}
+}
+
 func TestMetadataWriters(t *testing.T) {
 	repo := testRepoRoot(t)
 	workDir := testWorkDir(t, repo)
@@ -287,6 +331,16 @@ func writeTestChecksum(t *testing.T, path string) {
 	if err := os.WriteFile(path+".sha256", []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s.sha256) error = %v", path, err)
 	}
+}
+
+func testFileSHA256(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func writeTestJSON(t *testing.T, path string, value any) {
