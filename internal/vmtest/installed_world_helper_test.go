@@ -3,6 +3,7 @@ package vmtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -150,6 +151,30 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testi
 		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, spec); err != nil {
 			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%#v) error = %v", spec, err)
 		}
+	}
+}
+
+func TestEnsurePublishedFirstInstallRuntimeFixturesWritesSetupFailureWhenProducerFails(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
+		Produce: func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			return ProducedInstalledRuntimeFixture{}, errors.New("first install generator failed")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "first install generator failed") {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v, want generator failure", err)
+	}
+	var result scenarioResult
+	resultPath := filepath.Join(world.ScenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec)), "result.json")
+	readJSONForTest(t, resultPath, &result)
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "first install generator failed") {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
