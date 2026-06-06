@@ -15,6 +15,7 @@ if [[ -n "${KATL_VERSION:-}" ]]; then
 fi
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
+installer_package_set=""
 kubernetes_repo_file=""
 kubernetes_repo_backup=""
 
@@ -87,11 +88,13 @@ if ! image_exists; then
 fi
 
 if [[ $# -eq 0 ]]; then
+    installer_package_set=build/mkosi/katl-installer.packages.tsv
     set -- --profile installer-image -f build
 else
     case "$1" in
         build-installer)
             shift
+            installer_package_set=build/mkosi/katl-installer.packages.tsv
             set -- --profile installer-image -f build "$@"
             ;;
         build-runtime)
@@ -117,6 +120,9 @@ else
         installer-image | runtime)
             profile="$1"
             shift
+            if [[ "$profile" == installer-image ]]; then
+                installer_package_set=build/mkosi/katl-installer.packages.tsv
+            fi
             if [[ $# -eq 0 ]]; then
                 set -- --profile "$profile" -f build
             else
@@ -137,6 +143,7 @@ run_flags=(
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
+    --env "KATL_INSTALLER_PACKAGE_SET=$installer_package_set"
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
     --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
     --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
@@ -146,6 +153,10 @@ run_flags=(
     --env "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION"
     --env "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION"
 )
+
+if [[ -n "$installer_package_set" ]]; then
+    mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$installer_package_set")
+fi
 
 if [[ "$runtime" == podman ]]; then
     run_flags+=(--userns=keep-id --user root)
@@ -162,6 +173,9 @@ fi
     trap "rm -f \"$log\"" EXIT
     mkdir -p /work/build/go-mod
     GOMODCACHE=/work/build/go-mod go mod download
+    if [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
+        rm -f "$KATL_INSTALLER_PACKAGE_SET"
+    fi
     mkosi "$@" 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
     pkg_version() {

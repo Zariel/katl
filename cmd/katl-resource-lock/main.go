@@ -248,6 +248,9 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := addInstallerPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-installer.packages.tsv"), repo, ""); err != nil {
+		return err
+	}
 	if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
 		return err
 	}
@@ -447,6 +450,37 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 		Path:          "mkosi.profiles/runtime",
 		ConfigDigest:  profileDigest,
 		PackageSetRef: "runtime",
+	})
+	return nil
+}
+
+func addInstallerPackageSet(manifest *resourcetest.Manifest, packagePath string, repo resourcetest.PackageRepository, lockDigest string) error {
+	packages, ok, err := readRPMPackageFile(packagePath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	profileDigest, err := profileConfigDigest("mkosi.profiles/installer-image")
+	if err != nil {
+		return err
+	}
+	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
+		Name:         "installer-image",
+		Source:       "mkosi.profiles/installer-image",
+		LockDigest:   lockDigest,
+		Distribution: "fedora",
+		Release:      "44",
+		Architecture: "x86_64",
+		Repositories: []resourcetest.PackageRepository{repo},
+		Packages:     packages,
+	})
+	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
+		Name:          "installer-image",
+		Path:          "mkosi.profiles/installer-image",
+		ConfigDigest:  profileDigest,
+		PackageSetRef: "installer-image",
 	})
 	return nil
 }
@@ -743,6 +777,22 @@ func writeManifest(path string, manifest resourcetest.Manifest) error {
 }
 
 var queryRPMPackages = queryRootRPMPackages
+
+func readRPMPackageFile(path string) ([]resourcetest.Package, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read rpm package set %s: %w", path, err)
+	}
+	defer file.Close()
+	packages, err := resourcetest.ParseRPMPackages(file)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse rpm package set %s: %w", path, err)
+	}
+	return packages, true, nil
+}
 
 func queryRootRPMPackages(root string) ([]resourcetest.Package, error) {
 	absoluteRoot, err := filepath.Abs(root)

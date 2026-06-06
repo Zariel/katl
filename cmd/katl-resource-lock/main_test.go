@@ -184,6 +184,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime.efi"), "runtime-uki")
 	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
 	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.1-150500.1.1")
+	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
 	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
 
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
@@ -208,16 +209,27 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
-	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 2 || manifest.PackageSets[0].LockDigest == "" || manifest.PackageSets[1].LockDigest == "" {
+	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 3 {
 		t.Fatalf("manifest artifacts=%d packageSets=%#v", len(manifest.Artifacts), manifest.PackageSets)
+	}
+	for _, set := range manifest.PackageSets {
+		if set.LockDigest == "" {
+			t.Fatalf("package set %q missing lock digest", set.Name)
+		}
 	}
 	if len(manifest.Tools) != 1 || manifest.Tools[0].Name != "mkosi" || manifest.Tools[0].Version != "26" {
 		t.Fatalf("manifest tools = %#v", manifest.Tools)
 	}
-	if manifest.MkosiProfiles[0].ConfigDigest == "" || manifest.MkosiProfiles[1].ConfigDigest == "" {
-		t.Fatalf("manifest mkosiProfiles = %#v", manifest.MkosiProfiles)
+	for _, profile := range manifest.MkosiProfiles {
+		if profile.ConfigDigest == "" {
+			t.Fatalf("manifest mkosiProfiles = %#v", manifest.MkosiProfiles)
+		}
 	}
-	kubernetesSet := manifest.PackageSets[1]
+	installerSet := packageSet(manifest.PackageSets, "installer-image")
+	if packageNEVRA(installerSet.Packages, "systemd") != "systemd-0:259.6-1.fc44.x86_64" {
+		t.Fatalf("installer package set = %#v", installerSet)
+	}
+	kubernetesSet := packageSet(manifest.PackageSets, "kubernetes-sysext")
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.1-150500.1.1.x86_64" {
 		t.Fatalf("Kubernetes package set = %#v", kubernetesSet)
 	}
@@ -278,6 +290,58 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 		t.Fatalf("prepare refresh error = %v", err)
 	}
 	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.2-150500.1.1")
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
+		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)
+	}
+}
+
+func TestRunPrepareMkosiStrictRejectsInstallerDrift(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	packagePath := filepath.Join(mkosiDir, "katl-installer.packages.tsv")
+	writeInstallerPackages(t, packagePath, "systemd-0:259.6-1.fc44.x86_64")
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	args := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}
+	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	writeInstallerPackages(t, packagePath, "systemd-0:259.7-1.fc44.x86_64")
 	err := run([]string{
 		"prepare-mkosi",
 		"--manifest", manifestPath,
@@ -441,6 +505,20 @@ func writeKubernetesMetadata(t *testing.T, path, version string) {
 		t.Fatalf("marshal Kubernetes metadata: %v", err)
 	}
 	writeFile(t, path, string(append(data, '\n')))
+}
+
+func writeInstallerPackages(t *testing.T, path, systemd string) {
+	t.Helper()
+	writeFile(t, path, "bash\tbash-0:5.3.9-3.fc44.x86_64\nsystemd\t"+systemd+"\n")
+}
+
+func packageSet(sets []resourcetest.PackageSet, name string) resourcetest.PackageSet {
+	for _, set := range sets {
+		if set.Name == name {
+			return set
+		}
+	}
+	return resourcetest.PackageSet{}
 }
 
 func packageNEVRA(packages []resourcetest.Package, name string) string {

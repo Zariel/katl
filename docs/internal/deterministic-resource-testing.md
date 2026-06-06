@@ -117,12 +117,13 @@ The lock commands default to `mkosi.profiles/resource-package-lock.json`. The re
 command writes that lock from the manifest's generated mkosi profile and package
 records and prints the lock digest. The resource-test preparation path should
 use `prepare-mkosi` for the standard build outputs. It records runtime RPMs from
-the runtime root and Kubernetes package identities from the sysext metadata when
-`katl-kubernetes.raw.json` is present. It also records the mkosi version and
-profile config digests for the package-producing profiles so strict mode catches
-profile or tool drift before scenario execution. The lower-level `add-artifact`
-and `add-rpm-package-set` commands remain available for focused resource
-preparation and custom suites.
+the runtime root, installer RPMs from the package-set TSV emitted during
+installer mkosi builds, and Kubernetes package identities from the sysext
+metadata when `katl-kubernetes.raw.json` is present. It also records the mkosi
+version and profile config digests for the package-producing profiles so strict
+mode catches profile or tool drift before scenario execution. The lower-level
+`add-artifact` and `add-rpm-package-set` commands remain available for focused
+resource preparation and custom suites.
 
 ## Resource Graph
 
@@ -243,6 +244,13 @@ The repo should grow one command, initially a thin script:
 ```text
 scripts/check-resource-tests
 ```
+
+For VM-backed suites, the stronger execution contract is the hermetic world
+model in `docs/internal/hermetic-vmtest-worlds.md`: the command creates a
+tmpdir world, runs package test binaries through `go test -exec`, and lets each
+test allocate its own VMs and guest addresses inside that world. Resource
+checking remains an internal setup and summary concern, not a developer-facing
+requirement to pass fixture paths and IP addresses.
 
 Responsibilities:
 
