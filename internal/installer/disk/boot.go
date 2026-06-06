@@ -99,7 +99,7 @@ func checkBootPlan(plan DiskLayoutPlan) error {
 }
 
 func recordPartUUID(ctx context.Context, commands OutputCommandRunner, label string, target *string, labels map[string]string) error {
-	uuid, err := readPartUUID(ctx, commands, label)
+	uuid, err := ReadPartUUID(ctx, commands, label)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,8 @@ func recordPartUUID(ctx context.Context, commands OutputCommandRunner, label str
 	return nil
 }
 
-func readPartUUID(ctx context.Context, commands OutputCommandRunner, label string) (string, error) {
+// ReadPartUUID returns the PARTUUID for the partition with the given GPT label.
+func ReadPartUUID(ctx context.Context, commands OutputCommandRunner, label string) (string, error) {
 	output, err := commands.Output(ctx, "blkid", "-t", "PARTLABEL="+label, "-s", "PARTUUID", "-o", "value")
 	if err != nil {
 		return "", fmt.Errorf("read %s PARTUUID: %w", label, err)

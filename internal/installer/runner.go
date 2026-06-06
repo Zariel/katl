@@ -117,7 +117,7 @@ func NewPlan(options PlanOptions) Plan {
 		stubStep{id: PrepareDisk},
 		stubStep{id: CreatePartitions},
 		stubStep{id: FormatFilesystems},
-		stubStep{id: MountTarget},
+		mountTargetStep{},
 		installRootSlotStep{},
 		installBootArtifactsStep{},
 		installExtensionsStep{},
@@ -360,6 +360,39 @@ func runtimeRootSizeMiB(sizeBytes int64) uint64 {
 	}
 	const mib = 1024 * 1024
 	return uint64((sizeBytes + mib - 1) / mib)
+}
+
+type mountTargetStep struct{}
+
+func (mountTargetStep) ID() StepID {
+	return MountTarget
+}
+
+func (mountTargetStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosImage != nil && install.RootSlotPlan != nil && install.LoaderRecord == nil {
+		if strings.TrimSpace(install.RootPartitionUUID) == "" {
+			commands, ok := install.Commands.(disk.OutputCommandRunner)
+			if !ok {
+				return fmt.Errorf("command runner must support output to read root partition UUID")
+			}
+			uuid, err := disk.ReadPartUUID(ctx, commands, install.RootSlotPlan.TargetPartition.GPTLabel)
+			if err != nil {
+				return err
+			}
+			install.RootPartitionUUID = uuid
+		}
+		record, err := firstInstallRecordFromImage(*install.KatlosImage, *install.RootSlotPlan, install)
+		if err != nil {
+			return err
+		}
+		install.LoaderRecord = &record
+	}
+	return recordStep(ctx, install, MountTarget)
 }
 
 type installRootSlotStep struct{}

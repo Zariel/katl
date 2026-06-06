@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -299,6 +300,69 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 	}
 	if record.Confexts != nil {
 		t.Fatalf("planned record should not include node confext before WriteInstallRecord: %#v", record.Confexts)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	commands := &recordingOutputRunner{
+		outputs: map[string][]byte{
+			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
+		},
+	}
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		Commands:       commands,
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+		GenerationID:   "2026.06.06-001",
+	}
+
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, mountTargetStep{}}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if install.RootPartitionUUID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("root partition UUID = %q", install.RootPartitionUUID)
+	}
+	if install.LoaderRecord == nil {
+		t.Fatal("loader record is nil")
+	}
+	if install.LoaderRecord.Root.PartitionUUID != install.RootPartitionUUID || install.LoaderRecord.Root.Slot != string(disk.RootSlotA) {
+		t.Fatalf("loader root = %#v", install.LoaderRecord.Root)
+	}
+	if got := strings.Join(commands.OutputCalls, ";"); got != "blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value" {
+		t.Fatalf("output calls = %#v", commands.OutputCalls)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, MountTarget}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerMountTargetRequiresOutputForRootUUID(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		Commands:       &NoopCommandRunner{},
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+	}
+
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, mountTargetStep{}}
+	err := NewRunner(plan, install).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "command runner must support output") {
+		t.Fatalf("Run() error = %v, want output command runner failure", err)
+	}
+	if install.LoaderRecord != nil {
+		t.Fatalf("loader record = %#v, want nil", install.LoaderRecord)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
 		t.Fatalf("completed steps = %#v", got)
@@ -982,6 +1046,21 @@ type recordingRootSlotOpener struct {
 func (o *recordingRootSlotOpener) OpenRootSlotDevice(_ context.Context, target disk.RootSlotTarget) (disk.RootSlotDevice, error) {
 	o.targetLabel = target.GPTLabel
 	return o.target, nil
+}
+
+type recordingOutputRunner struct {
+	NoopCommandRunner
+	outputs     map[string][]byte
+	OutputCalls []string
+}
+
+func (r *recordingOutputRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	call := strings.Join(append([]string{name}, args...), " ")
+	r.OutputCalls = append(r.OutputCalls, call)
+	if data, ok := r.outputs[call]; ok {
+		return data, nil
+	}
+	return nil, fmt.Errorf("unexpected output command %s", call)
 }
 
 type failingStep struct {
