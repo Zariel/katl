@@ -153,7 +153,36 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 	if _, err := manifest.Decode(file); err != nil {
 		return FixtureRecord{}, err
 	}
+	if err := factory.stageInstallManifestLocalRef(source, record.Path); err != nil {
+		return FixtureRecord{}, err
+	}
 	return record, nil
+}
+
+func (factory NodeFixtureFactory) stageInstallManifestLocalRef(sourceManifest, stagedManifest string) error {
+	data, err := os.ReadFile(stagedManifest)
+	if err != nil {
+		return err
+	}
+	var input struct {
+		KatlosImage struct {
+			LocalRef string `json:"localRef"`
+		} `json:"katlosImage"`
+	}
+	if err := json.Unmarshal(data, &input); err != nil {
+		return fmt.Errorf("decode install manifest localRef: %w", err)
+	}
+	localRef := strings.TrimSpace(input.KatlosImage.LocalRef)
+	if localRef == "" {
+		return nil
+	}
+	if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || localRef == "." || strings.HasPrefix(localRef, "../") || strings.Contains(localRef, "/../") {
+		return fmt.Errorf("install manifest localRef %q must be a clean relative path", localRef)
+	}
+	src := filepath.Join(filepath.Dir(sourceManifest), filepath.FromSlash(localRef))
+	dst := filepath.Join(filepath.Dir(stagedManifest), filepath.FromSlash(localRef))
+	_, err = factory.stageFile(FixtureKatlOSInstallImage, localRef, src, dst)
+	return err
 }
 
 func (factory NodeFixtureFactory) FirstInstallTargetDisk(name string, format DiskFormat, size string) (DiskFixture, error) {

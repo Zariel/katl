@@ -96,6 +96,33 @@ func TestWorldFixturesStageFirstInstallInputs(t *testing.T) {
 	}
 }
 
+func TestWorldFixturesStageInstallManifestLocalRef(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "install manifest local ref")
+	node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	factory := scenario.NodeFixtures(node)
+
+	sourceDir := t.TempDir()
+	image := writeFixtureFile(t, filepath.Join(sourceDir, "images", "katlos.squashfs"), "katlos-image")
+	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "images/katlos.squashfs",`, 1))
+
+	record, err := factory.InstallManifest(manifest)
+	if err != nil {
+		t.Fatalf("InstallManifest() error = %v", err)
+	}
+	stagedImage := filepath.Join(filepath.Dir(record.Path), "images", "katlos.squashfs")
+	if stagedImage == image {
+		t.Fatalf("localRef image was not staged")
+	}
+	if data, err := os.ReadFile(stagedImage); err != nil || string(data) != "katlos-image" {
+		t.Fatalf("staged localRef image = %q, err = %v", data, err)
+	}
+	scenarioManifest := readScenarioManifest(t, scenario.ManifestPath)
+	if !hasFixtureKind(scenarioManifest.Fixtures, FixtureInstallManifest) || !hasFixtureKind(scenarioManifest.Fixtures, FixtureKatlOSInstallImage) {
+		t.Fatalf("scenario fixtures = %#v", scenarioManifest.Fixtures)
+	}
+}
+
 func TestWorldFixturesStageDirectKernelInstallerBoot(t *testing.T) {
 	world := testWorld(t)
 	scenario := world.NewScenario(t, "direct kernel installer")
