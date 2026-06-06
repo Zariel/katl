@@ -865,6 +865,14 @@ func finishTwoNodeResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Sce
 	if !result.Started.IsZero() {
 		result.DurationMS = result.Finished.Sub(result.Started).Milliseconds()
 	}
+	result.Phases = append(result.Phases, vmtest.PhaseResult{
+		Name:           "multi-node-smoke",
+		Status:         status,
+		Started:        result.Started,
+		Finished:       result.Finished,
+		DurationMS:     result.DurationMS,
+		FailureSummary: failure,
+	})
 	if err := runner.Write(scenario, result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -1135,6 +1143,33 @@ func TestRequireSmokePrereqsWritesSkippedResult(t *testing.T) {
 	}
 	if len(result.Missing) != 1 || result.Missing[0].Name != "KATL_REQUIRED_INPUT" {
 		t.Fatalf("result missing prerequisites = %#v", result.Missing)
+	}
+}
+
+func TestFinishTwoNodeResultWritesSmokePhase(t *testing.T) {
+	stateRoot := t.TempDir()
+	runner := vmtest.NewRunner(vmtest.Options{
+		Enabled:   true,
+		StateRoot: stateRoot,
+		RunID:     "failed-run",
+	})
+	scenario := vmtest.Scenario{Name: "two-node"}
+	result := planStartedVMResult(t, runner, scenario)
+	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "bootstrap failed")
+
+	data, err := os.ReadFile(filepath.Join(stateRoot, "failed-run", "result.json"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var written vmtest.Result
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if written.Status != vmtest.StatusFailed || written.FailureSummary != "bootstrap failed" {
+		t.Fatalf("result = %#v", written)
+	}
+	if len(written.Phases) != 1 || written.Phases[0].Name != "multi-node-smoke" || written.Phases[0].Status != vmtest.StatusFailed || written.Phases[0].FailureSummary != "bootstrap failed" {
+		t.Fatalf("result phases = %#v", written.Phases)
 	}
 }
 
