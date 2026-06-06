@@ -33,6 +33,7 @@ type WorldScenario struct {
 	ResultPath   string
 	NodeDir      string
 	Nodes        []Node
+	Fixtures     []FixtureRecord
 }
 
 type Node struct {
@@ -46,14 +47,15 @@ type Node struct {
 }
 
 type scenarioManifest struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	WorldRunID string `json:"worldRunID"`
-	Name       string `json:"name"`
-	ID         string `json:"id"`
-	Dir        string `json:"dir"`
-	ResultPath string `json:"resultPath"`
-	Nodes      []Node `json:"nodes"`
+	APIVersion string          `json:"apiVersion"`
+	Kind       string          `json:"kind"`
+	WorldRunID string          `json:"worldRunID"`
+	Name       string          `json:"name"`
+	ID         string          `json:"id"`
+	Dir        string          `json:"dir"`
+	ResultPath string          `json:"resultPath"`
+	Nodes      []Node          `json:"nodes"`
+	Fixtures   []FixtureRecord `json:"fixtures,omitempty"`
 }
 
 type scenarioResult struct {
@@ -177,6 +179,7 @@ func (scenario *WorldScenario) WriteManifest() error {
 		Dir:        scenario.Dir,
 		ResultPath: scenario.ResultPath,
 		Nodes:      scenario.Nodes,
+		Fixtures:   scenario.Fixtures,
 	})
 }
 
