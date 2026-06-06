@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/katlosimage"
+	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
 func TestVersion(t *testing.T) {
@@ -81,6 +83,31 @@ func TestBootInput(t *testing.T) {
 	}
 	if input.Action != installer.InstallActionRun || !input.CanMutateDisks() {
 		t.Fatalf("action = %s canMutate = %t, want run", input.Action, input.CanMutateDisks())
+	}
+}
+
+func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "media", "install-manifest.json")
+	stateDir := filepath.Join(root, "state")
+
+	install, err := manifestRunnerContext(manifestPath, stateDir, installstatus.InputModePXEPreseed, manifestPath)
+	if err != nil {
+		t.Fatalf("manifestRunnerContext() error = %v", err)
+	}
+
+	resolver, ok := install.KatlosResolver.(katlosimage.Resolver)
+	if !ok {
+		t.Fatalf("KatlosResolver = %T, want katlosimage.Resolver", install.KatlosResolver)
+	}
+	if resolver.MediaRoot != filepath.Dir(manifestPath) {
+		t.Fatalf("MediaRoot = %q, want %q", resolver.MediaRoot, filepath.Dir(manifestPath))
+	}
+	if resolver.WorkDir != filepath.Join(stateDir, "katlos-image") {
+		t.Fatalf("WorkDir = %q, want state-backed image workdir", resolver.WorkDir)
+	}
+	if resolver.Commands == nil || install.Commands == nil {
+		t.Fatalf("command runners are not configured: resolver=%#v install=%#v", resolver.Commands, install.Commands)
 	}
 }
 

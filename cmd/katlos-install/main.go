@@ -14,6 +14,7 @@ import (
 
 	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/handoff"
+	"github.com/zariel/katl/internal/installer/katlosimage"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
@@ -38,17 +39,43 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 		inputSource = manifestPath
 	}
 
-	runner := installer.NewRunner(installer.PreseededManifestPlan(), &installer.Context{
+	install, err := manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource)
+	if err != nil {
+		return err
+	}
+	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
+
+	return runner.Run(ctx)
+}
+
+func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string) (*installer.Context, error) {
+	mediaRoot, err := manifestMediaRoot(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	commands := installer.NewExecCommandRunner()
+	return &installer.Context{
 		ManifestPath: manifestPath,
 		StateDir:     stateDir,
 		TargetRoot:   "/mnt/target",
-		Commands:     installer.NewExecCommandRunner(),
+		Commands:     commands,
 		Store:        installer.NewFileStateStore(stateDir),
-		InputMode:    inputMode,
-		InputSource:  inputSource,
-	})
+		KatlosResolver: katlosimage.Resolver{
+			MediaRoot: mediaRoot,
+			WorkDir:   filepath.Join(stateDir, "katlos-image"),
+			Commands:  commands,
+		},
+		InputMode:   inputMode,
+		InputSource: inputSource,
+	}, nil
+}
 
-	return runner.Run(ctx)
+func manifestMediaRoot(manifestPath string) (string, error) {
+	path, err := filepath.Abs(manifestPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve manifest path: %w", err)
+	}
+	return filepath.Dir(path), nil
 }
 
 func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer) error {
