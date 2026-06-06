@@ -228,25 +228,21 @@ write_index() {
 path_for() {
     local kind="$1"
     local index="$2"
-    local path
+    local path count
     [[ -f "$index" ]] || fail "artifact index not found: $(rel "$index")"
-    path="$(awk -v want="$kind" '
-        /"kind":/ {
-            kind = $0
-            sub(/^[^"]*"kind": "?/, "", kind)
-            sub(/"?,?$/, "", kind)
-        }
-        /"path":/ {
-            path = $0
-            sub(/^[^"]*"path": "?/, "", path)
-            sub(/"?,?$/, "", path)
-            if (kind == want) {
-                print path
-                exit
-            }
-        }
-    ' "$index")"
-    [[ -n "$path" ]] || fail "artifact kind not found in $(rel "$index"): $kind"
+    need jq
+    count="$(jq -er --arg kind "$kind" '[.artifacts[]? | select(.kind == $kind)] | length' "$index")"
+    case "$count" in
+        0)
+            fail "artifact kind not found in $(rel "$index"): $kind"
+            ;;
+        1)
+            ;;
+        *)
+            fail "artifact kind appears more than once in $(rel "$index"): $kind"
+            ;;
+    esac
+    path="$(jq -er --arg kind "$kind" '.artifacts[] | select(.kind == $kind) | .path' "$index")"
     abs "$path"
 }
 
