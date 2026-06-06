@@ -296,6 +296,53 @@ func TestVMTestRunRequiredHostGapFails(t *testing.T) {
 	}
 }
 
+func TestVMTestRunBridgePrereqGapFails(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	if err := os.WriteFile(host.bridgeConf, []byte("allow otherbr0\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", host.bridgeConf, err)
+	}
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_RUN_ID=run-bridge-prereq",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
+	}
+	world, loadErr := LoadWorld(filepath.Join(runDir, "world.json"))
+	if loadErr != nil {
+		t.Fatalf("LoadWorld() error = %v", loadErr)
+	}
+	if world.Capabilities["bridge"] != WorldStatusFailed {
+		t.Fatalf("bridge capability = %q", world.Capabilities["bridge"])
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if !contains(caps.Missing, "qemu-bridge-acl") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "setup-failed" || summary.ExitCode != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -428,27 +475,33 @@ exit "${KATL_FAKE_CHILD_EXIT:-0}"
 }
 
 type fakeHostTools struct {
-	qemu     string
-	qemuImg  string
-	ip       string
-	ipLog    string
-	ovmfCode string
-	ovmfVars string
-	kvm      string
-	vsock    string
+	qemu         string
+	qemuImg      string
+	ip           string
+	ipLog        string
+	ovmfCode     string
+	ovmfVars     string
+	kvm          string
+	vsock        string
+	tun          string
+	bridgeHelper string
+	bridgeConf   string
 }
 
 func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostTools {
 	t.Helper()
 	tools := fakeHostTools{
-		qemu:     filepath.Join(dir, "qemu-system-x86_64"),
-		qemuImg:  filepath.Join(dir, "qemu-img"),
-		ip:       filepath.Join(dir, "ip"),
-		ipLog:    filepath.Join(dir, "ip.log"),
-		ovmfCode: filepath.Join(dir, "OVMF_CODE.fd"),
-		ovmfVars: filepath.Join(dir, "OVMF_VARS.fd"),
-		kvm:      filepath.Join(dir, "kvm"),
-		vsock:    filepath.Join(dir, "vhost-vsock"),
+		qemu:         filepath.Join(dir, "qemu-system-x86_64"),
+		qemuImg:      filepath.Join(dir, "qemu-img"),
+		ip:           filepath.Join(dir, "ip"),
+		ipLog:        filepath.Join(dir, "ip.log"),
+		ovmfCode:     filepath.Join(dir, "OVMF_CODE.fd"),
+		ovmfVars:     filepath.Join(dir, "OVMF_VARS.fd"),
+		kvm:          filepath.Join(dir, "kvm"),
+		vsock:        filepath.Join(dir, "vhost-vsock"),
+		tun:          filepath.Join(dir, "tun"),
+		bridgeHelper: filepath.Join(dir, "qemu-bridge-helper"),
+		bridgeConf:   filepath.Join(dir, "bridge.conf"),
 	}
 	writeExecutable(t, tools.qemu, "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, tools.qemuImg, "#!/usr/bin/env bash\nexit 0\n")
@@ -467,6 +520,13 @@ func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostToo
 	}
 	if err := os.WriteFile(tools.vsock, []byte{}, 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.vsock, err)
+	}
+	if err := os.WriteFile(tools.tun, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", tools.tun, err)
+	}
+	writeExecutable(t, tools.bridgeHelper, "#!/usr/bin/env bash\nexit 0\n")
+	if err := os.WriteFile(tools.bridgeConf, []byte("allow katl-vmtest0\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", tools.bridgeConf, err)
 	}
 	existing := "0"
 	if bridgeExists {
@@ -508,6 +568,9 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_OVMF_VARS="+tools.ovmfVars,
 		"KATL_VMTEST_KVM_DEVICE="+tools.kvm,
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
+		"KATL_VMTEST_TUN_DEVICE="+tools.tun,
+		"KATL_QEMU_BRIDGE_HELPER="+tools.bridgeHelper,
+		"KATL_QEMU_BRIDGE_CONF="+tools.bridgeConf,
 		"PATH="+filepath.Dir(tools.qemu)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return append(env, extra...)

@@ -27,6 +27,8 @@ ovmf_code="${KATL_OVMF_CODE:-}"
 ovmf_vars="${KATL_OVMF_VARS:-}"
 kvm_device="${KATL_VMTEST_KVM_DEVICE:-/dev/kvm}"
 vsock_device="${KATL_VMTEST_VSOCK_DEVICE:-/dev/vhost-vsock}"
+tun_device="${KATL_VMTEST_TUN_DEVICE:-/dev/net/tun}"
+bridge_conf="${KATL_QEMU_BRIDGE_CONF:-/etc/qemu/bridge.conf}"
 network_prefix=""
 bridge_created=0
 final_status="setup-failed"
@@ -186,6 +188,63 @@ validate_network() {
     fi
 }
 
+find_bridge_helper() {
+    if [[ -n "${KATL_QEMU_BRIDGE_HELPER:-}" ]]; then
+        printf "%s" "$KATL_QEMU_BRIDGE_HELPER"
+        return 0
+    fi
+    local helper
+    for helper in /usr/lib/qemu/qemu-bridge-helper /usr/libexec/qemu-bridge-helper /usr/lib64/qemu/qemu-bridge-helper; do
+        if [[ -e "$helper" ]]; then
+            printf "%s" "$helper"
+            return 0
+        fi
+    done
+    return 1
+}
+
+bridge_acl_allows() {
+    local bridge="$1"
+    local line
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [[ "$line" == "allow all" || "$line" == "allow $bridge" ]]; then
+            return 0
+        fi
+    done <"$bridge_conf"
+    return 1
+}
+
+check_bridge_prerequisites() {
+    local missing=0
+    if [[ ! -e "$tun_device" ]]; then
+        missing_capabilities+=("tun")
+        missing=1
+    fi
+    local helper=""
+    if ! helper="$(find_bridge_helper)"; then
+        missing_capabilities+=("qemu-bridge-helper")
+        missing=1
+    elif [[ ! -e "$helper" ]]; then
+        missing_capabilities+=("qemu-bridge-helper")
+        missing=1
+    fi
+    if [[ ! -r "$bridge_conf" ]]; then
+        missing_capabilities+=("qemu-bridge-acl")
+        missing=1
+    elif ! bridge_acl_allows "$network_bridge"; then
+        missing_capabilities+=("qemu-bridge-acl")
+        missing=1
+    fi
+    if [[ "$missing" == 1 ]]; then
+        cap_bridge="$(missing_status missing)"
+        return 1
+    fi
+    return 0
+}
+
 setup_network() {
     if [[ "$network_backend" != "bridge" ]]; then
         return
@@ -196,6 +255,9 @@ setup_network() {
         return
     fi
     if "$ip_bin" link show "$network_bridge" >/dev/null 2>&1; then
+        if ! check_bridge_prerequisites; then
+            return 0
+        fi
         cap_bridge="passed"
         return
     fi
@@ -203,6 +265,9 @@ setup_network() {
         bridge_created=1
         if "$ip_bin" addr add "$network_gateway/$network_prefix" dev "$network_bridge" &&
             "$ip_bin" link set "$network_bridge" up; then
+            if ! check_bridge_prerequisites; then
+                return 0
+            fi
             cap_bridge="passed"
             return
         fi
