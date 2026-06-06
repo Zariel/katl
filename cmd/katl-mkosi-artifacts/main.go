@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -28,7 +29,6 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer, environ []string) error {
-	_ = stderr
 	command := "write"
 	if len(args) > 0 {
 		command = args[0]
@@ -72,6 +72,12 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		}
 		fmt.Fprint(stdout, path)
 		return nil
+	case "write-runtime-root":
+		return runWriteRuntimeRoot(args, stdout, stderr, cfg)
+	case "write-runtime-uki":
+		return runWriteRuntimeUKI(args, stdout, stderr, cfg)
+	case "write-kubernetes-sysext":
+		return runWriteKubernetesSysext(args, stdout, stderr, cfg)
 	case "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -82,6 +88,9 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 
 const usage = `Usage: scripts/mkosi-artifacts [write [INDEX]]
        scripts/mkosi-artifacts path KIND [INDEX]
+       katl-mkosi-artifacts write-runtime-root --artifact PATH
+       katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
+       katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION
 
 Write or query the local mkosi artifact index.
 
@@ -180,6 +189,230 @@ type bootMetadata struct {
 	InstallerInterface       string   `json:"installerInterface"`
 	DefaultKernelCommandLine []string `json:"defaultKernelCommandLine"`
 	SupportedInputModes      []string `json:"supportedInputModes"`
+}
+
+type localMetadata struct {
+	Name              string            `json:"name"`
+	Kind              string            `json:"kind"`
+	Format            string            `json:"format"`
+	Path              string            `json:"path"`
+	SizeBytes         int64             `json:"sizeBytes"`
+	SHA256            string            `json:"sha256"`
+	Compression       string            `json:"compression,omitempty"`
+	Generation        string            `json:"generation,omitempty"`
+	Version           string            `json:"version,omitempty"`
+	PayloadVersion    string            `json:"payloadVersion,omitempty"`
+	Architecture      string            `json:"architecture"`
+	SourceRepo        *sourceRepo       `json:"sourceRepo,omitempty"`
+	PackageVersions   map[string]string `json:"packageVersions,omitempty"`
+	RuntimeInterface  string            `json:"runtimeInterface"`
+	CompatibleBoot    *bootCompat       `json:"compatibleBoot,omitempty"`
+	CompatibleRuntime *runtimeCompat    `json:"compatibleRuntime,omitempty"`
+	KernelVersion     string            `json:"kernelVersion,omitempty"`
+	KernelCommandLine []string          `json:"kernelCommandLine,omitempty"`
+	Created           string            `json:"created"`
+}
+
+type bootCompat struct {
+	Kind              string   `json:"kind"`
+	RuntimeInterface  string   `json:"runtimeInterface"`
+	KernelCommandLine []string `json:"kernelCommandLine,omitempty"`
+}
+
+type runtimeCompat struct {
+	Interface      string `json:"interface"`
+	ArtifactPath   string `json:"artifactPath,omitempty"`
+	ArtifactSHA256 string `json:"artifactSHA256,omitempty"`
+}
+
+type sourceRepo struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"baseURL"`
+	Minor   string `json:"minor"`
+}
+
+func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-runtime-root", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "runtime root SquashFS artifact")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+
+	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return err
+	}
+	if err := writeChecksum(artifactPath); err != nil {
+		return err
+	}
+	metadata := localMetadata{
+		Name:             "runtime-root",
+		Kind:             "runtime-root",
+		Format:           "squashfs",
+		Path:             filepath.Base(artifactPath),
+		SizeBytes:        size,
+		SHA256:           digest,
+		Compression:      "zstd",
+		Generation:       cfg.Generation,
+		Architecture:     cfg.Architecture,
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleBoot: &bootCompat{
+			Kind:              "uki",
+			RuntimeInterface:  "katl-runtime-1",
+			KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
+		},
+		Created: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
+func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-runtime-uki", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-runtime.efi"), "runtime UKI artifact")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	runtimeSHA := flags.String("runtime-sha256", "", "compatible runtime root SHA-256")
+	kernelVersion := flags.String("kernel-version", "", "runtime kernel version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*runtimeSHA) == "" {
+		return fmt.Errorf("--runtime-sha256 is required")
+	}
+	if strings.TrimSpace(*kernelVersion) == "" {
+		return fmt.Errorf("--kernel-version is required")
+	}
+
+	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	runtimePath := absPath(cfg.RepoRoot, *runtimeArtifact)
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return err
+	}
+	if err := writeChecksum(artifactPath); err != nil {
+		return err
+	}
+	metadata := localMetadata{
+		Name:             "runtime-uki",
+		Kind:             "runtime-uki",
+		Format:           "uki",
+		Path:             filepath.Base(artifactPath),
+		SizeBytes:        size,
+		SHA256:           digest,
+		Version:          cfg.Generation,
+		Architecture:     cfg.Architecture,
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &runtimeCompat{
+			Interface:      "katl-runtime-1",
+			ArtifactPath:   filepath.Base(runtimePath),
+			ArtifactSHA256: *runtimeSHA,
+		},
+		KernelVersion:     *kernelVersion,
+		KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
+		Created:           time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
+func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-kubernetes-sysext", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
+	payloadVersion := flags.String("payload-version", "", "Kubernetes payload version")
+	kubeadmVersion := flags.String("kubeadm-version", "", "resolved kubeadm package version")
+	kubeletVersion := flags.String("kubelet-version", "", "resolved kubelet package version")
+	kubectlVersion := flags.String("kubectl-version", "", "resolved kubectl package version")
+	criToolsVersion := flags.String("cri-tools-version", "", "resolved cri-tools package version")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
+	runtimeSHA := flags.String("runtime-sha256", "", "compatible runtime root SHA-256 override")
+	repoID := flags.String("repo-id", "", "Kubernetes package repository ID")
+	repoBaseURL := flags.String("repo-base-url", "", "Kubernetes package repository base URL")
+	repoMinor := flags.String("repo-minor", "", "Kubernetes package minor")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	for name, value := range map[string]string{
+		"--payload-version":   *payloadVersion,
+		"--kubeadm-version":   *kubeadmVersion,
+		"--kubelet-version":   *kubeletVersion,
+		"--kubectl-version":   *kubectlVersion,
+		"--cri-tools-version": *criToolsVersion,
+		"--repo-id":           *repoID,
+		"--repo-base-url":     *repoBaseURL,
+		"--repo-minor":        *repoMinor,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+
+	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	runtimePath := absPath(cfg.RepoRoot, *runtimeArtifact)
+	sha, err := resolveRuntimeSHA(cfg.RepoRoot, *runtimeSHA, *runtimeMetadata)
+	if err != nil {
+		return err
+	}
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return err
+	}
+	if err := writeChecksum(artifactPath); err != nil {
+		return err
+	}
+	metadata := localMetadata{
+		Name:           "kubernetes",
+		Kind:           "sysext",
+		Format:         "sysext",
+		Path:           filepath.Base(artifactPath),
+		SizeBytes:      size,
+		SHA256:         digest,
+		Version:        cfg.Generation,
+		PayloadVersion: *payloadVersion,
+		Architecture:   cfg.Architecture,
+		SourceRepo: &sourceRepo{
+			ID:      *repoID,
+			BaseURL: *repoBaseURL,
+			Minor:   *repoMinor,
+		},
+		PackageVersions: map[string]string{
+			"kubeadm":   *kubeadmVersion,
+			"kubelet":   *kubeletVersion,
+			"kubectl":   *kubectlVersion,
+			"cri-tools": *criToolsVersion,
+		},
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &runtimeCompat{
+			Interface:      "katl-runtime-1",
+			ArtifactPath:   filepath.Base(runtimePath),
+			ArtifactSHA256: sha,
+		},
+		Created: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
 }
 
 func writeIndex(indexPath string, cfg config) error {
@@ -317,6 +550,41 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 		return fmt.Errorf("write installer boot metadata %s: %w", relPath(cfg.RepoRoot, path), err)
 	}
 	return nil
+}
+
+func writeJSON(path string, value any, repoRoot string) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", relPath(repoRoot, path), err)
+	}
+	return nil
+}
+
+func resolveRuntimeSHA(repoRoot, explicit, metadataPath string) (string, error) {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit, nil
+	}
+	path := absPath(repoRoot, metadataPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read runtime metadata %s: %w", relPath(repoRoot, path), err)
+	}
+	var metadata struct {
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return "", fmt.Errorf("decode runtime metadata %s: %w", relPath(repoRoot, path), err)
+	}
+	if strings.TrimSpace(metadata.SHA256) == "" {
+		return "", fmt.Errorf("runtime metadata missing sha256: %s", relPath(repoRoot, path))
+	}
+	return metadata.SHA256, nil
 }
 
 func newEntry(kind, format, path, metadata, checksum, repoRoot string) (artifactEntry, error) {

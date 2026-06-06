@@ -111,6 +111,86 @@ func TestPathForKindRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestMetadataWriters(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	runtimeRoot := writeTestFile(t, workDir, "katl-runtime-root.squashfs", "runtime root")
+	runtimeUKI := writeTestFile(t, workDir, "katl-runtime.efi", "runtime uki")
+	sysext := writeTestFile(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
+	env := []string{
+		"KATL_BUILD_COMMIT=test-build",
+		"KATL_ARCHITECTURE=x86_64",
+	}
+
+	var stdout bytes.Buffer
+	if err := run([]string{"write-runtime-root", "--artifact", runtimeRoot}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-runtime-root error = %v", err)
+	}
+	runtimeSHA := strings.TrimSpace(stdout.String())
+	var rootMetadata localMetadata
+	readTestJSON(t, runtimeRoot+".json", &rootMetadata)
+	if rootMetadata.Name != "runtime-root" || rootMetadata.SHA256 != runtimeSHA || rootMetadata.Compression != "zstd" {
+		t.Fatalf("runtime root metadata = %#v, sha stdout %q", rootMetadata, runtimeSHA)
+	}
+	if rootMetadata.CompatibleBoot == nil || rootMetadata.CompatibleBoot.Kind != "uki" {
+		t.Fatalf("runtime root boot compatibility = %#v", rootMetadata.CompatibleBoot)
+	}
+
+	stdout.Reset()
+	if err := run([]string{
+		"write-runtime-uki",
+		"--artifact", runtimeUKI,
+		"--runtime-artifact", runtimeRoot,
+		"--runtime-sha256", runtimeSHA,
+		"--kernel-version", "6.12.0",
+	}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-runtime-uki error = %v", err)
+	}
+	var ukiMetadata localMetadata
+	readTestJSON(t, runtimeUKI+".json", &ukiMetadata)
+	if ukiMetadata.Name != "runtime-uki" || ukiMetadata.CompatibleRuntime == nil {
+		t.Fatalf("runtime UKI metadata = %#v", ukiMetadata)
+	}
+	if ukiMetadata.CompatibleRuntime.ArtifactPath != filepath.Base(runtimeRoot) || ukiMetadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
+		t.Fatalf("runtime UKI compatibility = %#v", ukiMetadata.CompatibleRuntime)
+	}
+	if ukiMetadata.KernelVersion != "6.12.0" {
+		t.Fatalf("kernelVersion = %q", ukiMetadata.KernelVersion)
+	}
+
+	stdout.Reset()
+	if err := run([]string{
+		"write-kubernetes-sysext",
+		"--artifact", sysext,
+		"--payload-version", "v1.36.0",
+		"--kubeadm-version", "1.36.0-1",
+		"--kubelet-version", "1.36.0-1",
+		"--kubectl-version", "1.36.0-1",
+		"--cri-tools-version", "1.36.0-1",
+		"--runtime-artifact", runtimeRoot,
+		"--runtime-metadata", runtimeRoot + ".json",
+		"--repo-id", "kubernetes",
+		"--repo-base-url", "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
+		"--repo-minor", "v1.36",
+	}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-kubernetes-sysext error = %v", err)
+	}
+	var sysextMetadata localMetadata
+	readTestJSON(t, sysext+".json", &sysextMetadata)
+	if sysextMetadata.Name != "kubernetes" || sysextMetadata.PayloadVersion != "v1.36.0" {
+		t.Fatalf("Kubernetes sysext metadata = %#v", sysextMetadata)
+	}
+	if sysextMetadata.CompatibleRuntime == nil || sysextMetadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
+		t.Fatalf("Kubernetes sysext compatibility = %#v", sysextMetadata.CompatibleRuntime)
+	}
+	if sysextMetadata.SourceRepo == nil || sysextMetadata.SourceRepo.Minor != "v1.36" {
+		t.Fatalf("Kubernetes source repo = %#v", sysextMetadata.SourceRepo)
+	}
+	if sysextMetadata.PackageVersions["cri-tools"] != "1.36.0-1" {
+		t.Fatalf("packageVersions = %#v", sysextMetadata.PackageVersions)
+	}
+}
+
 func testRepoRoot(t *testing.T) string {
 	t.Helper()
 	root, err := repoRoot()
