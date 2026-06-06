@@ -14,6 +14,10 @@ runtime_artifact="${KATL_RUNTIME_ARTIFACT:-}"
 runtime_esp="${KATL_RUNTIME_ESP_ARTIFACTS:-${KATL_INSTALLED_ESP_ARTIFACTS:-}}"
 node_metadata="${KATL_RUNTIME_NODE_METADATA:-${KATL_INSTALLED_NODE_METADATA:-}}"
 install_manifest="${KATL_INSTALL_MANIFEST:-}"
+installer_uki_sha256="${KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256:-}"
+runtime_artifact_sha256="${KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256:-}"
+install_manifest_sha256="${KATL_FIRST_INSTALL_MANIFEST_SHA256:-}"
+node_metadata_sha256="${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}"
 target_disk_size="${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}"
 vmtest_keep="${KATL_VMTEST_KEEP:-always}"
 vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-$state_dir/vm-runs}"
@@ -35,6 +39,10 @@ Options:
   --runtime-esp DIR          Rendered runtime ESP tree, or KATL_RUNTIME_ESP_ARTIFACTS
   --node-metadata PATH       Optional /etc/katl/node.json, or KATL_RUNTIME_NODE_METADATA
   --install-manifest PATH    Install manifest, or KATL_INSTALL_MANIFEST
+  --installer-uki-sha256 H   Expected installer UKI SHA-256
+  --runtime-artifact-sha256 H Expected runtime artifact SHA-256
+  --install-manifest-sha256 H Expected install manifest SHA-256
+  --node-metadata-sha256 H   Expected node metadata SHA-256
   --target-disk-size SIZE    Target disk size for the first install smoke (default: 20G)
   --state-dir DIR            Output directory for generated env, manifest, and wrapper
   --env-file PATH            Sourceable env output path (default: <state-dir>/vmtest.env)
@@ -102,6 +110,26 @@ while [[ $# -gt 0 ]]; do
         --install-manifest)
             need_value "$1" "${2:-}"
             install_manifest="$2"
+            shift 2
+            ;;
+        --installer-uki-sha256)
+            need_value "$1" "${2:-}"
+            installer_uki_sha256="$2"
+            shift 2
+            ;;
+        --runtime-artifact-sha256)
+            need_value "$1" "${2:-}"
+            runtime_artifact_sha256="$2"
+            shift 2
+            ;;
+        --install-manifest-sha256)
+            need_value "$1" "${2:-}"
+            install_manifest_sha256="$2"
+            shift 2
+            ;;
+        --node-metadata-sha256)
+            need_value "$1" "${2:-}"
+            node_metadata_sha256="$2"
             shift 2
             ;;
         --target-disk-size)
@@ -179,6 +207,49 @@ validate_no_shell_list_value() {
 
 validate_no_shell_list_value "target disk size" "$target_disk_size"
 
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need sha256sum
+
+file_sha() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+validate_sha256() {
+    local label="$1"
+    local value="$2"
+    [[ -z "$value" ]] && return 0
+    [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "$label must be a lowercase SHA-256 hex digest"
+}
+
+verify_sha256() {
+    local label="$1"
+    local path="$2"
+    local expected="$3"
+    local actual
+    actual="$(file_sha "$path")"
+    if [[ -n "$expected" && "$actual" != "$expected" ]]; then
+        fail "$label sha256 does not match $path"
+    fi
+    printf "%s" "$actual"
+}
+
+validate_sha256 "installer UKI SHA-256" "$installer_uki_sha256"
+validate_sha256 "runtime artifact SHA-256" "$runtime_artifact_sha256"
+validate_sha256 "install manifest SHA-256" "$install_manifest_sha256"
+validate_sha256 "node metadata SHA-256" "$node_metadata_sha256"
+
+installer_uki_sha256="$(verify_sha256 "installer UKI" "$installer_uki" "$installer_uki_sha256")"
+runtime_artifact_sha256="$(verify_sha256 "runtime artifact" "$runtime_artifact" "$runtime_artifact_sha256")"
+install_manifest_sha256="$(verify_sha256 "install manifest" "$install_manifest" "$install_manifest_sha256")"
+if [[ -n "$node_metadata" ]]; then
+    node_metadata_sha256="$(verify_sha256 "node metadata" "$node_metadata" "$node_metadata_sha256")"
+elif [[ -n "$node_metadata_sha256" ]]; then
+    fail "--node-metadata is required when --node-metadata-sha256 is set"
+fi
+
 check_loader_entries() {
     local esp="$1"
     local entries_dir="$esp/loader/entries"
@@ -214,9 +285,13 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_RUNTIME_ARTIFACT=%q\n' "$runtime_artifact"
     printf 'export KATL_RUNTIME_ESP_ARTIFACTS=%q\n' "$runtime_esp"
     printf 'export KATL_INSTALL_MANIFEST=%q\n' "$install_manifest"
+    printf 'export KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256=%q\n' "$installer_uki_sha256"
+    printf 'export KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256=%q\n' "$runtime_artifact_sha256"
+    printf 'export KATL_FIRST_INSTALL_MANIFEST_SHA256=%q\n' "$install_manifest_sha256"
     printf 'export KATL_FIRST_INSTALL_TARGET_DISK_SIZE=%q\n' "$target_disk_size"
     if [[ -n "$node_metadata" ]]; then
         printf 'export KATL_RUNTIME_NODE_METADATA=%q\n' "$node_metadata"
+        printf 'export KATL_FIRST_INSTALL_NODE_METADATA_SHA256=%q\n' "$node_metadata_sha256"
     fi
 } >"$env_file"
 
@@ -227,11 +302,16 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/recheck"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --runtime-esp "$KATL_RUNTIME_ESP_ARTIFACTS" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --runtime-esp "$KATL_RUNTIME_ESP_ARTIFACTS" --install-manifest "$KATL_INSTALL_MANIFEST" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
     # shellcheck disable=SC2016
     printf '    recheck_args+=(--node-metadata "$KATL_RUNTIME_NODE_METADATA")\n'
+    # shellcheck disable=SC2016
+    printf '    if [[ -n "${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '        recheck_args+=(--node-metadata-sha256 "$KATL_FIRST_INSTALL_NODE_METADATA_SHA256")\n'
+    printf '    fi\n'
     printf 'fi\n'
     # shellcheck disable=SC2016
     printf '%q "${recheck_args[@]}"\n' "$repo_root/scripts/resolve-first-install-runtime-fixture"
@@ -245,10 +325,14 @@ cat >"$manifest" <<EOF
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "FirstInstallRuntimeFixtureResolution",
   "installerUKI": "$(json "$installer_uki")",
+  "installerUKISHA256": "$(json "$installer_uki_sha256")",
   "runtimeArtifact": "$(json "$runtime_artifact")",
+  "runtimeArtifactSHA256": "$(json "$runtime_artifact_sha256")",
   "runtimeESPArtifacts": "$(json "$runtime_esp")",
   "nodeMetadata": "$(json "$node_metadata")",
+  "nodeMetadataSHA256": "$(json "$node_metadata_sha256")",
   "installManifest": "$(json "$install_manifest")",
+  "installManifestSHA256": "$(json "$install_manifest_sha256")",
   "targetDiskSize": "$(json "$target_disk_size")",
   "envFile": "$(json "$env_file")",
   "runScript": "$(json "$run_script")"

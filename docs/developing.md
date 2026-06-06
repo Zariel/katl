@@ -176,10 +176,11 @@ scripts/resolve-first-install-runtime-fixture \
   --install-manifest docs/internal/examples/minimal-install-manifest.json
 ```
 
-The command verifies that all referenced inputs exist, checks the runtime ESP
-loader-entry contract, and writes generated files under
-`build/first-install-runtime-fixture/`. Source the generated `vmtest.env` or run
-the generated wrapper to revalidate inputs and execute
+The command verifies that all referenced inputs exist, records SHA-256 bindings
+for the installer UKI, runtime artifact, install manifest, and optional node
+metadata, checks the runtime ESP loader-entry contract, and writes generated
+files under `build/first-install-runtime-fixture/`. Source the generated
+`vmtest.env` or run the generated wrapper to revalidate inputs and execute
 `TestFirstInstallTargetDiskFixtureContract`.
 
 The smoke keeps the target disk from the first-install harness, packages it with
