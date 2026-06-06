@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/manifest"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
@@ -178,6 +180,78 @@ func TestRunnerUsesNormalizedRequestDigest(t *testing.T) {
 	secondDigest := second.Statuses[len(second.Statuses)-1].RequestDigest
 	if firstDigest == "" || firstDigest != secondDigest {
 		t.Fatalf("normalized digests = %q and %q, want equal", firstDigest, secondDigest)
+	}
+}
+
+func TestRunnerResolvesKatlosImageBeforePlanning(t *testing.T) {
+	store := &MemoryStateStore{}
+	resolver := &recordingKatlosResolver{
+		payload: katlosimage.Payload{
+			Index: katlosimage.Index{
+				Version:          "2026.06.04",
+				Architecture:     "x86_64",
+				RuntimeInterface: "katl-runtime-1",
+			},
+		},
+	}
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		Commands:       &NoopCommandRunner{},
+		Store:          store,
+		KatlosResolver: resolver,
+		IdentityRandom: bytes.NewReader([]byte("0123456789abcdef")),
+		LoaderRecord:   minimalRecord("2026.06.04-000"),
+		TargetRoot:     t.TempDir(),
+		Chown:          func(string, int, int) error { return nil },
+		KubeadmConfigs: kubeadmPlans(),
+	}
+
+	plan := Plan{loadManifestStep{}, verifyKatlosImageStep{}, stubStep{id: PlanInstall}}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if resolver.image.SHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("resolver image = %#v", resolver.image)
+	}
+	if install.KatlosImage == nil || install.KatlosImage.Index.Version != "2026.06.04" {
+		t.Fatalf("resolved payload = %#v", install.KatlosImage)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerRejectsKatlosImageBeforeMutation(t *testing.T) {
+	store := &MemoryStateStore{}
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		TargetRoot:     t.TempDir(),
+		Commands:       &NoopCommandRunner{},
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{err: errString("image digest mismatch")},
+	}
+
+	plan := Plan{loadManifestStep{}, verifyKatlosImageStep{}, stubStep{id: PrepareDisk}}
+	err := NewRunner(plan, install).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "image digest mismatch") {
+		t.Fatalf("Run() error = %v, want image digest mismatch", err)
+	}
+	if install.KatlosImage != nil {
+		t.Fatalf("resolved payload = %#v, want nil", install.KatlosImage)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+	if len(store.Statuses) == 0 {
+		t.Fatal("no status records written")
+	}
+	status := store.Statuses[len(store.Statuses)-1]
+	if status.State != installstatus.StateFailedBeforeMutation || status.CurrentStep != string(VerifyTrust) || status.DestructiveMutation {
+		t.Fatalf("failure status = %#v", status)
+	}
+	if _, err := os.Stat(filepath.Join(install.TargetRoot, "var/lib/katl/install/status.json")); !os.IsNotExist(err) {
+		t.Fatalf("target status err = %v, want no target write before mutation", err)
 	}
 }
 
@@ -615,6 +689,20 @@ type errString string
 
 func (e errString) Error() string {
 	return string(e)
+}
+
+type recordingKatlosResolver struct {
+	payload katlosimage.Payload
+	image   manifest.KatlosImage
+	err     error
+}
+
+func (r *recordingKatlosResolver) ResolveKatlosImage(_ context.Context, image manifest.KatlosImage) (katlosimage.Payload, error) {
+	r.image = image
+	if r.err != nil {
+		return katlosimage.Payload{}, r.err
+	}
+	return r.payload, nil
 }
 
 type failingStatusStore struct{}

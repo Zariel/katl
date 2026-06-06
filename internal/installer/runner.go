@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	installstatus "github.com/zariel/katl/internal/installer/status"
@@ -49,6 +50,8 @@ type Context struct {
 	Store          StateStore
 	Manifest       manifest.Manifest
 	LoaderRecord   *generation.Record
+	KatlosImage    *katlosimage.Payload
+	KatlosResolver KatlosImageResolver
 	KubeadmConfigs map[string]kubeadmconfig.Plan
 	IdentityRandom io.Reader
 	Completed      []StepID
@@ -62,6 +65,10 @@ type Context struct {
 type Step interface {
 	ID() StepID
 	Run(context.Context, *Context) error
+}
+
+type KatlosImageResolver interface {
+	ResolveKatlosImage(context.Context, manifest.KatlosImage) (katlosimage.Payload, error)
 }
 
 var ErrInstallRefused = errors.New("install refused")
@@ -89,7 +96,7 @@ func NewPlan(options PlanOptions) Plan {
 		loadManifestStep{},
 		stubStep{id: SelectNode},
 		stubStep{id: CollectHardwareFacts},
-		stubStep{id: VerifyTrust},
+		verifyKatlosImageStep{},
 		stubStep{id: PlanInstall},
 		stubStep{id: PrepareDisk},
 		stubStep{id: CreatePartitions},
@@ -192,6 +199,28 @@ func (loadManifestStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, LoadManifest)
+}
+
+type verifyKatlosImageStep struct{}
+
+func (verifyKatlosImageStep) ID() StepID {
+	return VerifyTrust
+}
+
+func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosResolver != nil {
+		payload, err := install.KatlosResolver.ResolveKatlosImage(ctx, install.Manifest.KatlosImage)
+		if err != nil {
+			return err
+		}
+		install.KatlosImage = &payload
+	}
+	return recordStep(ctx, install, VerifyTrust)
 }
 
 type installSeedStep struct{}
