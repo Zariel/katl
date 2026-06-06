@@ -107,6 +107,8 @@ type Fixture struct {
 type Scenario struct {
 	Name                 string   `json:"name"`
 	Suite                string   `json:"suite"`
+	GoPackage            string   `json:"goPackage,omitempty"`
+	GoTest               string   `json:"goTest,omitempty"`
 	Status               Status   `json:"status"`
 	ResultPath           string   `json:"resultPath,omitempty"`
 	RunDir               string   `json:"runDir,omitempty"`

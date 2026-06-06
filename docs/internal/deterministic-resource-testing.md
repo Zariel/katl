@@ -146,6 +146,21 @@ mapped to `host-skipped` by the resource-test summary. This prevents
 `KATL_VMTEST_RUN=1` or `KATL_NSPAWN_RUN=1` from returning a green result while
 all resource-backed tests skipped because fixtures were never prepared.
 
+## Strict Summary
+
+The first strict aggregation helper also lives in `internal/resourcetest`. It
+consumes the resource manifest, `go test -json` output, and nspawn or VM
+`result.json` artifacts. It writes `kind: ResourceTestSummary` with per-scenario
+status counts, scenario run directories, failure summaries, and Go test
+failures.
+
+Enabled scenarios classify as `setup-failed` when their result artifact is
+missing, invalid, still `planned`, from another scenario or run, or when Go
+reports a generic skip that is not backed by a declared missing host capability.
+A skipped result with a populated `missing` prerequisite list classifies as
+`host-skipped`. The summary exits nonzero when any scenario is `failed` or
+`setup-failed`, or when the Go test JSON stream contains failures.
+
 ## Manifest Schema
 
 The first typed schema lives in `internal/resourcetest`. It uses
