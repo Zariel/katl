@@ -288,6 +288,102 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	_ = targetDiskPath(t, result)
 }
 
+func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install local handoff smoke")
+	}
+	options.Missing = MissingSkips
+	options.Keep = KeepAlways
+	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	var runner Runner
+	var installerBoot InstallerBootConfig
+	var runtimeArtifact, runtimeESP, manifestPath string
+	targetDisk := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
+	if worldRun, ok := firstInstallWorldRunForMode(t, "first-install-local-handoff-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP, firstInstallWorldGuestHandoff); ok {
+		runner = worldRun.Runner
+		installerBoot = worldRun.Config.Installer
+		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
+		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
+		manifestPath = worldRun.Config.ManifestPath
+		targetDisk = worldRun.Config.TargetDisk
+	} else {
+		installerBoot = firstInstallInstallerBoot(t)
+		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
+		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
+		if runtimeESP == "" && !useInstalledESP {
+			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install local handoff smoke")
+		}
+		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
+		runner = NewRunner(options)
+	}
+	var requiredTools []string
+	if useInstalledESP {
+		requiredTools = append(requiredTools, "sfdisk", "mcopy")
+	}
+	for _, tool := range requiredTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is required to run first-install local handoff smoke: %v", tool, err)
+		}
+	}
+
+	runner.RequireHost(t, HostRequirements{
+		QEMU:    true,
+		QEMUImg: true,
+		OVMF:    true,
+		KVM:     runner.options().KVM,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	vm := VMConfig{
+		KVM:     runner.options().KVM,
+		RAMMiB:  4096,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+	}
+	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-local-handoff-runtime"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    installerBoot.InstallerUKI,
+			InstallerKernel: installerBoot.InstallerKernel,
+			InstallerInitrd: installerBoot.InstallerInitrd,
+			CommandLine:     installerBoot.CommandLine,
+			RuntimeArtifact: runtimeArtifact,
+			VM:              vm,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: runtimeESP,
+			VM:           vm,
+		},
+		UseInstalledESP: useInstalledESP,
+		ManifestPath:    manifestPath,
+		GuestHandoff:    true,
+		TargetDisk:      targetDisk,
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("first install local handoff status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
+	}
+	request := readLog(t, result.Artifacts.HandoffRequest)
+	if request.PostURL == "" || request.Announcement == "" {
+		t.Fatalf("handoff request missing guest announcement details: %#v", request)
+	}
+	response := readLog(t, result.Artifacts.HandoffResponse)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("handoff response = %#v", response)
+	}
+	serial, err := os.ReadFile(result.Artifacts.RuntimeSerial)
+	if err != nil {
+		t.Fatalf("read runtime serial: %v", err)
+	}
+	if !strings.Contains(string(serial), "Katl state projection ready") {
+		t.Fatalf("runtime serial did not record state projection: %s", serial)
+	}
+	_ = targetDiskPath(t, result)
+}
+
 func firstInstallInstallerBoot(t *testing.T) InstallerBootConfig {
 	t.Helper()
 	boot := firstInstallInstallerBootFromEnv()

@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +21,24 @@ type firstInstallWorldInput struct {
 	RuntimeESP      string
 	NodeMetadata    string
 	InstallManifest string
+	Mode            firstInstallWorldMode
 	UseInstalledESP bool
 	TargetDiskSize  string
 }
 
+type firstInstallWorldMode string
+
+const (
+	firstInstallWorldPreseed      firstInstallWorldMode = "preseed"
+	firstInstallWorldGuestHandoff firstInstallWorldMode = "guest-handoff"
+)
+
 func firstInstallWorldRunFor(t *testing.T, name string, spec NodeSpec, useInstalledESP bool) (firstInstallWorldRun, bool) {
+	t.Helper()
+	return firstInstallWorldRunForMode(t, name, spec, useInstalledESP, firstInstallWorldPreseed)
+}
+
+func firstInstallWorldRunForMode(t *testing.T, name string, spec NodeSpec, useInstalledESP bool, mode firstInstallWorldMode) (firstInstallWorldRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) == "" {
 		return firstInstallWorldRun{}, false
@@ -36,6 +50,7 @@ func firstInstallWorldRunFor(t *testing.T, name string, spec NodeSpec, useInstal
 		RuntimeESP:      strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))),
 		NodeMetadata:    strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))),
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
+		Mode:            mode,
 		UseInstalledESP: useInstalledESP,
 		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"),
 	}, DefaultOptions().KVM)
@@ -96,6 +111,10 @@ func planFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		return run, err
 	}
 	installer.RuntimeArtifact = runtime.Path
+	mode := input.Mode
+	if mode == "" {
+		mode = firstInstallWorldPreseed
+	}
 	run.Runner = NewRunner(Options{
 		Enabled:   true,
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
@@ -111,8 +130,17 @@ func planFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		},
 		UseInstalledESP: input.UseInstalledESP,
 		ManifestPath:    installManifest.Path,
-		PreseedManifest: true,
 		TargetDisk:      target,
+	}
+	switch mode {
+	case firstInstallWorldPreseed:
+		run.Config.PreseedManifest = true
+	case firstInstallWorldGuestHandoff:
+		run.Config.GuestHandoff = true
+	default:
+		err := errors.New("unsupported first-install world mode: " + string(mode))
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
 	}
 	return run, nil
 }
@@ -175,6 +203,30 @@ func TestPlanFirstInstallWorldRunStagesInputs(t *testing.T) {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
+	}
+}
+
+func TestPlanFirstInstallWorldRunGuestHandoffMode(t *testing.T) {
+	world := testWorld(t)
+	sourceDir := t.TempDir()
+	installer := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
+	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
+	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
+	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest())
+
+	run, err := planFirstInstallWorldRun(world, "guest handoff world", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerUKI: installer},
+		RuntimeArtifact: runtime,
+		RuntimeESP:      esp,
+		InstallManifest: manifest,
+		Mode:            firstInstallWorldGuestHandoff,
+		TargetDiskSize:  "20G",
+	}, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun() error = %v", err)
+	}
+	if !run.Config.GuestHandoff || run.Config.PreseedManifest {
+		t.Fatalf("handoff mode config = %#v", run.Config)
 	}
 }
 
