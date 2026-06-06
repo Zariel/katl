@@ -130,6 +130,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 			CP3Metadata:       nodes["cp-3"].Config.NodeMetadata,
 			CP3Address:        nodes["cp-3"].Node.Address,
 			KubernetesVersion: firstString(kubernetesVersion, "v1.36.1"),
+			WorldProvenance:   multiNodeWorldProvenanceForSpecs(world, repo, threeControlPlaneWorldRuntimeSpecs()),
 		},
 	}, nil
 }
@@ -283,6 +284,7 @@ type threeControlPlaneSmokeInputs struct {
 	CP3Metadata       string
 	CP3Address        string
 	KubernetesVersion string
+	WorldProvenance   multiNodeWorldProvenancePaths
 }
 
 func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
@@ -332,50 +334,60 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
-	NodeRunDirs            map[string]string           `json:"nodeRunDirs"`
-	NodeScenarios          map[string]string           `json:"nodeScenarios,omitempty"`
-	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
-	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
-	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts       map[string]string           `json:"vsockTranscripts,omitempty"`
-	FixtureInputs          map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	Inventory              string                      `json:"inventory"`
-	Kubeconfig             string                      `json:"kubeconfig"`
-	KubeconfigMetadata     string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout        string                      `json:"bootstrapStdout"`
-	BootstrapStderr        string                      `json:"bootstrapStderr"`
-	BootstrapFixture       *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
-	KubectlOutput          string                      `json:"kubectlOutput"`
-	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	EtcdReport             string                      `json:"etcdReport"`
-	Transcripts            map[string]string           `json:"transcripts"`
-	EtcdTranscripts        map[string]string           `json:"etcdTranscripts"`
-	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
-	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
+	WorldManifest            string                      `json:"worldManifest,omitempty"`
+	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
+	NodeRunDirs              map[string]string           `json:"nodeRunDirs"`
+	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
+	QEMUCommands             map[string]string           `json:"qemuCommands,omitempty"`
+	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                      `json:"inventory"`
+	Kubeconfig               string                      `json:"kubeconfig"`
+	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                      `json:"bootstrapStdout"`
+	BootstrapStderr          string                      `json:"bootstrapStderr"`
+	BootstrapFixture         *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
+	KubectlOutput            string                      `json:"kubectlOutput"`
+	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
+	EtcdReport               string                      `json:"etcdReport"`
+	Transcripts              map[string]string           `json:"transcripts"`
+	EtcdTranscripts          map[string]string           `json:"etcdTranscripts"`
+	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
+	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
 }
 
 func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
 	return writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		NodeRunDirs:            nodeRunDirs(nodes),
-		NodeScenarios:          nodeScenarioPaths(nodes),
-		NodeResults:            nodeResultPaths(nodes),
-		QEMUCommands:           qemuCommandPaths(nodes),
-		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
-		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
-		Inventory:              filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
-		Kubeconfig:             filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
-		KubeconfigMetadata:     filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
-		BootstrapStdout:        filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
-		BootstrapStderr:        filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
-		BootstrapFixture:       bootstrapFixture.manifestValue(),
-		KubectlOutput:          filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
-		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
-		EtcdReport:             filepath.Join(result.RunDir, "etcd-report.json"),
-		Transcripts:            transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts:        transcriptPaths(etcdTranscriptDir, nodes),
-		SerialLogs:             serialLogPaths(nodes),
-		Diagnostics:            diagnosticSummaryPaths(nodes),
+		WorldManifest:            inputs.WorldProvenance.WorldManifest,
+		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
+		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
+		NodeRunDirs:              nodeRunDirs(nodes),
+		NodeScenarios:            nodeScenarioPaths(nodes),
+		NodeResults:              nodeResultPaths(nodes),
+		QEMUCommands:             qemuCommandPaths(nodes),
+		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
+		VSockTranscripts:         vsockTranscriptPaths(nodes),
+		FixtureInputs:            threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
+		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
+		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
+		Inventory:                filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
+		Kubeconfig:               filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
+		KubeconfigMetadata:       filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
+		BootstrapStdout:          filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
+		BootstrapStderr:          filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
+		BootstrapFixture:         bootstrapFixture.manifestValue(),
+		KubectlOutput:            filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
+		KubectlDiagnostics:       kubectlDiagnosticPaths(result.RunDir),
+		EtcdReport:               filepath.Join(result.RunDir, "etcd-report.json"),
+		Transcripts:              transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:          transcriptPaths(etcdTranscriptDir, nodes),
+		SerialLogs:               serialLogPaths(nodes),
+		Diagnostics:              diagnosticSummaryPaths(nodes),
 	})
 }
 
@@ -786,6 +798,13 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		CP3ESP:      "esp",
 		CP3Fixture:  "cp3-fixture.json",
 		CP3Metadata: "cp3-node.json",
+		WorldProvenance: multiNodeWorldProvenancePaths{
+			WorldManifest:            "/tmp/world.json",
+			HostCapabilities:         "/tmp/host-capabilities.json",
+			MkosiArtifactIndex:       "/tmp/mkosi-artifacts.json",
+			FixtureProducerScenarios: map[string]string{"cp-2": "/tmp/fixture-cp-2/scenario.json"},
+			FixtureProducerResults:   map[string]string{"cp-3": "/tmp/fixture-cp-3/result.json"},
+		},
 	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
 		t.Fatalf("writeThreeControlPlaneSmokeArtifactManifest() error = %v", err)
 	}
@@ -808,6 +827,9 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
 		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
+	}
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
+		t.Fatalf("planned provenance = %#v", manifest)
 	}
 }
 
@@ -851,6 +873,12 @@ func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *test
 	assertFileContent(t, run.Inputs.CP1Disk, "disk-world-cp-1")
 	assertFileContent(t, run.Inputs.CP2Disk, "disk-world-cp-2")
 	assertFileContent(t, run.Inputs.CP3Disk, "disk-world-cp-3")
+	if run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
+	}
+	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-3"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-3-control-plane", "result.json") {
+		t.Fatalf("fixture producer results = %#v", run.Inputs.WorldProvenance.FixtureProducerResults)
+	}
 }
 
 func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
@@ -930,6 +958,9 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
 	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
+		WorldManifest:      "/tmp/world.json",
+		HostCapabilities:   "/tmp/host-capabilities.json",
+		MkosiArtifactIndex: "/tmp/mkosi-artifacts.json",
 		NodeRunDirs: map[string]string{
 			"cp-1": "/tmp/cp-1-run",
 		},
@@ -948,12 +979,14 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 		VSockTranscripts: map[string]string{
 			"cp-1": "/tmp/cp-1-run/qemu/vsock-transcript.jsonl",
 		},
-		FixtureInputs:      inputs,
-		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
-		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
-		SerialLogs:         map[string]string{"cp-1": "/tmp/cp-1-run/qemu/runtime-serial.log"},
-		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
-		KubectlDiagnostics: map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
+		FixtureInputs:            inputs,
+		FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp-1/scenario.json", "cp-2": "/tmp/fixture-cp-2/scenario.json", "cp-3": "/tmp/fixture-cp-3/scenario.json"},
+		FixtureProducerResults:   map[string]string{"cp-1": "/tmp/fixture-cp-1/result.json", "cp-2": "/tmp/fixture-cp-2/result.json", "cp-3": "/tmp/fixture-cp-3/result.json"},
+		KubeconfigMetadata:       "/tmp/run/operator-kubeconfig-metadata.json",
+		BootstrapFixture:         (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
+		SerialLogs:               map[string]string{"cp-1": "/tmp/cp-1-run/qemu/runtime-serial.log"},
+		Diagnostics:              map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
+		KubectlDiagnostics:       map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
 		t.Fatalf("writeThreeControlPlaneArtifactManifest() error = %v", err)
 	}
@@ -967,6 +1000,12 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].NodeMetadata != "cp3-node.json" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
+		t.Fatalf("artifact manifest world provenance = %q %q %q", manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
+	}
+	if manifest.FixtureProducerScenarios["cp-2"] != "/tmp/fixture-cp-2/scenario.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
+		t.Fatalf("artifact manifest fixture provenance = %#v %#v", manifest.FixtureProducerScenarios, manifest.FixtureProducerResults)
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)

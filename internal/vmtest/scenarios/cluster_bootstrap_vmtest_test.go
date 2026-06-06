@@ -303,10 +303,10 @@ type twoNodeSmokeInputs struct {
 	WorkerMetadata         string
 	WorkerAddress          string
 	KubernetesVersion      string
-	WorldProvenance        twoNodeWorldProvenancePaths
+	WorldProvenance        multiNodeWorldProvenancePaths
 }
 
-type twoNodeWorldProvenancePaths struct {
+type multiNodeWorldProvenancePaths struct {
 	WorldManifest            string
 	HostCapabilities         string
 	MkosiArtifactIndex       string
@@ -314,8 +314,8 @@ type twoNodeWorldProvenancePaths struct {
 	FixtureProducerResults   map[string]string
 }
 
-func twoNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) twoNodeWorldProvenancePaths {
-	provenance := twoNodeWorldProvenancePaths{
+func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) multiNodeWorldProvenancePaths {
+	provenance := multiNodeWorldProvenancePaths{
 		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
 		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
 		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
@@ -338,8 +338,8 @@ func twoNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmt
 	return provenance
 }
 
-func twoNodeWorldProvenance(world vmtest.World, repo string) twoNodeWorldProvenancePaths {
-	return twoNodeWorldProvenanceForSpecs(world, repo, twoNodeWorldRuntimeSpecs())
+func twoNodeWorldProvenance(world vmtest.World, repo string) multiNodeWorldProvenancePaths {
+	return multiNodeWorldProvenanceForSpecs(world, repo, twoNodeWorldRuntimeSpecs())
 }
 
 func planStartedVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario) vmtest.Result {
@@ -1405,7 +1405,7 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 		WorkerESP:            "esp",
 		WorkerFixture:        "worker-fixture.json",
 		WorkerMetadata:       "worker-node.json",
-		WorldProvenance: twoNodeWorldProvenancePaths{
+		WorldProvenance: multiNodeWorldProvenancePaths{
 			WorldManifest:            "/tmp/world.json",
 			HostCapabilities:         "/tmp/host-capabilities.json",
 			MkosiArtifactIndex:       "/tmp/mkosi-artifacts.json",
