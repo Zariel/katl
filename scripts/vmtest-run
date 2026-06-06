@@ -459,7 +459,8 @@ cleanup_network() {
 
 filter_count_args() {
     filtered_args=()
-    local has_package_arg=0
+    filtered_has_package_arg=0
+    filtered_has_selection_arg=0
     local expect_flag_value=0
     while [[ $# -gt 0 ]]; do
         if [[ "$expect_flag_value" == 1 ]]; then
@@ -483,14 +484,24 @@ filter_count_args() {
                 fi
                 ;;
             -args)
-                if [[ "$has_package_arg" == 0 ]]; then
+                if [[ "$filtered_has_package_arg" == 0 ]]; then
                     filtered_args+=("./...")
-                    has_package_arg=1
                 fi
                 filtered_args+=("$@")
                 return
                 ;;
-            -run|-timeout|-bench|-benchtime|-cpu|-list|-skip|-parallel|-shuffle|-coverprofile|-covermode|-coverpkg|-outputdir)
+            -run|-bench|-list|-skip)
+                filtered_has_selection_arg=1
+                filtered_args+=("$1")
+                expect_flag_value=1
+                shift
+                ;;
+            -run=*|-bench=*|-list=*|-skip=*)
+                filtered_has_selection_arg=1
+                filtered_args+=("$1")
+                shift
+                ;;
+            -timeout|-benchtime|-cpu|-parallel|-shuffle|-coverprofile|-covermode|-coverpkg|-outputdir)
                 filtered_args+=("$1")
                 expect_flag_value=1
                 shift
@@ -500,13 +511,13 @@ filter_count_args() {
                 shift
                 ;;
             *)
-                has_package_arg=1
+                filtered_has_package_arg=1
                 filtered_args+=("$1")
                 shift
                 ;;
         esac
     done
-    if [[ "$has_package_arg" == 0 ]]; then
+    if [[ "$filtered_has_package_arg" == 0 ]]; then
         filtered_args+=("./...")
     fi
 }
@@ -516,8 +527,12 @@ if [[ $# -eq 0 ]]; then
     filtered_args=("./...")
     preflight_required=1
 else
-    preflight_required=0
     filter_count_args "$@"
+    if [[ "$filtered_has_package_arg" == 1 || "$filtered_has_selection_arg" == 1 ]]; then
+        preflight_required=0
+    else
+        preflight_required=1
+    fi
 fi
 
 need jq
