@@ -55,6 +55,7 @@ type HostRequirements struct {
 	KVM          KVMPolicy `json:"kvm,omitempty"`
 	OVMFCode     string    `json:"ovmfCode,omitempty"`
 	OVMFVars     string    `json:"ovmfVars,omitempty"`
+	MTools       bool      `json:"mtools,omitempty"`
 	SharedBridge bool      `json:"sharedBridge,omitempty"`
 }
 
@@ -401,6 +402,11 @@ func checkHost(requirements HostRequirements, probe probe) error {
 		vars := first(requirements.OVMFVars, probe.env("KATL_OVMF_VARS"))
 		missing = appendFile(missing, probe, "OVMF code", code, "set KATL_OVMF_CODE or Scenario.Host.OVMFCode")
 		missing = appendFile(missing, probe, "OVMF vars", vars, "set KATL_OVMF_VARS or Scenario.Host.OVMFVars")
+	}
+	if requirements.MTools {
+		missing = appendCommand(missing, probe, "mformat")
+		missing = appendCommand(missing, probe, "mcopy")
+		missing = appendCommand(missing, probe, "truncate")
 	}
 	if requirements.KVM == KVMOn {
 		if err := probe.access("/dev/kvm"); err != nil {

@@ -3,6 +3,7 @@ package vmtest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -181,6 +182,7 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 		PreseedManifest: true,
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
 		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
 		RuntimeRunner:   fakeVM("Katl state projection ready"),
 	})
@@ -203,8 +205,17 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 	if !strings.Contains(string(command), "serial=katl-seed") {
 		t.Fatalf("installer command missing preseed device: %s", command)
 	}
+	if !strings.Contains(string(command), "preseed.img") {
+		t.Fatalf("installer command missing preseed image: %s", command)
+	}
+	if !strings.Contains(string(command), "efi.img") {
+		t.Fatalf("installer command missing EFI image: %s", command)
+	}
 	if strings.Contains(string(command), "hostfwd=") {
 		t.Fatalf("installer command unexpectedly has host forward: %s", command)
+	}
+	if strings.Contains(string(command), "fat:rw:") {
+		t.Fatalf("installer command unexpectedly uses fat directory: %s", command)
 	}
 	input, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "install-input.json"))
 	if err != nil {
@@ -234,16 +245,22 @@ func TestFirstInstallPreseedLocalRef(t *testing.T) {
 	result.Artifacts.ManifestsDir = filepath.Join(root, "run", "manifests")
 	result.Artifacts.InstallManifest = filepath.Join(result.Artifacts.ManifestsDir, "install-manifest.json")
 
-	preseed, err := writePreseedMedia(result, FirstInstallConfig{ManifestPath: manifestPath}, manifest)
+	preseed, err := writePreseedMedia(context.Background(), result, FirstInstallConfig{
+		ManifestPath:  manifestPath,
+		PreseedRunner: fakePreseedRunner{},
+	}, manifest)
 	if err != nil {
 		t.Fatalf("writePreseedMedia() error = %v", err)
 	}
-	copied, err := os.ReadFile(filepath.Join(preseed, "images", "katlos.squashfs"))
+	copied, err := os.ReadFile(filepath.Join(preseed.Dir, "images", "katlos.squashfs"))
 	if err != nil {
 		t.Fatalf("read copied localRef: %v", err)
 	}
 	if string(copied) != "image" {
 		t.Fatalf("copied localRef = %q", copied)
+	}
+	if _, err := os.Stat(preseed.Image); err != nil {
+		t.Fatalf("preseed image missing: %v", err)
 	}
 }
 
@@ -370,6 +387,23 @@ func fakeVMWithExecutor(executor VMExecutor) VMRunner {
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
+	}
+}
+
+type fakePreseedRunner struct{}
+
+func (fakePreseedRunner) Run(_ context.Context, name string, args ...string) error {
+	switch name {
+	case "truncate":
+		path := args[len(args)-1]
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte("seed image"), 0o644)
+	case "mformat", "mcopy":
+		return nil
+	default:
+		return fmt.Errorf("unexpected preseed command %s", name)
 	}
 }
 

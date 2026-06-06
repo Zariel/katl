@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ type FirstInstallConfig struct {
 	HandoffPoster    func(context.Context, string, string, []byte) (int, string, error)
 	TargetDisk       DiskFixture
 	DiskRunner       DiskRunner
+	PreseedRunner    DiskRunner
 	InstallerRunner  VMRunner
 	RuntimeRunner    VMRunner
 }
@@ -74,11 +76,13 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		return failFirst(runner, scenario, result, "install-manifest", err)
 	}
 	if config.PreseedManifest {
-		preseedDir, err := writePreseedMedia(result, config, manifest)
+		preseed, err := writePreseedMedia(ctx, result, config, manifest)
 		if err != nil {
 			return failFirst(runner, scenario, result, "preseed", err)
 		}
-		config.Installer.VM.PreseedDir = preseedDir
+		config.Installer.VM.PreseedImage = preseed.Image
+		config.Installer.VM.EFIDiskImage = true
+		config.Installer.VM.MediaRunner = config.PreseedRunner
 		if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
 			config.Installer.Expect = installerCompletedSignal
 		}
@@ -243,10 +247,15 @@ func writeManifest(result Result, manifest []byte) error {
 	return os.WriteFile(result.Artifacts.InstallManifest, manifest, 0o600)
 }
 
-func writePreseedMedia(result Result, config FirstInstallConfig, manifest []byte) (string, error) {
+type preseedMedia struct {
+	Dir   string
+	Image string
+}
+
+func writePreseedMedia(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) (preseedMedia, error) {
 	dir := filepath.Join(result.Artifacts.ManifestsDir, "preseed")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+		return preseedMedia{}, err
 	}
 	input := struct {
 		ManifestPath string `json:"manifestPath"`
@@ -256,15 +265,19 @@ func writePreseedMedia(result Result, config FirstInstallConfig, manifest []byte
 		InstallMode:  "auto",
 	}
 	if err := writeJSON(filepath.Join(dir, "install-input.json"), input); err != nil {
-		return "", err
+		return preseedMedia{}, err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), manifest, 0o600); err != nil {
-		return "", err
+		return preseedMedia{}, err
 	}
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
-		return "", err
+		return preseedMedia{}, err
 	}
-	return dir, nil
+	image := filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")
+	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
+		return preseedMedia{}, err
+	}
+	return preseedMedia{Dir: dir, Image: image}, nil
 }
 
 func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []byte, preseedDir string) error {
@@ -313,6 +326,72 @@ func copyRequiredFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+func createPreseedImage(ctx context.Context, dir, image string, runner DiskRunner) error {
+	return createFATImage(ctx, dir, image, "KATLSEED", runner)
+}
+
+func createFATImage(ctx context.Context, dir, image, label string, runner DiskRunner) error {
+	size, err := fatImageSize(dir)
+	if err != nil {
+		return err
+	}
+	if runner == nil {
+		runner = ExecDiskRunner{}
+	}
+	if err := runner.Run(ctx, "truncate", "-s", strconv.FormatInt(size, 10), image); err != nil {
+		return fmt.Errorf("create FAT image file: %w", err)
+	}
+	if err := runner.Run(ctx, "mformat", "-i", image, "-F", "-v", label, "::"); err != nil {
+		return fmt.Errorf("format FAT image: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read FAT image source dir: %w", err)
+	}
+	args := []string{"-i", image, "-s"}
+	for _, entry := range entries {
+		args = append(args, filepath.Join(dir, entry.Name()))
+	}
+	args = append(args, "::/")
+	if err := runner.Run(ctx, "mcopy", args...); err != nil {
+		return fmt.Errorf("copy files into FAT image: %w", err)
+	}
+	return nil
+}
+
+func fatImageSize(dir string) (int64, error) {
+	var payload int64
+	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		payload += info.Size()
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("measure FAT image source dir: %w", err)
+	}
+	const (
+		minSize = int64(8 * 1024 * 1024)
+		slack   = int64(64 * 1024 * 1024)
+		mb      = int64(1024 * 1024)
+	)
+	size := payload + slack
+	if size < minSize {
+		size = minSize
+	}
+	if rem := size % mb; rem != 0 {
+		size += mb - rem
+	}
+	return size, nil
 }
 
 func extractInstalledESP(ctx context.Context, result Result, config FirstInstallConfig) (string, error) {

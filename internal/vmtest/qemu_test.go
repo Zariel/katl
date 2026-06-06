@@ -229,6 +229,33 @@ func TestVMEFITreeBoot(t *testing.T) {
 	}
 }
 
+func TestVMUKIEFIImage(t *testing.T) {
+	result, config := vmFixture(t)
+	config.EFIDiskImage = true
+	config.MediaRunner = fakePreseedRunner{}
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	efiImage := filepath.Join(result.QEMUDir, "efi.img")
+	if !hasArg(plan.Args, "if=virtio,index=0,format=raw,file="+efiImage) {
+		t.Fatalf("EFI image drive missing from args: %#v", plan.Args)
+	}
+	if hasArg(plan.Args, "if=virtio,index=0,format=raw,file=fat:rw:"+filepath.Join(result.QEMUDir, "efi")) {
+		t.Fatalf("EFI image plan still uses fat:rw: %#v", plan.Args)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+	if _, err := os.Stat(efiImage); err != nil {
+		t.Fatalf("EFI image missing: %v", err)
+	}
+}
+
 func TestVMPreseedDrive(t *testing.T) {
 	result, config := vmFixture(t)
 	result.Disks = []DiskPlan{{
@@ -255,6 +282,38 @@ func TestVMPreseedDrive(t *testing.T) {
 	}
 	if !hasArg(plan.Args, "virtio-blk-pci,drive=katlseed3,serial=katl-seed") {
 		t.Fatalf("preseed device missing from args: %#v", plan.Args)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+}
+
+func TestVMPreseedImage(t *testing.T) {
+	result, config := vmFixture(t)
+	result.Disks = []DiskPlan{{
+		Name:     "root",
+		Format:   DiskQCOW2,
+		HostPath: filepath.Join(result.DiskDir, "00-root.qcow2"),
+	}}
+	image := filepath.Join(t.TempDir(), "preseed.img")
+	if err := os.WriteFile(image, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	config.PreseedImage = image
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "if=none,id=katlseed3,format=raw,file="+image) {
+		t.Fatalf("preseed image drive missing from args: %#v", plan.Args)
+	}
+	if !hasArg(plan.Args, "virtio-blk-pci,drive=katlseed3,serial=katl-seed") {
+		t.Fatalf("preseed image device missing from args: %#v", plan.Args)
 	}
 	if err := prepareVM(plan, config); err != nil {
 		t.Fatalf("prepareVM() error = %v", err)

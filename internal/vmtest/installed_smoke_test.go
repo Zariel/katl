@@ -49,6 +49,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     options.KVM,
+		MTools:  true,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -211,6 +212,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     options.KVM,
+		MTools:  true,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()

@@ -409,6 +409,28 @@ func (t *fakeTB) Fatalf(format string, args ...any) {
 	t.message = fmt.Sprintf(format, args...)
 }
 
+func TestHostCheckMTools(t *testing.T) {
+	err := checkHost(HostRequirements{
+		MTools: true,
+	}, probe{
+		lookPath: func(name string) (string, error) {
+			if name == "mformat" {
+				return "/usr/bin/" + name, nil
+			}
+			return "", fmt.Errorf("%s missing", name)
+		},
+	})
+	if err == nil {
+		t.Fatal("checkHost() error = nil, want missing mtools")
+	}
+	text := err.Error()
+	for _, want := range []string{"mcopy", "truncate"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("error %q missing %q", text, want)
+		}
+	}
+}
+
 func readResult(t *testing.T, path string) Result {
 	t.Helper()
 	data, err := os.ReadFile(path)

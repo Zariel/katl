@@ -26,7 +26,10 @@ type VMBoot struct {
 
 type VMConfig struct {
 	Boot         VMBoot
+	EFIDiskImage bool
 	PreseedDir   string
+	PreseedImage string
+	MediaRunner  DiskRunner
 	QEMUPath     string
 	OVMFCode     string
 	OVMFVars     string
@@ -434,6 +437,12 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 		if err := copyFile(config.Boot.UKI, bootPath, 0o644); err != nil {
 			return err
 		}
+		if config.EFIDiskImage {
+			efiImage := filepath.Join(filepath.Dir(plan.EFITree), "efi.img")
+			if err := createFATImage(context.Background(), plan.EFITree, efiImage, "KATLEFI", config.MediaRunner); err != nil {
+				return err
+			}
+		}
 	}
 	if config.PreseedDir != "" {
 		info, err := os.Stat(config.PreseedDir)
@@ -442,6 +451,15 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("VM preseed path %s is not a directory", config.PreseedDir)
+		}
+	}
+	if config.PreseedImage != "" {
+		info, err := os.Stat(config.PreseedImage)
+		if err != nil {
+			return fmt.Errorf("stat VM preseed image: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("VM preseed image %s is not a regular file", config.PreseedImage)
 		}
 	}
 	return os.WriteFile(plan.CommandFile, []byte(commandLine(plan.QEMUPath, plan.Args)+"\n"), 0o644)
@@ -511,7 +529,11 @@ func vmDrives(result Result, config VMConfig) ([]string, string, error) {
 		return nil, "", errors.New("VM boot requires at most one of UKI or EFI tree")
 	}
 	if boot.UKI != "" {
-		add("format=raw,file=fat:rw:" + efiTree)
+		if config.EFIDiskImage {
+			add("format=raw,file=" + filepath.Join(result.QEMUDir, "efi.img"))
+		} else {
+			add("format=raw,file=fat:rw:" + efiTree)
+		}
 		if boot.Image != "" {
 			add(imageSpec(boot))
 		}
@@ -535,7 +557,13 @@ func vmDrives(result Result, config VMConfig) ([]string, string, error) {
 		)
 		index++
 	}
-	if config.PreseedDir != "" {
+	if config.PreseedImage != "" {
+		id := fmt.Sprintf("katlseed%d", index)
+		args = append(args,
+			"-drive", fmt.Sprintf("if=none,id=%s,format=raw,file=%s", id, config.PreseedImage),
+			"-device", fmt.Sprintf("virtio-blk-pci,drive=%s,serial=katl-seed", id),
+		)
+	} else if config.PreseedDir != "" {
 		id := fmt.Sprintf("katlseed%d", index)
 		args = append(args,
 			"-drive", fmt.Sprintf("if=none,id=%s,format=raw,file=fat:rw:%s", id, config.PreseedDir),
