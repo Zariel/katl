@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+go_bin="${KATL_VMTEST_GO:-go}"
+tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
+run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
+artifact_dir="$run_dir/artifacts"
+scenario_dir="$run_dir/scenarios"
+network_dir="$run_dir/network"
+world_manifest="$run_dir/world.json"
+lease_file="$network_dir/leases.json"
+go_test_json="$run_dir/go-test.json"
+summary_json="$run_dir/summary.json"
+network_bridge="${KATL_VMTEST_BRIDGE:-katl-vmtest0}"
+network_cidr="${KATL_VMTEST_CIDR:-10.77.0.0/24}"
+network_gateway="${KATL_VMTEST_GATEWAY:-10.77.0.1}"
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/vmtest-run [go test package patterns and flags...]
+
+Create a temporary Katl VM test world and run Go test binaries through
+scripts/vmtest-exec. Arguments are forwarded to go test after forcing -count=1.
+USAGE
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "error: $1 is required" >&2
+        exit 1
+    }
+}
+
+write_world() {
+    jq -n \
+        --arg runID "$run_id" \
+        --arg runDir "$run_dir" \
+        --arg artifactDir "$artifact_dir" \
+        --arg scenarioDir "$scenario_dir" \
+        --arg bridge "$network_bridge" \
+        --arg cidr "$network_cidr" \
+        --arg gateway "$network_gateway" \
+        --arg leaseFile "$lease_file" \
+        '{
+          apiVersion: "katl.dev/v1alpha1",
+          kind: "VMTestWorld",
+          runID: $runID,
+          runDir: $runDir,
+          artifactDir: $artifactDir,
+          scenarioDir: $scenarioDir,
+          network: {
+            backend: "bridge",
+            bridge: $bridge,
+            cidr: $cidr,
+            gateway: $gateway,
+            leaseFile: $leaseFile
+          },
+          capabilities: {
+            qemu: "disabled",
+            "qemu-img": "disabled",
+            ovmf: "disabled",
+            kvm: "disabled",
+            bridge: "disabled",
+            vsock: "disabled",
+            "systemd-nspawn": "disabled"
+          }
+        }' >"$world_manifest"
+}
+
+write_summary() {
+    local status="$1"
+    local exit_code="$2"
+    shift 2
+    jq -n \
+        --arg runID "$run_id" \
+        --arg runDir "$run_dir" \
+        --arg worldManifest "$world_manifest" \
+        --arg goTestJSON "$go_test_json" \
+        --arg status "$status" \
+        --argjson exitCode "$exit_code" \
+        --args \
+        '{
+          apiVersion: "katl.dev/v1alpha1",
+          kind: "VMTestRunSummary",
+          runID: $runID,
+          runDir: $runDir,
+          worldManifest: $worldManifest,
+          goTestJSON: $goTestJSON,
+          status: $status,
+          exitCode: $exitCode,
+          args: $ARGS.positional
+        }' -- "$@" >"$summary_json"
+}
+
+filter_count_args() {
+    filtered_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -count=*)
+                shift
+                ;;
+            -count)
+                shift
+                if [[ $# -gt 0 ]]; then
+                    shift
+                fi
+                ;;
+            *)
+                filtered_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+}
+
+filtered_args=()
+if [[ $# -eq 0 ]]; then
+    filtered_args=("./...")
+else
+    filter_count_args "$@"
+fi
+
+need jq
+mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
+jq -n '{}' >"$lease_file"
+write_world
+
+export KATL_VMTEST_RUN_DIR="$run_dir"
+export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
+
+set +e
+"$go_bin" test -count=1 -json -exec "$repo_root/scripts/vmtest-exec" "${filtered_args[@]}" 2>&1 | tee "$go_test_json"
+exit_code=${PIPESTATUS[0]}
+set -e
+
+status="passed"
+if [[ "$exit_code" -ne 0 ]]; then
+    status="failed"
+    echo "vmtest run dir: $run_dir" >&2
+fi
+write_summary "$status" "$exit_code" "${filtered_args[@]}"
+
+exit "$exit_code"

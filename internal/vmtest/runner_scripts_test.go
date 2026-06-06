@@ -1,0 +1,266 @@
+package vmtest
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestVMTestRunInjectsWorld(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+	childArgsPath := filepath.Join(tmp, "child-args.txt")
+	childEnvPath := filepath.Join(tmp, "child-env.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"),
+		"./internal/vmtest/scenarios",
+		"-run", "^TestTwoNode$",
+		"-count=99",
+		"-timeout", "2m",
+	)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+childArgsPath,
+		"KATL_FAKE_CHILD_ENV="+childEnvPath,
+		"KATL_VMTEST_RUN_ID=run-1",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+	if err != nil {
+		t.Fatalf("LoadWorld() error = %v", err)
+	}
+	if world.RunID != "run-1" || world.RunDir != runDir {
+		t.Fatalf("world = %#v", world)
+	}
+	if world.Network.Backend != NetworkBridge || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
+		t.Fatalf("world network = %#v", world.Network)
+	}
+
+	goArgs := readLines(t, goArgsPath)
+	wantGoArgs := []string{
+		"test",
+		"-count=1",
+		"-json",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"./internal/vmtest/scenarios",
+		"-run",
+		"^TestTwoNode$",
+		"-timeout",
+		"2m",
+	}
+	if !reflect.DeepEqual(goArgs, wantGoArgs) {
+		t.Fatalf("go args = %#v, want %#v", goArgs, wantGoArgs)
+	}
+	for _, arg := range goArgs {
+		if arg == "-count=99" {
+			t.Fatalf("vmtest-run did not force -count=1: %#v", goArgs)
+		}
+	}
+
+	childArgs := readLines(t, childArgsPath)
+	wantChildArgs := []string{"-test.run=^Forwarded$", "-test.v", "child-extra"}
+	if !reflect.DeepEqual(childArgs, wantChildArgs) {
+		t.Fatalf("child args = %#v, want %#v", childArgs, wantChildArgs)
+	}
+
+	childEnv := readKeyValues(t, childEnvPath)
+	if childEnv["KATL_VMTEST_WORLD_MANIFEST"] != filepath.Join(runDir, "world.json") {
+		t.Fatalf("child manifest env = %q", childEnv["KATL_VMTEST_WORLD_MANIFEST"])
+	}
+	if childEnv["KATL_VMTEST_RUN"] != "1" || childEnv["KATL_VMTEST_WORLD_STRICT"] != "1" {
+		t.Fatalf("child strict env = %#v", childEnv)
+	}
+
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !reflect.DeepEqual(summary.Args, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-timeout", "2m"}) {
+		t.Fatalf("summary args = %#v", summary.Args)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "go-test.json")); err != nil {
+		t.Fatalf("go-test.json missing: %v", err)
+	}
+}
+
+func TestVMTestRunPropagatesChildExit(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "Nspawn")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_EXIT=7",
+		"KATL_VMTEST_RUN_ID=run-2",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 7 {
+		t.Fatalf("vmtest-run exit = %v, want 7\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "vmtest run dir: "+runDir) {
+		t.Fatalf("output missing run dir %q:\n%s", runDir, output)
+	}
+
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "failed" || summary.ExitCode != 7 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestVMTestExecRequiresManifest(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-exec"), filepath.Join(repo, "scripts", "vmtest-run"))
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "KATL_VMTEST_WORLD_MANIFEST=", "KATL_VMTEST_RUN_DIR=")
+
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 2 {
+		t.Fatalf("vmtest-exec exit = %v, want 2\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "scripts/vmtest-run") {
+		t.Fatalf("output missing runner hint:\n%s", output)
+	}
+}
+
+func writeFakeGoTools(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	fakeGo := filepath.Join(dir, "go")
+	fakeChild := filepath.Join(dir, "fake-test-binary")
+	writeExecutable(t, fakeGo, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$KATL_FAKE_GO_ARGS"
+args=("$@")
+if [[ "${args[0]:-}" != "test" ]]; then
+    echo "unexpected go command: $*" >&2
+    exit 91
+fi
+exec_wrapper=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "-exec" ]]; then
+        exec_wrapper="${args[$((i + 1))]:-}"
+    fi
+done
+if [[ -z "$exec_wrapper" ]]; then
+    echo "missing -exec" >&2
+    exit 92
+fi
+printf '{"Action":"run","Package":"fake/vmtest"}\n'
+set +e
+"$exec_wrapper" "$KATL_FAKE_CHILD" "-test.run=^Forwarded$" "-test.v" "child-extra"
+exit_code=$?
+set -e
+printf '{"Action":"pass","Package":"fake/vmtest"}\n'
+exit "$exit_code"
+`)
+	writeExecutable(t, fakeChild, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
+{
+    printf 'KATL_VMTEST_WORLD_MANIFEST=%s\n' "${KATL_VMTEST_WORLD_MANIFEST:-}"
+    printf 'KATL_VMTEST_RUN=%s\n' "${KATL_VMTEST_RUN:-}"
+    printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
+} > "$KATL_FAKE_CHILD_ENV"
+[[ -f "${KATL_VMTEST_WORLD_MANIFEST:-}" ]] || exit 41
+exit "${KATL_FAKE_CHILD_EXIT:-0}"
+`)
+	return fakeGo, fakeChild
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func scriptTestRepoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	return root
+}
+
+func readLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	text := strings.TrimSuffix(string(data), "\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
+func readKeyValues(t *testing.T, path string) map[string]string {
+	t.Helper()
+	values := make(map[string]string)
+	for _, line := range readLines(t, path) {
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("malformed env line %q", line)
+		}
+		values[name] = value
+	}
+	return values
+}
+
+type vmtestRunSummary struct {
+	Status   string   `json:"status"`
+	ExitCode int      `json:"exitCode"`
+	Args     []string `json:"args"`
+}
+
+func readSummary(t *testing.T, path string) vmtestRunSummary {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	var summary vmtestRunSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v", path, err)
+	}
+	return summary
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}

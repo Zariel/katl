@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "error: scripts/vmtest-exec requires a compiled Go test binary" >&2
+    exit 2
+fi
+
+world_manifest="${KATL_VMTEST_WORLD_MANIFEST:-}"
+run_dir="${KATL_VMTEST_RUN_DIR:-}"
+
+if [[ -z "$world_manifest" ]]; then
+    echo "error: KATL_VMTEST_WORLD_MANIFEST is not set; run enabled VM tests with scripts/vmtest-run" >&2
+    exit 2
+fi
+if [[ ! -f "$world_manifest" ]]; then
+    echo "error: VM test world manifest not found: $world_manifest; run enabled VM tests with scripts/vmtest-run" >&2
+    exit 2
+fi
+if [[ -z "$run_dir" ]]; then
+    run_dir="$(dirname "$world_manifest")"
+fi
+
+export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_WORLD_STRICT=1
+
+set +e
+"$@"
+exit_code=$?
+set -e
+
+if [[ "$exit_code" -ne 0 ]]; then
+    echo "vmtest run dir: $run_dir" >&2
+fi
+
+exit "$exit_code"
