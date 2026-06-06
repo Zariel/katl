@@ -419,6 +419,64 @@ func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
 	}
 }
 
+func TestRunnerVerifiesAppliedTargetLayout(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	targetRoot := t.TempDir()
+	discovery := &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
+		planningFacts(),
+		appliedLayoutFacts(targetRoot),
+	}}
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		TargetRoot:     targetRoot,
+		Commands:       &NoopCommandRunner{},
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery:      discovery,
+	}
+
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, verifyTargetStep{}}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if discovery.calls != 2 {
+		t.Fatalf("discovery calls = %d, want 2", discovery.calls)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, VerifyTarget}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerRejectsMissingAppliedMount(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	targetRoot := t.TempDir()
+	applied := appliedLayoutFacts(targetRoot)
+	applied.Mounts = applied.Mounts[:1]
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		TargetRoot:     targetRoot,
+		Commands:       &NoopCommandRunner{},
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery: &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
+			planningFacts(),
+			applied,
+		}},
+	}
+
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, verifyTargetStep{}}
+	err := NewRunner(plan, install).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "state partition is not mounted") {
+		t.Fatalf("Run() error = %v, want missing state mount", err)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
 func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 	payload, contents := writeInstallPayload(t)
 	store := &MemoryStateStore{}
@@ -981,6 +1039,49 @@ func planningFacts() discovery.HardwareFacts {
 			},
 		},
 	}
+}
+
+func appliedLayoutFacts(targetRoot string) discovery.HardwareFacts {
+	return discovery.HardwareFacts{
+		BlockDevices: []discovery.BlockDevice{
+			{
+				Name:      "nvme0n1",
+				Path:      "/dev/nvme0n1",
+				Type:      discovery.DeviceDisk,
+				ByID:      []string{"/dev/disk/by-id/ata-root"},
+				SizeBytes: 64 * 1024 * 1024 * 1024,
+				Partitions: []discovery.BlockDevice{
+					{Path: "/dev/nvme0n1p1", GPTLabel: disk.GPTLabelESP},
+					{Path: "/dev/nvme0n1p2", GPTLabel: disk.GPTLabelRootA},
+					{Path: "/dev/nvme0n1p3", GPTLabel: disk.GPTLabelRootB},
+					{Path: "/dev/nvme0n1p4", GPTLabel: disk.GPTLabelState},
+				},
+			},
+		},
+		Mounts: []discovery.MountFact{
+			{Source: "/dev/nvme0n1p1", Target: filepath.Join(targetRoot, "efi"), Filesystem: "vfat"},
+			{Source: "/dev/nvme0n1p4", Target: filepath.Join(targetRoot, "var"), Filesystem: "ext4"},
+		},
+	}
+}
+
+type sequenceDiscoverySource struct {
+	facts []discovery.HardwareFacts
+	calls int
+}
+
+func (s *sequenceDiscoverySource) Discover(ctx context.Context) (discovery.HardwareFacts, error) {
+	select {
+	case <-ctx.Done():
+		return discovery.HardwareFacts{}, ctx.Err()
+	default:
+	}
+	if s.calls >= len(s.facts) {
+		return discovery.HardwareFacts{}, fmt.Errorf("unexpected discovery call %d", s.calls+1)
+	}
+	facts := s.facts[s.calls]
+	s.calls++
+	return facts, nil
 }
 
 type installPayloadContents struct {

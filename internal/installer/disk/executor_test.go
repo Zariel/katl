@@ -272,6 +272,15 @@ func TestValidateAppliedLayout(t *testing.T) {
 	if err := ValidateAppliedLayout(facts, plan); err != nil {
 		t.Fatalf("ValidateAppliedLayout() error = %v", err)
 	}
+	prefixed := facts
+	prefixed.Mounts = []MountFact{
+		{Source: "/dev/nvme0n1p1", Target: "/target/efi", Filesystem: "vfat"},
+		{Source: "/dev/nvme0n1p4", Target: "/target/var", Filesystem: "ext4"},
+		{Source: "/dev/sdb", Target: "/target/srv/data", Filesystem: "xfs"},
+	}
+	if err := ValidateAppliedLayoutAt(prefixed, plan, "/target"); err != nil {
+		t.Fatalf("ValidateAppliedLayoutAt() error = %v", err)
+	}
 
 	facts.Mounts = facts.Mounts[:1]
 	if err := ValidateAppliedLayout(facts, plan); err == nil {

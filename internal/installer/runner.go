@@ -124,7 +124,7 @@ func NewPlan(options PlanOptions) Plan {
 		installSeedStep{},
 		stubStep{id: InstallMountUnits},
 		writeInstallRecordStep{},
-		stubStep{id: VerifyTarget},
+		verifyTargetStep{},
 		stubStep{id: Reboot},
 	)
 
@@ -722,6 +722,35 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	}
 	install.LoaderRecord = &result.Record
 	return recordStep(ctx, install, WriteInstallRecord)
+}
+
+type verifyTargetStep struct{}
+
+func (verifyTargetStep) ID() StepID {
+	return VerifyTarget
+}
+
+func (verifyTargetStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.DiskLayout == nil {
+		return recordStep(ctx, install, VerifyTarget)
+	}
+	if install.Discovery == nil {
+		return fmt.Errorf("discovery source is required to verify target layout")
+	}
+	facts, err := install.Discovery.Discover(ctx)
+	if err != nil {
+		return err
+	}
+	install.HardwareFacts = facts
+	if err := disk.ValidateAppliedLayoutAt(facts, *install.DiskLayout, install.TargetRoot); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, VerifyTarget)
 }
 
 type stubStep struct {

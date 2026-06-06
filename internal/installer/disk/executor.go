@@ -267,6 +267,13 @@ func partLabelDevice(label string) string {
 }
 
 func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
+	return ValidateAppliedLayoutAt(facts, plan, "")
+}
+
+func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMountPrefix string) error {
+	if targetMountPrefix == "" {
+		targetMountPrefix = "/"
+	}
 	target := findDevice(facts.BlockDevices, plan.TargetDiskPath)
 	if target == nil {
 		return fmt.Errorf("target disk %s not found", plan.TargetDiskPath)
@@ -284,19 +291,20 @@ func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
 	if _, ok := partitionsByLabel[plan.Boot.RootPartitionLabel]; !ok {
 		return fmt.Errorf("boot root label %s not found", plan.Boot.RootPartitionLabel)
 	}
-	if !mountExists(facts.Mounts, "/var") {
-		return fmt.Errorf("state partition is not mounted at /var")
+	if !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/var")) {
+		return fmt.Errorf("state partition is not mounted at %s", targetPath(targetMountPrefix, "/var"))
 	}
-	if !mountExists(facts.Mounts, "/efi") {
-		return fmt.Errorf("ESP partition is not mounted at /efi")
+	if !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/efi")) {
+		return fmt.Errorf("ESP partition is not mounted at %s", targetPath(targetMountPrefix, "/efi"))
 	}
-	if _, ok := findPartitionByName(plan.Partitions, "xbootldr"); ok && !mountExists(facts.Mounts, "/boot") {
-		return fmt.Errorf("XBOOTLDR partition is not mounted at /boot")
+	if _, ok := findPartitionByName(plan.Partitions, "xbootldr"); ok && !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/boot")) {
+		return fmt.Errorf("XBOOTLDR partition is not mounted at %s", targetPath(targetMountPrefix, "/boot"))
 	}
 
 	for _, extra := range plan.ExtraMounts {
-		if !mountExists(facts.Mounts, extra.MountPath) {
-			return fmt.Errorf("extra disk %q is not mounted at %s", extra.Name, extra.MountPath)
+		target := targetPath(targetMountPrefix, extra.MountPath)
+		if !mountExists(facts.Mounts, target) {
+			return fmt.Errorf("extra disk %q is not mounted at %s", extra.Name, target)
 		}
 	}
 
