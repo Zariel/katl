@@ -68,10 +68,11 @@ type MkosiProfile struct {
 }
 
 type PackageSet struct {
-	Name     string    `json:"name"`
-	Source   string    `json:"source,omitempty"`
-	Digest   string    `json:"sha256,omitempty"`
-	Packages []Package `json:"packages,omitempty"`
+	Name       string    `json:"name"`
+	Source     string    `json:"source,omitempty"`
+	Digest     string    `json:"sha256,omitempty"`
+	LockDigest string    `json:"lockSHA256,omitempty"`
+	Packages   []Package `json:"packages,omitempty"`
 }
 
 type Package struct {
@@ -201,6 +202,9 @@ func ValidateManifest(manifest Manifest) error {
 		}
 		if set.Digest != "" && !validSHA256(set.Digest) {
 			return fmt.Errorf("packageSets[%d]: sha256 must be lowercase SHA-256", i)
+		}
+		if set.LockDigest != "" && !validSHA256(set.LockDigest) {
+			return fmt.Errorf("packageSets[%d]: lockSHA256 must be lowercase SHA-256", i)
 		}
 		if packageSets[set.Name] {
 			return fmt.Errorf("packageSets[%d]: duplicate package set %q", i, set.Name)

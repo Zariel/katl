@@ -83,6 +83,27 @@ refresh
 Fedora and Kubernetes repository updates should therefore show up as an explicit
 lock refresh with a reviewable package and artifact diff.
 
+The first package-lock verifier lives in `internal/resourcetest`. It consumes a
+`kind: ResourcePackageLock` document and a generated resource manifest. The lock
+names mkosi profile paths, profile config digests, package repository identities,
+selected package NEVRAs, optional package checksums, and mkosi/tool versions.
+Generated package sets in `ResourceTestManifest` carry `lockSHA256`, the digest
+of the lock source used for the run.
+
+Strict verification fails before scenario assertions when:
+
+```text
+the package lock is missing profile, repository, or package records
+a generated mkosi profile points at a different path, config digest, or package set
+a generated package set omits the package-lock digest
+the package-lock digest does not match the lock used by the run
+selected package NEVRAs or package checksums drift from the lock
+generated package sets contain packages not present in the lock
+```
+
+Refresh mode should regenerate the lock from a reviewed mkosi build and then
+rerun strict verification so the resource manifest records the new lock digest.
+
 ## Resource Graph
 
 The resource graph should be typed and content-addressed enough that downstream

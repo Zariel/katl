@@ -33,6 +33,15 @@ func TestValidateManifestRejectsInvalidDigest(t *testing.T) {
 	}
 }
 
+func TestValidateManifestRejectsInvalidPackageLockDigest(t *testing.T) {
+	manifest := validManifest()
+	manifest.PackageSets[0].LockDigest = strings.ToUpper(testSHA)
+	err := ValidateManifest(manifest)
+	if err == nil || !strings.Contains(err.Error(), "lockSHA256") {
+		t.Fatalf("ValidateManifest() error = %v, want lockSHA256 rejection", err)
+	}
+}
+
 func TestValidateManifestRejectsUnknownFixtureRef(t *testing.T) {
 	manifest := validManifest()
 	manifest.Scenarios[0].FixtureRefs = []string{"missing"}
