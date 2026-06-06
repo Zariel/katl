@@ -229,6 +229,58 @@ func TestPlanFirstInstallWorldRunRejectsStaleInstallerArtifact(t *testing.T) {
 	}
 }
 
+func TestPlanFirstInstallWorldRunRejectsStaleKatlOSInstallImage(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
+	metadata := writeFixtureFile(t, image+".json", `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KatlOSImageArtifact",
+  "imageRole": "install",
+  "version": "0.0.0-dev",
+  "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-1",
+  "sizeBytes": 11,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}`)
+	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
+  "artifacts": [
+    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"},
+    {"kind":"katlos-install-image","path":"build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs","metadataPath":"build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs.json"}
+  ]
+}`)
+	source := writeFixtureFile(t, filepath.Join(repo, "scripts", "build-katlos-install-image"), "source")
+	oldTime := time.Unix(1700000000, 0)
+	newTime := oldTime.Add(time.Hour)
+	for _, path := range []string{image, metadata} {
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes(%s) error = %v", path, err)
+		}
+	}
+	if err := os.Chtimes(source, newTime, newTime); err != nil {
+		t.Fatalf("Chtimes(source) error = %v", err)
+	}
+
+	run, err := planFirstInstallWorldRun(world, "stale katlos image world", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+		TargetDiskSize: "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "KatlOS install image") || !strings.Contains(err.Error(), "rebuild KatlOS install image") {
+		t.Fatalf("planFirstInstallWorldRun() error = %v, want stale KatlOS install image failure", err)
+	}
+	if run.Scenario == nil {
+		t.Fatal("planFirstInstallWorldRun() did not return scenario on setup failure")
+	}
+	var result scenarioResult
+	readJSONForTest(t, run.Scenario.ResultPath, &result)
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "rebuild KatlOS install image") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestPlanFirstInstallWorldRunAllowsExplicitStaleInstallerOverride(t *testing.T) {
 	t.Setenv("KATL_ALLOW_STALE_INSTALLER_ARTIFACTS", "1")
 	world := testWorld(t)
