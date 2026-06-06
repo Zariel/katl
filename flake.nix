@@ -32,6 +32,7 @@
             iproute2
             jq
             mkosi
+            mtools
             openssl
             OVMFFull
             protobuf
