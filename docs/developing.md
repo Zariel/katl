@@ -164,27 +164,29 @@ agent and checks the local handoff boundary: `katl-kubeadm-ready.target`,
 It does not run `kubeadm init` or the API-server smoke.
 
 To run the opt-in first-install target-disk fixture contract smoke, resolve
-the installer UKI, runtime artifact, runtime ESP artifacts, optional node
-metadata, and install manifest into a sourceable environment with:
+the installer UKI, KatlOS install image, optional node metadata, and install
+manifest into a sourceable environment with:
 
 ```sh
-scripts/resolve-first-install-runtime-fixture \
+scripts/resolve-first-install-katlos-image-fixture \
   --installer-uki build/mkosi/katl-installer.efi \
-  --runtime-artifact build/mkosi/katl-runtime-root.squashfs \
-  --use-installed-esp \
+  --katlos-image build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs \
   --node-metadata build/local/cp-1-node.json \
   --install-manifest docs/internal/examples/minimal-install-manifest.json
 ```
 
-The command verifies that all referenced inputs exist, records SHA-256 bindings
-for the installer UKI, runtime artifact, install manifest, and optional node
-metadata, and writes generated files under
-`build/first-install-runtime-fixture/`. With `--use-installed-esp`, the smoke
-extracts the ESP from the target disk written by the installer and uses that
-tree for the packaged runtime boot. Without that option, pass `--runtime-esp`
-to preflight an existing runtime ESP loader-entry tree. Source the generated
+The command verifies the KatlOS image contract and manifest image binding,
+extracts the runtime-root component for the host-side VM harness, records
+SHA-256 bindings, and writes generated files under
+`build/first-install-katlos-image-fixture/`. The generated smoke runs in
+installed-ESP mode: it extracts the ESP from the target disk written by the
+installer and uses that tree for the packaged runtime boot. Source the generated
 `vmtest.env` or run the generated wrapper to revalidate inputs and execute
 `TestFirstInstallTargetDiskFixtureContract`.
+
+If you already have a loose runtime root and rendered runtime ESP tree from a
+lower-level development loop, `scripts/resolve-first-install-runtime-fixture`
+can still resolve those inputs directly.
 
 The smoke keeps the target disk from the first-install harness, packages it with
 `scripts/create-installed-runtime-fixture`, includes node metadata when

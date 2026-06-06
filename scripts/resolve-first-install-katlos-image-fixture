@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+run_id="${KATL_FIRST_INSTALL_FIXTURE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+state_root="${KATL_FIRST_INSTALL_KATLOS_FIXTURE_STATE_ROOT:-$repo_root/build/first-install-katlos-image-fixture}"
+state_dir="${KATL_FIRST_INSTALL_KATLOS_FIXTURE_STATE_DIR:-$state_root/$run_id}"
+env_file="${KATL_FIRST_INSTALL_FIXTURE_ENV:-$state_dir/vmtest.env}"
+run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
+manifest="$state_dir/katlos-image-fixture.json"
+
+installer_uki="${KATL_INSTALLER_UKI:-}"
+katlos_image="${KATL_KATLOS_IMAGE:-}"
+katlos_image_sha256="${KATL_KATLOS_IMAGE_SHA256:-}"
+install_manifest="${KATL_INSTALL_MANIFEST:-}"
+node_metadata="${KATL_RUNTIME_NODE_METADATA:-${KATL_INSTALLED_NODE_METADATA:-}}"
+node_metadata_sha256="${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}"
+target_disk_size="${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}"
+env_file_set=0
+check_only=0
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/resolve-first-install-katlos-image-fixture [options]
+
+Resolve the host-side runtime root input for the opt-in first-install target
+disk fixture smoke from a single KatlOS install image. The generated wrapper
+revalidates the KatlOS image and then runs the first-install target-disk smoke
+in installed-ESP mode, so runtime boot metadata comes from the disk written by
+the installer.
+
+Options:
+  --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
+  --katlos-image PATH        KatlOS install image, or KATL_KATLOS_IMAGE
+  --katlos-image-sha256 H    Expected KatlOS image SHA-256
+  --node-metadata PATH       Optional /etc/katl/node.json, or KATL_RUNTIME_NODE_METADATA
+  --node-metadata-sha256 H   Expected node metadata SHA-256
+  --install-manifest PATH    Install manifest, or KATL_INSTALL_MANIFEST
+  --target-disk-size SIZE    Target disk size for the first install smoke (default: 20G)
+  --state-dir DIR            Output directory for generated env, manifest, and wrappers
+  --env-file PATH            Sourceable env output path (default: <state-dir>/vmtest.env)
+  --check-only               Validate inputs without writing wrappers
+  -h, --help                 Show this help
+
+After this command succeeds:
+  source <state-dir>/vmtest.env
+  <state-dir>/run-first-install-katlos-image-fixture.sh
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+real() {
+    realpath -m "$1"
+}
+
+json() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    printf "%s" "$value"
+}
+
+file_sha() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+validate_sha256() {
+    local label="$1"
+    local value="$2"
+    [[ -z "$value" ]] && return 0
+    [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "$label must be a lowercase SHA-256 hex digest"
+}
+
+normal_image_path() {
+    local label="$1"
+    local value="$2"
+    [[ -n "$value" ]] || fail "$label is required"
+    [[ "$value" != /* ]] || fail "$label must be relative"
+    [[ "$value" != *".."* ]] || fail "$label must not contain dot segments"
+    [[ "$value" != *"//"* ]] || fail "$label must be clean"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --installer-uki)
+            need_value "$1" "${2:-}"
+            installer_uki="$2"
+            shift 2
+            ;;
+        --katlos-image)
+            need_value "$1" "${2:-}"
+            katlos_image="$2"
+            shift 2
+            ;;
+        --katlos-image-sha256)
+            need_value "$1" "${2:-}"
+            katlos_image_sha256="$2"
+            shift 2
+            ;;
+        --node-metadata)
+            need_value "$1" "${2:-}"
+            node_metadata="$2"
+            shift 2
+            ;;
+        --node-metadata-sha256)
+            need_value "$1" "${2:-}"
+            node_metadata_sha256="$2"
+            shift 2
+            ;;
+        --install-manifest)
+            need_value "$1" "${2:-}"
+            install_manifest="$2"
+            shift 2
+            ;;
+        --target-disk-size)
+            need_value "$1" "${2:-}"
+            target_disk_size="$2"
+            shift 2
+            ;;
+        --state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            if [[ "$env_file_set" -eq 0 ]]; then
+                env_file="$state_dir/vmtest.env"
+            fi
+            run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
+            manifest="$state_dir/katlos-image-fixture.json"
+            shift 2
+            ;;
+        --env-file)
+            need_value "$1" "${2:-}"
+            env_file="$2"
+            env_file_set=1
+            shift 2
+            ;;
+        --check-only)
+            check_only=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+need awk
+need jq
+need mkdir
+need realpath
+need sha256sum
+need stat
+need unsquashfs
+
+[[ -n "$installer_uki" ]] || fail "--installer-uki is required"
+[[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
+[[ -n "$katlos_image" ]] || fail "--katlos-image is required"
+[[ -f "$katlos_image" ]] || fail "KatlOS image not found: $(rel "$katlos_image")"
+[[ -n "$install_manifest" ]] || fail "--install-manifest is required"
+[[ -f "$install_manifest" ]] || fail "install manifest not found: $(rel "$install_manifest")"
+[[ -n "$target_disk_size" ]] || fail "--target-disk-size is required"
+case "$target_disk_size" in
+    *[[:space:],]*)
+        fail "target disk size must not contain whitespace or comma"
+        ;;
+esac
+if [[ -n "$node_metadata" ]]; then
+    [[ -f "$node_metadata" ]] || fail "node metadata not found: $(rel "$node_metadata")"
+fi
+
+installer_uki="$(real "$installer_uki")"
+katlos_image="$(real "$katlos_image")"
+install_manifest="$(real "$install_manifest")"
+if [[ -n "$node_metadata" ]]; then
+    node_metadata="$(real "$node_metadata")"
+fi
+state_dir="$(real "$state_dir")"
+env_file="$(real "$env_file")"
+run_script="$(real "$run_script")"
+manifest="$(real "$manifest")"
+
+validate_sha256 "KatlOS image SHA-256" "$katlos_image_sha256"
+validate_sha256 "node metadata SHA-256" "$node_metadata_sha256"
+
+image_sha256="$(file_sha "$katlos_image")"
+if [[ -n "$katlos_image_sha256" && "$image_sha256" != "$katlos_image_sha256" ]]; then
+    fail "KatlOS image sha256 does not match $katlos_image"
+fi
+image_size="$(stat -c %s "$katlos_image")"
+
+manifest_image_sha256="$(jq -er '.katlosImage.sha256 // empty' "$install_manifest")"
+if [[ -n "$manifest_image_sha256" && "$manifest_image_sha256" != "$image_sha256" ]]; then
+    fail "install manifest KatlOS image sha256 does not match $katlos_image"
+fi
+manifest_image_size="$(jq -er '.katlosImage.sizeBytes // empty' "$install_manifest")"
+if [[ -n "$manifest_image_size" && "$manifest_image_size" != "$image_size" ]]; then
+    fail "install manifest KatlOS image size does not match $katlos_image"
+fi
+manifest_local_ref="$(jq -er '.katlosImage.localRef // empty' "$install_manifest")"
+if [[ -n "$manifest_local_ref" ]]; then
+    normal_image_path "install manifest katlosImage.localRef" "$manifest_local_ref"
+    manifest_ref_path="$(real "$(dirname "$install_manifest")/$manifest_local_ref")"
+    [[ "$manifest_ref_path" == "$katlos_image" ]] || fail "install manifest katlosImage.localRef resolves to $(rel "$manifest_ref_path"), not $(rel "$katlos_image")"
+fi
+
+"$repo_root/scripts/check-katlos-install-image" "$katlos_image" >/dev/null
+
+work_dir="$state_dir/katlos-image"
+index_file="$work_dir/image.json"
+runtime_artifact="$work_dir/runtime-root.squashfs"
+mkdir -p "$work_dir"
+unsquashfs -cat "$katlos_image" katlos/image.json >"$index_file"
+runtime_path="$(jq -er '.components[] | select(.role == "runtime-root") | .path' "$index_file")"
+normal_image_path "runtime-root component path" "$runtime_path"
+runtime_sha256="$(jq -er '.components[] | select(.role == "runtime-root") | .sha256' "$index_file")"
+runtime_size="$(jq -er '.components[] | select(.role == "runtime-root") | .sizeBytes' "$index_file")"
+validate_sha256 "runtime-root component SHA-256" "$runtime_sha256"
+unsquashfs -cat "$katlos_image" "$runtime_path" >"$runtime_artifact"
+actual_runtime_sha256="$(file_sha "$runtime_artifact")"
+actual_runtime_size="$(stat -c %s "$runtime_artifact")"
+[[ "$actual_runtime_sha256" == "$runtime_sha256" ]] || fail "runtime-root component sha256 does not match KatlOS image index"
+[[ "$actual_runtime_size" == "$runtime_size" ]] || fail "runtime-root component size does not match KatlOS image index"
+
+if [[ -n "$node_metadata" ]]; then
+    actual_node_metadata_sha256="$(file_sha "$node_metadata")"
+    if [[ -n "$node_metadata_sha256" && "$actual_node_metadata_sha256" != "$node_metadata_sha256" ]]; then
+        fail "node metadata sha256 does not match $node_metadata"
+    fi
+else
+    actual_node_metadata_sha256=""
+fi
+
+if [[ "$check_only" -eq 1 ]]; then
+    echo "ok: first-install KatlOS image fixture inputs valid"
+    exit 0
+fi
+
+resolver_args=(
+    --installer-uki "$installer_uki"
+    --runtime-artifact "$runtime_artifact"
+    --runtime-artifact-sha256 "$runtime_sha256"
+    --use-installed-esp
+    --install-manifest "$install_manifest"
+    --target-disk-size "$target_disk_size"
+    --state-dir "$state_dir"
+    --env-file "$env_file"
+)
+if [[ -n "$node_metadata" ]]; then
+    resolver_args+=(--node-metadata "$node_metadata")
+    if [[ -n "$actual_node_metadata_sha256" ]]; then
+        resolver_args+=(--node-metadata-sha256 "$actual_node_metadata_sha256")
+    fi
+fi
+"$repo_root/scripts/resolve-first-install-runtime-fixture" "${resolver_args[@]}" >/dev/null
+
+{
+    printf 'export KATL_KATLOS_IMAGE=%q\n' "$katlos_image"
+    printf 'export KATL_KATLOS_IMAGE_SHA256=%q\n' "$image_sha256"
+} >>"$env_file"
+
+cat >"$manifest" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "FirstInstallKatlOSImageFixtureResolution",
+  "katlosImage": "$(json "$katlos_image")",
+  "katlosImageSHA256": "$(json "$image_sha256")",
+  "katlosImageSizeBytes": $image_size,
+  "runtimeArtifact": "$(json "$runtime_artifact")",
+  "runtimeArtifactSHA256": "$(json "$runtime_sha256")",
+  "installManifest": "$(json "$install_manifest")",
+  "nodeMetadata": "$(json "$node_metadata")",
+  "nodeMetadataSHA256": "$(json "$actual_node_metadata_sha256")",
+  "envFile": "$(json "$env_file")",
+  "runScript": "$(json "$run_script")"
+}
+EOF
+
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf 'cd %q\n' "$repo_root"
+    printf 'source %q\n' "$env_file"
+    printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck"
+    # shellcheck disable=SC2016
+    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--node-metadata "$KATL_RUNTIME_NODE_METADATA")\n'
+    # shellcheck disable=SC2016
+    printf '    if [[ -n "${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '        recheck_args+=(--node-metadata-sha256 "$KATL_FIRST_INSTALL_NODE_METADATA_SHA256")\n'
+    printf '    fi\n'
+    printf 'fi\n'
+    # shellcheck disable=SC2016
+    printf '%q "${recheck_args[@]}"\n' "$repo_root/scripts/resolve-first-install-katlos-image-fixture"
+    printf '%q\n' "$state_dir/run-first-install-target-disk-fixture.sh"
+} >"$run_script"
+chmod +x "$run_script"
+
+echo "fixture env: $(rel "$env_file")"
+echo "fixture manifest: $(rel "$manifest")"
+echo "run script: $(rel "$run_script")"
+echo "next: source $(rel "$env_file")"
+echo "next: $(rel "$run_script")"
