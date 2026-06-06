@@ -170,6 +170,19 @@ fi
 node_name="$(jq -er '.nodeName' "$latest_fixture")"
 system_role="$(jq -er '.systemRole' "$latest_fixture")"
 
+source_check_args=(
+    --disk "$source_disk"
+    --esp-artifacts "$source_esp_artifacts"
+    --fixture "$latest_fixture"
+    --format "$disk_format"
+    --state-dir "$state_dir/source-recheck"
+    --check-only
+)
+if [[ -n "$node_metadata" ]]; then
+    source_check_args+=(--node-metadata "$node_metadata")
+fi
+"$repo_root/scripts/resolve-installed-runtime-fixture" "${source_check_args[@]}" >/dev/null
+
 pack_args=(
     --disk "$source_disk"
     --esp-artifacts "$source_esp_artifacts"
