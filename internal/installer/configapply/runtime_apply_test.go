@@ -330,6 +330,105 @@ func TestApplyTrustedBundleRejectsLeadingZeroDesiredVersion(t *testing.T) {
 	}
 }
 
+func TestApplyTrustedBundleRejectsNoSupportedDomainsBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "no supported changed domains") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want no-domain rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || result.Audit.FailureReason == "" {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRejectsUnsupportedApplyModeBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    "immediate",
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "apply mode") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want apply-mode rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || result.Audit.FailureReason == "" {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRejectsUnsupportedKnownDomainFieldsBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "bad name.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "networkd") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want known-domain field rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainNetworkd) {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRejectsRawEtcInputBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			UnsafeEtcFiles: confextFiles{{Path: "/etc/motd", Content: "raw\n"}}.native(),
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want arbitrary /etc rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainArbitraryEtc) {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPathBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	plan := kubeadmPlan("control-plane")
+	plan.Config.RenderPath = "/etc/kubernetes/admin.conf"
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			KubeadmChanged: true,
+		},
+		CurrentManifest: manifestWithKubeadm(),
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": plan,
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "/etc/kubernetes") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want unsafe kubeadm render path rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainKubeadmConfig) {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
 func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
@@ -351,6 +450,7 @@ func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
 	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainArbitraryEtc) {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
 func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T) {
@@ -500,6 +600,13 @@ func containsDomain(domains []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertGenerationMissing(t *testing.T, root string, generationID string) {
+	t.Helper()
+	if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations", generationID)); !os.IsNotExist(statErr) {
+		t.Fatalf("request created generation dir %s: %v", generationID, statErr)
+	}
 }
 
 type confextFile struct {
