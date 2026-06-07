@@ -3,9 +3,8 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 go_bin="${KATL_VMTEST_GO:-go}"
-qemu_bin="${KATL_VMTEST_QEMU:-qemu-system-x86_64}"
-qemu_img_bin="${KATL_VMTEST_QEMU_IMG:-qemu-img}"
-ip_bin="${KATL_VMTEST_IP:-ip}"
+image_tool="${KATL_VMTEST_IMAGE_TOOL:-qemu-img}"
+virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
 kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
 go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
@@ -18,26 +17,26 @@ world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
 run_index="$run_dir/run.json"
 lease_file="$network_dir/leases.json"
-keep_policy="${KATL_VMTEST_KEEP:-failed}"
-network_backend="${KATL_VMTEST_NETWORK_BACKEND:-bridge}"
-network_bridge="${KATL_VMTEST_BRIDGE:-katl-vmtest0}"
+libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
+libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
+libvirt_storage_pool="${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-default}"
+libvirt_storage_path="${KATL_VMTEST_LIBVIRT_STORAGE_PATH:-/var/lib/libvirt/images}"
+libvirt_domain_prefix="${KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX:-katl-${run_id}}"
 network_cidr="${KATL_VMTEST_CIDR:-10.77.0.0/24}"
 network_gateway="${KATL_VMTEST_GATEWAY:-10.77.0.1}"
 ovmf_code="${KATL_OVMF_CODE:-}"
 ovmf_vars="${KATL_OVMF_VARS:-}"
 kvm_device="${KATL_VMTEST_KVM_DEVICE:-/dev/kvm}"
 vsock_device="${KATL_VMTEST_VSOCK_DEVICE:-/dev/vhost-vsock}"
-tun_device="${KATL_VMTEST_TUN_DEVICE:-/dev/net/tun}"
-bridge_conf="${KATL_QEMU_BRIDGE_CONF:-/etc/qemu/bridge.conf}"
 network_prefix=""
-bridge_created=0
 final_status="setup-failed"
-cap_qemu="disabled"
-cap_qemu_img="disabled"
+cap_image_tool="disabled"
+cap_libvirt="disabled"
+cap_libvirt_network="disabled"
+cap_libvirt_storage_pool="disabled"
 cap_ovmf="disabled"
 cap_kvm="disabled"
 cap_vsock="disabled"
-cap_bridge="disabled"
 cap_mtools="disabled"
 cap_sfdisk="disabled"
 cap_sha256sum="disabled"
@@ -69,11 +68,17 @@ have_command() {
 
 capability_hint() {
     case "$1" in
-        qemu)
-            printf "install qemu-system-x86_64 or set KATL_VMTEST_QEMU to the QEMU binary"
+        image-tool)
+            printf "install qemu-img or set KATL_VMTEST_IMAGE_TOOL to an image tool compatible with qemu-img"
             ;;
-        qemu-img)
-            printf "install qemu-img or set KATL_VMTEST_QEMU_IMG to the qemu-img binary"
+        libvirt)
+            printf "install libvirt client tools and ensure %s can connect to %s" "$virsh_bin" "$libvirt_uri"
+            ;;
+        libvirt-network)
+            printf "define and start libvirt network %s on %s, or set KATL_VMTEST_LIBVIRT_NETWORK" "$libvirt_network" "$libvirt_uri"
+            ;;
+        libvirt-storage-pool)
+            printf "define and start libvirt storage pool %s on %s, or set KATL_VMTEST_LIBVIRT_STORAGE_POOL" "$libvirt_storage_pool" "$libvirt_uri"
             ;;
         ovmf)
             printf "set KATL_OVMF_CODE and KATL_OVMF_VARS to readable OVMF pflash images"
@@ -107,18 +112,6 @@ capability_hint() {
             ;;
         nspawn-privileges)
             printf "systemd-nspawn is installed, but this run is not privileged; run with sudo or set KATL_NSPAWN_ALLOW_UNPRIVILEGED=1 after configuring rootless systemd-nspawn"
-            ;;
-        tun)
-            printf "%s is missing; load the tun module or set KATL_VMTEST_TUN_DEVICE" "$tun_device"
-            ;;
-        qemu-bridge-helper)
-            printf "install qemu-bridge-helper or set KATL_QEMU_BRIDGE_HELPER to its path"
-            ;;
-        qemu-bridge-acl)
-            printf "%s must contain 'allow %s' or 'allow all'; override the ACL path with KATL_QEMU_BRIDGE_CONF" "$bridge_conf" "$network_bridge"
-            ;;
-        bridge)
-            printf "create or allow creation of bridge %s, or set KATL_VMTEST_BRIDGE to an existing bridge" "$network_bridge"
             ;;
         *)
             printf "see %s for recorded host capability state" "$host_capabilities_json"
@@ -209,18 +202,49 @@ build_default_artifacts() {
 }
 
 probe_vm_capabilities() {
-    if have_command "$qemu_bin"; then
-        cap_qemu="passed"
+    if have_command "$image_tool"; then
+        cap_image_tool="passed"
     else
-        missing_capabilities+=("qemu")
-        cap_qemu="$(missing_status missing)"
+        missing_capabilities+=("image-tool")
+        cap_image_tool="$(missing_status missing)"
     fi
-    if have_command "$qemu_img_bin"; then
-        cap_qemu_img="passed"
+
+    if have_command "$virsh_bin" && "$virsh_bin" -c "$libvirt_uri" uri >/dev/null 2>&1; then
+        cap_libvirt="passed"
     else
-        missing_capabilities+=("qemu-img")
-        cap_qemu_img="$(missing_status missing)"
+        missing_capabilities+=("libvirt")
+        cap_libvirt="$(missing_status missing)"
     fi
+
+    if [[ "$cap_libvirt" == "passed" ]]; then
+        local network_info=""
+        if network_info="$("$virsh_bin" -c "$libvirt_uri" net-info "$libvirt_network" 2>/dev/null)" &&
+            grep -Eq '^Active:[[:space:]]+yes' <<<"$network_info" &&
+            discover_libvirt_network; then
+            cap_libvirt_network="passed"
+        else
+            missing_capabilities+=("libvirt-network")
+            cap_libvirt_network="$(missing_status missing)"
+        fi
+
+        local pool_info=""
+        if pool_info="$("$virsh_bin" -c "$libvirt_uri" pool-info "$libvirt_storage_pool" 2>/dev/null)" &&
+            grep -Eq '^State:[[:space:]]+running' <<<"$pool_info"; then
+            cap_libvirt_storage_pool="passed"
+            local pool_xml=""
+            if pool_xml="$("$virsh_bin" -c "$libvirt_uri" pool-dumpxml "$libvirt_storage_pool" 2>/dev/null)"; then
+                local discovered_path=""
+                discovered_path="$(sed -n 's:.*<path>\(.*\)</path>.*:\1:p' <<<"$pool_xml" | head -n 1)"
+                if [[ -n "$discovered_path" ]]; then
+                    libvirt_storage_path="$discovered_path"
+                fi
+            fi
+        else
+            missing_capabilities+=("libvirt-storage-pool")
+            cap_libvirt_storage_pool="$(missing_status missing)"
+        fi
+    fi
+
     if [[ -n "$ovmf_code" && -e "$ovmf_code" && -n "$ovmf_vars" && -e "$ovmf_vars" ]]; then
         cap_ovmf="passed"
     else
@@ -316,11 +340,76 @@ ipv4_to_int() {
     printf "%u" "$(((a << 24) + (b << 16) + (c << 8) + d))"
 }
 
-validate_network() {
-    if [[ "$network_backend" != "bridge" ]]; then
-        setup_failures+=("unsupported network backend: $network_backend")
-        return
+int_to_ipv4() {
+    local value="$1"
+    printf "%u.%u.%u.%u" "$(((value >> 24) & 255))" "$(((value >> 16) & 255))" "$(((value >> 8) & 255))" "$((value & 255))"
+}
+
+netmask_to_prefix() {
+    local mask="$1"
+    local mask_int
+    if ! mask_int="$(ipv4_to_int "$mask")"; then
+        return 1
     fi
+    local prefix=0
+    local seen_zero=0
+    local bit
+    for ((bit = 31; bit >= 0; bit--)); do
+        if (((mask_int & (1 << bit)) != 0)); then
+            if [[ "$seen_zero" == 1 ]]; then
+                return 1
+            fi
+            prefix=$((prefix + 1))
+        else
+            seen_zero=1
+        fi
+    done
+    printf "%u" "$prefix"
+}
+
+network_cidr_from_gateway() {
+    local gateway="$1"
+    local prefix="$2"
+    local gateway_int mask network_int
+    if ! gateway_int="$(ipv4_to_int "$gateway")"; then
+        return 1
+    fi
+    if ! [[ "$prefix" =~ ^[0-9]+$ ]] || ((prefix < 0 || prefix > 32)); then
+        return 1
+    fi
+    if ((prefix == 0)); then
+        mask=0
+    else
+        mask=$(((0xffffffff << (32 - prefix)) & 0xffffffff))
+    fi
+    network_int=$((gateway_int & mask))
+    printf "%s/%u" "$(int_to_ipv4 "$network_int")" "$prefix"
+}
+
+discover_libvirt_network() {
+    local network_xml gateway prefix netmask cidr
+    if ! network_xml="$("$virsh_bin" -c "$libvirt_uri" net-dumpxml "$libvirt_network" 2>/dev/null)"; then
+        return 1
+    fi
+    gateway="$(sed -n "s/.*<ip[^>]* address=['\"]\([^'\"]*\)['\"][^>]*>.*/\1/p" <<<"$network_xml" | head -n 1)"
+    prefix="$(sed -n "s/.*<ip[^>]* prefix=['\"]\([0-9][0-9]*\)['\"][^>]*>.*/\1/p" <<<"$network_xml" | head -n 1)"
+    if [[ -z "$prefix" ]]; then
+        netmask="$(sed -n "s/.*<ip[^>]* netmask=['\"]\([^'\"]*\)['\"][^>]*>.*/\1/p" <<<"$network_xml" | head -n 1)"
+        if [[ -n "$netmask" ]]; then
+            prefix="$(netmask_to_prefix "$netmask")"
+        fi
+    fi
+    if [[ -z "$gateway" || -z "$prefix" ]]; then
+        return 1
+    fi
+    if ! cidr="$(network_cidr_from_gateway "$gateway" "$prefix")"; then
+        return 1
+    fi
+    network_gateway="$gateway"
+    network_cidr="$cidr"
+}
+
+validate_network() {
     if [[ ! "$network_cidr" =~ ^([^/]+)/([0-9]{1,2})$ ]]; then
         setup_failures+=("invalid CIDR: $network_cidr")
         return
@@ -350,102 +439,15 @@ validate_network() {
     fi
 }
 
-find_bridge_helper() {
-    if [[ -n "${KATL_QEMU_BRIDGE_HELPER:-}" ]]; then
-        printf "%s" "$KATL_QEMU_BRIDGE_HELPER"
-        return 0
-    fi
-    local helper
-    for helper in /usr/lib/qemu/qemu-bridge-helper /usr/libexec/qemu-bridge-helper /usr/lib64/qemu/qemu-bridge-helper; do
-        if [[ -e "$helper" ]]; then
-            printf "%s" "$helper"
-            return 0
-        fi
-    done
-    return 1
-}
-
-bridge_acl_allows() {
-    local bridge="$1"
-    local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        if [[ "$line" == "allow all" || "$line" == "allow $bridge" ]]; then
-            return 0
-        fi
-    done <"$bridge_conf"
-    return 1
-}
-
-check_bridge_prerequisites() {
-    local missing=0
-    if [[ ! -e "$tun_device" ]]; then
-        missing_capabilities+=("tun")
-        missing=1
-    fi
-    local helper=""
-    if ! helper="$(find_bridge_helper)"; then
-        missing_capabilities+=("qemu-bridge-helper")
-        missing=1
-    elif [[ ! -e "$helper" ]]; then
-        missing_capabilities+=("qemu-bridge-helper")
-        missing=1
-    fi
-    if [[ ! -r "$bridge_conf" ]]; then
-        missing_capabilities+=("qemu-bridge-acl")
-        missing=1
-    elif ! bridge_acl_allows "$network_bridge"; then
-        missing_capabilities+=("qemu-bridge-acl")
-        missing=1
-    fi
-    if [[ "$missing" == 1 ]]; then
-        cap_bridge="$(missing_status missing)"
-        return 1
-    fi
-    return 0
-}
-
-setup_network() {
-    if [[ "$network_backend" != "bridge" ]]; then
-        return
-    fi
-    if ! have_command "$ip_bin"; then
-        missing_capabilities+=("bridge")
-        cap_bridge="$(missing_status missing)"
-        return
-    fi
-    if "$ip_bin" link show "$network_bridge" >/dev/null 2>&1; then
-        if ! check_bridge_prerequisites; then
-            return 0
-        fi
-        cap_bridge="passed"
-        return
-    fi
-    if "$ip_bin" link add name "$network_bridge" type bridge >/dev/null 2>&1; then
-        bridge_created=1
-        if "$ip_bin" addr add "$network_gateway/$network_prefix" dev "$network_bridge" >/dev/null 2>&1 &&
-            "$ip_bin" link set "$network_bridge" up >/dev/null 2>&1; then
-            if ! check_bridge_prerequisites; then
-                return 0
-            fi
-            cap_bridge="passed"
-            return
-        fi
-    fi
-    missing_capabilities+=("bridge")
-    cap_bridge="$(missing_status missing)"
-}
-
 write_host_capabilities() {
     jq -n \
-        --arg qemu "$cap_qemu" \
-        --arg qemuImg "$cap_qemu_img" \
+        --arg imageTool "$cap_image_tool" \
+        --arg libvirt "$cap_libvirt" \
+        --arg libvirtNetwork "$cap_libvirt_network" \
+        --arg libvirtStoragePool "$cap_libvirt_storage_pool" \
         --arg ovmf "$cap_ovmf" \
         --arg kvm "$cap_kvm" \
         --arg vsock "$cap_vsock" \
-        --arg bridge "$cap_bridge" \
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
         --arg sha256sum "$cap_sha256sum" \
@@ -458,12 +460,13 @@ write_host_capabilities() {
           apiVersion: "katl.dev/v1alpha1",
           kind: "VMTestHostCapabilities",
           capabilities: {
-            qemu: $qemu,
-            "qemu-img": $qemuImg,
+            "image-tool": $imageTool,
+            libvirt: $libvirt,
+            "libvirt-network": $libvirtNetwork,
+            "libvirt-storage-pool": $libvirtStoragePool,
             ovmf: $ovmf,
             kvm: $kvm,
             vsock: $vsock,
-            bridge: $bridge,
             mtools: $mtools,
             sfdisk: $sfdisk,
             sha256sum: $sha256sum,
@@ -483,16 +486,21 @@ write_world() {
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
         --arg runIndex "$run_index" \
-        --arg bridge "$network_bridge" \
+        --arg libvirtURI "$libvirt_uri" \
+        --arg libvirtNetwork "$libvirt_network" \
+        --arg libvirtStoragePool "$libvirt_storage_pool" \
+        --arg libvirtStoragePath "$libvirt_storage_path" \
+        --arg libvirtDomainPrefix "$libvirt_domain_prefix" \
         --arg cidr "$network_cidr" \
         --arg gateway "$network_gateway" \
         --arg leaseFile "$lease_file" \
-        --arg qemu "$cap_qemu" \
-        --arg qemuImg "$cap_qemu_img" \
+        --arg imageTool "$cap_image_tool" \
+        --arg libvirt "$cap_libvirt" \
+        --arg libvirtNetworkStatus "$cap_libvirt_network" \
+        --arg libvirtStoragePoolStatus "$cap_libvirt_storage_pool" \
         --arg ovmf "$cap_ovmf" \
         --arg kvm "$cap_kvm" \
         --arg vsock "$cap_vsock" \
-        --arg bridgeStatus "$cap_bridge" \
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
         --arg sha256sum "$cap_sha256sum" \
@@ -508,19 +516,27 @@ write_world() {
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
+          libvirt: {
+            uri: $libvirtURI,
+            network: $libvirtNetwork,
+            storagePool: $libvirtStoragePool,
+            storagePath: $libvirtStoragePath,
+            domainPrefix: $libvirtDomainPrefix
+          },
           network: {
-            backend: "bridge",
-            bridge: $bridge,
+            backend: "libvirt",
+            name: $libvirtNetwork,
             cidr: $cidr,
             gateway: $gateway,
             leaseFile: $leaseFile
           },
           capabilities: {
-            qemu: $qemu,
-            "qemu-img": $qemuImg,
+            "image-tool": $imageTool,
+            libvirt: $libvirt,
+            "libvirt-network": $libvirtNetworkStatus,
+            "libvirt-storage-pool": $libvirtStoragePoolStatus,
             ovmf: $ovmf,
             kvm: $kvm,
-            bridge: $bridgeStatus,
             mtools: $mtools,
             sfdisk: $sfdisk,
             sha256sum: $sha256sum,
@@ -571,28 +587,11 @@ write_run_index() {
         }' -- "$@" >"$run_index"
 }
 
-cleanup_network() {
-    local exit_code=$?
-    if [[ "$bridge_created" == 1 ]]; then
-        case "$keep_policy:$final_status" in
-            always:*)
-                ;;
-            failed:failed|failed:setup-failed)
-                ;;
-            *)
-                "$ip_bin" link del "$network_bridge" >/dev/null 2>&1 || true
-                ;;
-        esac
-    fi
-    exit "$exit_code"
-}
-
 need jq
 mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
 jq -n '{}' >"$lease_file"
 write_host_capabilities
 write_run_index "setup" "$@"
-trap cleanup_network EXIT
 validate_network
 if [[ "${#setup_failures[@]}" -gt 0 ]]; then
     write_run_index "setup-failed" "$@"
@@ -606,7 +605,6 @@ if ! build_default_artifacts; then
     exit 2
 fi
 probe_capabilities
-setup_network
 write_host_capabilities
 write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
@@ -615,7 +613,11 @@ fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
-export KATL_VMTEST_BRIDGE="$network_bridge"
+export KATL_VMTEST_LIBVIRT_URI="$libvirt_uri"
+export KATL_VMTEST_LIBVIRT_NETWORK="$libvirt_network"
+export KATL_VMTEST_LIBVIRT_STORAGE_POOL="$libvirt_storage_pool"
+export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
+export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 
 final_status="go-test"
 write_run_index "$final_status" "$@"

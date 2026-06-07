@@ -46,6 +46,7 @@
             iproute2
             jq
             kubectl
+            libvirt
             mkosi
             mtools
             openssl
@@ -67,11 +68,11 @@
             export TMPDIR="''${TMPDIR:-/tmp}"
             export KATL_OVMF_CODE="''${KATL_OVMF_CODE:-${pkgs.OVMFFull.fd}/FV/OVMF_CODE.fd}"
             export KATL_OVMF_VARS="''${KATL_OVMF_VARS:-${pkgs.OVMFFull.fd}/FV/OVMF_VARS.fd}"
-            export KATL_VMTEST_QEMU="''${KATL_VMTEST_QEMU:-${pkgs.qemu_kvm}/bin/qemu-system-x86_64}"
-            export KATL_VMTEST_QEMU_IMG="''${KATL_VMTEST_QEMU_IMG:-${pkgs.qemu_kvm}/bin/qemu-img}"
-            export KATL_VMTEST_IP="''${KATL_VMTEST_IP:-${pkgs.iproute2}/bin/ip}"
-            export KATL_QEMU_BRIDGE_HELPER="''${KATL_QEMU_BRIDGE_HELPER:-${pkgs.qemu_kvm}/libexec/qemu-bridge-helper}"
-            export KATL_VMTEST_BRIDGE="''${KATL_VMTEST_BRIDGE:-virbr0}"
+            export KATL_VMTEST_IMAGE_TOOL="''${KATL_VMTEST_IMAGE_TOOL:-${pkgs.qemu_kvm}/bin/qemu-img}"
+            export KATL_VMTEST_VIRSH="''${KATL_VMTEST_VIRSH:-${pkgs.libvirt}/bin/virsh}"
+            export KATL_VMTEST_LIBVIRT_URI="''${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
+            export KATL_VMTEST_LIBVIRT_NETWORK="''${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
+            export KATL_VMTEST_LIBVIRT_STORAGE_POOL="''${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-default}"
           '';
         };
     in

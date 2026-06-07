@@ -57,10 +57,13 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
 	}
-	if world.Network.Backend != NetworkBridge || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
+	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
+		t.Fatalf("world libvirt = %#v", world.Libvirt)
+	}
+	if world.Network.Backend != NetworkLibvirt || world.Network.Name != "default" || world.Network.CIDR != "192.168.122.0/24" || world.Network.Gateway != "192.168.122.1" || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
 		t.Fatalf("world network = %#v", world.Network)
 	}
-	for _, capability := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "kubectl", "systemd-nspawn"} {
+	for _, capability := range []string{"image-tool", "libvirt", "libvirt-network", "libvirt-storage-pool", "ovmf", "kvm", "vsock", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "kubectl", "systemd-nspawn"} {
 		if world.Capabilities[capability] != WorldStatusPassed {
 			t.Fatalf("capability %s = %q", capability, world.Capabilities[capability])
 		}
@@ -92,8 +95,8 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if childEnv["KATL_VMTEST_WORLD_MANIFEST"] != filepath.Join(runDir, "world.json") {
 		t.Fatalf("child manifest env = %q", childEnv["KATL_VMTEST_WORLD_MANIFEST"])
 	}
-	if childEnv["KATL_VMTEST_BRIDGE"] != "katl-vmtest0" {
-		t.Fatalf("child bridge env = %q", childEnv["KATL_VMTEST_BRIDGE"])
+	if childEnv["KATL_VMTEST_LIBVIRT_URI"] != "qemu:///system" || childEnv["KATL_VMTEST_LIBVIRT_NETWORK"] != "default" {
+		t.Fatalf("child libvirt env = %#v", childEnv)
 	}
 	if childEnv["KATL_VMTEST_RUN"] != "1" || childEnv["KATL_VMTEST_WORLD_STRICT"] != "1" {
 		t.Fatalf("child strict env = %#v", childEnv)
@@ -313,67 +316,106 @@ func TestVMTestExecRequiresManifest(t *testing.T) {
 	}
 }
 
-func TestVMTestRunRecordsHostGapsAndExecsGo(t *testing.T) {
-	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
-	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
-	host := writeFakeHostTools(t, tmp, true)
-	runDir := filepath.Join(tmp, "run")
-	goArgsPath := filepath.Join(tmp, "go-args.txt")
+func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
+	tests := []struct {
+		name       string
+		extraEnv   []string
+		capability string
+		notMissing []string
+	}{
+		{
+			name:       "connection",
+			extraEnv:   []string{"KATL_VMTEST_VIRSH=/tmp/missing-virsh"},
+			capability: "libvirt",
+			notMissing: []string{"libvirt-network", "libvirt-storage-pool"},
+		},
+		{
+			name:       "network",
+			extraEnv:   []string{"KATL_FAKE_VIRSH_NET_INACTIVE=1"},
+			capability: "libvirt-network",
+		},
+		{
+			name:       "storage pool",
+			extraEnv:   []string{"KATL_FAKE_VIRSH_POOL_INACTIVE=1"},
+			capability: "libvirt-storage-pool",
+		},
+	}
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "NeedsQEMU")
-	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
-		"KATL_VMTEST_GO="+fakeGo,
-		"KATL_FAKE_GO_ARGS="+goArgsPath,
-		"KATL_FAKE_CHILD="+fakeChild,
-		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
-		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
-		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
-		"KATL_VMTEST_RUN_ID=run-host-gap",
-		"KATL_VMTEST_RUN_DIR="+runDir,
-		"TMPDIR="+tmp,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "vmtest world has missing host capabilities") {
-		t.Fatalf("output missing host gap heading:\n%s", output)
-	}
-	if !strings.Contains(string(output), "  - qemu:") {
-		t.Fatalf("output missing qemu diagnostic:\n%s", output)
-	}
-	goArgs := readLines(t, goArgsPath)
-	if !reflect.DeepEqual(goArgs, []string{
-		"test",
-		"-exec",
-		filepath.Join(repo, "scripts", "vmtest-exec"),
-		"-timeout",
-		"90m",
-		"./internal/vmtest",
-		"-run",
-		"NeedsQEMU",
-	}) {
-		t.Fatalf("go args = %#v", goArgs)
-	}
-	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
-	if err != nil {
-		t.Fatalf("LoadWorld() error = %v", err)
-	}
-	if world.Capabilities["qemu"] != WorldStatusFailed {
-		t.Fatalf("qemu capability = %q", world.Capabilities["qemu"])
-	}
-	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
-	if !contains(caps.Missing, "qemu") {
-		t.Fatalf("missing capabilities = %#v", caps.Missing)
-	}
-	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
-	if !contains(runIndex.MissingCapabilities, "qemu") || runIndex.Status != "go-test" {
-		t.Fatalf("run index = %#v", runIndex)
-	}
-	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("summary.json exists unexpectedly: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := scriptTestRepoRoot(t)
+			tmp := t.TempDir()
+			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+			host := writeFakeHostTools(t, tmp, true)
+			runDir := filepath.Join(tmp, "run")
+			goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+			env := appendHostEnv(os.Environ(), host,
+				"KATL_VMTEST_GO="+fakeGo,
+				"KATL_FAKE_GO_ARGS="+goArgsPath,
+				"KATL_FAKE_CHILD="+fakeChild,
+				"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+				"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+				"KATL_VMTEST_RUN_ID=run-host-gap-"+tt.name,
+				"KATL_VMTEST_RUN_DIR="+runDir,
+				"TMPDIR="+tmp,
+			)
+			env = append(env, tt.extraEnv...)
+			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "NeedsLibvirt")
+			cmd.Dir = repo
+			cmd.Env = env
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "vmtest world has missing host capabilities") {
+				t.Fatalf("output missing host gap heading:\n%s", output)
+			}
+			if !strings.Contains(string(output), "  - "+tt.capability+":") {
+				t.Fatalf("output missing %s diagnostic:\n%s", tt.capability, output)
+			}
+			goArgs := readLines(t, goArgsPath)
+			if !reflect.DeepEqual(goArgs, []string{
+				"test",
+				"-exec",
+				filepath.Join(repo, "scripts", "vmtest-exec"),
+				"-timeout",
+				"90m",
+				"./internal/vmtest",
+				"-run",
+				"NeedsLibvirt",
+			}) {
+				t.Fatalf("go args = %#v", goArgs)
+			}
+			world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+			if err != nil {
+				t.Fatalf("LoadWorld() error = %v", err)
+			}
+			if world.Capabilities[tt.capability] != WorldStatusFailed {
+				t.Fatalf("%s capability = %q", tt.capability, world.Capabilities[tt.capability])
+			}
+			caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+			if !contains(caps.Missing, tt.capability) {
+				t.Fatalf("missing capabilities = %#v", caps.Missing)
+			}
+			for _, unexpected := range tt.notMissing {
+				if contains(caps.Missing, unexpected) {
+					t.Fatalf("missing capabilities include dependent %s: %#v", unexpected, caps.Missing)
+				}
+			}
+			runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+			if !contains(runIndex.MissingCapabilities, tt.capability) || runIndex.Status != "go-test" {
+				t.Fatalf("run index = %#v", runIndex)
+			}
+			for _, unexpected := range tt.notMissing {
+				if contains(runIndex.MissingCapabilities, unexpected) {
+					t.Fatalf("run index includes dependent %s: %#v", unexpected, runIndex.MissingCapabilities)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("summary.json exists unexpectedly: %v", err)
+			}
+		})
 	}
 }
 
@@ -385,7 +427,7 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "-run", "^TestDoesNotNeedQEMU$", "-timeout", "2m")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "-run", "^TestDoesNotNeedLibvirt$", "-timeout", "2m")
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
@@ -407,7 +449,7 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
 		"-run",
-		"^TestDoesNotNeedQEMU$",
+		"^TestDoesNotNeedLibvirt$",
 		"-timeout",
 		"2m",
 	}) {
@@ -443,73 +485,6 @@ func TestVMTestRunFinalProcessIsGoTest(t *testing.T) {
 	pid := strings.TrimSpace(readScriptFile(t, pidPath))
 	if pid != strconv.Itoa(cmd.ProcessState.Pid()) {
 		t.Fatalf("fake go pid = %q, want wrapper process pid %d", pid, cmd.ProcessState.Pid())
-	}
-}
-
-func TestVMTestRunBridgeACLAllowsFinalLineWithoutNewline(t *testing.T) {
-	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
-	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
-	host := writeFakeHostTools(t, tmp, true)
-	runDir := filepath.Join(tmp, "run")
-	if err := os.WriteFile(host.bridgeConf, []byte("allow katl-vmtest0"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", host.bridgeConf, err)
-	}
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
-	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
-		"KATL_VMTEST_GO="+fakeGo,
-		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
-		"KATL_FAKE_CHILD="+fakeChild,
-		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
-		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
-		"KATL_VMTEST_RUN_ID=run-bridge-acl-no-newline",
-		"KATL_VMTEST_RUN_DIR="+runDir,
-		"TMPDIR="+tmp,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
-	}
-	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
-	if contains(caps.Missing, "qemu-bridge-acl") {
-		t.Fatalf("missing capabilities = %#v", caps.Missing)
-	}
-}
-
-func TestVMTestRunBridgeCreateFailureRecordsCapabilityAndExecsGo(t *testing.T) {
-	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
-	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
-	host := writeFakeHostTools(t, tmp, false)
-	runDir := filepath.Join(tmp, "run")
-	goArgsPath := filepath.Join(tmp, "go-args.txt")
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"))
-	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
-		"KATL_VMTEST_GO="+fakeGo,
-		"KATL_FAKE_GO_ARGS="+goArgsPath,
-		"KATL_FAKE_CHILD="+fakeChild,
-		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
-		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
-		"KATL_FAKE_IP_FAIL_ADD=1",
-		"KATL_VMTEST_RUN_ID=run-bridge-create-failure",
-		"KATL_VMTEST_RUN_DIR="+runDir,
-		"TMPDIR="+tmp,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
-	}
-	if strings.Contains(string(output), "synthetic netlink failure") {
-		t.Fatalf("vmtest-run leaked raw ip stderr:\n%s", output)
-	}
-	_ = readLines(t, goArgsPath)
-	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
-	if !contains(caps.Missing, "bridge") {
-		t.Fatalf("missing capabilities = %#v", caps.Missing)
 	}
 }
 
@@ -623,7 +598,9 @@ set -euo pipefail
 printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
 {
     printf 'KATL_VMTEST_WORLD_MANIFEST=%s\n' "${KATL_VMTEST_WORLD_MANIFEST:-}"
-    printf 'KATL_VMTEST_BRIDGE=%s\n' "${KATL_VMTEST_BRIDGE:-}"
+    printf 'KATL_VMTEST_LIBVIRT_URI=%s\n' "${KATL_VMTEST_LIBVIRT_URI:-}"
+    printf 'KATL_VMTEST_LIBVIRT_NETWORK=%s\n' "${KATL_VMTEST_LIBVIRT_NETWORK:-}"
+    printf 'KATL_VMTEST_LIBVIRT_STORAGE_POOL=%s\n' "${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-}"
     printf 'KATL_VMTEST_RUN=%s\n' "${KATL_VMTEST_RUN:-}"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
 } > "$KATL_FAKE_CHILD_ENV"
@@ -696,38 +673,62 @@ exit "${KATL_FAKE_CHILD_EXIT:-0}"
 }
 
 type fakeHostTools struct {
-	qemu         string
-	qemuImg      string
-	ip           string
-	ipLog        string
-	ovmfCode     string
-	ovmfVars     string
-	kvm          string
-	vsock        string
-	tun          string
-	bridgeHelper string
-	bridgeConf   string
-	kubectl      string
+	imageTool string
+	virsh     string
+	ovmfCode  string
+	ovmfVars  string
+	kvm       string
+	vsock     string
+	kubectl   string
 }
 
-func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostTools {
+func writeFakeHostTools(t *testing.T, dir string, _ bool) fakeHostTools {
 	t.Helper()
 	tools := fakeHostTools{
-		qemu:         filepath.Join(dir, "qemu-system-x86_64"),
-		qemuImg:      filepath.Join(dir, "qemu-img"),
-		ip:           filepath.Join(dir, "ip"),
-		ipLog:        filepath.Join(dir, "ip.log"),
-		ovmfCode:     filepath.Join(dir, "OVMF_CODE.fd"),
-		ovmfVars:     filepath.Join(dir, "OVMF_VARS.fd"),
-		kvm:          filepath.Join(dir, "kvm"),
-		vsock:        filepath.Join(dir, "vhost-vsock"),
-		tun:          filepath.Join(dir, "tun"),
-		bridgeHelper: filepath.Join(dir, "qemu-bridge-helper"),
-		bridgeConf:   filepath.Join(dir, "bridge.conf"),
-		kubectl:      filepath.Join(dir, "kubectl"),
+		imageTool: filepath.Join(dir, "qemu-img"),
+		virsh:     filepath.Join(dir, "virsh"),
+		ovmfCode:  filepath.Join(dir, "OVMF_CODE.fd"),
+		ovmfVars:  filepath.Join(dir, "OVMF_VARS.fd"),
+		kvm:       filepath.Join(dir, "kvm"),
+		vsock:     filepath.Join(dir, "vhost-vsock"),
+		kubectl:   filepath.Join(dir, "kubectl"),
 	}
-	writeExecutable(t, tools.qemu, "#!/usr/bin/env bash\nexit 0\n")
-	writeExecutable(t, tools.qemuImg, "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, tools.imageTool, "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, tools.virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    uri)
+        printf 'qemu:///system\n'
+        ;;
+    net-info)
+        if [[ "${KATL_FAKE_VIRSH_NET_INACTIVE:-0}" == "1" ]]; then
+            printf 'Name: default\nActive: no\n'
+        else
+            printf 'Name: default\nActive: yes\n'
+        fi
+        ;;
+    net-dumpxml)
+        printf '<network><name>default</name><ip address="192.168.122.1" netmask="255.255.255.0"/></network>\n'
+        ;;
+    pool-info)
+        if [[ "${KATL_FAKE_VIRSH_POOL_INACTIVE:-0}" == "1" ]]; then
+            printf 'Name: default\nState: inactive\n'
+        else
+            printf 'Name: default\nState: running\n'
+        fi
+        ;;
+    pool-dumpxml)
+        printf '<pool><target><path>%s</path></target></pool>\n' "${KATL_FAKE_VIRSH_POOL_PATH:-/tmp/libvirt-images}"
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
 	writeExecutable(t, filepath.Join(dir, "mformat"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "mcopy"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "truncate"), "#!/usr/bin/env bash\nexit 0\n")
@@ -749,68 +750,24 @@ func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostToo
 	if err := os.WriteFile(tools.vsock, []byte{}, 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.vsock, err)
 	}
-	if err := os.WriteFile(tools.tun, []byte{}, 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", tools.tun, err)
-	}
-	writeExecutable(t, tools.bridgeHelper, "#!/usr/bin/env bash\nexit 0\n")
-	if err := os.WriteFile(tools.bridgeConf, []byte("allow katl-vmtest0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", tools.bridgeConf, err)
-	}
-	existing := "0"
-	if bridgeExists {
-		existing = "1"
-	}
-	writeExecutable(t, tools.ip, `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$KATL_FAKE_IP_LOG"
-case "$*" in
-    "link show katl-vmtest0")
-        if [[ "${KATL_FAKE_BRIDGE_EXISTS:-0}" == "1" ]]; then
-            exit 0
-        fi
-        exit 1
-        ;;
-    "link add name katl-vmtest0 type bridge")
-        if [[ "${KATL_FAKE_IP_FAIL_ADD:-0}" == "1" ]]; then
-            echo "synthetic netlink failure" >&2
-            exit 1
-        fi
-        exit 0
-        ;;
-    "addr add 10.77.0.1/24 dev katl-vmtest0"|"link set katl-vmtest0 up"|"link del katl-vmtest0")
-        exit 0
-        ;;
-    *)
-        echo "unexpected ip args: $*" >&2
-        exit 40
-        ;;
-esac
-`)
-	if err := os.WriteFile(tools.ipLog, nil, 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", tools.ipLog, err)
-	}
-	t.Setenv("KATL_FAKE_BRIDGE_EXISTS", existing)
-	t.Setenv("KATL_FAKE_IP_LOG", tools.ipLog)
 	return tools
 }
 
 func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string {
 	env = append(env,
-		"KATL_VMTEST_QEMU="+tools.qemu,
-		"KATL_VMTEST_QEMU_IMG="+tools.qemuImg,
-		"KATL_VMTEST_IP="+tools.ip,
+		"KATL_VMTEST_IMAGE_TOOL="+tools.imageTool,
+		"KATL_VMTEST_VIRSH="+tools.virsh,
+		"KATL_VMTEST_LIBVIRT_URI=qemu:///system",
+		"KATL_VMTEST_LIBVIRT_NETWORK=default",
+		"KATL_VMTEST_LIBVIRT_STORAGE_POOL=default",
 		"KATL_OVMF_CODE="+tools.ovmfCode,
 		"KATL_OVMF_VARS="+tools.ovmfVars,
 		"KATL_VMTEST_KVM_DEVICE="+tools.kvm,
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
-		"KATL_VMTEST_TUN_DEVICE="+tools.tun,
-		"KATL_QEMU_BRIDGE_HELPER="+tools.bridgeHelper,
-		"KATL_QEMU_BRIDGE_CONF="+tools.bridgeConf,
-		"KATL_VMTEST_BRIDGE=katl-vmtest0",
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
-		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.qemu), "prebuilt-artifacts.json"),
+		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.imageTool), "prebuilt-artifacts.json"),
 		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
-		"PATH="+filepath.Dir(tools.qemu)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+filepath.Dir(tools.imageTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return append(env, extra...)
 }

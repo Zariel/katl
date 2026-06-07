@@ -17,11 +17,11 @@ func TestDecodeWorldValidManifest(t *testing.T) {
 	if world.APIVersion != WorldAPIVersion || world.Kind != WorldKind {
 		t.Fatalf("world envelope = %#v", world)
 	}
-	if world.Network.Backend != NetworkBridge || world.Network.Gateway != "10.77.0.1" {
+	if world.Libvirt.URI != "qemu:///system" || world.Network.Backend != NetworkLibvirt || world.Network.Gateway != "10.77.0.1" {
 		t.Fatalf("network = %#v", world.Network)
 	}
-	if world.Capabilities["qemu"] != WorldStatusPassed {
-		t.Fatalf("qemu capability = %q", world.Capabilities["qemu"])
+	if world.Capabilities["libvirt"] != WorldStatusPassed {
+		t.Fatalf("libvirt capability = %q", world.Capabilities["libvirt"])
 	}
 }
 
@@ -37,19 +37,27 @@ func TestWorldManifestJSONShape(t *testing.T) {
   "runDir": "/tmp/katl-vmtest/20260606T120000Z-abc123",
   "artifactDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
   "scenarioDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
+  "libvirt": {
+    "uri": "qemu:///system",
+    "network": "default",
+    "storagePool": "default",
+    "storagePath": "/var/lib/libvirt/images",
+    "domainPrefix": "katl-20260606T120000Z-abc123"
+  },
   "network": {
-    "backend": "bridge",
-    "bridge": "katl-vmtest0",
+    "backend": "libvirt",
+    "name": "default",
     "cidr": "10.77.0.0/24",
     "gateway": "10.77.0.1",
     "leaseFile": "/tmp/katl-vmtest/20260606T120000Z-abc123/network/leases.json"
   },
   "capabilities": {
-    "bridge": "passed",
+    "image-tool": "passed",
     "kvm": "passed",
+    "libvirt": "passed",
+    "libvirt-network": "passed",
+    "libvirt-storage-pool": "passed",
     "ovmf": "passed",
-    "qemu": "passed",
-    "qemu-img": "passed",
     "vsock": "passed"
   }
 }`
@@ -90,9 +98,34 @@ func TestDecodeWorldRejectsRequiredFields(t *testing.T) {
 			want:   "network.backend is required",
 		},
 		{
-			name:   "bridge",
-			mutate: func(world *World) { world.Network.Bridge = "" },
-			want:   "network.bridge is required",
+			name:   "libvirt uri",
+			mutate: func(world *World) { world.Libvirt.URI = "" },
+			want:   "libvirt.uri is required",
+		},
+		{
+			name:   "libvirt network",
+			mutate: func(world *World) { world.Libvirt.Network = "" },
+			want:   "libvirt.network is required",
+		},
+		{
+			name:   "libvirt storage pool",
+			mutate: func(world *World) { world.Libvirt.StoragePool = "" },
+			want:   "libvirt.storagePool is required",
+		},
+		{
+			name:   "libvirt storage path",
+			mutate: func(world *World) { world.Libvirt.StoragePath = "" },
+			want:   "libvirt.storagePath is required",
+		},
+		{
+			name:   "libvirt domain prefix",
+			mutate: func(world *World) { world.Libvirt.DomainPrefix = "" },
+			want:   "libvirt.domainPrefix is required",
+		},
+		{
+			name:   "network name",
+			mutate: func(world *World) { world.Network.Name = "" },
+			want:   "network.name is required",
 		},
 		{
 			name:   "cidr",
@@ -189,11 +222,6 @@ func TestDecodeWorldRejectsInvalidNetwork(t *testing.T) {
 			mutate: func(world *World) { world.Network.Gateway = "10.78.0.1" },
 			want:   "outside network.cidr",
 		},
-		{
-			name:   "invalid bridge",
-			mutate: func(world *World) { world.Network.Bridge = "bad/name" },
-			want:   "network.bridge",
-		},
 	}
 
 	for _, tt := range tests {
@@ -234,6 +262,11 @@ func TestDecodeWorldRejectsRelativePaths(t *testing.T) {
 			mutate: func(world *World) { world.Network.LeaseFile = "network/leases.json" },
 			want:   "leaseFile must be an absolute path",
 		},
+		{
+			name:   "libvirt storage path",
+			mutate: func(world *World) { world.Libvirt.StoragePath = "libvirt/images" },
+			want:   "libvirt.storagePath must be an absolute path",
+		},
 	}
 
 	for _, tt := range tests {
@@ -251,7 +284,7 @@ func TestDecodeWorldRejectsRelativePaths(t *testing.T) {
 func TestDecodeWorldCapabilityStatuses(t *testing.T) {
 	world := validWorld()
 	world.Capabilities = map[string]WorldStatus{
-		"qemu":    WorldStatusPassed,
+		"libvirt": WorldStatusPassed,
 		"fixture": WorldStatusFailed,
 		"mkosi":   WorldStatusSetupFailed,
 		"kvm":     WorldStatusHostSkipped,
@@ -350,20 +383,28 @@ func validWorld() World {
 		RunDir:      "/tmp/katl-vmtest/20260606T120000Z-abc123",
 		ArtifactDir: "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
 		ScenarioDir: "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
+		Libvirt: WorldLibvirt{
+			URI:          "qemu:///system",
+			Network:      "default",
+			StoragePool:  "default",
+			StoragePath:  "/var/lib/libvirt/images",
+			DomainPrefix: "katl-20260606T120000Z-abc123",
+		},
 		Network: WorldNetwork{
-			Backend:   NetworkBridge,
-			Bridge:    "katl-vmtest0",
+			Backend:   NetworkLibvirt,
+			Name:      "default",
 			CIDR:      "10.77.0.0/24",
 			Gateway:   "10.77.0.1",
 			LeaseFile: "/tmp/katl-vmtest/20260606T120000Z-abc123/network/leases.json",
 		},
 		Capabilities: map[string]WorldStatus{
-			"bridge":   WorldStatusPassed,
-			"kvm":      WorldStatusPassed,
-			"ovmf":     WorldStatusPassed,
-			"qemu":     WorldStatusPassed,
-			"qemu-img": WorldStatusPassed,
-			"vsock":    WorldStatusPassed,
+			"image-tool":           WorldStatusPassed,
+			"kvm":                  WorldStatusPassed,
+			"libvirt":              WorldStatusPassed,
+			"libvirt-network":      WorldStatusPassed,
+			"libvirt-storage-pool": WorldStatusPassed,
+			"ovmf":                 WorldStatusPassed,
+			"vsock":                WorldStatusPassed,
 		},
 	}
 }

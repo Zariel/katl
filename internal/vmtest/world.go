@@ -25,12 +25,22 @@ type World struct {
 	ArtifactDir  string                 `json:"artifactDir"`
 	ScenarioDir  string                 `json:"scenarioDir"`
 	RunIndex     string                 `json:"runIndex,omitempty"`
+	Libvirt      WorldLibvirt           `json:"libvirt"`
 	Network      WorldNetwork           `json:"network"`
 	Capabilities map[string]WorldStatus `json:"capabilities"`
 }
 
+type WorldLibvirt struct {
+	URI          string `json:"uri"`
+	Network      string `json:"network"`
+	StoragePool  string `json:"storagePool"`
+	StoragePath  string `json:"storagePath"`
+	DomainPrefix string `json:"domainPrefix"`
+}
+
 type WorldNetwork struct {
 	Backend   NetworkBackend `json:"backend"`
+	Name      string         `json:"name"`
 	Bridge    string         `json:"bridge,omitempty"`
 	CIDR      string         `json:"cidr"`
 	Gateway   string         `json:"gateway"`
@@ -40,7 +50,8 @@ type WorldNetwork struct {
 type NetworkBackend string
 
 const (
-	NetworkBridge NetworkBackend = "bridge"
+	NetworkLibvirt NetworkBackend = "libvirt"
+	NetworkBridge  NetworkBackend = "bridge"
 )
 
 type WorldStatus string
@@ -129,6 +140,9 @@ func ValidateWorld(world World) error {
 	if strings.TrimSpace(world.RunIndex) != "" && !filepath.IsAbs(world.RunIndex) {
 		return fmt.Errorf("runIndex must be an absolute path: %s", world.RunIndex)
 	}
+	if err := validateWorldLibvirt(world.Libvirt); err != nil {
+		return err
+	}
 	if err := validateWorldNetwork(world.Network); err != nil {
 		return err
 	}
@@ -146,8 +160,30 @@ func ValidateWorld(world World) error {
 	return nil
 }
 
+func validateWorldLibvirt(libvirt WorldLibvirt) error {
+	for name, value := range map[string]string{
+		"libvirt.uri":          libvirt.URI,
+		"libvirt.network":      libvirt.Network,
+		"libvirt.storagePool":  libvirt.StoragePool,
+		"libvirt.storagePath":  libvirt.StoragePath,
+		"libvirt.domainPrefix": libvirt.DomainPrefix,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+	if !filepath.IsAbs(libvirt.StoragePath) {
+		return fmt.Errorf("libvirt.storagePath must be an absolute path: %s", libvirt.StoragePath)
+	}
+	return nil
+}
+
 func validateWorldNetwork(network WorldNetwork) error {
 	switch network.Backend {
+	case NetworkLibvirt:
+		if strings.TrimSpace(network.Name) == "" {
+			return errors.New("network.name is required for libvirt backend")
+		}
 	case NetworkBridge:
 		if strings.TrimSpace(network.Bridge) == "" {
 			return errors.New("network.bridge is required for bridge backend")
