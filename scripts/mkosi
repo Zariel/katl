@@ -5,6 +5,8 @@ repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+build_dir="$repo_root/build/mkosi"
+stamp_dir="$build_dir/.katl-stamps"
 kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
 # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
 # shellcheck disable=SC1091
@@ -16,6 +18,7 @@ fi
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
 installer_package_set=""
+cache_target=""
 kubernetes_repo_file=""
 kubernetes_repo_backup=""
 
@@ -41,6 +44,149 @@ restore_kubernetes_repo_file() {
 }
 
 trap restore_kubernetes_repo_file EXIT
+
+list_cache_inputs() {
+    {
+        git -C "$repo_root" ls-files -z
+        git -C "$repo_root" ls-files --others --exclude-standard -z
+    } | while IFS= read -r -d "" path; do
+        case "$path" in
+            .beads/* | build/* | */build/*)
+                continue
+                ;;
+        esac
+        printf '%s\0' "$path"
+    done | sort -z
+}
+
+cache_fingerprint() {
+    local target="$1"
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v sort >/dev/null 2>&1; then
+        return 1
+    fi
+    local path digest
+    digest="$(
+        {
+            printf 'target=%s\n' "$target"
+            printf 'builder-image=%s\n' "$image"
+            printf 'build-commit=%s\n' "$build_commit"
+            printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
+            printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
+            printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
+            printf 'KATL_RUNTIME_INTERFACE=%s\n' "${KATL_RUNTIME_INTERFACE:-katl-runtime-1}"
+            printf 'KATL_KUBERNETES_MINOR=%s\n' "$KATL_KUBERNETES_MINOR"
+            printf 'KATL_KUBERNETES_REPO_ID=%s\n' "$KATL_KUBERNETES_REPO_ID"
+            printf 'KATL_KUBERNETES_REPO_BASEURL=%s\n' "$KATL_KUBERNETES_REPO_BASEURL"
+            printf 'KATL_KUBERNETES_PAYLOAD_VERSION=%s\n' "$KATL_KUBERNETES_PAYLOAD_VERSION"
+            printf 'KATL_KUBERNETES_KUBEADM_VERSION=%s\n' "$KATL_KUBERNETES_KUBEADM_VERSION"
+            printf 'KATL_KUBERNETES_KUBELET_VERSION=%s\n' "$KATL_KUBERNETES_KUBELET_VERSION"
+            printf 'KATL_KUBERNETES_KUBECTL_VERSION=%s\n' "$KATL_KUBERNETES_KUBECTL_VERSION"
+            printf 'KATL_KUBERNETES_CRITOOLS_VERSION=%s\n' "$KATL_KUBERNETES_CRITOOLS_VERSION"
+            while IFS= read -r -d "" path; do
+                if [[ -f "$repo_root/$path" ]]; then
+                    read -r file_digest _ < <(sha256sum "$repo_root/$path")
+                    printf 'file %s %s\n' "$path" "$file_digest"
+                else
+                    printf 'missing %s\n' "$path"
+                fi
+            done < <(list_cache_inputs)
+        } | sha256sum
+    )"
+    printf '%s\n' "${digest%% *}"
+}
+
+katlos_image_output() {
+    local version architecture image_role
+    version="${KATL_VERSION:-0.0.0-dev}"
+    architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+    image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"
+    printf '%s\n' "${KATL_KATLOS_IMAGE:-$build_dir/katlos-${image_role}-${version}-${architecture}.squashfs}"
+}
+
+target_outputs() {
+    case "$1" in
+        installer)
+            printf '%s\n' \
+                "$build_dir/artifacts.json" \
+                "$build_dir/katl-installer.efi" \
+                "$build_dir/katl-installer.efi.json" \
+                "$build_dir/katl-installer.efi.sha256" \
+                "$build_dir/katl-installer.initrd" \
+                "$build_dir/katl-installer.initrd.json" \
+                "$build_dir/katl-installer.initrd.sha256" \
+                "$build_dir/katl-installer.packages.tsv" \
+                "$build_dir/katl-installer.vmlinuz" \
+                "$build_dir/katl-installer.vmlinuz.json" \
+                "$build_dir/katl-installer.vmlinuz.sha256"
+            ;;
+        runtime)
+            printf '%s\n' \
+                "$build_dir/artifacts.json" \
+                "$build_dir/katl-runtime-root" \
+                "$build_dir/katl-runtime-root.squashfs" \
+                "$build_dir/katl-runtime-root.squashfs.json" \
+                "$build_dir/katl-runtime-root.squashfs.sha256" \
+                "$build_dir/katl-runtime-root.vmlinuz" \
+                "$build_dir/katl-runtime.efi" \
+                "$build_dir/katl-runtime.efi.json" \
+                "$build_dir/katl-runtime.efi.sha256"
+            ;;
+        kubernetes-sysext)
+            printf '%s\n' \
+                "$build_dir/artifacts.json" \
+                "$build_dir/katl-kubernetes.raw" \
+                "$build_dir/katl-kubernetes.raw.json" \
+                "$build_dir/katl-kubernetes.raw.sha256"
+            ;;
+        katlos-install-image)
+            local image_output
+            image_output="$(katlos_image_output)"
+            target_outputs runtime
+            target_outputs kubernetes-sysext
+            printf '%s\n' \
+                "$image_output" \
+                "$image_output.json" \
+                "$image_output.sha256"
+            ;;
+    esac
+}
+
+target_outputs_exist() {
+    local target="$1"
+    local output
+    while IFS= read -r output; do
+        [[ -e "$output" ]] || return 1
+    done < <(target_outputs "$target")
+}
+
+target_cache_hit() {
+    local target="$1"
+    local stamp="$stamp_dir/$target.sha256"
+    local current recorded
+    [[ "$runtime" != direct ]] || return 1
+    target_outputs_exist "$target" || return 1
+    [[ -f "$stamp" ]] || return 1
+    current="$(cache_fingerprint "$target")" || return 1
+    recorded="$(<"$stamp")"
+    [[ "$recorded" == "$current" ]]
+}
+
+store_target_cache() {
+    local target="$1"
+    local current
+    [[ "$runtime" != direct ]] || return 0
+    current="$(cache_fingerprint "$target")" || return 0
+    mkdir -p "$stamp_dir"
+    printf '%s\n' "$current" > "$stamp_dir/$target.sha256"
+}
+
+prepare_cached_target() {
+    local target="$1"
+    if target_cache_hit "$target"; then
+        printf 'mkosi cache hit: %s artifacts match the current repo\n' "$target" >&2
+        exit 0
+    fi
+}
 
 if [[ -z "$runtime" ]]; then
     if command -v podman >/dev/null 2>&1; then
@@ -91,6 +237,8 @@ if ! image_exists; then
 fi
 
 if [[ $# -eq 0 ]]; then
+    cache_target=installer
+    prepare_cached_target "$cache_target"
     installer_package_set=build/mkosi/katl-installer.packages.tsv
     set -- --profile installer-image -f build
 else
@@ -98,12 +246,24 @@ else
         build-installer)
             shift
             installer_package_set=build/mkosi/katl-installer.packages.tsv
-            set -- --profile installer-image -f build "$@"
+            if [[ $# -eq 0 ]]; then
+                cache_target=installer
+                prepare_cached_target "$cache_target"
+                set -- --profile installer-image -f build
+            else
+                set -- --profile installer-image -f build "$@"
+            fi
             ;;
         build-runtime)
             shift
             emit_runtime_artifact=1
-            set -- --profile runtime -f build "$@"
+            if [[ $# -eq 0 ]]; then
+                cache_target=runtime
+                prepare_cached_target "$cache_target"
+                set -- --profile runtime -f build
+            else
+                set -- --profile runtime -f build "$@"
+            fi
             ;;
         build-kubernetes-sysext)
             shift
@@ -112,13 +272,28 @@ else
             kubernetes_repo_backup="$(mktemp)"
             cp "$kubernetes_repo_file" "$kubernetes_repo_backup"
             write_kubernetes_repo_file "$kubernetes_repo_file"
-            set -- --profile kubernetes-sysext -f build "$@"
+            if [[ $# -eq 0 ]]; then
+                cache_target=kubernetes-sysext
+                prepare_cached_target "$cache_target"
+                set -- --profile kubernetes-sysext -f build
+            else
+                set -- --profile kubernetes-sysext -f build "$@"
+            fi
             ;;
         build-katlos-install-image)
             shift
+            if [[ $# -eq 0 ]] && target_cache_hit katlos-install-image; then
+                printf 'mkosi cache hit: katlos-install-image artifacts match the current repo\n' >&2
+                exit 0
+            fi
             "$repo_root/scripts/mkosi" build-runtime
             "$repo_root/scripts/mkosi" build-kubernetes-sysext
-            exec "$repo_root/scripts/build-katlos-install-image" "$@"
+            "$repo_root/scripts/build-katlos-install-image" "$@"
+            status=$?
+            if [[ "$status" -eq 0 && $# -eq 0 ]]; then
+                store_target_cache katlos-install-image
+            fi
+            exit "$status"
             ;;
         installer-image | runtime)
             profile="$1"
@@ -205,6 +380,9 @@ if [[ "$runtime" == direct ]]; then
     if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
         GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" go run ./cmd/katl-mkosi-artifacts write >/dev/null || status=1
     fi
+    if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
+        store_target_cache "$cache_target"
+    fi
     exit "$status"
 fi
 
@@ -217,6 +395,7 @@ if [[ -t 0 && -t 1 ]]; then
 fi
 
 # shellcheck disable=SC2016
+set +e
 "$runtime" "${run_flags[@]}" "$image" bash -lc '
     set -uo pipefail
     log=$(mktemp)
@@ -327,3 +506,9 @@ fi
     fi
     exit "$status"
 ' bash "${mkosi_env[@]}" "$@"
+status=$?
+set -e
+if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
+    store_target_cache "$cache_target"
+fi
+exit "$status"
