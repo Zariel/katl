@@ -231,6 +231,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     runner.options().KVM,
+		MTools:  true,
 	})
 	scenario.RunID = result.RunID
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)

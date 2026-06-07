@@ -240,6 +240,28 @@ func TestBootWait(t *testing.T) {
 	}
 }
 
+func TestMaterializeHandoffPayloadsCopiesSeedMedia(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	manifestPath := filepath.Join(runDir, "install-manifest.json")
+	writeTestFile(t, manifestPath, `{"katlosImage":{"localRef":"katlos-install.squashfs"}}`)
+	writeTestFile(t, filepath.Join(runDir, "preseed", "katlos-install.squashfs"), "katlos payload")
+	writeTestFile(t, filepath.Join(runDir, "preseed", installer.KubeadmConfigObjectsDir, "control-plane.yaml"), "object")
+	writeTestFile(t, filepath.Join(runDir, "preseed", installer.KubeadmConfigFilesDir, "control-plane.yaml"), "config")
+
+	var stdout bytes.Buffer
+	if err := materializeHandoffPayloads(manifestPath, runDir, &stdout); err != nil {
+		t.Fatalf("materializeHandoffPayloads() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, "katlos-install.squashfs"), "katlos payload")
+	assertFile(t, filepath.Join(runDir, installer.KubeadmConfigObjectsDir, "control-plane.yaml"), "object")
+	assertFile(t, filepath.Join(runDir, installer.KubeadmConfigFilesDir, "control-plane.yaml"), "config")
+	if got := stdout.String(); !strings.Contains(got, "katlos-install.squashfs") || !strings.Contains(got, installer.KubeadmConfigFilesDir) {
+		t.Fatalf("stdout = %q, want copied payload logs", got)
+	}
+}
+
 func TestBootHold(t *testing.T) {
 	root := t.TempDir()
 	runDir := filepath.Join(root, "run")
@@ -269,5 +291,16 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func assertFile(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }

@@ -213,21 +213,13 @@ func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
 			applied++
 			fmt.Fprintf(stdout, "katl input: copied %s to %s\n", item.src, item.dst)
 			if item.manifest {
-				copied, err := copyManifestLocalRef(item.src, filepath.Dir(item.dst))
+				copiedPayloads, err := CopyManifestPayloads(item.src, filepath.Dir(item.src), filepath.Dir(item.dst))
 				if err != nil {
 					return applied, err
 				}
-				if copied.src != "" {
+				for _, copied := range copiedPayloads {
 					applied++
-					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.src, copied.dst)
-				}
-				copiedDirs, err := copyManifestKubeadmDirs(filepath.Dir(item.src), filepath.Dir(item.dst))
-				if err != nil {
-					return applied, err
-				}
-				for _, copied := range copiedDirs {
-					applied++
-					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.src, copied.dst)
+					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.Source, copied.Destination)
 				}
 			}
 		}
@@ -277,35 +269,41 @@ func copyInput(src, dst string) (bool, error) {
 	return true, nil
 }
 
-type copiedPreseedPayload struct {
-	src string
-	dst string
+type CopiedManifestPayload struct {
+	Source      string
+	Destination string
 }
 
 var preseedLocalRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
 
-func copyManifestLocalRef(manifestPath, dstRoot string) (copiedPreseedPayload, error) {
+// CopyManifestPayloads copies local payloads referenced by a manifest from srcRoot to dstRoot.
+func CopyManifestPayloads(manifestPath, srcRoot, dstRoot string) ([]CopiedManifestPayload, error) {
+	var copied []CopiedManifestPayload
 	localRef, err := manifestLocalRef(manifestPath)
 	if err != nil {
-		return copiedPreseedPayload{}, err
+		return nil, err
 	}
-	if localRef == "" {
-		return copiedPreseedPayload{}, nil
+	if localRef != "" {
+		src := filepath.Join(srcRoot, filepath.FromSlash(localRef))
+		dst := filepath.Join(dstRoot, filepath.FromSlash(localRef))
+		ok, err := copyPreseedPayload(src, dst)
+		if err != nil {
+			return nil, fmt.Errorf("copy preseed KatlOS image localRef: %w", err)
+		}
+		if ok {
+			copied = append(copied, CopiedManifestPayload{Source: src, Destination: dst})
+		}
 	}
-	src := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef))
-	dst := filepath.Join(dstRoot, filepath.FromSlash(localRef))
-	ok, err := copyPreseedPayload(src, dst)
+	copiedDirs, err := copyManifestKubeadmDirs(srcRoot, dstRoot)
 	if err != nil {
-		return copiedPreseedPayload{}, fmt.Errorf("copy preseed KatlOS image localRef: %w", err)
+		return nil, err
 	}
-	if !ok {
-		return copiedPreseedPayload{}, nil
-	}
-	return copiedPreseedPayload{src: src, dst: dst}, nil
+	copied = append(copied, copiedDirs...)
+	return copied, nil
 }
 
-func copyManifestKubeadmDirs(srcRoot, dstRoot string) ([]copiedPreseedPayload, error) {
-	var copied []copiedPreseedPayload
+func copyManifestKubeadmDirs(srcRoot, dstRoot string) ([]CopiedManifestPayload, error) {
+	var copied []CopiedManifestPayload
 	for _, name := range []string{KubeadmConfigObjectsDir, KubeadmConfigFilesDir} {
 		src := filepath.Join(srcRoot, name)
 		dst := filepath.Join(dstRoot, name)
@@ -314,7 +312,7 @@ func copyManifestKubeadmDirs(srcRoot, dstRoot string) ([]copiedPreseedPayload, e
 			return nil, fmt.Errorf("copy preseed %s: %w", name, err)
 		}
 		if ok {
-			copied = append(copied, copiedPreseedPayload{src: src, dst: dst})
+			copied = append(copied, CopiedManifestPayload{Source: src, Destination: dst})
 		}
 	}
 	return copied, nil

@@ -141,7 +141,8 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 	installerSerial := stagedVMExec{
 		first: server.Announcement("http://10.0.2.15:8080") + "\n",
 		wait:  handoffPosted,
-		then:  guestHandoffAcceptedSignal + "/run/katl/install-manifest.json\n",
+		then: guestHandoffAcceptedSignal + "/run/katl/install-manifest.json\n" +
+			installerCompletedSignal + "/run/katl/install-manifest.json\n",
 	}
 	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
 		StateRoot: root,
@@ -168,6 +169,7 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 		},
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
 		InstallerRunner: fakeVMWithExecutor(installerSerial),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
@@ -187,6 +189,19 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 	}
 	if command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand); err != nil || !strings.Contains(string(command), "hostfwd=tcp:127.0.0.1:18080-:8080") {
 		t.Fatalf("installer command = %q, err = %v", command, err)
+	}
+	command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand)
+	if err != nil {
+		t.Fatalf("read installer command: %v", err)
+	}
+	if !strings.Contains(string(command), "serial=katl-seed") || !strings.Contains(string(command), "handoff-seed.img") {
+		t.Fatalf("installer command missing handoff seed: %s", command)
+	}
+	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-input.json")); !os.IsNotExist(err) {
+		t.Fatalf("handoff seed should not contain install input: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("handoff seed should not contain install manifest: %v", err)
 	}
 }
 

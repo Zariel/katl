@@ -89,6 +89,12 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 	}
 	if config.GuestHandoff {
+		preseed, err := writeGuestHandoffSeedMedia(ctx, result, config, manifest)
+		if err != nil {
+			return failFirst(runner, scenario, result, "guest-handoff-seed", err)
+		}
+		config.Installer.VM.PreseedImage = preseed.Image
+		config.Installer.VM.MediaRunner = config.PreseedRunner
 		config, err = configureGuestHandoff(result, config, manifest)
 		if err != nil {
 			return failFirst(runner, scenario, result, "guest-handoff", err)
@@ -232,7 +238,7 @@ func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []
 		})
 	}
 	if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
-		config.Installer.Expect = guestHandoffAcceptedSignal
+		config.Installer.Expect = installerCompletedSignal
 	}
 	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, SerialHook{
 		Name:   "installer-guest-handoff",
@@ -323,6 +329,24 @@ func writePreseedMedia(ctx context.Context, result Result, config FirstInstallCo
 		return preseedMedia{}, err
 	}
 	image := filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")
+	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
+		return preseedMedia{}, err
+	}
+	return preseedMedia{Dir: dir, Image: image}, nil
+}
+
+func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) (preseedMedia, error) {
+	dir := filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return preseedMedia{}, err
+	}
+	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
+		return preseedMedia{}, err
+	}
+	if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
+		return preseedMedia{}, err
+	}
+	image := filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed.img")
 	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
 		return preseedMedia{}, err
 	}

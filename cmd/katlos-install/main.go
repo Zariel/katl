@@ -269,6 +269,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			if err := os.WriteFile(manifestPath, server.Manifest(), 0o600); err != nil {
 				return fmt.Errorf("write handoff manifest: %w", err)
 			}
+			if err := materializeHandoffPayloads(manifestPath, runDir, stdout); err != nil {
+				return err
+			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
 			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
 		}
@@ -280,6 +283,17 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		case <-ticker.C:
 		}
 	}
+}
+
+func materializeHandoffPayloads(manifestPath, runDir string, stdout io.Writer) error {
+	copied, err := installer.CopyManifestPayloads(manifestPath, filepath.Join(runDir, "preseed"), runDir)
+	if err != nil {
+		return fmt.Errorf("materialize handoff payloads: %w", err)
+	}
+	for _, payload := range copied {
+		fmt.Fprintf(stdout, "katlos-install handoff copied %s to %s\n", payload.Source, payload.Destination)
+	}
+	return nil
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
