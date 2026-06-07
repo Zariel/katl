@@ -61,6 +61,8 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	if err != nil {
 		return fail(err)
 	}
+	result.DomainName = plan.DomainName
+	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, vm); err != nil {
 		return fail(err)
@@ -107,6 +109,20 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		stop()
 		<-done
 		return fail(err)
+	}
+	if plan.MACAddress != "" {
+		lease, err := WaitLibvirtLease(runCtx, plan.VirshPath, plan.LibvirtURI, plan.LibvirtNetwork, plan.MACAddress, 30*time.Second)
+		if err != nil {
+			stop()
+			<-done
+			return fail(err)
+		}
+		result.IPAddress = lease.IPAddress
+		if err := writeJSON(result.Artifacts.LibvirtLease, lease); err != nil {
+			stop()
+			<-done
+			return fail(fmt.Errorf("write libvirt lease artifact: %w", err))
+		}
 	}
 	if err := writeInstalledRuntimeNodeResult(result, StatusPassed, "", started); err != nil {
 		stop()

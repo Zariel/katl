@@ -34,9 +34,9 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
-		QEMU: true,
-		OVMF: true,
-		KVM:  runner.options().KVM,
+		Libvirt: true,
+		OVMF:    true,
+		KVM:     runner.options().KVM,
 	})
 	helper := buildConfigApplySmokeHelper(t)
 
@@ -138,11 +138,11 @@ func TestRequirePlannedVMHostWritesFailedResult(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	got := requirePlannedVMHost(tb, runner, scenario, result, HostRequirements{QEMU: true})
+	got := requirePlannedVMHost(tb, runner, scenario, result, HostRequirements{Libvirt: true})
 	if !tb.failed || tb.skipped {
 		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
 	}
-	if got.Status != StatusFailed || !strings.Contains(got.FailureSummary, "qemu-system-x86_64") {
+	if got.Status != StatusFailed || !strings.Contains(got.FailureSummary, "virsh") {
 		t.Fatalf("result = %#v", got)
 	}
 	data, err := os.ReadFile(got.Artifacts.Result)

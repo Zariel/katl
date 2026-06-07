@@ -51,6 +51,7 @@ type Scenario struct {
 type HostRequirements struct {
 	QEMU         bool      `json:"qemu,omitempty"`
 	QEMUImg      bool      `json:"qemuImg,omitempty"`
+	Libvirt      bool      `json:"libvirt,omitempty"`
 	OVMF         bool      `json:"ovmf,omitempty"`
 	KVM          KVMPolicy `json:"kvm,omitempty"`
 	OVMFCode     string    `json:"ovmfCode,omitempty"`
@@ -91,6 +92,9 @@ type Result struct {
 	FailureSummary string                `json:"failureSummary,omitempty"`
 	Artifacts      ArtifactPaths         `json:"artifacts"`
 	Disks          []DiskPlan            `json:"disks,omitempty"`
+	DomainName     string                `json:"domainName,omitempty"`
+	MACAddress     string                `json:"macAddress,omitempty"`
+	IPAddress      string                `json:"ipAddress,omitempty"`
 	VSock          VSockPlan             `json:"vsock,omitempty"`
 	Phases         []PhaseResult         `json:"phases,omitempty"`
 	Missing        []MissingPrerequisite `json:"missing,omitempty"`
@@ -120,6 +124,7 @@ type ArtifactPaths struct {
 	HandoffRequest         string `json:"handoffRequest,omitempty"`
 	HandoffResponse        string `json:"handoffResponse,omitempty"`
 	VSockTranscript        string `json:"vsockTranscript,omitempty"`
+	LibvirtLease           string `json:"libvirtLease,omitempty"`
 	ManifestsDir           string `json:"manifestsDir"`
 	DisksDir               string `json:"disksDir"`
 	GuestDir               string `json:"guestDir"`
@@ -410,6 +415,9 @@ func checkHost(requirements HostRequirements, probe probe) error {
 	if requirements.QEMUImg {
 		missing = appendCommand(missing, probe, "qemu-img")
 	}
+	if requirements.Libvirt {
+		missing = appendCommand(missing, probe, "virsh")
+	}
 	if requirements.OVMF {
 		code := first(requirements.OVMFCode, probe.env("KATL_OVMF_CODE"))
 		vars := first(requirements.OVMFVars, probe.env("KATL_OVMF_VARS"))
@@ -641,6 +649,7 @@ func pathsFor(runDir string) ArtifactPaths {
 		HandoffRequest:         filepath.Join(runDir, "manifests", "handoff-request.json"),
 		HandoffResponse:        filepath.Join(runDir, "manifests", "handoff-response.json"),
 		VSockTranscript:        filepath.Join(runDir, "vm", "vsock-transcript.jsonl"),
+		LibvirtLease:           filepath.Join(runDir, "manifests", "libvirt-lease.json"),
 		ManifestsDir:           filepath.Join(runDir, "manifests"),
 		DisksDir:               filepath.Join(runDir, "disks"),
 		GuestDir:               filepath.Join(runDir, "guest"),

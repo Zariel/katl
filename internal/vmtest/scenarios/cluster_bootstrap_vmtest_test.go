@@ -37,7 +37,8 @@ type twoNodeSmokeRun struct {
 	Scenario      vmtest.Scenario
 	Result        vmtest.Result
 	Inputs        twoNodeSmokeInputs
-	Bridge        string
+	LibvirtURI    string
+	Network       string
 }
 
 func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
@@ -105,7 +106,8 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 		Runner:        runner,
 		Scenario:      vmScenario,
 		Result:        result,
-		Bridge:        world.Network.Bridge,
+		LibvirtURI:    world.Libvirt.URI,
+		Network:       world.Libvirt.Network,
 		Inputs: twoNodeSmokeInputs{
 			ControlPlaneDisk:       cp.Config.Disk,
 			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
@@ -113,12 +115,14 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 			ControlPlaneFixture:    cp.Config.FixtureManifest,
 			ControlPlaneMetadata:   cp.Config.NodeMetadata,
 			ControlPlaneAddress:    cp.Node.Address,
+			ControlPlaneMAC:        cp.Node.MACAddress,
 			WorkerDisk:             worker.Config.Disk,
 			WorkerDiskFormat:       string(worker.Config.DiskFormat),
 			WorkerESP:              worker.Config.ESPArtifacts,
 			WorkerFixture:          worker.Config.FixtureManifest,
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
+			WorkerMAC:              worker.Node.MACAddress,
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:        twoNodeWorldProvenance(world, repo),
 		},
@@ -144,11 +148,9 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 	result := smoke.Result
 	inputs := smoke.Inputs
 	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
-		QEMU:         true,
-		OVMF:         true,
-		KVM:          options.KVM,
-		SharedBridge: true,
-		Bridge:       smoke.Bridge,
+		Libvirt: true,
+		OVMF:    true,
+		KVM:     options.KVM,
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
@@ -184,7 +186,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 			ESPArtifacts:    inputs.ControlPlaneESP,
 			FixtureManifest: inputs.ControlPlaneFixture,
 			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, 43101),
+			VM:              twoNodeVMConfigForRun(smoke, inputs.ControlPlaneMAC, 43101),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -201,7 +203,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 			ESPArtifacts:    inputs.WorkerESP,
 			FixtureManifest: inputs.WorkerFixture,
 			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, 43102),
+			VM:              twoNodeVMConfigForRun(smoke, inputs.WorkerMAC, 43102),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -218,14 +220,16 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, nodes, bootstrapFixture); err != nil {
 		t.Fatal(err)
 	}
+	controlPlaneAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
+	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", inputs.ControlPlaneAddress + ":6443",
-		"--node-address", "cp-1=" + inputs.ControlPlaneAddress,
-		"--node-address", "worker-1=" + inputs.WorkerAddress,
+		"--control-plane-endpoint", controlPlaneAddress + ":6443",
+		"--node-address", "cp-1=" + controlPlaneAddress,
+		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 		"--vmtest-transcript-dir", transcriptDir,
@@ -273,9 +277,6 @@ func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 		RAMMiB:  4096,
 		CPUs:    2,
 		Timeout: 25 * time.Minute,
-		Network: vmtest.VMNetworkConfig{
-			Mode: vmtest.VMNetworkBridge,
-		},
 		VSock: vmtest.VSockConfig{
 			Enabled:  true,
 			GuestCID: cid,
@@ -283,9 +284,11 @@ func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 	}
 }
 
-func twoNodeVMConfigForRun(run twoNodeSmokeRun, cid uint32) vmtest.VMConfig {
+func twoNodeVMConfigForRun(run twoNodeSmokeRun, mac string, cid uint32) vmtest.VMConfig {
 	config := twoNodeVMConfig(run.Options.KVM, cid)
-	config.Network.Bridge = run.Bridge
+	config.LibvirtURI = run.LibvirtURI
+	config.LibvirtNetwork = run.Network
+	config.Network.MAC = mac
 	return config
 }
 
@@ -296,12 +299,14 @@ type twoNodeSmokeInputs struct {
 	ControlPlaneFixture    string
 	ControlPlaneMetadata   string
 	ControlPlaneAddress    string
+	ControlPlaneMAC        string
 	WorkerDisk             string
 	WorkerDiskFormat       string
 	WorkerESP              string
 	WorkerFixture          string
 	WorkerMetadata         string
 	WorkerAddress          string
+	WorkerMAC              string
 	KubernetesVersion      string
 	WorldProvenance        multiNodeWorldProvenancePaths
 }
@@ -311,6 +316,7 @@ type multiNodeWorldProvenancePaths struct {
 	WorldManifest            string
 	HostCapabilities         string
 	MkosiArtifactIndex       string
+	NetworkLeaseFile         string
 	FixtureProducerScenarios map[string]string
 	FixtureProducerResults   map[string]string
 }
@@ -321,6 +327,7 @@ func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []v
 		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
 		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
 		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
+		NetworkLeaseFile:   world.Network.LeaseFile,
 	}
 	if len(specs) == 0 {
 		return provenance
@@ -475,6 +482,10 @@ type twoNodeArtifactManifest struct {
 	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
 	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
 	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
 	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
 	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
 	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
@@ -489,6 +500,7 @@ type twoNodeArtifactManifest struct {
 	ControlPlaneTranscript   string                      `json:"controlPlaneTranscript"`
 	WorkerTranscript         string                      `json:"workerTranscript"`
 	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
+	NetworkLeases            string                      `json:"networkLeases,omitempty"`
 	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
 }
 
@@ -507,6 +519,10 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 		DomainXMLs:               domainXMLPaths(nodes),
 		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
 		VSockTranscripts:         vsockTranscriptPaths(nodes),
+		LibvirtLeases:            libvirtLeasePaths(nodes),
+		NodeDomains:              nodeDomainNames(nodes),
+		NodeMACs:                 nodeMACAddresses(nodes),
+		NodeIPs:                  nodeIPAddresses(nodes),
 		FixtureInputs:            twoNodeFixtureInputs(inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.ControlPlaneESP, inputs.WorkerESP, inputs.ControlPlaneFixture, inputs.WorkerFixture, inputs.ControlPlaneMetadata, inputs.WorkerMetadata),
 		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
 		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
@@ -521,6 +537,7 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 		ControlPlaneTranscript:   twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
 		WorkerTranscript:         twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
 		SerialLogs:               serialLogPaths(nodes),
+		NetworkLeases:            inputs.WorldProvenance.NetworkLeaseFile,
 		Diagnostics:              diagnosticSummaryPaths(nodes),
 	})
 }
@@ -1098,20 +1115,50 @@ func vsockTranscriptPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string
 	})
 }
 
+func libvirtLeasePaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.LibvirtLease
+	})
+}
+
 func serialLogPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
 	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
 		return paths.RuntimeSerial
 	})
 }
 
+func nodeDomainNames(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeResultValues(nodes, func(result vmtest.Result) string {
+		return result.DomainName
+	})
+}
+
+func nodeMACAddresses(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeResultValues(nodes, func(result vmtest.Result) string {
+		return result.MACAddress
+	})
+}
+
+func nodeIPAddresses(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeResultValues(nodes, func(result vmtest.Result) string {
+		return result.IPAddress
+	})
+}
+
 func nodeArtifactPaths(nodes []vmtest.RunningInstalledRuntimeNode, path func(vmtest.ArtifactPaths) string) map[string]string {
+	return nodeResultValues(nodes, func(result vmtest.Result) string {
+		return path(result.Artifacts)
+	})
+}
+
+func nodeResultValues(nodes []vmtest.RunningInstalledRuntimeNode, value func(vmtest.Result) string) map[string]string {
 	out := make(map[string]string, len(nodes))
 	for _, node := range nodes {
-		value := path(node.Result.Artifacts)
-		if node.Name == "" || value == "" {
+		got := value(node.Result)
+		if node.Name == "" || got == "" {
 			continue
 		}
-		out[node.Name] = value
+		out[node.Name] = got
 	}
 	if len(out) == 0 {
 		return nil
@@ -1311,13 +1358,20 @@ func twoNodeTestWorld(t *testing.T) vmtest.World {
 		ArtifactDir: filepath.Join(root, "artifacts"),
 		ScenarioDir: filepath.Join(root, "scenarios"),
 		Network: vmtest.WorldNetwork{
-			Backend:   vmtest.NetworkBridge,
-			Bridge:    "katlbr0",
+			Backend:   vmtest.NetworkLibvirt,
+			Name:      "katl-default",
 			CIDR:      "10.77.0.0/24",
 			Gateway:   "10.77.0.1",
 			LeaseFile: leaseFile,
 		},
-		Capabilities: map[string]vmtest.WorldStatus{"vm": vmtest.WorldStatusPassed},
+		Libvirt: vmtest.WorldLibvirt{
+			URI:          "qemu:///system",
+			Network:      "katl-default",
+			StoragePool:  "default",
+			StoragePath:  "/var/lib/libvirt/images",
+			DomainPrefix: "katl-run-1",
+		},
+		Capabilities: map[string]vmtest.WorldStatus{"libvirt": vmtest.WorldStatusPassed},
 	}
 }
 
@@ -1413,6 +1467,12 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan worker-1: %v", err)
 	}
+	cpResult.DomainName = "katl-cp-1"
+	cpResult.MACAddress = "52:54:00:00:00:01"
+	cpResult.IPAddress = "192.0.2.11"
+	workerResult.DomainName = "katl-worker-1"
+	workerResult.MACAddress = "52:54:00:00:00:02"
+	workerResult.IPAddress = "192.0.2.12"
 	nodes := []vmtest.RunningInstalledRuntimeNode{
 		{Name: "cp-1", Result: cpResult},
 		{Name: "worker-1", Result: workerResult},
@@ -1430,6 +1490,7 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 			WorldManifest:            "/tmp/world.json",
 			HostCapabilities:         "/tmp/host-capabilities.json",
 			MkosiArtifactIndex:       "/tmp/mkosi-artifacts.json",
+			NetworkLeaseFile:         "/tmp/network-leases.json",
 			FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp/scenario.json"},
 			FixtureProducerResults:   map[string]string{"worker-1": "/tmp/fixture-worker/result.json"},
 		},
@@ -1453,10 +1514,16 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 	if manifest.NodeScenarios["cp-1"] != cpResult.Artifacts.Scenario || manifest.NodeScenarios["worker-1"] != workerResult.Artifacts.Scenario {
 		t.Fatalf("planned node scenario indexes = %#v", manifest.NodeScenarios)
 	}
+	if manifest.NodeDomains["cp-1"] != "katl-cp-1" || manifest.NodeMACs["worker-1"] != "52:54:00:00:00:02" || manifest.NodeIPs["cp-1"] != "192.0.2.11" {
+		t.Fatalf("planned node identity = domains %#v macs %#v ips %#v", manifest.NodeDomains, manifest.NodeMACs, manifest.NodeIPs)
+	}
 	if manifest.InstalledRuntimeInputs["worker-1"] != workerResult.Artifacts.InstalledRuntime || manifest.VSockTranscripts["cp-1"] != cpResult.Artifacts.VSockTranscript {
 		t.Fatalf("planned runtime indexes = installed %#v vsock %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
 	}
-	if manifest.WorldManifest != "/tmp/world.json" || manifest.FixtureProducerScenarios["cp-1"] != "/tmp/fixture-cp/scenario.json" {
+	if manifest.LibvirtLeases["cp-1"] != cpResult.Artifacts.LibvirtLease || manifest.LibvirtLeases["worker-1"] != workerResult.Artifacts.LibvirtLease {
+		t.Fatalf("planned libvirt lease artifacts = %#v", manifest.LibvirtLeases)
+	}
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.NetworkLeases != "/tmp/network-leases.json" || manifest.FixtureProducerScenarios["cp-1"] != "/tmp/fixture-cp/scenario.json" {
 		t.Fatalf("planned provenance = %#v", manifest)
 	}
 }

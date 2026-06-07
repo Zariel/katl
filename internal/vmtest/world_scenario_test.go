@@ -22,6 +22,9 @@ func TestWorldScenarioAllocatesLeases(t *testing.T) {
 	if cp.Address != "10.77.0.2" || worker.Address != "10.77.0.3" {
 		t.Fatalf("addresses = %s, %s", cp.Address, worker.Address)
 	}
+	if cp.MACAddress == "" || worker.MACAddress == "" || cp.MACAddress == worker.MACAddress {
+		t.Fatalf("MAC addresses = %q, %q", cp.MACAddress, worker.MACAddress)
+	}
 	if cp.ArtifactDir != filepath.Join(world.ScenarioDir, "two-node-kubeadm", "nodes", "cp-1") {
 		t.Fatalf("cp artifact dir = %q", cp.ArtifactDir)
 	}
@@ -37,9 +40,15 @@ func TestWorldScenarioAllocatesLeases(t *testing.T) {
 	if !reflect.DeepEqual(gotLeases, wantLeases) {
 		t.Fatalf("leases = %#v, want %#v", gotLeases, wantLeases)
 	}
+	if leases.Leases[0].MACAddress != cp.MACAddress || leases.Leases[1].MACAddress != worker.MACAddress {
+		t.Fatalf("lease MACs = %#v", leases.Leases)
+	}
 	manifest := readScenarioManifest(t, scenario.ManifestPath)
 	if manifest.Name != "two node kubeadm" || manifest.ID != "two-node-kubeadm" || len(manifest.Nodes) != 2 {
 		t.Fatalf("manifest = %#v", manifest)
+	}
+	if manifest.Nodes[0].MACAddress != cp.MACAddress || manifest.Nodes[1].MACAddress != worker.MACAddress {
+		t.Fatalf("manifest node MACs = %#v", manifest.Nodes)
 	}
 }
 

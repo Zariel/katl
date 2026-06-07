@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,7 @@ type Node struct {
 	Name        string   `json:"name"`
 	Role        NodeRole `json:"role"`
 	Address     string   `json:"address"`
+	MACAddress  string   `json:"macAddress"`
 	ArtifactDir string   `json:"artifactDir"`
 	ManifestDir string   `json:"manifestDir"`
 	DiskDir     string   `json:"diskDir"`
@@ -76,9 +78,10 @@ type leaseFile struct {
 }
 
 type leaseEntry struct {
-	Address  string `json:"address"`
-	Scenario string `json:"scenario"`
-	Node     string `json:"node"`
+	Address    string `json:"address"`
+	MACAddress string `json:"macAddress,omitempty"`
+	Scenario   string `json:"scenario"`
+	Node       string `json:"node"`
 }
 
 func (world World) NewScenario(t interface {
@@ -149,6 +152,7 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 		Name:        spec.Name,
 		Role:        spec.Role,
 		Address:     address,
+		MACAddress:  nodeMACAddress(scenario.World.RunID, scenario.ID, spec.Name),
 		ArtifactDir: artifactDir,
 		ManifestDir: filepath.Join(artifactDir, "manifests"),
 		DiskDir:     filepath.Join(artifactDir, "disks"),
@@ -223,11 +227,17 @@ func (scenario *WorldScenario) allocateAddress(spec NodeSpec) (string, error) {
 		return "", err
 	}
 	leases.Leases = append(leases.Leases, leaseEntry{
-		Address:  address,
-		Scenario: scenario.ID,
-		Node:     spec.Name,
+		Address:    address,
+		MACAddress: nodeMACAddress(scenario.World.RunID, scenario.ID, spec.Name),
+		Scenario:   scenario.ID,
+		Node:       spec.Name,
 	})
 	return address, writeLeases(scenario.World.Network.LeaseFile, leases)
+}
+
+func nodeMACAddress(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return fmt.Sprintf("52:54:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
 func readLeases(path string) (leaseFile, error) {

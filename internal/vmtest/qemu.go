@@ -79,6 +79,7 @@ type VMNetworkConfig struct {
 	Mode   VMNetworkMode
 	Bridge string
 	Helper string
+	MAC    string
 }
 
 type HostForward struct {
@@ -112,9 +113,11 @@ type VMPlan struct {
 	Args           []string
 	Accel          string
 	DomainName     string
+	MACAddress     string
 	DomainXML      string
 	DomainXMLFile  string
 	LibvirtURI     string
+	LibvirtNetwork string
 	SerialLog      string
 	CommandFile    string
 	OVMFVars       string
@@ -264,6 +267,8 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	if err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 	}
+	result.DomainName = plan.DomainName
+	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
@@ -615,6 +620,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		return VMPlan{}, err
 	}
 	domainName := "katl-" + clean(result.RunID)
+	macAddress := strings.TrimSpace(config.Network.MAC)
 	domainXML, err := libvirtDomainXML(libvirtDomain{
 		Name:        domainName,
 		Accel:       accel,
@@ -627,6 +633,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		CommandLine: strings.Join(config.Boot.CommandLine, " "),
 		SerialLog:   serial,
 		Network:     libvirtNetwork,
+		MACAddress:  macAddress,
 		Disks:       disks,
 		VSock:       vsock,
 	})
@@ -641,9 +648,11 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		Args:           args,
 		Accel:          accel,
 		DomainName:     domainName,
+		MACAddress:     macAddress,
 		DomainXML:      domainXML,
 		DomainXMLFile:  xmlFile,
 		LibvirtURI:     libvirtURI,
+		LibvirtNetwork: libvirtNetwork,
 		SerialLog:      serial,
 		CommandFile:    result.Artifacts.LaunchCommand,
 		OVMFVars:       firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
@@ -797,6 +806,7 @@ type libvirtDomain struct {
 	CommandLine string
 	SerialLog   string
 	Network     string
+	MACAddress  string
 	Disks       []libvirtDisk
 	VSock       VSockPlan
 }
@@ -864,8 +874,13 @@ type domainRNGBackend struct {
 
 type domainInterface struct {
 	Type   string                `xml:"type,attr"`
+	MAC    *domainInterfaceMAC   `xml:"mac,omitempty"`
 	Source domainInterfaceSource `xml:"source"`
 	Model  domainInterfaceModel  `xml:"model"`
+}
+
+type domainInterfaceMAC struct {
+	Address string `xml:"address,attr"`
 }
 
 type domainInterfaceSource struct {
@@ -1052,6 +1067,9 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	} else {
 		doc.OS.Loader = &domainLoader{ReadOnly: "yes", Type: "pflash", Path: domain.OVMFCode}
 		doc.OS.NVRAM = domain.OVMFVars
+	}
+	if strings.TrimSpace(domain.MACAddress) != "" {
+		doc.Devices.Interface.MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
 	}
 	for _, disk := range domain.Disks {
 		xmlDisk := domainDisk{

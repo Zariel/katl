@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -457,15 +456,14 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 	}
 }
 
-func TestVMTestRunFinalProcessIsGoTest(t *testing.T) {
+func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
-	pidPath := filepath.Join(tmp, "go-pid.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestUnitOnly$")
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
@@ -473,18 +471,21 @@ func TestVMTestRunFinalProcessIsGoTest(t *testing.T) {
 		"KATL_FAKE_CHILD="+fakeChild,
 		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
-		"KATL_FAKE_GO_PID="+pidPath,
-		"KATL_VMTEST_RUN_ID=run-final-process",
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=",
+		"KATL_VMTEST_RUN_ID=run-no-scenario",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
 	)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	if exitCode(err) != 3 {
+		t.Fatalf("vmtest-run exit = %v, want 3\n%s", err, output)
 	}
-	pid := strings.TrimSpace(readScriptFile(t, pidPath))
-	if pid != strconv.Itoa(cmd.ProcessState.Pid()) {
-		t.Fatalf("fake go pid = %q, want wrapper process pid %d", pid, cmd.ProcessState.Pid())
+	if !strings.Contains(string(output), "did not execute any world scenario") {
+		t.Fatalf("output missing no-scenario diagnostic:\n%s", output)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Status != "no-scenario-result" {
+		t.Fatalf("run index status = %q", runIndex.Status)
 	}
 }
 
@@ -767,6 +768,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.imageTool), "prebuilt-artifacts.json"),
 		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
 		"PATH="+filepath.Dir(tools.imageTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return append(env, extra...)

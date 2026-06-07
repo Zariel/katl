@@ -41,7 +41,8 @@ type threeControlPlaneSmokeRun struct {
 	Scenario      vmtest.Scenario
 	Result        vmtest.Result
 	Inputs        threeControlPlaneSmokeInputs
-	Bridge        string
+	LibvirtURI    string
+	Network       string
 }
 
 func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bool) {
@@ -109,7 +110,8 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 		Runner:        runner,
 		Scenario:      vmScenario,
 		Result:        result,
-		Bridge:        world.Network.Bridge,
+		LibvirtURI:    world.Libvirt.URI,
+		Network:       world.Libvirt.Network,
 		Inputs: threeControlPlaneSmokeInputs{
 			CP1Disk:           nodes["cp-1"].Config.Disk,
 			CP1DiskFormat:     string(nodes["cp-1"].Config.DiskFormat),
@@ -117,18 +119,21 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 			CP1Fixture:        nodes["cp-1"].Config.FixtureManifest,
 			CP1Metadata:       nodes["cp-1"].Config.NodeMetadata,
 			CP1Address:        nodes["cp-1"].Node.Address,
+			CP1MAC:            nodes["cp-1"].Node.MACAddress,
 			CP2Disk:           nodes["cp-2"].Config.Disk,
 			CP2DiskFormat:     string(nodes["cp-2"].Config.DiskFormat),
 			CP2ESP:            nodes["cp-2"].Config.ESPArtifacts,
 			CP2Fixture:        nodes["cp-2"].Config.FixtureManifest,
 			CP2Metadata:       nodes["cp-2"].Config.NodeMetadata,
 			CP2Address:        nodes["cp-2"].Node.Address,
+			CP2MAC:            nodes["cp-2"].Node.MACAddress,
 			CP3Disk:           nodes["cp-3"].Config.Disk,
 			CP3DiskFormat:     string(nodes["cp-3"].Config.DiskFormat),
 			CP3ESP:            nodes["cp-3"].Config.ESPArtifacts,
 			CP3Fixture:        nodes["cp-3"].Config.FixtureManifest,
 			CP3Metadata:       nodes["cp-3"].Config.NodeMetadata,
 			CP3Address:        nodes["cp-3"].Node.Address,
+			CP3MAC:            nodes["cp-3"].Node.MACAddress,
 			KubernetesVersion: firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:   multiNodeWorldProvenanceForSpecs(world, repo, threeControlPlaneWorldRuntimeSpecs()),
 		},
@@ -143,11 +148,9 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	result := smoke.Result
 	inputs := smoke.Inputs
 	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
-		QEMU:         true,
-		OVMF:         true,
-		KVM:          options.KVM,
-		SharedBridge: true,
-		Bridge:       smoke.Bridge,
+		Libvirt: true,
+		OVMF:    true,
+		KVM:     options.KVM,
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	etcdTranscriptDir := filepath.Join(result.RunDir, "etcd-transcripts")
@@ -173,14 +176,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), 43201), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), inputs.CP1MAC, 43201), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), 43202), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2MAC, 43202), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -188,7 +191,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), 43203), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3MAC, 43203), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -203,16 +206,19 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, transcriptDir, etcdTranscriptDir, nodes, bootstrapFixture); err != nil {
 		t.Fatal(err)
 	}
+	cp1Address := firstString(cp1Node.Result.IPAddress, inputs.CP1Address)
+	cp2Address := firstString(cp2Node.Result.IPAddress, inputs.CP2Address)
+	cp3Address := firstString(cp3Node.Result.IPAddress, inputs.CP3Address)
 
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", inputs.CP1Address + ":6443",
-		"--node-address", "cp-1=" + inputs.CP1Address,
-		"--node-address", "cp-2=" + inputs.CP2Address,
-		"--node-address", "cp-3=" + inputs.CP3Address,
+		"--control-plane-endpoint", cp1Address + ":6443",
+		"--node-address", "cp-1=" + cp1Address,
+		"--node-address", "cp-2=" + cp2Address,
+		"--node-address", "cp-3=" + cp3Address,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 		"--vmtest-transcript-dir", transcriptDir,
@@ -275,18 +281,21 @@ type threeControlPlaneSmokeInputs struct {
 	CP1Fixture        string
 	CP1Metadata       string
 	CP1Address        string
+	CP1MAC            string
 	CP2Disk           string
 	CP2DiskFormat     string
 	CP2ESP            string
 	CP2Fixture        string
 	CP2Metadata       string
 	CP2Address        string
+	CP2MAC            string
 	CP3Disk           string
 	CP3DiskFormat     string
 	CP3ESP            string
 	CP3Fixture        string
 	CP3Metadata       string
 	CP3Address        string
+	CP3MAC            string
 	KubernetesVersion string
 	WorldProvenance   multiNodeWorldProvenancePaths
 }
@@ -305,9 +314,11 @@ func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata 
 	}
 }
 
-func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, cid uint32) vmtest.InstalledRuntimeNodeConfig {
+func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, mac string, cid uint32) vmtest.InstalledRuntimeNodeConfig {
 	config := threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata, format, run.Options.KVM, cid)
-	config.Runtime.VM.Network.Bridge = run.Bridge
+	config.Runtime.VM.LibvirtURI = run.LibvirtURI
+	config.Runtime.VM.LibvirtNetwork = run.Network
+	config.Runtime.VM.Network.MAC = mac
 	return config
 }
 
@@ -349,6 +360,10 @@ type threeControlPlaneArtifactManifest struct {
 	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
 	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
 	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
 	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
 	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
 	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
@@ -364,6 +379,7 @@ type threeControlPlaneArtifactManifest struct {
 	Transcripts              map[string]string           `json:"transcripts"`
 	EtcdTranscripts          map[string]string           `json:"etcdTranscripts"`
 	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
+	NetworkLeases            string                      `json:"networkLeases,omitempty"`
 	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
 }
 
@@ -380,6 +396,10 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		DomainXMLs:               domainXMLPaths(nodes),
 		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
 		VSockTranscripts:         vsockTranscriptPaths(nodes),
+		LibvirtLeases:            libvirtLeasePaths(nodes),
+		NodeDomains:              nodeDomainNames(nodes),
+		NodeMACs:                 nodeMACAddresses(nodes),
+		NodeIPs:                  nodeIPAddresses(nodes),
 		FixtureInputs:            threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
 		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
 		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
@@ -395,6 +415,7 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		Transcripts:              transcriptPaths(transcriptDir, nodes),
 		EtcdTranscripts:          transcriptPaths(etcdTranscriptDir, nodes),
 		SerialLogs:               serialLogPaths(nodes),
+		NetworkLeases:            inputs.WorldProvenance.NetworkLeaseFile,
 		Diagnostics:              diagnosticSummaryPaths(nodes),
 	})
 }
@@ -796,6 +817,17 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		if err != nil {
 			t.Fatalf("plan %s: %v", name, err)
 		}
+		nodeResult.DomainName = "katl-" + name
+		nodeResult.MACAddress = map[string]string{
+			"cp-1": "52:54:00:00:10:01",
+			"cp-2": "52:54:00:00:10:02",
+			"cp-3": "52:54:00:00:10:03",
+		}[name]
+		nodeResult.IPAddress = map[string]string{
+			"cp-1": "192.0.2.21",
+			"cp-2": "192.0.2.22",
+			"cp-3": "192.0.2.23",
+		}[name]
 		nodes = append(nodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
 	}
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, threeControlPlaneSmokeInputs{
@@ -815,6 +847,7 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 			WorldManifest:            "/tmp/world.json",
 			HostCapabilities:         "/tmp/host-capabilities.json",
 			MkosiArtifactIndex:       "/tmp/mkosi-artifacts.json",
+			NetworkLeaseFile:         "/tmp/network-leases.json",
 			FixtureProducerScenarios: map[string]string{"cp-2": "/tmp/fixture-cp-2/scenario.json"},
 			FixtureProducerResults:   map[string]string{"cp-3": "/tmp/fixture-cp-3/result.json"},
 		},
@@ -838,10 +871,16 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	if manifest.LaunchCommands["cp-1"] != nodes[0].Result.Artifacts.LaunchCommand || manifest.DomainXMLs["cp-2"] != nodes[1].Result.Artifacts.DomainXML || manifest.InstalledRuntimeInputs["cp-3"] != nodes[2].Result.Artifacts.InstalledRuntime {
 		t.Fatalf("planned artifact indexes = launch %#v domain %#v installed %#v", manifest.LaunchCommands, manifest.DomainXMLs, manifest.InstalledRuntimeInputs)
 	}
+	if manifest.LibvirtLeases["cp-1"] != nodes[0].Result.Artifacts.LibvirtLease || manifest.LibvirtLeases["cp-3"] != nodes[2].Result.Artifacts.LibvirtLease {
+		t.Fatalf("planned libvirt lease artifacts = %#v", manifest.LibvirtLeases)
+	}
+	if manifest.NodeDomains["cp-2"] != "katl-cp-2" || manifest.NodeMACs["cp-3"] != "52:54:00:00:10:03" || manifest.NodeIPs["cp-1"] != "192.0.2.21" {
+		t.Fatalf("planned node identity = domains %#v macs %#v ips %#v", manifest.NodeDomains, manifest.NodeMACs, manifest.NodeIPs)
+	}
 	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
 		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
 	}
-	if manifest.WorldManifest != "/tmp/world.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.NetworkLeases != "/tmp/network-leases.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
 		t.Fatalf("planned provenance = %#v", manifest)
 	}
 }

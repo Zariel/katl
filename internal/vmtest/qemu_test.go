@@ -13,6 +13,7 @@ import (
 
 func TestVMPlan(t *testing.T) {
 	result, config := vmFixture(t)
+	config.Network.MAC = "52:54:ab:cd:01:02"
 	result.Disks = []DiskPlan{{
 		Name:            "root",
 		Format:          DiskQCOW2,
@@ -30,7 +31,7 @@ func TestVMPlan(t *testing.T) {
 	if plan.Accel != "kvm" {
 		t.Fatalf("Accel = %q", plan.Accel)
 	}
-	if plan.VirshPath != "/usr/bin/virsh" || plan.DomainName != "katl-run-1" {
+	if plan.VirshPath != "/usr/bin/virsh" || plan.DomainName != "katl-run-1" || plan.MACAddress != "52:54:ab:cd:01:02" {
 		t.Fatalf("plan libvirt fields = %#v", plan)
 	}
 	wantArgs := []string{"-c", "qemu:///system", "define", filepath.Join(result.VMDir, "domain.xml")}
@@ -44,6 +45,7 @@ func TestVMPlan(t *testing.T) {
 		`<loader readonly="yes" type="pflash">` + config.OVMFCode + `</loader>`,
 		`<nvram>` + filepath.Join(result.VMDir, "OVMF_VARS.fd") + `</nvram>`,
 		`<source network="default"></source>`,
+		`<mac address="52:54:ab:cd:01:02"></mac>`,
 		`<source file="` + filepath.Join(result.VMDir, "efi.img") + `"></source>`,
 		`<source file="` + filepath.Join(result.VMDir, "vdb.snapshot.qcow2") + `"></source>`,
 		`<source file="` + filepath.Join(result.DiskDir, "00-root.qcow2") + `"></source>`,

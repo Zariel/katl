@@ -44,6 +44,8 @@ cap_awk="disabled"
 cap_realpath="disabled"
 cap_systemd_nspawn="disabled"
 cap_kubectl="disabled"
+nspawn_checks="${KATL_VMTEST_NSPAWN:-1}"
+require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
 missing_capabilities=()
 setup_failures=()
 
@@ -305,6 +307,10 @@ probe_fixture_tool_capabilities() {
 }
 
 probe_nspawn_capabilities() {
+    if [[ "$nspawn_checks" == 0 || "$nspawn_checks" == false || "$nspawn_checks" == disabled ]]; then
+        cap_systemd_nspawn="disabled"
+        return
+    fi
     if have_command systemd-nspawn; then
         if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
             cap_systemd_nspawn="passed"
@@ -626,4 +632,16 @@ go_test_args=()
 if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
     go_test_args+=("-timeout" "$go_test_timeout")
 fi
-exec "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@"
+set +e
+"$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@"
+exit_code=$?
+set -e
+if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
+    if ! find "$scenario_dir" -mindepth 2 -maxdepth 2 -name result.json -print -quit | grep -q .; then
+        write_run_index "no-scenario-result" "$@"
+        printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
+        printf 'vmtest run dir: %s\n' "$run_dir" >&2
+        exit 3
+    fi
+fi
+exit "$exit_code"

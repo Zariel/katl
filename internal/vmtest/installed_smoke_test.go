@@ -159,7 +159,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 
 	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
-		QEMU:    true,
+		Libvirt: true,
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     runner.options().KVM,
@@ -227,7 +227,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	}
 
 	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
-		QEMU:    true,
+		Libvirt: true,
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     runner.options().KVM,
@@ -293,9 +293,9 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 			t.Fatalf("Plan() error = %v", err)
 		}
 		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
-			QEMU: true,
-			OVMF: true,
-			KVM:  worldRun.Runner.options().KVM,
+			Libvirt: true,
+			OVMF:    true,
+			KVM:     worldRun.Runner.options().KVM,
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
@@ -334,9 +334,9 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 			t.Fatalf("Plan() error = %v", err)
 		}
 		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
-			QEMU: true,
-			OVMF: true,
-			KVM:  worldRun.Runner.options().KVM,
+			Libvirt: true,
+			OVMF:    true,
+			KVM:     worldRun.Runner.options().KVM,
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 		defer cancel()
@@ -374,9 +374,9 @@ func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 			t.Fatalf("Plan() error = %v", err)
 		}
 		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
-			QEMU: true,
-			OVMF: true,
-			KVM:  worldRun.Runner.options().KVM,
+			Libvirt: true,
+			OVMF:    true,
+			KVM:     worldRun.Runner.options().KVM,
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
