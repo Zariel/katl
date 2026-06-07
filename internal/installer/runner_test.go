@@ -474,7 +474,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		t.Fatalf("confext metadata = %#v", install.LoaderRecord.Confexts)
 	}
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"), string(contents.kubernetes))
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/katl-kubernetes.raw"), string(contents.kubernetes))
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/confext/etc/katl/node.json"), `"configPath": "/etc/katl/kubeadm/control-plane/config.yaml"`)
