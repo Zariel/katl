@@ -7,6 +7,8 @@ runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
 build_dir="$repo_root/build/mkosi"
 stamp_dir="$build_dir/.katl-stamps"
+go_mod_cache="$repo_root/build/go-mod"
+go_build_cache="$repo_root/build/go-cache"
 kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
 # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
 # shellcheck disable=SC1091
@@ -398,6 +400,7 @@ run_flags=(
     --env "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION"
     --env "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION"
 )
+chown_build=1
 
 if [[ -n "$installer_package_set" ]]; then
     mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$installer_package_set")
@@ -432,8 +435,9 @@ if [[ "$runtime" == direct ]]; then
     fi
     log="$(mktemp)"
     trap 'restore_kubernetes_repo_file; rm -f "$log"' EXIT
-    mkdir -p "$repo_root/build/go-mod"
-    export GOMODCACHE="${GOMODCACHE:-$repo_root/build/go-mod}"
+    mkdir -p "$go_mod_cache" "$go_build_cache"
+    export GOCACHE="${GOCACHE:-$go_build_cache}"
+    export GOMODCACHE="${GOMODCACHE:-$go_mod_cache}"
     export MKOSI_DNF="${MKOSI_DNF:-dnf5}"
     export TMPDIR="${TMPDIR:-/tmp}"
     if [[ -n "$installer_package_set" ]]; then
@@ -455,7 +459,9 @@ fi
 
 if [[ "$runtime" == podman ]]; then
     run_flags+=(--userns=keep-id --user root)
+    chown_build=0
 fi
+run_flags+=(--env "KATL_CHOWN_BUILD=$chown_build")
 
 if [[ -t 0 && -t 1 ]]; then
     run_flags+=(--interactive --tty)
@@ -467,8 +473,10 @@ set +e
     set -uo pipefail
     log=$(mktemp)
     trap "rm -f \"$log\"" EXIT
-    mkdir -p /work/build/go-mod
-    GOMODCACHE=/work/build/go-mod go mod download
+    mkdir -p /work/build/go-mod /work/build/go-cache
+    export GOCACHE=/work/build/go-cache
+    export GOMODCACHE=/work/build/go-mod
+    go mod download
     if [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
         rm -f "$KATL_INSTALLER_PACKAGE_SET"
     fi
@@ -568,8 +576,17 @@ set +e
             fi
         fi
     fi
-    if [[ -d build ]]; then
+    if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d build ]]; then
         chown -R "$HOST_UID:$HOST_GID" build || true
+    elif [[ -d build/mkosi ]]; then
+        find build/mkosi/cache build/mkosi/builddir -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+        chown -h "$HOST_UID:$HOST_GID" \
+            build/mkosi/artifacts.json \
+            build/mkosi/katl-* \
+            build/mkosi/*.json \
+            build/mkosi/*.sha256 \
+            build/mkosi/*.packages.tsv \
+            2>/dev/null || true
     fi
     exit "$status"
 ' bash "${mkosi_env[@]}" "$@"

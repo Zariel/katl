@@ -89,6 +89,43 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	}
 }
 
+func TestMkosiPodmanSkipsRecursiveBuildChown(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
+	}
+	podmanArgs := filepath.Join(tmp, "podman-args.txt")
+	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
+  exit 0
+fi
+printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
+`)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer", "--debug")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_CONTAINER_RUNTIME=podman",
+		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
+		"GOCACHE="+filepath.Join(tmp, "go-cache"),
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/mkosi podman failed: %v\n%s", err, output)
+	}
+
+	args := readLinesForScripts(t, podmanArgs)
+	if !containsString(args, "--userns=keep-id") || !containsString(args, "--user") || !containsString(args, "root") {
+		t.Fatalf("podman args missing keep-id root mode: %#v", args)
+	}
+	if !containsString(args, "KATL_CHOWN_BUILD=0") {
+		t.Fatalf("podman args missing KATL_CHOWN_BUILD=0: %#v", args)
+	}
+}
+
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
