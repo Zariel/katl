@@ -79,11 +79,7 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 	}
 	vm := config.VM
 	vm.Phase = "runtime"
-	if config.RequireVMTestAgent {
-		vm.Expect = first(vm.Expect, config.Expect, runtimeBootSignal)
-	} else {
-		vm.Expect = first(vm.Expect, config.Expect, "Katl state projection ready")
-	}
+	vm.Expect = first(vm.Expect, config.Expect, runtimeBootSignal)
 	vm.Boot = VMBoot{
 		Image:         config.Disk,
 		ImageFormat:   diskFormat(config.DiskFormat),

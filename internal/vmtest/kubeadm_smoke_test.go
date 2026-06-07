@@ -123,7 +123,7 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
@@ -151,7 +151,7 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 	var connects int
 
 	runner := VMRunner{
-		Executor: blockingVMExec{write: "Katl state projection ready"},
+		Executor: blockingVMExec{write: runtimeBootSignal},
 		AgentConnector: func(_ context.Context, _ VSockPlan, _ string) (AgentHealthClient, error) {
 			t.Fatal("health connector should not be used by kubeadm smoke")
 			return nil, nil
@@ -207,10 +207,10 @@ func TestInstalledKubeadmAPISmokeFailsWhenQEMUExitsAfterReady(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	vmConfig.VSock.Enabled = true
 	runner := VMRunner{
-		Executor: vmExec{write: "Katl state projection ready"},
+		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,
@@ -238,8 +238,8 @@ func TestInstalledKubeadmAPISmokeFailsWhenQEMUExitsAfterReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runtime serial: %v", err)
 	}
-	if !strings.Contains(string(serial), "Katl state projection ready") {
-		t.Fatalf("runtime serial missing readiness marker: %s", serial)
+	if !strings.Contains(string(serial), runtimeBootSignal) {
+		t.Fatalf("runtime serial missing runtime boot signal: %s", serial)
 	}
 }
 

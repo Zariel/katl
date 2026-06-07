@@ -50,7 +50,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
@@ -65,7 +65,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
 	}
 	runner := VMRunner{
-		Executor: blockingVMExec{write: "Katl state projection ready"},
+		Executor: blockingVMExec{write: runtimeBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,

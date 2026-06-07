@@ -36,7 +36,7 @@ func TestFirstInstall(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -117,7 +117,7 @@ func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVMWithExecutor(vmExec{write: "katlos-install.service: Failed with result 'exit-code'.\ncollect facts failed\n"}),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -169,7 +169,7 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVMWithExecutor(installerSerial),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -215,7 +215,7 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
 		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/install-manifest.json\n"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -282,7 +282,7 @@ func TestFirstInstallPreseedManifestRequiresEvidence(t *testing.T) {
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
 		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/install-manifest.json\n"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -366,7 +366,7 @@ func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -473,7 +473,7 @@ func TestFirstInstallIgnoresSwitchRootFailureAfterCompletion(t *testing.T) {
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
 		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/install-manifest.json\ninitrd-switch-root.service: Failed with result 'exit-code'.\n"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -509,7 +509,7 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
-		RuntimeRunner:   fakeVM("Katl state projection ready"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)

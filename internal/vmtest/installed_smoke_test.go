@@ -203,8 +203,8 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runtime serial: %v", err)
 	}
-	if !strings.Contains(string(serial), "Katl state projection ready") {
-		t.Fatalf("runtime serial did not record state projection: %s", serial)
+	if !strings.Contains(string(serial), runtimeBootSignal) {
+		t.Fatalf("runtime serial did not record runtime boot signal: %s", serial)
 	}
 	_ = targetDiskPath(t, result)
 }
@@ -278,8 +278,8 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runtime serial: %v", err)
 	}
-	if !strings.Contains(string(serial), "Katl state projection ready") {
-		t.Fatalf("runtime serial did not record state projection: %s", serial)
+	if !strings.Contains(string(serial), runtimeBootSignal) {
+		t.Fatalf("runtime serial did not record runtime boot signal: %s", serial)
 	}
 	_ = targetDiskPath(t, result)
 }

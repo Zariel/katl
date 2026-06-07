@@ -47,7 +47,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	}
 	vm := runtime.VM
 	vm.Phase = "runtime"
-	vm.Expect = first(vm.Expect, runtime.Expect, "Katl state projection ready")
+	vm.Expect = first(vm.Expect, runtime.Expect, runtimeBootSignal)
 	vm.Boot = VMBoot{
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),

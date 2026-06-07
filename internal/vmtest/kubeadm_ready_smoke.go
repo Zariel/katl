@@ -41,7 +41,7 @@ func RunInstalledKubeadmReadySmoke(ctx context.Context, result Result, config Ku
 	}
 	vm := runtime.VM
 	vm.Phase = "kubeadm-ready-smoke"
-	vm.Expect = first(vm.Expect, runtime.Expect, "Katl state projection ready")
+	vm.Expect = first(vm.Expect, runtime.Expect, runtimeBootSignal)
 	vm.Boot = VMBoot{
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),

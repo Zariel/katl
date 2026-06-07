@@ -32,11 +32,11 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	vmConfig.Timeout = time.Minute
 	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62000}
 	runner := VMRunner{
-		Executor: longRunningVMExec{ready: "Katl state projection ready"},
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
@@ -74,7 +74,7 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("ESP copy missing: %v", err)
 	}
 	serial, err := os.ReadFile(node.Result.Artifacts.RuntimeSerial)
-	if err != nil || !strings.Contains(string(serial), "Katl state projection ready") {
+	if err != nil || !strings.Contains(string(serial), runtimeBootSignal) {
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
 	command, err := os.ReadFile(node.Result.Artifacts.QEMUCommand)

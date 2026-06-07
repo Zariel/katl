@@ -46,9 +46,9 @@ func TestInstalledRuntime(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	runner := VMRunner{
-		Executor: vmExec{write: "Katl state projection ready"},
+		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,
@@ -67,7 +67,7 @@ func TestInstalledRuntime(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp)))); err != nil {
 		t.Fatalf("ESP copy missing: %v", err)
 	}
-	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), "Katl state projection ready") {
+	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), runtimeBootSignal) {
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
 	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
@@ -373,9 +373,9 @@ func TestInstalledRuntimeAcceptsRelativeFixturePaths(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
+	vmConfig.Expect = runtimeBootSignal
 	runner := VMRunner{
-		Executor: vmExec{write: "Katl state projection ready"},
+		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,
