@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,24 +21,22 @@ import (
 )
 
 type FirstInstallConfig struct {
-	Installer        InstallerBootConfig
-	Runtime          InstalledRuntimeConfig
-	UseInstalledESP  bool
-	ESPExtractor     InstalledESPExtractor
-	Manifest         []byte
-	ManifestPath     string
-	GuestHandoff     bool
-	PreseedManifest  bool
-	HandoffToken     string
-	HandoffURL       string
-	HandoffHostPort  int
-	HandoffGuestPort int
-	HandoffPoster    func(context.Context, string, string, []byte) (int, string, error)
-	TargetDisk       DiskFixture
-	DiskRunner       DiskRunner
-	PreseedRunner    DiskRunner
-	InstallerRunner  VMRunner
-	RuntimeRunner    VMRunner
+	Installer       InstallerBootConfig
+	Runtime         InstalledRuntimeConfig
+	UseInstalledESP bool
+	ESPExtractor    InstalledESPExtractor
+	Manifest        []byte
+	ManifestPath    string
+	GuestHandoff    bool
+	PreseedManifest bool
+	HandoffToken    string
+	HandoffURL      string
+	HandoffPoster   func(context.Context, string, string, []byte) (int, string, error)
+	TargetDisk      DiskFixture
+	DiskRunner      DiskRunner
+	PreseedRunner   DiskRunner
+	InstallerRunner VMRunner
+	RuntimeRunner   VMRunner
 }
 
 type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, error)
@@ -55,6 +53,10 @@ type handoffLog struct {
 	Token        string `json:"token,omitempty"`
 	ManifestPath string `json:"manifestPath"`
 	Announcement string `json:"announcement,omitempty"`
+	GuestAddress string `json:"guestAddress,omitempty"`
+	DomainName   string `json:"domainName,omitempty"`
+	SerialLog    string `json:"serialLog,omitempty"`
+	SerialTail   string `json:"serialTail,omitempty"`
 	StatusCode   int    `json:"statusCode,omitempty"`
 	Body         string `json:"body,omitempty"`
 }
@@ -219,24 +221,6 @@ func loadManifest(config FirstInstallConfig) ([]byte, error) {
 }
 
 func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []byte) (FirstInstallConfig, error) {
-	hostPort := config.HandoffHostPort
-	guestPort := config.HandoffGuestPort
-	if guestPort == 0 {
-		guestPort = 8080
-	}
-	if config.HandoffURL == "" {
-		if hostPort == 0 {
-			port, err := freeTCPPort()
-			if err != nil {
-				return config, err
-			}
-			hostPort = port
-		}
-		config.Installer.VM.HostForwards = append(config.Installer.VM.HostForwards, HostForward{
-			HostPort:  hostPort,
-			GuestPort: guestPort,
-		})
-	}
 	if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
 		config.Installer.Expect = installerCompletedSignal
 	}
@@ -244,7 +228,7 @@ func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []
 		Name:   "installer-guest-handoff",
 		Signal: guestHandoffSignal,
 		Run: func(ctx context.Context, event SerialHookEvent) error {
-			return deliverGuestHandoff(ctx, result, config, manifest, hostPort, event.SerialText)
+			return deliverGuestHandoff(ctx, result, config, manifest, event, event.SerialText)
 		},
 	})
 	return config, nil
@@ -277,19 +261,6 @@ func requirePreseedInstallerEvidence(result Result) error {
 		}
 	}
 	return nil
-}
-
-func freeTCPPort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("reserve handoff host port: %w", err)
-	}
-	defer listener.Close()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		return 0, fmt.Errorf("reserve handoff host port: unexpected address %s", listener.Addr())
-	}
-	return addr.Port, nil
 }
 
 func writeManifest(result Result, manifest []byte) error {
@@ -654,17 +625,14 @@ func runToolOutput(ctx context.Context, name string, args ...string) ([]byte, er
 	return cmd.CombinedOutput()
 }
 
-func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, hostPort int, serialText string) error {
+func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, event SerialHookEvent, serialText string) error {
 	announcement, url, token, err := parseHandoffAnnouncement(serialText)
 	if err != nil {
 		return err
 	}
 	postURL := strings.TrimSpace(config.HandoffURL)
 	if postURL == "" {
-		if hostPort == 0 {
-			return errors.New("handoff host port is required")
-		}
-		postURL = fmt.Sprintf("http://127.0.0.1:%d/v1/install", hostPort)
+		postURL = url
 	}
 	request := handoffLog{
 		URL:          url,
@@ -672,15 +640,46 @@ func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstall
 		Token:        token,
 		ManifestPath: result.Artifacts.InstallManifest,
 		Announcement: announcement,
+		GuestAddress: handoffGuestAddress(url),
+		DomainName:   event.Plan.DomainName,
+		SerialLog:    event.Plan.SerialLog,
+		SerialTail:   serialTail(event.Plan.SerialLog, 12, 4000),
 	}
 	if err := writeJSON(result.Artifacts.HandoffRequest, request); err != nil {
 		return err
 	}
 	status, body, err := postHandoff(ctx, config, postURL, token, manifest)
 	if err != nil {
-		return err
+		return fmt.Errorf("guest handoff post failed: %w; %s", err, handoffContext(request))
 	}
-	return writeHandoff(result, url, status, body)
+	if err := writeHandoff(result, url, status, body); err != nil {
+		return fmt.Errorf("%w; %s", err, handoffContext(request))
+	}
+	return nil
+}
+
+func handoffGuestAddress(rawURL string) string {
+	parsed, err := neturl.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func handoffContext(log handoffLog) string {
+	parts := []string{
+		"guest=" + first(log.GuestAddress, log.URL),
+	}
+	if log.DomainName != "" {
+		parts = append(parts, "domain="+log.DomainName)
+	}
+	if log.SerialLog != "" {
+		parts = append(parts, "serial="+log.SerialLog)
+	}
+	if log.SerialTail != "" {
+		parts = append(parts, "serial tail:\n"+log.SerialTail)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func parseHandoffAnnouncement(serialText string) (announcement string, url string, token string, err error) {

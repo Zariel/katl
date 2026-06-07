@@ -131,7 +131,7 @@ func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 	}
 }
 
-func TestFirstInstallGuestHandoffRequiresLibvirtMigration(t *testing.T) {
+func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
@@ -161,10 +161,12 @@ func TestFirstInstallGuestHandoffRequiresLibvirtMigration(t *testing.T) {
 			ESPArtifacts: espFixture(t),
 			VM:           vmConfig,
 		},
-		Manifest:        []byte(firstManifest()),
-		GuestHandoff:    true,
-		HandoffHostPort: 18080,
+		Manifest:     []byte(firstManifest()),
+		GuestHandoff: true,
 		HandoffPoster: func(ctx context.Context, url, token string, manifest []byte) (int, string, error) {
+			if url != "http://10.0.2.15:8080/v1/install" {
+				t.Fatalf("handoff post URL = %q", url)
+			}
 			status, body, err := postLocal(ctx, server.Handler(), url, token, manifest)
 			if err == nil {
 				close(handoffPosted)
@@ -180,14 +182,73 @@ func TestFirstInstallGuestHandoffRequiresLibvirtMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "host forwards are not supported by libvirt VM execution") {
+	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	request := readLog(t, result.Artifacts.HandoffRequest)
+	if request.URL != "http://10.0.2.15:8080/v1/install" || request.PostURL != request.URL || request.GuestAddress != "10.0.2.15" || request.DomainName == "" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
+		t.Fatalf("handoff request = %#v", request)
+	}
+	response := readLog(t, result.Artifacts.HandoffResponse)
+	if response.StatusCode != 200 || !strings.Contains(response.Body, "install-starting") {
+		t.Fatalf("handoff response = %#v", response)
 	}
 	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-input.json")); !os.IsNotExist(err) {
 		t.Fatalf("handoff seed should not contain install input: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-manifest.json")); !os.IsNotExist(err) {
 		t.Fatalf("handoff seed should not contain install manifest: %v", err)
+	}
+}
+
+func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	vmConfig.HostForwards = nil
+	server, err := handoff.NewHandoffServer("guest-token", nil)
+	if err != nil {
+		t.Fatalf("NewHandoffServer() error = %v", err)
+	}
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-guest-handoff-failure"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:     []byte(firstManifest()),
+		GuestHandoff: true,
+		HandoffPoster: func(context.Context, string, string, []byte) (int, string, error) {
+			return 0, "", fmt.Errorf("network unreachable")
+		},
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
+		InstallerRunner: fakeVM(server.Announcement("http://10.0.2.15:8080") + "\n"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	for _, want := range []string{"guest handoff post failed", "network unreachable", "guest=10.0.2.15", "domain=katl-run-1", "serial=", "serial tail:"} {
+		if !strings.Contains(result.FailureSummary, want) {
+			t.Fatalf("failure summary missing %q: %s", want, result.FailureSummary)
+		}
+	}
+	request := readLog(t, result.Artifacts.HandoffRequest)
+	if request.GuestAddress != "10.0.2.15" || request.DomainName != "katl-run-1" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
+		t.Fatalf("handoff request = %#v", request)
 	}
 }
 
@@ -497,7 +558,6 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 		},
 		Manifest:        []byte(firstManifest()),
 		GuestHandoff:    true,
-		HandoffHostPort: 18080,
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
@@ -506,7 +566,7 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "host forwards are not supported by libvirt VM execution") {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "guest handoff response artifact is missing") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 }

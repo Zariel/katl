@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -257,7 +258,11 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	}()
 	defer httpServer.Shutdown(context.Background())
 
-	fmt.Fprintln(stdout, server.Announcement("http://"+listener.Addr().String()))
+	baseURL, err := handoffAnnouncementBaseURL(listener.Addr())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, server.Announcement(baseURL))
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -283,6 +288,71 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		case <-ticker.C:
 		}
 	}
+}
+
+func handoffAnnouncementBaseURL(addr net.Addr) (string, error) {
+	return handoffAnnouncementBaseURLWithHost(addr, handoffAnnouncementHost)
+}
+
+func handoffAnnouncementBaseURLWithHost(addr net.Addr, detectHost func() (string, error)) (string, error) {
+	tcpAddr, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return "", fmt.Errorf("handoff listener has unexpected address: %s", addr)
+	}
+	host := tcpAddr.IP.String()
+	if tcpAddr.IP == nil || tcpAddr.IP.IsUnspecified() {
+		detected, err := detectHost()
+		if err != nil {
+			return "", err
+		}
+		host = detected
+	}
+	return "http://" + net.JoinHostPort(host, fmt.Sprintf("%d", tcpAddr.Port)), nil
+}
+
+func handoffAnnouncementHost() (string, error) {
+	if ip, ok := outboundIP(); ok {
+		return ip.String(), nil
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("discover handoff announcement address: %w", err)
+	}
+	for _, addr := range addrs {
+		ip := interfaceIP(addr)
+		if handoffAnnouncementIP(ip) {
+			return ip.String(), nil
+		}
+	}
+	return "", errors.New("discover handoff announcement address: no non-loopback interface address found")
+}
+
+func outboundIP() (net.IP, bool) {
+	conn, err := net.Dial("udp", "192.0.2.1:9")
+	if err != nil {
+		return nil, false
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || !handoffAnnouncementIP(addr.IP) {
+		return nil, false
+	}
+	return addr.IP, true
+}
+
+func interfaceIP(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
+}
+
+func handoffAnnouncementIP(ip net.IP) bool {
+	return ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
 func materializeHandoffPayloads(manifestPath, runDir string, stdout io.Writer) error {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,6 +238,54 @@ func TestBootWait(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "waiting for config") {
 		t.Fatalf("stdout = %q, want handoff announcement", got)
+	}
+}
+
+func TestHandoffAnnouncementBaseURLKeepsExplicitAddress(t *testing.T) {
+	got, err := handoffAnnouncementBaseURLWithHost(&net.TCPAddr{
+		IP:   net.ParseIP("192.0.2.44"),
+		Port: 8080,
+	}, func() (string, error) {
+		t.Fatal("explicit listener address should not detect host")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("handoffAnnouncementBaseURL() error = %v", err)
+	}
+	if got != "http://192.0.2.44:8080" {
+		t.Fatalf("base URL = %q", got)
+	}
+}
+
+func TestHandoffAnnouncementBaseURLReplacesWildcardAddress(t *testing.T) {
+	got, err := handoffAnnouncementBaseURLWithHost(&net.TCPAddr{
+		IP:   net.ParseIP("0.0.0.0"),
+		Port: 8080,
+	}, func() (string, error) {
+		return "192.0.2.44", nil
+	})
+	if err != nil {
+		t.Fatalf("handoffAnnouncementBaseURL() error = %v", err)
+	}
+	if got != "http://192.0.2.44:8080" {
+		t.Fatalf("base URL = %q", got)
+	}
+}
+
+func TestHandoffAnnouncementIPRejectsWildcardAndLoopback(t *testing.T) {
+	for _, ip := range []net.IP{
+		net.ParseIP("0.0.0.0"),
+		net.ParseIP("::"),
+		net.ParseIP("127.0.0.1"),
+		net.ParseIP("::1"),
+		net.ParseIP("169.254.10.20"),
+	} {
+		if handoffAnnouncementIP(ip) {
+			t.Fatalf("handoffAnnouncementIP(%s) = true", ip)
+		}
+	}
+	if !handoffAnnouncementIP(net.ParseIP("192.0.2.44")) {
+		t.Fatal("handoffAnnouncementIP(192.0.2.44) = false")
 	}
 }
 
