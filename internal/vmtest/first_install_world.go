@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/zariel/katl/internal/installer"
 )
 
 type FirstInstallWorldRun struct {
@@ -293,18 +295,30 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 	} else if err != nil {
 		return "", err
 	}
+	kubeadmRef, err := writeFirstInstallWorldKubeadmSource(sourceDir, spec)
+	if err != nil {
+		return "", err
+	}
+	node := map[string]any{
+		"identity": map[string]any{
+			"hostname": spec.Name,
+			"ssh": map[string]any{
+				"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"},
+			},
+		},
+		"systemRole": string(spec.Role),
+	}
+	if kubeadmRef != "" {
+		node["kubernetes"] = map[string]any{
+			"kubeadm": map[string]any{
+				"configRef": kubeadmRef,
+			},
+		}
+	}
 	manifest := map[string]any{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind":       "InstallManifest",
-		"node": map[string]any{
-			"identity": map[string]any{
-				"hostname": spec.Name,
-				"ssh": map[string]any{
-					"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"},
-				},
-			},
-			"systemRole": string(spec.Role),
-		},
+		"node":       node,
 		"install": map[string]any{
 			"allowDestructiveInstall": true,
 			"targetDisk": map[string]any{
@@ -331,6 +345,59 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		return "", err
 	}
 	return manifestPath, nil
+}
+
+func writeFirstInstallWorldKubeadmSource(sourceDir string, spec NodeSpec) (string, error) {
+	switch spec.Role {
+	case ControlPlane:
+		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig())
+	case Worker:
+		return writeFirstInstallWorldKubeadmPlan(sourceDir, "worker", workerKubeadmConfig())
+	default:
+		return "", nil
+	}
+}
+
+func writeFirstInstallWorldKubeadmPlan(sourceDir, name, config string) (string, error) {
+	configRel := filepath.ToSlash(filepath.Join(installer.KubeadmConfigFilesDir, name+".yaml"))
+	objectDir := filepath.Join(sourceDir, installer.KubeadmConfigObjectsDir)
+	if err := os.MkdirAll(objectDir, 0o755); err != nil {
+		return "", err
+	}
+	configPath := filepath.Join(sourceDir, filepath.FromSlash(configRel))
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return "", err
+	}
+	object := fmt.Sprintf(`apiVersion: config.katl.dev/v1alpha1
+kind: KubeadmConfig
+metadata:
+  name: %s
+spec:
+  configFile: %s
+`, name, configRel)
+	if err := os.WriteFile(filepath.Join(objectDir, name+".yaml"), []byte(object), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func controlPlaneKubeadmConfig() string {
+	return `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+`
+}
+
+func workerKubeadmConfig() string {
+	return `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+`
 }
 
 func writeFirstInstallWorldNodeMetadataSource(scenario *WorldScenario, spec NodeSpec) (string, error) {

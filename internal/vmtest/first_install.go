@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/handoff"
 )
 
@@ -318,6 +319,9 @@ func writePreseedMedia(ctx context.Context, result Result, config FirstInstallCo
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
 		return preseedMedia{}, err
 	}
+	if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
+		return preseedMedia{}, err
+	}
 	image := filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")
 	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
 		return preseedMedia{}, err
@@ -353,6 +357,21 @@ func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []by
 	return nil
 }
 
+func copyPreseedKubeadmDirs(config FirstInstallConfig, result Result, preseedDir string) error {
+	manifestRoot := filepath.Dir(result.Artifacts.InstallManifest)
+	if config.ManifestPath != "" {
+		manifestRoot = filepath.Dir(config.ManifestPath)
+	}
+	for _, name := range []string{installer.KubeadmConfigObjectsDir, installer.KubeadmConfigFilesDir} {
+		src := filepath.Join(manifestRoot, name)
+		dst := filepath.Join(preseedDir, name)
+		if err := copyOptionalDir(src, dst); err != nil {
+			return fmt.Errorf("copy preseed %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func copyRequiredFile(src, dst string, mode os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -371,6 +390,40 @@ func copyRequiredFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+func copyOptionalDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", src)
+	}
+	return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", path)
+		}
+		return copyRequiredFile(path, target, info.Mode().Perm())
+	})
 }
 
 func createPreseedImage(ctx context.Context, dir, image string, runner DiskRunner) error {

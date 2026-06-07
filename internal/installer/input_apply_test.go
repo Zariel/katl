@@ -57,6 +57,30 @@ func TestApplyInputCopiesManifestLocalRef(t *testing.T) {
 	}
 }
 
+func TestApplyInputCopiesManifestKubeadmDirs(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-manifest.json"), `{"kind":"InstallManifest"}`)
+	writeTestFile(t, filepath.Join(preseed, KubeadmConfigObjectsDir, "control-plane.yaml"), "object")
+	writeTestFile(t, filepath.Join(preseed, KubeadmConfigFilesDir, "control-plane.yaml"), "config")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, KubeadmConfigObjectsDir, "control-plane.yaml"), "object")
+	assertFile(t, filepath.Join(runDir, KubeadmConfigFilesDir, "control-plane.yaml"), "config")
+	if got := stdout.String(); !strings.Contains(got, KubeadmConfigObjectsDir) || !strings.Contains(got, KubeadmConfigFilesDir) {
+		t.Fatalf("stdout = %q, want kubeadm dir copy logs", got)
+	}
+}
+
 func TestApplyInputRejectsUnsafeManifestLocalRef(t *testing.T) {
 	root := t.TempDir()
 	preseed := filepath.Join(root, "seed")

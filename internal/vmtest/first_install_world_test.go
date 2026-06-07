@@ -159,8 +159,17 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%s) error = %v", run.Config.ManifestPath, err)
 	}
-	if !strings.Contains(string(manifestData), `"hostname": "cp-1"`) || !strings.Contains(string(manifestData), `"localRef": "katlos-install-0.0.0-dev-x86_64.squashfs"`) {
+	if !strings.Contains(string(manifestData), `"hostname": "cp-1"`) ||
+		!strings.Contains(string(manifestData), `"localRef": "katlos-install-0.0.0-dev-x86_64.squashfs"`) ||
+		!strings.Contains(string(manifestData), `"configRef": "control-plane"`) {
 		t.Fatalf("generated manifest = %s", manifestData)
+	}
+	manifestDir := filepath.Dir(run.Config.ManifestPath)
+	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm-configs", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "configFile: kubeadm/control-plane.yaml") {
+		t.Fatalf("generated KubeadmConfig = %q, err = %v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kind: InitConfiguration") {
+		t.Fatalf("generated kubeadm config = %q, err = %v", data, err)
 	}
 	scenarioManifest := readScenarioManifest(t, run.Scenario.ManifestPath)
 	metadataData, err := os.ReadFile(run.Config.Runtime.NodeMetadata)

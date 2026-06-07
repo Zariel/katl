@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/manifest"
 )
 
@@ -156,6 +157,9 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 	if err := factory.stageInstallManifestLocalRef(source, record.Path); err != nil {
 		return FixtureRecord{}, err
 	}
+	if err := factory.stageInstallManifestKubeadmDirs(source, record.Path); err != nil {
+		return FixtureRecord{}, err
+	}
 	return record, nil
 }
 
@@ -183,6 +187,31 @@ func (factory NodeFixtureFactory) stageInstallManifestLocalRef(sourceManifest, s
 	dst := filepath.Join(filepath.Dir(stagedManifest), filepath.FromSlash(localRef))
 	_, err = factory.stageFile(FixtureKatlOSInstallImage, localRef, src, dst)
 	return err
+}
+
+func (factory NodeFixtureFactory) stageInstallManifestKubeadmDirs(sourceManifest, stagedManifest string) error {
+	for _, name := range []string{installer.KubeadmConfigObjectsDir, installer.KubeadmConfigFilesDir} {
+		src := filepath.Join(filepath.Dir(sourceManifest), name)
+		info, err := os.Stat(src)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("install manifest %s is not a directory: %s", name, src)
+		}
+		sha, err := espTreeSHA256(src)
+		if err != nil {
+			return fmt.Errorf("hash install manifest %s: %w", name, err)
+		}
+		dst := filepath.Join(filepath.Dir(stagedManifest), name)
+		if err := copyOrRejectStaleTree(src, dst, sha); err != nil {
+			return fmt.Errorf("stage install manifest %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (factory NodeFixtureFactory) FirstInstallTargetDisk(name string, format DiskFormat, size string) (DiskFixture, error) {

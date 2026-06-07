@@ -180,6 +180,40 @@ func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
 	}
 }
 
+func TestManifestRunnerContextLoadsKubeadmConfigs(t *testing.T) {
+	root := t.TempDir()
+	media := filepath.Join(root, "media")
+	manifestPath := filepath.Join(media, "install-manifest.json")
+	stateDir := filepath.Join(root, "state")
+	writeTestFile(t, manifestPath, `{"kind":"InstallManifest"}`)
+	writeTestFile(t, filepath.Join(media, installer.KubeadmConfigObjectsDir, "control-plane.yaml"), `apiVersion: config.katl.dev/v1alpha1
+kind: KubeadmConfig
+metadata:
+  name: control-plane
+spec:
+  configFile: kubeadm/control-plane.yaml
+`)
+	writeTestFile(t, filepath.Join(media, installer.KubeadmConfigFilesDir, "control-plane.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+`)
+
+	install, err := manifestRunnerContext(manifestPath, stateDir, installstatus.InputModePXEPreseed, manifestPath)
+	if err != nil {
+		t.Fatalf("manifestRunnerContext() error = %v", err)
+	}
+
+	plan, ok := install.KubeadmConfigs["control-plane"]
+	if !ok {
+		t.Fatalf("KubeadmConfigs = %#v, want control-plane", install.KubeadmConfigs)
+	}
+	if plan.Config.RenderPath != "/etc/katl/kubeadm/control-plane/config.yaml" {
+		t.Fatalf("RenderPath = %q", plan.Config.RenderPath)
+	}
+	if len(plan.Documents) != 1 || plan.Documents[0].Kind != "InitConfiguration" {
+		t.Fatalf("Documents = %#v", plan.Documents)
+	}
+}
+
 func TestBootWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -225,5 +259,15 @@ func TestBootHold(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "debug hold active") {
 		t.Fatalf("stdout = %q, want debug hold log", got)
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 }

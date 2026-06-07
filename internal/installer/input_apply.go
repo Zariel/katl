@@ -27,7 +27,9 @@ type InputApplyRequest struct {
 }
 
 const (
-	DefaultSeedMount = "/run/katl/preseed"
+	DefaultSeedMount        = "/run/katl/preseed"
+	KubeadmConfigObjectsDir = "kubeadm-configs"
+	KubeadmConfigFilesDir   = "kubeadm"
 )
 
 var DefaultSeedDevices = []string{
@@ -219,6 +221,14 @@ func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
 					applied++
 					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.src, copied.dst)
 				}
+				copiedDirs, err := copyManifestKubeadmDirs(filepath.Dir(item.src), filepath.Dir(item.dst))
+				if err != nil {
+					return applied, err
+				}
+				for _, copied := range copiedDirs {
+					applied++
+					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.src, copied.dst)
+				}
 			}
 		}
 	}
@@ -294,6 +304,22 @@ func copyManifestLocalRef(manifestPath, dstRoot string) (copiedPreseedPayload, e
 	return copiedPreseedPayload{src: src, dst: dst}, nil
 }
 
+func copyManifestKubeadmDirs(srcRoot, dstRoot string) ([]copiedPreseedPayload, error) {
+	var copied []copiedPreseedPayload
+	for _, name := range []string{KubeadmConfigObjectsDir, KubeadmConfigFilesDir} {
+		src := filepath.Join(srcRoot, name)
+		dst := filepath.Join(dstRoot, name)
+		ok, err := copyOptionalPreseedPayload(src, dst)
+		if err != nil {
+			return nil, fmt.Errorf("copy preseed %s: %w", name, err)
+		}
+		if ok {
+			copied = append(copied, copiedPreseedPayload{src: src, dst: dst})
+		}
+	}
+	return copied, nil
+}
+
 func manifestLocalRef(manifestPath string) (string, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -327,6 +353,21 @@ func copyPreseedPayload(src, dst string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return copyPreseedPayloadWithInfo(src, dst, info)
+}
+
+func copyOptionalPreseedPayload(src, dst string) (bool, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return copyPreseedPayloadWithInfo(src, dst, info)
+}
+
+func copyPreseedPayloadWithInfo(src, dst string, info os.FileInfo) (bool, error) {
 	if _, err := os.Stat(dst); err == nil {
 		return false, nil
 	} else if !os.IsNotExist(err) {

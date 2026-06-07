@@ -18,6 +18,7 @@ import (
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
 	"github.com/zariel/katl/internal/installer/katlosimage"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
@@ -63,6 +64,10 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 	if err != nil {
 		return nil, err
 	}
+	kubeadmConfigs, err := loadKubeadmConfigs(mediaRoot)
+	if err != nil {
+		return nil, err
+	}
 	commands := installer.NewExecCommandRunner()
 	return &installer.Context{
 		ManifestPath: manifestPath,
@@ -79,6 +84,7 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 		RootSlotOpener: disk.FileRootSlotDeviceOpener{},
 		IdentityRandom: rand.Reader,
 		Chown:          os.Chown,
+		KubeadmConfigs: kubeadmConfigs,
 		InputMode:      inputMode,
 		InputSource:    inputSource,
 	}, nil
@@ -90,6 +96,54 @@ func manifestMediaRoot(manifestPath string) (string, error) {
 		return "", fmt.Errorf("resolve manifest path: %w", err)
 	}
 	return filepath.Dir(path), nil
+}
+
+func loadKubeadmConfigs(mediaRoot string) (map[string]kubeadmconfig.Plan, error) {
+	objectDir := filepath.Join(mediaRoot, installer.KubeadmConfigObjectsDir)
+	entries, err := os.ReadDir(objectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read kubeadm config object dir: %w", err)
+	}
+	configs := make(map[string]kubeadmconfig.Plan)
+	for _, entry := range entries {
+		if entry.IsDir() || !isKubeadmConfigObjectFile(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(objectDir, entry.Name())
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("open kubeadm config object %s: %w", path, err)
+		}
+		object, err := kubeadmconfig.Decode(file)
+		closeErr := file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decode kubeadm config object %s: %w", path, err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close kubeadm config object %s: %w", path, closeErr)
+		}
+		if _, exists := configs[object.Metadata.Name]; exists {
+			return nil, fmt.Errorf("duplicate kubeadm config %q", object.Metadata.Name)
+		}
+		plan, err := kubeadmconfig.Resolve(kubeadmconfig.ResolveRequest{RepoRoot: mediaRoot, Object: object})
+		if err != nil {
+			return nil, fmt.Errorf("resolve kubeadm config %q: %w", object.Metadata.Name, err)
+		}
+		configs[object.Metadata.Name] = plan
+	}
+	return configs, nil
+}
+
+func isKubeadmConfigObjectFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".yaml", ".yml", ".json":
+		return true
+	default:
+		return false
+	}
 }
 
 func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer) error {
