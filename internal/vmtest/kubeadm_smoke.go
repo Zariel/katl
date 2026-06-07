@@ -151,19 +151,24 @@ func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAP
 		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubectl"}},
 		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/crictl"}},
 		{Name: "systemctl", Argv: []string{"systemctl", "is-active", "--quiet", "containerd.service"}},
+		visibilityCommand("networkctl-status", []string{"networkctl", "status", "--all"}, 512<<10),
+		visibilityCommand("resolvectl-status", []string{"resolvectl", "status"}, 512<<10),
+		visibilityCommand("ip-route", []string{"ip", "route"}, 128<<10),
 		{Name: "crictl-info", Argv: []string{"crictl", "info"}, SensitiveOutput: true},
 	} {
 		if _, err := guest.RunCommand(ctx, command); err != nil {
 			return err
 		}
 	}
+	if err := waitGuestRegistryDNS(ctx, guest, plan); err != nil {
+		return err
+	}
 	if _, err := guest.RunCommand(ctx, GuestCommandRequest{
-		Name:            "kubeadm-init",
-		Argv:            []string{"kubeadm", "init", "--config", plan.ConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy"},
-		Timeout:         plan.KubeadmTimeout,
-		StdoutLimit:     1024 << 10,
-		StderrLimit:     1024 << 10,
-		SensitiveOutput: true,
+		Name:        "kubeadm-init",
+		Argv:        []string{"kubeadm", "init", "--config", plan.ConfigPath, "--skip-token-print", "--skip-phases=addon/coredns,addon/kube-proxy"},
+		Timeout:     plan.KubeadmTimeout,
+		StdoutLimit: 1024 << 10,
+		StderrLimit: 1024 << 10,
 	}); err != nil {
 		return err
 	}
@@ -189,6 +194,16 @@ func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAP
 		return err
 	}
 	return nil
+}
+
+func visibilityCommand(name string, argv []string, stdoutLimit uint32) GuestCommandRequest {
+	return GuestCommandRequest{
+		Name:         name,
+		Argv:         argv,
+		StdoutLimit:  stdoutLimit,
+		StderrLimit:  128 << 10,
+		AllowFailure: true,
+	}
 }
 
 func kubernetesProjectionSourceMatches(source string, projected string) bool {
@@ -220,6 +235,38 @@ func waitKubeadmReady(ctx context.Context, guest *GuestControl, plan KubeadmAPIS
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(plan.ReadyPollInterval):
+		}
+	}
+}
+
+func waitGuestRegistryDNS(ctx context.Context, guest *GuestControl, plan KubeadmAPISmokePlan) error {
+	timeout := plan.ReadyTimeout
+	if timeout == 0 {
+		timeout = 2 * time.Minute
+	}
+	interval := plan.ReadyPollInterval
+	if interval == 0 {
+		interval = 2 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if _, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name:    "registry-dns",
+			Argv:    []string{"getent", "hosts", "registry.k8s.io"},
+			Timeout: plan.CommandTimeout,
+		}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("wait for guest DNS resolution of registry.k8s.io: %w", lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
 		}
 	}
 }
@@ -309,12 +356,17 @@ func kubeadmSmokeDiagnostics(plan KubeadmAPISmokePlan) GuestDiagnostics {
 			{Name: "ready-target-status", Argv: []string{"systemctl", "status", "katl-kubeadm-ready.target"}},
 			{Name: "containerd-status", Argv: []string{"systemctl", "status", "containerd.service"}},
 			{Name: "kubelet-status", Argv: []string{"systemctl", "status", "kubelet.service"}},
+			{Name: "networkd-status", Argv: []string{"systemctl", "status", "systemd-networkd.service"}},
+			visibilityCommand("networkctl-status", []string{"networkctl", "status", "--all"}, 512<<10),
+			visibilityCommand("resolvectl-status", []string{"resolvectl", "status"}, 512<<10),
+			visibilityCommand("ip-route", []string{"ip", "route"}, 128<<10),
 			{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
 			{Name: "etc-kubernetes-mount", Argv: []string{"findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"}},
 		},
 		Files: []GuestFileRequest{
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
 			{Name: "kubeadm-config", Path: plan.ConfigPath},
+			{Name: "networkd-vmtest-dhcp", Path: "/etc/systemd/network/80-katl-vmtest-dhcp.network"},
 		},
 		Journals: []GuestJournalRequest{
 			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"}},

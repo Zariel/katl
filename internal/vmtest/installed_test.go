@@ -78,8 +78,8 @@ func TestInstalledRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read qemu command: %v", err)
 	}
-	if strings.Contains(string(command), "fat:rw:") {
-		t.Fatalf("default runtime boot used injected ESP tree: %s", command)
+	if !strings.Contains(string(command), "fat:rw:"+filepath.Join(result.RunDir, "esp")) {
+		t.Fatalf("default runtime boot did not use prepared ESP tree: %s", command)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
@@ -87,6 +87,11 @@ func TestInstalledRuntime(t *testing.T) {
 	}
 	if strings.Contains(string(entry), "katl.vmtest_agent=1") {
 		t.Fatalf("default runtime boot injected vmtest agent flag: %s", entry)
+	}
+	for _, option := range runtimeConsoleOptions {
+		if !strings.Contains(string(entry), option) {
+			t.Fatalf("default runtime option %q missing from copied loader entry: %s", option, entry)
+		}
 	}
 }
 

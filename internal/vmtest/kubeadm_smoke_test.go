@@ -17,23 +17,27 @@ func TestKubeadmAPISmokeRunsInitAndReadyz(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
-		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):                                        {okCommand()},
-		commandKey("test", "-f", DefaultKubeadmConfigPath):                                                                  {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"):                          {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
-		commandKey("test", "-x", "/usr/bin/kubeadm"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubelet"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubectl"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/crictl"):                                                                         {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                                               {okCommand()},
-		commandKey("crictl", "info"):                                                                                        {stdoutCommand("{}\n")},
-		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy"): {stdoutCommand("token should be redacted\n")},
-		commandKey("test", "-f", "/etc/kubernetes/admin.conf"):                                                              {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-apiserver.yaml"):                                           {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-controller-manager.yaml"):                                  {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-scheduler.yaml"):                                           {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/etcd.yaml"):                                                     {okCommand()},
-		commandKey("crictl", "ps", "--name", "kube-apiserver", "--state", "Running", "-q"):                                  {stdoutCommand("apiserver-id\n")},
-		commandKey("kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"):                         {stdoutCommand("ok\n")},
+		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
+		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
+		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
+		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/crictl"):                                                {okCommand()},
+		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                      {okCommand()},
+		commandKey("networkctl", "status", "--all"):                                                {failedCommand("Failed to connect to system bus\n")},
+		commandKey("resolvectl", "status"):                                                         {stdoutCommand("DNS Servers: 10.0.2.3\n"), stdoutCommand("DNS Servers: 10.0.2.3\n")},
+		commandKey("ip", "route"):                                                                  {stdoutCommand("default via 10.0.2.2 dev enp0s2\n"), stdoutCommand("default via 10.0.2.2 dev enp0s2\n")},
+		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
+		commandKey("getent", "hosts", "registry.k8s.io"):                                           {stdoutCommand("1.2.3.4 registry.k8s.io\n")},
+		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-token-print", "--skip-phases=addon/coredns,addon/kube-proxy"): {stdoutCommand("kubeadm init completed\n")},
+		commandKey("test", "-f", "/etc/kubernetes/admin.conf"):                                      {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-apiserver.yaml"):                   {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-controller-manager.yaml"):          {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-scheduler.yaml"):                   {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/etcd.yaml"):                             {okCommand()},
+		commandKey("crictl", "ps", "--name", "kube-apiserver", "--state", "Running", "-q"):          {stdoutCommand("apiserver-id\n")},
+		commandKey("kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"): {stdoutCommand("ok\n")},
 	}
 	guest := NewGuestControl(result, client)
 	guest.Timeout = time.Second
@@ -42,9 +46,6 @@ func TestKubeadmAPISmokeRunsInitAndReadyz(t *testing.T) {
 		t.Fatalf("RunKubeadmAPISmoke() error = %v", err)
 	}
 
-	if !client.sensitiveCommand(commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy")) {
-		t.Fatalf("kubeadm init was not marked sensitive: %#v", client.commandRequests)
-	}
 	if !client.sensitiveCommand(commandKey("crictl", "info")) {
 		t.Fatalf("crictl info was not marked sensitive: %#v", client.commandRequests)
 	}
@@ -53,8 +54,16 @@ func TestKubeadmAPISmokeRunsInitAndReadyz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read kubeadm command record: %v", err)
 	}
-	if strings.Contains(string(data), "token should be redacted") || !strings.Contains(string(data), `"redaction": "output"`) {
-		t.Fatalf("kubeadm command record leaked sensitive output: %s", data)
+	if strings.Contains(string(data), `"redaction": "output"`) {
+		t.Fatalf("kubeadm command record unexpectedly redacted debuggable output: %s", data)
+	}
+	networkctlRecord := findCommandRecord(t, result, "networkctl-status")
+	networkctlData, err := os.ReadFile(filepath.Join(networkctlRecord, "command.json"))
+	if err != nil {
+		t.Fatalf("read networkctl command record: %v", err)
+	}
+	if !strings.Contains(string(networkctlData), `"allowFailure": true`) {
+		t.Fatalf("network visibility command record missing allowFailure: %s", networkctlData)
 	}
 }
 
@@ -66,22 +75,26 @@ func TestKubeadmAPISmokeWaitsForReadyTarget(t *testing.T) {
 			failedCommand("inactive\n"),
 			okCommand(),
 		},
-		commandKey("test", "-f", DefaultKubeadmConfigPath):                                                                  {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"):                          {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
-		commandKey("test", "-x", "/usr/bin/kubeadm"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubelet"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubectl"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/crictl"):                                                                         {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                                               {okCommand()},
-		commandKey("crictl", "info"):                                                                                        {stdoutCommand("{}\n")},
-		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy"): {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/admin.conf"):                                                              {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-apiserver.yaml"):                                           {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-controller-manager.yaml"):                                  {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-scheduler.yaml"):                                           {okCommand()},
-		commandKey("test", "-f", "/etc/kubernetes/manifests/etcd.yaml"):                                                     {okCommand()},
-		commandKey("crictl", "ps", "--name", "kube-apiserver", "--state", "Running", "-q"):                                  {stdoutCommand("apiserver-id\n")},
-		commandKey("kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"):                         {stdoutCommand("ok\n")},
+		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
+		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
+		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/crictl"):                                                {okCommand()},
+		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                      {okCommand()},
+		commandKey("networkctl", "status", "--all"):                                                {stdoutCommand("routable\n")},
+		commandKey("resolvectl", "status"):                                                         {stdoutCommand("DNS Servers: 10.0.2.3\n")},
+		commandKey("ip", "route"):                                                                  {stdoutCommand("default via 10.0.2.2 dev enp0s2\n")},
+		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
+		commandKey("getent", "hosts", "registry.k8s.io"):                                           {stdoutCommand("1.2.3.4 registry.k8s.io\n")},
+		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-token-print", "--skip-phases=addon/coredns,addon/kube-proxy"): {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/admin.conf"):                                      {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-apiserver.yaml"):                   {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-controller-manager.yaml"):          {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/kube-scheduler.yaml"):                   {okCommand()},
+		commandKey("test", "-f", "/etc/kubernetes/manifests/etcd.yaml"):                             {okCommand()},
+		commandKey("crictl", "ps", "--name", "kube-apiserver", "--state", "Running", "-q"):          {stdoutCommand("apiserver-id\n")},
+		commandKey("kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"): {stdoutCommand("ok\n")},
 	}
 	guest := NewGuestControl(result, client)
 	err := RunKubeadmAPISmoke(context.Background(), guest, KubeadmAPISmokePlan{
@@ -127,21 +140,26 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
-		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):                                        {okCommand()},
-		commandKey("test", "-f", DefaultKubeadmConfigPath):                                                                  {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"):                          {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
-		commandKey("test", "-x", "/usr/bin/kubeadm"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubelet"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubectl"):                                                                        {okCommand()},
-		commandKey("test", "-x", "/usr/bin/crictl"):                                                                         {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                                               {okCommand()},
-		commandKey("crictl", "info"):                                                                                        {stdoutCommand("{}\n")},
-		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy"): {failedCommand("bootstrap token secret\n")},
-		commandKey("systemctl", "status", "katl-kubeadm-ready.target"):                                                      {okCommand()},
-		commandKey("systemctl", "status", "containerd.service"):                                                             {okCommand()},
-		commandKey("systemctl", "status", "kubelet.service"):                                                                {okCommand()},
-		commandKey("crictl", "ps", "-a"):                                                                                    {stdoutCommand("containers\n")},
-		commandKey("findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"):                    {stdoutCommand(DefaultProjectedKubernetesPath + " /etc/kubernetes none rw\n")},
+		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
+		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
+		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
+		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},
+		commandKey("test", "-x", "/usr/bin/crictl"):                                                {okCommand()},
+		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                      {okCommand()},
+		commandKey("networkctl", "status", "--all"):                                                {stdoutCommand("routable\n")},
+		commandKey("resolvectl", "status"):                                                         {stdoutCommand("DNS Servers: 10.0.2.3\n")},
+		commandKey("ip", "route"):                                                                  {stdoutCommand("default via 10.0.2.2 dev enp0s2\n")},
+		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
+		commandKey("getent", "hosts", "registry.k8s.io"):                                           {stdoutCommand("1.2.3.4 registry.k8s.io\n")},
+		commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-token-print", "--skip-phases=addon/coredns,addon/kube-proxy"): {failedCommand("kubeadm init failed\n")},
+		commandKey("systemctl", "status", "katl-kubeadm-ready.target"):                                                                            {okCommand()},
+		commandKey("systemctl", "status", "containerd.service"):                                                                                   {okCommand()},
+		commandKey("systemctl", "status", "kubelet.service"):                                                                                      {okCommand()},
+		commandKey("systemctl", "status", "systemd-networkd.service"):                                                                             {okCommand()},
+		commandKey("crictl", "ps", "-a"):                                                                                                          {stdoutCommand("containers\n")},
+		commandKey("findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"):                                          {stdoutCommand(DefaultProjectedKubernetesPath + " /etc/kubernetes none rw\n")},
 	}
 	client.fileResults = map[string]*vmtestpb.FileResult{
 		"/etc/katl/node.json":    {Content: []byte(`{"kind":"NodeMetadata"}`), SizeBytes: 23, Redaction: "sensitive"},
@@ -191,8 +209,8 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read kubeadm command record: %v", err)
 	}
-	if strings.Contains(string(data), "bootstrap token secret") {
-		t.Fatalf("kubeadm failure leaked sensitive output: %s", data)
+	if !strings.Contains(string(data), `"stderr"`) {
+		t.Fatalf("kubeadm failure did not preserve debuggable output artifact: %s", data)
 	}
 }
 

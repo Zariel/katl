@@ -68,6 +68,36 @@ func TestGuestSensitiveOutputIsRedacted(t *testing.T) {
 	}
 }
 
+func TestGuestCommandAllowsFailure(t *testing.T) {
+	result := guestResult(t)
+	client := &fakeGuestClient{
+		command: &vmtestpb.CommandResult{
+			ExitStatus:  1,
+			Stderr:      []byte("diagnostic unavailable\n"),
+			StderrBytes: 23,
+		},
+	}
+	guest := NewGuestControl(result, client)
+	record, err := guest.RunCommand(context.Background(), GuestCommandRequest{
+		Name:         "networkctl-status",
+		Argv:         []string{"networkctl", "status", "--all"},
+		AllowFailure: true,
+	})
+	if err != nil {
+		t.Fatalf("RunCommand() error = %v", err)
+	}
+	if record.ExitStatus != 1 || !record.AllowFailure {
+		t.Fatalf("record = %#v", record)
+	}
+	data, err := os.ReadFile(filepath.Join(record.Dir, "command.json"))
+	if err != nil {
+		t.Fatalf("read command record: %v", err)
+	}
+	if !strings.Contains(string(data), `"allowFailure": true`) {
+		t.Fatalf("record missing allowFailure: %s", data)
+	}
+}
+
 func TestGuestFileContentExcludedByDefault(t *testing.T) {
 	result := guestResult(t)
 	client := &fakeGuestClient{

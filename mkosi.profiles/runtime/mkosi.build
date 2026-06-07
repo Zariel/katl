@@ -7,6 +7,8 @@ version="${KATL_VERSION:-0.0.0-dev}"
 
 mkdir -p "$DESTDIR/usr/lib/katl/vmtest"
 mkdir -p "$DESTDIR/usr/lib/katl/runtime"
+mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
+ln -sf ../systemd-networkd.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/systemd-networkd.service"
 
 if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
     repo=/work

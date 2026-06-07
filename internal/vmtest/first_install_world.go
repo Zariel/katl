@@ -306,6 +306,14 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 				"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"},
 			},
 		},
+		"networkd": map[string]any{
+			"files": []map[string]any{
+				{
+					"name":    "80-katl-vmtest-dhcp.network",
+					"content": "[Match]\nName=*\n\n[Network]\nDHCP=yes\n",
+				},
+			},
+		},
 		"systemRole": string(spec.Role),
 	}
 	if kubeadmRef != "" {
@@ -350,7 +358,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 func writeFirstInstallWorldKubeadmSource(sourceDir string, spec NodeSpec) (string, error) {
 	switch spec.Role {
 	case ControlPlane:
-		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig())
+		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig(spec.Name))
 	case Worker:
 		return writeFirstInstallWorldKubeadmPlan(sourceDir, "worker", workerKubeadmConfig())
 	default:
@@ -384,11 +392,35 @@ spec:
 	return name, nil
 }
 
-func controlPlaneKubeadmConfig() string {
+func controlPlaneKubeadmConfig(nodeName string) string {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		nodeName = "cp-1"
+	}
 	return `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 10.0.2.15
+  bindPort: 6443
 nodeRegistration:
+  name: ` + nodeName + `
   criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: katl-smoke
+kubernetesVersion: v1.36.1
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+apiServer:
+  certSANs:
+    - 10.0.2.15
+    - 127.0.0.1
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
 `
 }
 

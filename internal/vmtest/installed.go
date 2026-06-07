@@ -26,12 +26,13 @@ type InstalledRuntimeConfig struct {
 	VM                 VMConfig
 }
 
-var runtimeVMTestOptions = []string{
-	"katl.vmtest_agent=1",
+var runtimeConsoleOptions = []string{
 	"console=ttyS0,115200n8",
 	"systemd.log_target=console",
 	"loglevel=6",
 }
+
+var runtimeVMTestOptions = append([]string{"katl.vmtest_agent=1"}, runtimeConsoleOptions...)
 
 const runtimeBootSignal = "Katl runtime reached systemd userspace"
 
@@ -84,9 +85,7 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 		Image:         config.Disk,
 		ImageFormat:   diskFormat(config.DiskFormat),
 		ImageSnapshot: true,
-	}
-	if config.RequireVMTestAgent {
-		vm.Boot.EFITree = runtimeESPPath(result)
+		EFITree:       runtimeESPPath(result),
 	}
 	return runner.Run(ctx, result, vm)
 }
@@ -108,8 +107,11 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 	if err := copyDir(config.ESPArtifacts, esp); err != nil {
 		return err
 	}
+	if err := InjectESPOptions(esp, runtimeConsoleOptions...); err != nil {
+		return err
+	}
 	if config.RequireVMTestAgent {
-		if err := InjectESPOptions(esp, runtimeVMTestOptions...); err != nil {
+		if err := InjectESPOptions(esp, "katl.vmtest_agent=1"); err != nil {
 			return err
 		}
 	}

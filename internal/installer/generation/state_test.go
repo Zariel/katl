@@ -43,6 +43,7 @@ WantedBy=local-fs.target
 		"d /var/lib/katl/install/logs 0755 root root -",
 		"d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -",
 		"d /var/lib/containerd 0755 root root -",
+		"d /var/lib/etcd 0755 root root -",
 		"d /var/lib/kubelet 0755 root root -",
 		"d /var/log/journal 2755 root systemd-journal -",
 	} {

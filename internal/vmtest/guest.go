@@ -39,6 +39,7 @@ type GuestCommandRequest struct {
 	StdoutLimit     uint32
 	StderrLimit     uint32
 	SensitiveOutput bool
+	AllowFailure    bool
 }
 
 type GuestCommandArtifact struct {
@@ -53,6 +54,7 @@ type GuestCommandArtifact struct {
 	StdoutTruncated bool     `json:"stdoutTruncated,omitempty"`
 	StderrTruncated bool     `json:"stderrTruncated,omitempty"`
 	Redaction       string   `json:"redaction,omitempty"`
+	AllowFailure    bool     `json:"allowFailure,omitempty"`
 	Error           string   `json:"error,omitempty"`
 }
 
@@ -144,10 +146,11 @@ func (g *GuestControl) RunCommand(ctx context.Context, req GuestCommandRequest) 
 	name := first(req.Name, filepath.Base(req.Argv[0]))
 	dir := g.nextDir("commands", name)
 	record := GuestCommandArtifact{
-		Name:       name,
-		Argv:       append([]string(nil), req.Argv...),
-		Dir:        dir,
-		ExitStatus: -1,
+		Name:         name,
+		Argv:         append([]string(nil), req.Argv...),
+		Dir:          dir,
+		ExitStatus:   -1,
+		AllowFailure: req.AllowFailure,
 	}
 	ctx, cancel := g.withTimeout(ctx, req.Timeout)
 	defer cancel()
@@ -184,7 +187,7 @@ func (g *GuestControl) RunCommand(ctx context.Context, req GuestCommandRequest) 
 	if err := g.writeRecord(filepath.Join(dir, "command.json"), record); err != nil {
 		return record, err
 	}
-	if result.ExitStatus != 0 {
+	if result.ExitStatus != 0 && !req.AllowFailure {
 		return record, fmt.Errorf("guest command %q exited %d", name, result.ExitStatus)
 	}
 	return record, nil
