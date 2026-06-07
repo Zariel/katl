@@ -34,6 +34,40 @@ func TestApplyInput(t *testing.T) {
 	}
 }
 
+func TestApplyInputCopiesManifestLocalRef(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-manifest.json"), `{"katlosImage":{"localRef":"payloads/katlos-install.squashfs"}}`)
+	writeTestFile(t, filepath.Join(preseed, "payloads/katlos-install.squashfs"), "katlos payload")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, "install-manifest.json"), `{"katlosImage":{"localRef":"payloads/katlos-install.squashfs"}}`)
+	assertFile(t, filepath.Join(runDir, "payloads/katlos-install.squashfs"), "katlos payload")
+	if got := stdout.String(); !strings.Contains(got, "payloads/katlos-install.squashfs") {
+		t.Fatalf("stdout = %q, want localRef copy log", got)
+	}
+}
+
+func TestApplyInputRejectsUnsafeManifestLocalRef(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	writeTestFile(t, filepath.Join(preseed, "install-manifest.json"), `{"katlosImage":{"localRef":"../katlos-install.squashfs"}}`)
+
+	err := ApplyInput(InputApplyRequest{PreseedDirs: []string{preseed}, RunDir: filepath.Join(root, "run")})
+	if err == nil || !strings.Contains(err.Error(), "dot segments") {
+		t.Fatalf("ApplyInput() error = %v, want dot segments error", err)
+	}
+}
+
 func TestApplyInputMountsSeedDevice(t *testing.T) {
 	root := t.TempDir()
 	device := filepath.Join(root, "seed-device")

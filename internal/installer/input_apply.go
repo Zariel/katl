@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -207,24 +210,35 @@ func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
 		if ok {
 			applied++
 			fmt.Fprintf(stdout, "katl input: copied %s to %s\n", item.src, item.dst)
+			if item.manifest {
+				copied, err := copyManifestLocalRef(item.src, filepath.Dir(item.dst))
+				if err != nil {
+					return applied, err
+				}
+				if copied.src != "" {
+					applied++
+					fmt.Fprintf(stdout, "katl input: copied %s to %s\n", copied.src, copied.dst)
+				}
+			}
 		}
 	}
 	return applied, nil
 }
 
 type preseedItem struct {
-	src string
-	dst string
+	src      string
+	dst      string
+	manifest bool
 }
 
 func preseedItems(dir, runDir, etcDir string) []preseedItem {
 	return []preseedItem{
-		{filepath.Join(dir, "install-input.json"), filepath.Join(runDir, "install-input.json")},
-		{filepath.Join(dir, "install-manifest.json"), filepath.Join(runDir, "install-manifest.json")},
-		{filepath.Join(dir, "run/katl/install-input.json"), filepath.Join(runDir, "install-input.json")},
-		{filepath.Join(dir, "run/katl/install-manifest.json"), filepath.Join(runDir, "install-manifest.json")},
-		{filepath.Join(dir, "etc/katl/install-input.json"), filepath.Join(etcDir, "install-input.json")},
-		{filepath.Join(dir, "etc/katl/install-manifest.json"), filepath.Join(etcDir, "install-manifest.json")},
+		{src: filepath.Join(dir, "install-input.json"), dst: filepath.Join(runDir, "install-input.json")},
+		{src: filepath.Join(dir, "install-manifest.json"), dst: filepath.Join(runDir, "install-manifest.json"), manifest: true},
+		{src: filepath.Join(dir, "run/katl/install-input.json"), dst: filepath.Join(runDir, "install-input.json")},
+		{src: filepath.Join(dir, "run/katl/install-manifest.json"), dst: filepath.Join(runDir, "install-manifest.json"), manifest: true},
+		{src: filepath.Join(dir, "etc/katl/install-input.json"), dst: filepath.Join(etcDir, "install-input.json")},
+		{src: filepath.Join(dir, "etc/katl/install-manifest.json"), dst: filepath.Join(etcDir, "install-manifest.json"), manifest: true},
 	}
 }
 
@@ -251,4 +265,128 @@ func copyInput(src, dst string) (bool, error) {
 		return false, fmt.Errorf("write destination %s: %w", dst, err)
 	}
 	return true, nil
+}
+
+type copiedPreseedPayload struct {
+	src string
+	dst string
+}
+
+var preseedLocalRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
+
+func copyManifestLocalRef(manifestPath, dstRoot string) (copiedPreseedPayload, error) {
+	localRef, err := manifestLocalRef(manifestPath)
+	if err != nil {
+		return copiedPreseedPayload{}, err
+	}
+	if localRef == "" {
+		return copiedPreseedPayload{}, nil
+	}
+	src := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef))
+	dst := filepath.Join(dstRoot, filepath.FromSlash(localRef))
+	ok, err := copyPreseedPayload(src, dst)
+	if err != nil {
+		return copiedPreseedPayload{}, fmt.Errorf("copy preseed KatlOS image localRef: %w", err)
+	}
+	if !ok {
+		return copiedPreseedPayload{}, nil
+	}
+	return copiedPreseedPayload{src: src, dst: dst}, nil
+}
+
+func manifestLocalRef(manifestPath string) (string, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", fmt.Errorf("read preseed manifest %s: %w", manifestPath, err)
+	}
+	var input struct {
+		KatlosImage struct {
+			LocalRef string `json:"localRef"`
+		} `json:"katlosImage"`
+	}
+	if err := json.Unmarshal(data, &input); err != nil {
+		return "", fmt.Errorf("decode preseed manifest %s: %w", manifestPath, err)
+	}
+	localRef := strings.TrimSpace(input.KatlosImage.LocalRef)
+	if localRef == "" {
+		return "", nil
+	}
+	if input.KatlosImage.LocalRef != localRef || filepath.IsAbs(localRef) || path.Clean(localRef) != localRef || !preseedLocalRefRE.MatchString(localRef) {
+		return "", fmt.Errorf("preseed KatlOS image localRef %q must be a clean relative path", input.KatlosImage.LocalRef)
+	}
+	for _, segment := range strings.Split(localRef, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("preseed KatlOS image localRef %q must not contain dot segments", localRef)
+		}
+	}
+	return localRef, nil
+}
+
+func copyPreseedPayload(src, dst string) (bool, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("stat destination %s: %w", dst, err)
+	}
+	if info.IsDir() {
+		return true, copyPreseedDir(src, dst, info.Mode().Perm())
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s is not a regular file or directory", src)
+	}
+	return true, copyPreseedFile(src, dst, info.Mode().Perm())
+}
+
+func copyPreseedDir(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(dst, mode); err != nil {
+		return fmt.Errorf("create preseed payload dir %s: %w", dst, err)
+	}
+	return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == src {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file or directory", path)
+		}
+		return copyPreseedFile(path, target, info.Mode().Perm())
+	})
+}
+
+func copyPreseedFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("create preseed payload dir %s: %w", filepath.Dir(dst), err)
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
