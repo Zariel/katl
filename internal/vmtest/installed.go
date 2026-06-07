@@ -26,6 +26,15 @@ type InstalledRuntimeConfig struct {
 	VM                 VMConfig
 }
 
+var runtimeVMTestOptions = []string{
+	"katl.vmtest_agent=1",
+	"console=ttyS0,115200n8",
+	"systemd.log_target=console",
+	"loglevel=6",
+}
+
+const runtimeBootSignal = "Katl runtime reached systemd userspace"
+
 type installedRuntimeRecord struct {
 	APIVersion         string                         `json:"apiVersion"`
 	Kind               string                         `json:"kind"`
@@ -70,7 +79,11 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 	}
 	vm := config.VM
 	vm.Phase = "runtime"
-	vm.Expect = first(vm.Expect, config.Expect, "Katl state projection ready")
+	if config.RequireVMTestAgent {
+		vm.Expect = first(vm.Expect, config.Expect, runtimeBootSignal)
+	} else {
+		vm.Expect = first(vm.Expect, config.Expect, "Katl state projection ready")
+	}
 	vm.Boot = VMBoot{
 		Image:         config.Disk,
 		ImageFormat:   diskFormat(config.DiskFormat),
@@ -100,7 +113,7 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 		return err
 	}
 	if config.RequireVMTestAgent {
-		if err := InjectESPOption(esp, "katl.vmtest_agent=1"); err != nil {
+		if err := InjectESPOptions(esp, runtimeVMTestOptions...); err != nil {
 			return err
 		}
 	}
@@ -312,9 +325,20 @@ func runtimeESPPath(result Result) string {
 }
 
 func InjectESPOption(root string, option string) error {
-	option = strings.TrimSpace(option)
-	if option == "" || strings.ContainsAny(option, " \t\n\r") {
-		return fmt.Errorf("loader option %q must not contain whitespace", option)
+	return InjectESPOptions(root, option)
+}
+
+func InjectESPOptions(root string, options ...string) error {
+	if len(options) == 0 {
+		return nil
+	}
+	cleaned := make([]string, 0, len(options))
+	for _, option := range options {
+		option, err := cleanLoaderOption(option)
+		if err != nil {
+			return err
+		}
+		cleaned = append(cleaned, option)
 	}
 	entries := filepath.Join(root, "loader", "entries")
 	var changed int
@@ -325,8 +349,10 @@ func InjectESPOption(root string, option string) error {
 		if entry.IsDir() || filepath.Ext(path) != ".conf" {
 			return nil
 		}
-		if err := injectLoaderOption(path, option); err != nil {
-			return err
+		for _, option := range cleaned {
+			if err := injectLoaderOption(path, option); err != nil {
+				return err
+			}
 		}
 		changed++
 		return nil
@@ -338,6 +364,14 @@ func InjectESPOption(root string, option string) error {
 		return errors.New("ESP artifacts contain no loader entries")
 	}
 	return nil
+}
+
+func cleanLoaderOption(option string) (string, error) {
+	option = strings.TrimSpace(option)
+	if option == "" || strings.ContainsAny(option, " \t\n\r") {
+		return "", fmt.Errorf("loader option %q must not contain whitespace", option)
+	}
+	return option, nil
 }
 
 func injectLoaderOption(path string, option string) error {

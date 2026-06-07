@@ -106,9 +106,8 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 	_, vmConfig := vmFixture(t)
-	vmConfig.Expect = "Katl state projection ready"
 	runner := VMRunner{
-		Executor: vmExec{write: "Katl state projection ready"},
+		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
 			stat:     os.Stat,
@@ -137,8 +136,10 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read copied loader entry: %v", err)
 	}
-	if !strings.Contains(string(entry), "katl.vmtest_agent=1") {
-		t.Fatalf("vmtest agent flag missing from copied loader entry: %s", entry)
+	for _, option := range runtimeVMTestOptions {
+		if !strings.Contains(string(entry), option) {
+			t.Fatalf("vmtest runtime option %q missing from copied loader entry: %s", option, entry)
+		}
 	}
 	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
 	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || !input.RequireVMTestAgent {
@@ -164,6 +165,11 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	}
 	if strings.Contains(string(source), "katl.vmtest_agent=1") {
 		t.Fatalf("source ESP artifact was mutated: %s", source)
+	}
+	for _, option := range runtimeVMTestOptions[1:] {
+		if strings.Contains(string(source), option) {
+			t.Fatalf("source ESP artifact was mutated with %q: %s", option, source)
+		}
 	}
 }
 
