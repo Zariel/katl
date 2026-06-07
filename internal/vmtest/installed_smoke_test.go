@@ -109,7 +109,7 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 		RuntimeArtifact: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
 		UseInstalledESP: envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"),
-		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"),
+		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "32G"),
 	}, DefaultOptions().KVM)
 	if err != nil {
 		failWorldSetup(t, worldRun.Scenario, err)

@@ -96,6 +96,37 @@ func TestFirstInstallFailure(t *testing.T) {
 	}
 }
 
+func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	_, vmConfig := vmFixture(t)
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI: uki,
+			VM:           vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:        []byte(firstManifest()),
+		HandoffToken:    "test-token",
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		InstallerRunner: fakeVMWithExecutor(vmExec{write: "katlos-install.service: Failed with result 'exit-code'.\ncollect facts failed\n"}),
+		RuntimeRunner:   fakeVM("Katl state projection ready"),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installer service failed") || !strings.Contains(result.FailureSummary, "collect facts failed") {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+}
+
 func TestFirstInstallGuestHandoff(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
@@ -183,7 +214,7 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
+		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/install-manifest.json\n"),
 		RuntimeRunner:   fakeVM("Katl state projection ready"),
 	})
 	if err != nil {
@@ -250,7 +281,7 @@ func TestFirstInstallPreseedManifestRequiresEvidence(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
+		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/install-manifest.json\n"),
 		RuntimeRunner:   fakeVM("Katl state projection ready"),
 	})
 	if err != nil {
@@ -418,6 +449,40 @@ func TestCheckExtractedESPArtifacts(t *testing.T) {
 	}
 }
 
+func TestFirstInstallIgnoresSwitchRootFailureAfterCompletion(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-preseed-switch-root-after-complete"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:        []byte(firstManifest()),
+		PreseedManifest: true,
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
+		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/install-manifest.json\ninitrd-switch-root.service: Failed with result 'exit-code'.\n"),
+		RuntimeRunner:   fakeVM("Katl state projection ready"),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+}
+
 func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
@@ -481,7 +546,7 @@ func preseedInstallerEvidence() string {
 	return strings.Join([]string{
 		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
 		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL= inputMode=offline-media",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/install-manifest.json manifestURL= inputMode=offline-media",
 		"",
 	}, "\n")
 }

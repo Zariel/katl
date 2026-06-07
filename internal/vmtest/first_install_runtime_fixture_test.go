@@ -3,7 +3,35 @@ package vmtest
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestFirstInstallFixtureVMConfigsKeepAgentRuntimeOnly(t *testing.T) {
+	base := VMConfig{
+		KVM:     KVMAuto,
+		RAMMiB:  4096,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+		VSock: VSockConfig{
+			Enabled:  true,
+			GuestCID: 2048,
+			Port:     10240,
+		},
+		Agent: AgentControlConfig{
+			RequireHealth: true,
+			Timeout:       30 * time.Second,
+		},
+	}
+
+	installer, runtime := firstInstallFixtureVMConfigs(base)
+
+	if installer.VSock.Enabled || installer.Agent.RequireHealth {
+		t.Fatalf("installer VM config keeps agent settings: %#v", installer)
+	}
+	if !runtime.VSock.Enabled || !runtime.Agent.RequireHealth {
+		t.Fatalf("runtime VM config lost agent settings: %#v", runtime)
+	}
+}
 
 func TestPackageFirstInstallRuntimeFixtureWritesTypedFixture(t *testing.T) {
 	root := t.TempDir()

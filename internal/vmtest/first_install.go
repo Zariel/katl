@@ -94,6 +94,7 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 	}
 
+	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, firstInstallFailureHooks()...)
 	result = BootInstaller(ctx, result, config.Installer, config.InstallerRunner)
 	if err := copyArtifact(result.Artifacts.QEMUCommand, result.Artifacts.InstallerQEMUCommand); err != nil {
 		return failFirst(runner, scenario, result, "installer", err)
@@ -156,12 +157,34 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	return result, nil
 }
 
+func firstInstallFailureHooks() []SerialHook {
+	return []SerialHook{
+		{
+			Name:   "katlos-install-service-failed",
+			Signal: "katlos-install.service: Failed with result",
+			Run: func(_ context.Context, event SerialHookEvent) error {
+				return fmt.Errorf("installer service failed; serial tail:\n%s", serialTail(event.Plan.SerialLog, 20, 6000))
+			},
+		},
+		{
+			Name:   "initrd-switch-root-failed",
+			Signal: "initrd-switch-root.service: Failed with result",
+			Run: func(_ context.Context, event SerialHookEvent) error {
+				if strings.Contains(event.SerialText, installerCompletedSignal) {
+					return nil
+				}
+				return fmt.Errorf("installer initrd attempted switch-root and failed; serial tail:\n%s", serialTail(event.Plan.SerialLog, 20, 6000))
+			},
+		},
+	}
+}
+
 func withTarget(scenario Scenario, target DiskFixture) Scenario {
 	if len(scenario.Disks) > 0 {
 		return scenario
 	}
 	if target.Name == "" {
-		target = TargetDisk("root", string(DiskQCOW2), "20G")
+		target = TargetDisk("root", string(DiskQCOW2), "32G")
 	}
 	scenario.Disks = []DiskFixture{target}
 	return scenario
@@ -239,7 +262,7 @@ func requirePreseedInstallerEvidence(result Result) error {
 	for _, signal := range []string{
 		"katl input: mounted seed device",
 		"katl input: copied",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/install-manifest.json",
 		"inputMode=offline-media",
 	} {
 		if !strings.Contains(text, signal) {

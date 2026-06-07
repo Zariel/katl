@@ -51,7 +51,7 @@ func DefaultFirstInstallWorldInputFromEnv(mode FirstInstallWorldMode, useInstall
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
 		Mode:            mode,
 		UseInstalledESP: useInstalledESP,
-		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"),
+		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "32G"),
 	}
 }
 

@@ -152,6 +152,7 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 			Timeout:       30 * time.Second,
 		},
 	}
+	installerVM, runtimeVM := firstInstallFixtureVMConfigs(vm)
 	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: FirstInstallRuntimeFixtureScenarioName(contract.Node)}, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    contract.InstallerBoot.InstallerUKI,
@@ -159,12 +160,12 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 			InstallerInitrd: contract.InstallerBoot.InstallerInitrd,
 			CommandLine:     contract.InstallerBoot.CommandLine,
 			RuntimeArtifact: contract.RuntimeArtifact,
-			VM:              vm,
+			VM:              installerVM,
 		},
 		Runtime: InstalledRuntimeConfig{
 			ESPArtifacts:       contract.RuntimeESP,
 			RequireVMTestAgent: true,
-			VM:                 vm,
+			VM:                 runtimeVM,
 		},
 		UseInstalledESP: contract.UseInstalledESP,
 		ManifestPath:    contract.ManifestPath,
@@ -192,6 +193,13 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 		return publishFirstInstallRuntimeWorldFixture(contract, installedDisk, fixtureESP)
 	}
 	return packageFirstInstallRuntimeFixture(contract, firstResult, installedDisk, fixtureESP)
+}
+
+func firstInstallFixtureVMConfigs(base VMConfig) (VMConfig, VMConfig) {
+	installer := base
+	installer.VSock = VSockConfig{}
+	installer.Agent = AgentControlConfig{}
+	return installer, base
 }
 
 func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureContract, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
