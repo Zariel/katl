@@ -14,8 +14,10 @@ Katl
   The project.
 
 katlc
-  The user-facing compiler. It turns Katl config into install assets, update
-  artifacts, manifests, and build inputs.
+  The user-facing KatlOS state/configuration command. It accepts user-supplied
+  Katl YAML or configuration, validates it, compiles it into generation-scoped
+  sysext/confext payloads and metadata, and applies, stages, reports, or rolls
+  back runtime state.
 
 installer-image
   The temporary boot environment built with mkosi. It bootstraps a target node
@@ -24,7 +26,7 @@ installer-image
 katlos-install
   The Go installer application that runs inside installer-image.
 
-runtime OS
+KatlOS runtime
   The installed, persistent OS composition that boots from the target disk.
   It is a pared down, tightly configured Linux system for kubeadm/kubelet, not
   a bespoke distribution.
@@ -41,17 +43,17 @@ Fedora-derived system image that Katl trims and configures: kernel and initramfs
 systemd userspace, basic networking and storage tools, SSH, a container runtime,
 Katl-owned units/agents, and the components needed for kubelet and kubeadm.
 
-The runtime OS exists only after Katl builds a generation. The initial
-implementation should think of it as a generated, Fedora-derived runtime image
-assembled from artifacts, not as a new distribution with its own package
-repository.
+KatlOS exists after Katl installs a generation. The initial implementation
+should think of the runtime root as a Fedora-derived image assembled from
+artifacts, with KatlOS state managed by generated sysext/confext generations,
+not as a user-facing OS generator or a new package repository.
 
 ## Component Boundaries
 
 ```text
 katlc
-  renders manifests, native systemd artifacts, mkosi inputs, and artifact
-  metadata
+  validates user-supplied Katl YAML/configuration, compiles generation-scoped
+  sysext/confext payloads and metadata, and applies or stages runtime state
 
 mkosi
   builds installer-image, runtime root artifacts, UKIs, and sysexts
@@ -62,7 +64,7 @@ installer-image
 katlos-install
   applies the install manifest to the target disk and writes the runtime OS
 
-runtime OS
+KatlOS runtime
   runs the node after install and reaches the kubeadm-ready handoff point
 ```
 
@@ -553,7 +555,6 @@ For the current install path, the runtime root artifact is produced on the build
 side, before the machine boots the installer:
 
 ```text
-katlc renders build inputs and manifests
 mkosi builds the Fedora-derived runtime root tree
 the build packages that tree as a SquashFS filesystem image
 the build emits metadata next to the image
@@ -562,10 +563,11 @@ katlos-install verifies and writes the image into root-a or root-b
 ```
 
 The build-side mkosi profile should produce the runtime root from declared
-packages, generated Katl units, and rendered configuration inputs. The final
-SquashFS packaging step is also a build-side operation. `katlc` may render the
-metadata and manifest references, but the artifact bytes and their digest must
-be fixed before a target node begins installation.
+packages and generated Katl units. The final SquashFS packaging step is also a
+build-side operation. The artifact bytes and their digest must be fixed before a
+target node begins installation. User-supplied Katl YAML/configuration is
+compiled by `katlc` into sysext/confext generation state on KatlOS, not baked
+into generic runtime artifact bytes.
 
 The target machine must not assemble the Fedora runtime from packages during
 install. It consumes a prebuilt, hashed artifact.
@@ -681,18 +683,20 @@ Should UKI compatibility be represented as a direct UKI digest, a boot metadata
 
 ## Generated Confext Contract
 
-Users should not supply confext images directly in the default path. Users
-supply Katl install manifests and configuration in known domains. Katl
-materializes that input into generated confext content.
+Users should not supply sysext/confext images directly in the default
+configuration path. Users supply Katl install manifests and Katl
+YAML/configuration in known domains. Katl materializes that input into
+generation-scoped sysext/confext state.
 
 Configuration apply is node-local. The input handed to the installer or runtime
-agent is Katl configuration; the node validates that input and renders the
-generation-scoped extension state itself. Generated confext is built locally for
-that generation. Sysext payloads are prebuilt artifacts, but their selected
+state path is Katl YAML/configuration; KatlOS validates that input and renders
+the generation-scoped extension state itself. Generated confext is built locally
+for that generation. Sysext payloads are prebuilt artifacts, but their selected
 activation set is recorded with the same generation as the rendered confext.
-The runtime agent must reject unknown or unsupported configuration before it
-renders anything. Unsupported domains, fields, sysext selections, apply modes,
-or raw extension paths are validation failures, not ignored input.
+`katlc` and KatlOS runtime services must reject unknown or unsupported
+configuration before rendering anything. Unsupported domains, fields, sysext
+selections, apply modes, or raw extension paths are validation failures, not
+ignored input.
 
 The configuration API should be small and explicit. It is not an arbitrary
 `/etc` passthrough. Each supported domain defines:
@@ -726,21 +730,21 @@ Generated confext must be switched with the selected generation. It must not
 drift independently from the selected root slot, UKI, boot metadata, or sysext
 set.
 
-A future runtime Katl agent will perform the same logical operation for later
-configuration changes on an already installed node. The agent can come after the
-initial installer work, but the install-time layout must leave room for it:
+`katlc` performs the same logical operation for later configuration changes on
+an already installed node. The command can come after the initial installer
+work, but the install-time layout must leave room for it:
 
 ```text
-receive desired Katl configuration
+receive desired Katl YAML/configuration
 validate trust and policy
 render known configuration domains into a new generated confext generation
 activate it through systemd-confext
 record success, failure, and rollback metadata
 ```
 
-The runtime agent should not become a general-purpose configuration management
-system. It applies Katl-generated configuration generations while preserving
-native systemd/Linux file semantics.
+`katlc` and KatlOS runtime services should not become a general-purpose
+configuration management system. They apply Katl-generated configuration
+generations while preserving native systemd/Linux file semantics.
 
 ## Runtime OS Composition
 
@@ -771,7 +775,8 @@ nftables or other required packet filtering base
 openssh-server
 containerd
 runc or crun
-katl node/update agent, when it exists
+katlc
+katl node/update services, when they exist
 katlctl, when it exists
 ```
 
@@ -800,7 +805,7 @@ package/system users
   created by required base packages
 
 katl-agent
-  optional later no-login service identity if the runtime agent needs one
+  optional later no-login service identity if KatlOS runtime services need one
 ```
 
 Katl should render the `katl` account, authorized keys, and sshd policy. The

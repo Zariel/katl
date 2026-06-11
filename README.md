@@ -1,12 +1,13 @@
 # Katl
 
-Katl is an experimental systemd-native Kubernetes node OS builder.
+Katl produces and maintains KatlOS: an experimental, installable,
+upgradeable, systemd-native Kubernetes node OS.
 
-It is designed to produce a stripped-down Linux node OS that treats Kubernetes
-clusters as a first-class workload. Katl focuses on modern systemd primitives,
-immutable and versioned node runtime artifacts, kubeadm-ready bootstrapping, and
-GitOps-focused node configuration that compiles into native systemd, sysext, and
-confext artifacts.
+KatlOS treats Kubernetes clusters as a first-class workload. Users customize it
+by supplying Katl YAML or configuration, which `katlc` validates and compiles
+into sysext/confext generations. Those generations are activated with
+rollback-aware runtime state while staying close to native systemd, Linux, and
+kubeadm artifacts.
 
 Katl is early-stage software. Interfaces, workflows, generated artifacts, and
 runtime behavior are expected to change. Do not use Katl for production

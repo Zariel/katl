@@ -41,21 +41,20 @@ spec:
   nodeOverrides: ...
 ```
 
-The initial implementation accepts this request from an operator command that
-runs on the node or copies a request file to the node and asks the Katl runtime
-agent to apply it. A local file path is therefore the first concrete transport.
-The local file is not the trust root by itself; it is only the handoff format
-for an authenticated operator action.
+The initial implementation accepts this request from `katlc`, running as an
+operator command on the node. A local file path is therefore the first concrete
+transport. The local file is not the trust root by itself; it is only the
+handoff format for an authenticated operator action.
 
 The request contains desired Katl configuration, not generated extension
-artifacts. After authentication and validation, the runtime agent locally renders
-the candidate generation: generated confext content, selected sysext activation
+artifacts. After authentication and validation, `katlc` locally renders the
+candidate generation: generated confext content, selected sysext activation
 metadata, immutable generation metadata, and apply status. User input cannot
-directly provide confext images, activation links, or generation paths. The
-agent rejects unknown domains, unsupported fields, unsupported sysext selection
+directly provide confext images, activation links, or generation paths. `katlc`
+rejects unknown domains, unsupported fields, unsupported sysext selection
 requests, and unsupported apply modes before render.
 
-The runtime agent must merge input in this order:
+`katlc` must merge input in this order:
 
 ```text
 cluster defaults
@@ -104,17 +103,17 @@ For the first implementation, the authenticated actor is the operator who can
 reach the node through Katl-supported operator access. The trust roots are:
 
 ```text
-installed Katl runtime and runtime agent binaries
-existing operator SSH key or vmtest agent channel used to submit the request
+installed KatlOS runtime, `katlc`, and KatlOS runtime service binaries
+existing operator SSH key or vmtest channel used to submit the request
 the installed generation metadata that records the current root, sysext, and
   confext selection
-the request digest and desiredVersion recorded by the runtime agent
+the request digest and desiredVersion recorded by `katlc`
 ```
 
-The request body is trusted only after the runtime agent has received it through
-an authenticated operator path and validated it against Katl domain policy.
-Katl must not trust user-provided file ownership, file path, generation ID,
-render path, confext activation path, sysext selection, or root selection.
+The request body is trusted only after `katlc` has received it through an
+authenticated operator path and validated it against Katl domain policy. Katl
+must not trust user-provided file ownership, file path, generation ID, render
+path, confext activation path, sysext selection, or root selection.
 
 Pull and push/API modes need additional trust roots before they can be enabled:
 
@@ -139,9 +138,9 @@ Every runtime change request must include a `metadata.desiredVersion`. The
 initial accepted format is an unsigned decimal sequence number encoded as a
 string, compared numerically within a `metadata.sourceID`. A later pull or API
 transport may introduce a different version scheme only if that scheme defines
-a deterministic total ordering before it is accepted by the runtime agent.
+a deterministic total ordering before it is accepted by `katlc`.
 
-The runtime agent records for each accepted or rejected request:
+`katlc` records for each accepted or rejected request:
 
 ```text
 sourceID
@@ -181,8 +180,8 @@ revision numbers, but the node-local monotonic check remains required.
 
 ## Audit And Rejection Records
 
-The runtime agent writes an audit record for every request before it mutates
-runtime state. The audit record belongs under the Katl writable state tree, for
+`katlc` writes an audit record for every request before it mutates runtime
+state. The audit record belongs under the Katl writable state tree, for
 example:
 
 ```text
@@ -281,8 +280,8 @@ rejected unsafe paths producing an audit/status record without partial
 The first runtime configuration implementation should expose an operator-command
 path and local request file shape before adding pull or push/API transports.
 
-The runtime agent must persist enough request metadata to make retries
-idempotent and stale changes visible to operators.
+`katlc` must persist enough request metadata to make retries idempotent and
+stale changes visible to operators.
 
 The generated confext renderer remains the only path that creates runtime
 configuration artifacts. User-provided confext images and arbitrary `/etc`

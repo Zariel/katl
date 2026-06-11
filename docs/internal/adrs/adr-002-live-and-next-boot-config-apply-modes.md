@@ -20,9 +20,9 @@ general-purpose configuration manager or a Kubernetes lifecycle controller.
 Runtime apply still starts with Katl configuration. The installed node locally
 compiles that trusted input into a new generation-scoped confext and selected
 sysext activation set instead of accepting user-supplied extension trees.
-The KatlOS runtime agent fails closed: unsupported domains, fields, apply modes,
-sysext selections, and raw extension activation paths are rejected before
-rendering.
+`katlc` and KatlOS runtime services fail closed: unsupported domains, fields,
+apply modes, sysext selections, and raw extension activation paths are rejected
+before rendering.
 
 The key distinction is whether a requested change can be made effective on the
 currently running node, or whether it must be staged as the next bootable
@@ -269,8 +269,8 @@ machine-local paths into committed configuration.
 
 ## Consequences
 
-A follow-up should implement a typed planner before any runtime agent executes
-live changes. The planner should produce an explicit decision: accepted `live`,
+A follow-up should implement a typed planner before `katlc` executes live
+changes. The planner should produce an explicit decision: accepted `live`,
 accepted `next-boot`, or rejected with domain diagnostics.
 
 Another follow-up should prove the decision in VM tests before live application

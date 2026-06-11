@@ -33,9 +33,9 @@ installed node as Katl configuration. The node-local runtime path validates the
 trusted input, renders generated confext for a new generation, and records the
 selected sysext activation set with that generation. Sysext payloads are still
 prebuilt artifacts; runtime config decides which compatible payloads a
-generation selects. The KatlOS runtime agent must reject unknown domains,
-unsupported fields, unsupported sysext selection requests, unsupported apply
-modes, and raw extension activation paths before rendering.
+generation selects. `katlc` and KatlOS runtime services must reject unknown
+domains, unsupported fields, unsupported sysext selection requests, unsupported
+apply modes, and raw extension activation paths before rendering.
 
 ## Decision
 
@@ -54,11 +54,11 @@ stages the generated confext under /var/lib/katl/generations/<generation-id>/
 records it in generation metadata with the selected root slot and sysext set
 ```
 
-For later runtime configuration changes, a Katl runtime agent can perform the
-same logical operation on an installed node:
+For later runtime configuration changes, `katlc` and KatlOS runtime services can
+perform the same logical operation on an installed node:
 
 ```text
-receive desired Katl configuration
+receive desired Katl YAML/configuration
 validate trust and policy
 reject unknown or unsupported configuration
 select the compatible sysext activation set for the generation
@@ -68,8 +68,8 @@ activate it with the selected generation
 record success, failure, and rollback state
 ```
 
-The runtime agent is later work. The install-time generated confext layout must
-leave room for that model.
+`katlc` is later work. The install-time generated confext layout must leave room
+for that model.
 
 ## User-Facing Input
 
@@ -217,7 +217,7 @@ enforce the fixed host user and SSH policy in generated confext validation
 render Katl-owned sshd policy and katl authorized keys
 wire generated confext activation into generation selection
 prove the boot ordering in VM tests
-define the later runtime agent input and trust policy
+define the later `katlc` input and trust policy
 ```
 
 The runtime input and trust policy follow-up is now recorded in

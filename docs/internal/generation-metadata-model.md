@@ -127,10 +127,10 @@ sysext set. User-supplied runtime input does not directly name generated confext
 activation paths or mutate the sysext activation set outside generation
 metadata.
 
-The runtime agent creates a generation record only after validation accepts the
-requested config. Unknown domains, unsupported fields, unsupported sysext
-selection requests, and unsupported apply modes do not get placeholder
-generation records; they produce rejected request status only.
+`katlc` and KatlOS runtime services create a generation record only after
+validation accepts the requested config. Unknown domains, unsupported fields,
+unsupported sysext selection requests, and unsupported apply modes do not get
+placeholder generation records; they produce rejected request status only.
 
 Before a candidate generation is made bootable, Katl must validate the selected
 runtime root, UKI, sysexts, and confexts as one compatibility set. The generation

@@ -218,9 +218,9 @@ default Katl config repository format.
 A runtime configuration update can change the desired kubeadm input:
 
 ```text
-new Katl config repository state
-runtime agent validates KubeadmConfig
-runtime agent renders a new generated confext generation
+new Katl YAML/configuration
+katlc validates KubeadmConfig
+katlc renders a new generated confext generation
 /etc/katl/kubeadm/<name>/config.yaml changes after activation
 ```
 

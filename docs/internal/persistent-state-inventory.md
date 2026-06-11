@@ -23,10 +23,10 @@ own kubeadm output, SSH host keys, or machine identity.
 
 | Path | Owner | Mutability | Placement |
 | --- | --- | --- | --- |
-| `/var/lib/katl` | Katl installer/runtime agent | Mutable generation metadata, staged artifacts, activation records, repair state | Native `/var`; primary Katl state root |
-| `/var/lib/katl/generations/<id>/metadata.json` | Katl installer/runtime agent | Selection fields immutable after generation creation; bootState/healthState mutable by boot health, rollback, or repair tooling | Native `/var`; selected with boot metadata |
-| `/var/lib/katl/generations/<id>/confext` | Katl installer/runtime agent | Immutable generated configuration for that generation | Native `/var`; exposed at boot through selected `/run/confexts` activation path |
-| `/var/lib/katl/generations/<id>/sysext` | Katl installer/runtime agent | Immutable extension artifacts for that generation | Native `/var`; exposed at boot through selected `/run/extensions` activation path |
+| `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation metadata, staged artifacts, activation records, repair state | Native `/var`; primary Katl state root |
+| `/var/lib/katl/generations/<id>/metadata.json` | Katl installer, `katlc`, KatlOS runtime services | Selection fields immutable after generation creation; bootState/healthState mutable by boot health, rollback, or repair tooling | Native `/var`; selected with boot metadata |
+| `/var/lib/katl/generations/<id>/confext` | Katl installer, `katlc`, KatlOS runtime services | Immutable generated configuration for that generation | Native `/var`; exposed at boot through selected `/run/confexts` activation path |
+| `/var/lib/katl/generations/<id>/sysext` | Katl installer, `katlc`, KatlOS runtime services | Immutable extension artifacts for that generation | Native `/var`; exposed at boot through selected `/run/extensions` activation path |
 | `/var/lib/katl/identity/machine-id` | Katl installer, systemd | Random install-generated node identity; stable across boots and updates; write-protected after install | Native `/var`; passed early with `systemd.machine_id=` or projected before PID 1 consumers need it |
 | `/etc/machine-id` | systemd and D-Bus consumers | Stable identity, read very early | Project from `/var/lib/katl/identity/machine-id`; not user supplied or deterministic across reinstalls; a late service is not sufficient |
 | `/var/lib/katl/ssh/host-keys` | sshd, Katl installer | Stable SSH host identity | Native `/var`; projected into `/etc/ssh` before sshd starts |

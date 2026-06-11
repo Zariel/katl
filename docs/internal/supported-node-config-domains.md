@@ -7,9 +7,10 @@ install-time materialization and later runtime configuration changes. It narrows
 the general generated-confext decision in
 `docs/internal/adrs/adr-001-generated-confext-configuration.md`.
 
-Katl remains a systemd-native Kubernetes node OS builder. Supported domains must
-compile into native systemd/Linux artifacts or bounded Katl-owned files. Katl
-does not become a general-purpose host configuration language, a Talos patch
+Katl produces and maintains KatlOS, a systemd-native Kubernetes node OS.
+Supported domains must compile from user-supplied Katl YAML or configuration
+into native systemd/Linux artifacts or bounded Katl-owned files. Katl does not
+become a general-purpose host configuration language, a Talos patch
 compatibility layer, or a Kubernetes distribution.
 
 ## Decision
@@ -188,22 +189,23 @@ confext for the candidate generation. Later runtime configuration changes
 should render a new generated confext generation and select it atomically with
 the runtime root and sysext set.
 
-Runtime configuration apply receives Katl configuration and compiles it on the
-installed node into generation-scoped artifacts. The node-local renderer owns the
-generated confext tree or image, compatibility validation, generation metadata,
-and sysext activation selection. Users do not hand the node arbitrary confext
-images or raw extension activation paths as the configuration API.
+Runtime configuration apply receives Katl YAML/configuration through `katlc` and
+compiles it on the installed node into generation-scoped artifacts. The
+node-local renderer owns the generated confext tree or image, compatibility
+validation, generation metadata, and sysext activation selection. Users do not
+hand the node arbitrary confext images or raw extension activation paths as the
+configuration API.
 
-The KatlOS runtime agent must reject unknown and unsupported config before the
-renderer writes a generation. Rejection is required for unknown domains,
+`katlc` and KatlOS runtime services must reject unknown and unsupported config
+before the renderer writes a generation. Rejection is required for unknown domains,
 unsupported fields inside a known domain, unsupported apply modes, unsupported
 sysext selection requests, and raw confext or sysext activation paths.
 
 The live versus next-boot runtime apply contract is defined in
 `docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`. Domain
 implementations must declare whether their diffs are online-applicable,
-staged-only, or rejected for live application before the runtime agent accepts
-them.
+staged-only, or rejected for live application before `katlc` and KatlOS runtime
+services accept them.
 
 Normal confext activation must not run kubeadm, kubectl, CNI installers, package
 managers, or application controllers. Kubeadm-aware actions remain explicit
@@ -213,10 +215,10 @@ Runtime apply behavior is domain-specific:
 
 ```text
 networkd
-  reload or restart systemd-networkd only through tested runtime-agent logic
+  reload or restart systemd-networkd only through tested KatlOS runtime logic
 
 resolved
-  reload or restart systemd-resolved only through tested runtime-agent logic
+  reload or restart systemd-resolved only through tested KatlOS runtime logic
 
 sysctl
   apply through systemd-sysctl or bounded sysctl calls

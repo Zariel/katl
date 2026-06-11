@@ -2,20 +2,24 @@
 
 Status: durable product direction.
 
-Katl is a stripped-down Linux OS builder for Kubernetes nodes. It treats
-Kubernetes clusters as the primary workload, uses modern Linux and systemd
-constructs as the native operating model, and gives users a GitOps-friendly
-configuration workflow that stays close to the files and APIs it configures.
+Katl produces and maintains KatlOS: an installable, upgradeable,
+systemd-native Kubernetes node OS. Users customize KatlOS by supplying Katl YAML
+or configuration, which `katlc` validates and compiles into sysext/confext
+generations. Those generations are activated with rollback-aware runtime state
+while staying close to the native Linux, systemd, and kubeadm files and APIs
+they configure.
 
-The practical outcome is a reproducible path from configuration in Git to
-booted, kubeadm-ready nodes:
+The practical outcome is a reproducible path from generic KatlOS artifacts and
+user-supplied configuration to booted, kubeadm-ready nodes:
 
 ```text
-Katl config in Git
-  -> katlc validates node intent and emits manifests, plans, and metadata
+KatlOS source
   -> mkosi builds generic installer, runtime, sysext, and update artifacts
   -> user-managed boot or release infrastructure publishes those artifacts
-  -> katlos-install installs a selected runtime generation
+  -> katlos-install installs KatlOS and seeds the first generation
+  -> users supply Katl YAML/configuration
+  -> katlc on KatlOS validates and compiles config into a generation
+  -> KatlOS activates, stages, reports, or rolls back that generation
   -> nodes reach a kubeadm-ready handoff point
   -> kubeadm and user-managed GitOps bring the cluster to its desired state
 ```
@@ -26,23 +30,24 @@ Katl has three durable product surfaces:
 
 ```text
 katlc
-  Compiles Katl configuration into validated install manifests, update plans,
-  artifact selections, metadata, and build inputs. Activation-ready confext is
-  rendered by `katlos-install` or the runtime apply path on the target node.
+  Runs on KatlOS as the user-facing state and configuration command. It accepts
+  user-supplied Katl YAML or configuration, validates supported domains,
+  compiles them into generation-scoped sysext/confext payloads and metadata,
+  and applies, stages, reports, or rolls back runtime state.
 
 katlos-install
   Runs in the installer environment, applies a user-supplied install manifest,
   owns Katl disk layout, writes runtime generations, and records install state.
 
-runtime OS
+KatlOS runtime
   Boots installed nodes into a small, systemd-native Linux environment with the
-  host plumbing needed for containerd, kubelet, kubeadm, updates, health checks,
-  and rollback.
+  host plumbing needed for containerd, kubelet, kubeadm, updates, health
+  checks, and rollback.
 ```
 
-The runtime OS is intentionally narrow. It carries the kernel, systemd,
-networking, storage, SSH access for operators, container runtime support, Katl
-agents, generated configuration, and selected sysexts. Kubernetes add-ons,
+The KatlOS runtime is intentionally narrow. It carries the kernel, systemd,
+networking, storage, SSH access for operators, container runtime support,
+`katlc`, Katl-owned runtime services, generated configuration, and selected sysexts. Kubernetes add-ons,
 workload policy, ingress, storage systems, GitOps controllers, and application
 workloads live in the cluster layer unless a future design adds a bounded
 node-level capability.
@@ -72,19 +77,19 @@ that is the clearest interface. A network domain may accept `.network`,
 Katl adds validation, ownership, render paths, apply mode, trust handling, and
 rollback behavior around those native artifacts.
 
-Katl configuration is applied to nodes.
+Katl configuration is applied to KatlOS nodes.
 
-Install and runtime apply paths both start from Katl configuration, not
+Install and runtime apply paths both start from Katl YAML or configuration, not
 pre-rendered extension trees supplied by users. On first install,
-`katlos-install` renders the initial generated confext and selected sysext set.
-After install, the runtime apply path receives trusted Katl configuration and
-locally renders a new generation that contains generated confext plus the
-selected sysext activation metadata. Sysext payloads remain prebuilt artifacts;
-node-local compilation decides how trusted config selects and activates them.
-The KatlOS runtime agent is the enforcement point on installed nodes: unknown
-domains, unsupported fields, unsupported apply modes, unsupported sysext
-selection requests, and raw extension activation inputs are rejected before
-anything is rendered or activated.
+`katlos-install` bootstraps the initial generation. After install, `katlc`
+receives trusted user-supplied configuration on KatlOS and locally compiles a
+new generation containing generated confext plus selected sysext activation
+metadata. Sysext payloads remain prebuilt artifacts; node-local compilation
+decides how trusted config selects and activates them. `katlc` and the KatlOS
+runtime services are the enforcement point on installed nodes: unknown domains,
+unsupported fields, unsupported apply modes, unsupported sysext selection
+requests, and raw extension activation inputs are rejected before anything is
+rendered or activated.
 
 Katl artifacts are generic and reusable.
 
@@ -128,8 +133,8 @@ Kubernetes handoff behavior.
 Katl owns:
 
 ```text
-configuration compilation and validation
-generic installer and update artifact contracts
+KatlOS configuration compilation and validation through katlc
+generic KatlOS installer and update artifact contracts
 target root disk layout selected by a Katl install manifest
 runtime generation metadata
 systemd boot, mount, extension, and health wiring
@@ -159,14 +164,8 @@ material for user-managed GitOps.
 
 A user keeps cluster node intent in Git. The repository describes node roles,
 hostnames, networkd units, SSH keys, kubeadm config references, target disk
-selectors, selected runtime artifacts, selected Kubernetes sysexts, and any
-supported extra data disk mounts.
-
-The user runs `katlc` locally or in CI. `katlc` validates the intent, rejects
-unsafe or unsupported paths, emits install manifests and metadata, and produces
-inputs for artifact building or artifact selection. Rendering activation-ready
-confext and selecting runtime sysext activation happens on the target node from
-that trusted Katl input.
+selectors for install, selected Kubernetes sysexts, and any supported extra data
+disk mounts.
 
 The user publishes generic Katl artifacts through their own infrastructure.
 PXE, matchbox, USB, virtual media, or local handoff can all provide the
@@ -178,9 +177,12 @@ runtime generation, persists identity and state layout, installs boot metadata,
 and reboots.
 
 The installed runtime reaches a local health target and then a kubeadm-ready
-handoff point. The user or `katlctl` can run the appropriate kubeadm flow. Once
-the API server is reachable, the user's GitOps stack installs CNI, CoreDNS,
-Flux, policies, storage, and applications.
+handoff point. The user applies Katl YAML/configuration with `katlc` on KatlOS.
+`katlc` validates the input, rejects unsafe or unsupported domains, compiles it
+into a generated sysext/confext generation, and activates or stages it with
+rollback-aware status. The user or `katlctl` can run the appropriate kubeadm
+flow. Once the API server is reachable, the user's GitOps stack installs CNI,
+CoreDNS, Flux, policies, storage, and applications.
 
 Updates follow the same model. A new desired state compiles into a new
 generation. Online-applicable configuration can apply immediately through a

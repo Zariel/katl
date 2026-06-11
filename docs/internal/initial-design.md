@@ -1,6 +1,6 @@
 # Katl Current Design
 
-Status: current architecture snapshot as of 2026-06-01.
+Status: current architecture snapshot as of 2026-06-11.
 
 This document is the short orientation guide for the active Katl design. Focused
 details live in the companion documents under `docs/internal/` and accepted ADRs
@@ -10,20 +10,23 @@ under `docs/internal/adrs/`.
 
 The durable product direction lives in `docs/internal/north-star.md`.
 
-Katl is a stripped-down Linux OS builder for Kubernetes nodes. It builds
-installer, runtime, configuration, sysext, and update assets that produce
-reproducible kubeadm-ready nodes while fitting a user-owned GitOps cluster
-workflow.
+Katl produces and maintains KatlOS: an installable, upgradeable,
+systemd-native Kubernetes node OS. Users customize KatlOS by supplying Katl YAML
+or configuration, which `katlc` validates and compiles into sysext/confext
+generations. Those generations are activated with rollback-aware runtime state
+while fitting a user-owned GitOps cluster workflow.
 
 The long-term user workflow is:
 
 ```text
-Katl config repo
-  -> katlc validates and compiles config
-  -> mkosi builds installer/runtime artifacts
+KatlOS source
+  -> mkosi builds generic installer/runtime/sysext artifacts
   -> artifacts are published by the user's chosen release process
   -> machines boot installer-image through user-managed boot infrastructure
   -> katlos-install installs the runtime OS
+  -> users supply Katl YAML/configuration
+  -> katlc on KatlOS validates and compiles config into a generation
+  -> KatlOS activates, stages, reports, or rolls back that generation
   -> kubeadm and user-managed GitOps take over
 ```
 
@@ -37,7 +40,7 @@ disk, and boot that installed runtime.
 Katl-owned surfaces:
 
 ```text
-katlc configuration compiler
+katlc KatlOS state/configuration command
 installer-image build inputs
 katlos-install
 runtime root artifact build inputs
@@ -69,8 +72,10 @@ surface.
 
 ```text
 katlc
-  User-facing compiler. It validates Katl config and produces install manifests,
-  mkosi inputs, artifact metadata, update artifacts, and later publish plans.
+  User-facing KatlOS state/configuration command. It accepts user-supplied Katl
+  YAML or configuration, validates supported domains, compiles them into
+  generation-scoped sysext/confext payloads and metadata, and applies, stages,
+  reports, or rolls back runtime state.
 
 mkosi
   Build-time image tool. It is used by developers, build containers, and later
@@ -88,7 +93,7 @@ katlos-install
   installs boot metadata, materializes initial generated confext, seeds writable
   state, and reboots.
 
-runtime OS
+KatlOS runtime
   Installed Fedora-derived node runtime. It is a pared down Linux system for
   systemd, SSH, container runtime, kubeadm, and kubelet. It is not a bespoke
   distribution or a Talos-style appliance.
@@ -121,21 +126,22 @@ prebuilt artifacts and writes them into the installed layout.
 
 ## Configuration Model
 
-Katl uses a Katl-native install manifest and generated confext.
+Katl uses a Katl-native install manifest, user-supplied Katl YAML/configuration,
+and generated sysext/confext generations.
 
 Katl configuration is applied to nodes as Katl configuration. Users and external
-automation should not have to prebuild confext content for a node. On first
-install, `katlos-install` validates the manifest and locally renders the
-initial generated confext. After install, runtime configuration apply receives
-trusted Katl configuration and locally renders a new generation that contains
+automation should not have to prebuild sysext/confext generation content for a
+node. On first install, `katlos-install` validates the manifest and bootstraps
+the initial generation. After install, `katlc` receives trusted Katl
+YAML/configuration on KatlOS and locally compiles a new generation that contains
 generated confext and the selected sysext activation set. Sysext payloads are
 prebuilt artifacts; the node-local generation records which compatible sysexts
 are selected with the rendered confext.
 
-The KatlOS runtime agent must fail closed. Unknown domains, unsupported fields,
-unsupported sysext selections, unsupported apply modes, and raw extension
-activation inputs are rejected before render, staging, live apply, or boot
-selection.
+`katlc` and KatlOS runtime services must fail closed. Unknown domains,
+unsupported fields, unsupported sysext selections, unsupported apply modes, and
+raw extension activation inputs are rejected before render, staging, live apply,
+or boot selection.
 
 Users supply:
 
@@ -205,11 +211,12 @@ selects a named kubeadm config, Katl validates and renders it under
 Katl does not use Ignition for installer or runtime configuration.
 
 It was rejected because it would add a second configuration language and a
-separate first-boot phase between `katlos-install` and the runtime agent. Katl
-already needs typed validation, target disk ownership, artifact verification,
-generated confext, and later runtime-generated configuration generations. Keeping
-all of that in Katl avoids a three-phase installer/bootstrap/runtime model and
-keeps the source of truth in the Katl manifest and generation metadata.
+separate first-boot phase between `katlos-install` and KatlOS runtime state
+management. Katl already needs typed validation, target disk ownership, artifact
+verification, generated confext, and later `katlc`-generated configuration
+generations. Keeping all of that in Katl avoids a three-phase
+installer/bootstrap/runtime model and keeps the source of truth in the Katl
+manifest and generation metadata.
 
 ## Runtime OS Composition
 
@@ -275,8 +282,8 @@ package/system users
   Only those required by Fedora/systemd/OpenSSH/container runtime packages.
 
 katl-agent
-  Optional later no-login service user if a runtime agent needs an unprivileged
-  phase.
+  Optional later no-login service user if KatlOS runtime services need an
+  unprivileged phase.
 ```
 
 The runtime should not expose user-managed host accounts such as `admin`,

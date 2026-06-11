@@ -28,12 +28,13 @@ domain libraries
   VM worlds, resource manifests, kubeadm planning, and runtime state.
 ```
 
-The intended product boundary is unchanged: `katlc` is the user-facing compiler
-for configuration, install assets, and update artifacts; `katlctl` is the
-operator CLI for cluster bootstrap and later operational workflows; node and
-runtime behavior is implemented as typed Go state transitions. Shell may
-orchestrate host tools, but it must not become the installer engine, the VM test
-fixture engine, or a parallel manifest mutation layer.
+The intended product boundary is unchanged: `katlc` is the user-facing KatlOS
+state/configuration command that turns user-supplied Katl YAML or configuration
+into generation-scoped sysext/confext payloads; `katlctl` is the operator CLI
+for cluster bootstrap and later operational workflows; node and runtime behavior
+is implemented as typed Go state transitions. Shell may orchestrate host tools,
+but it must not become the installer engine, the VM test fixture engine, or a
+parallel manifest mutation layer.
 
 ## Decision
 
@@ -129,11 +130,11 @@ when the script is clearly glue around tools that already own the domain logic.
 
 ## Command Relationships
 
-`katlc` is the planned compiler. It should own validation and compilation of
-Katl configuration into install manifests, generated assets, update artifacts,
-and any build-side plans that must be reproducible. Until `katlc` exists, narrow
-Go commands may hold pieces of that behavior, but scripts should not grow a
-second compiler.
+`katlc` is the planned KatlOS state/configuration command. It should own
+validation and compilation of user-supplied Katl YAML/configuration into
+generation-scoped sysext/confext payloads, metadata, apply plans, status, and
+rollback-aware runtime state. Until `katlc` exists, narrow Go commands may hold
+pieces of that behavior, but scripts should not grow a second compiler.
 
 `katlctl` is the operator CLI. It should consume compiled plans or explicit
 operator input and perform cluster bootstrap or operational actions. VM tests may
@@ -240,11 +241,12 @@ to decide whether resource-sensitive tests are still valid. It may consume
 artifacts produced by `scripts/mkosi` and indexed by
 `cmd/katl-mkosi-artifacts`, but it should not become the image builder.
 
-`katlc` is the future user-facing compiler for durable install/update artifacts.
-When `katlc` exists, stable artifact packaging behavior from
-`cmd/katl-mkosi-artifacts` should move behind the compiler or be called by it as
-a typed internal package. Until then, `cmd/katl-mkosi-artifacts` is the narrow Go
-surface for build-side artifact metadata policy.
+`katlc` is the future user-facing KatlOS state/configuration command. Stable
+artifact metadata behavior from `cmd/katl-mkosi-artifacts` may be shared with
+`katlc` as typed internal packages when generation planning needs it, but mkosi
+artifact packaging remains a build-side implementation detail. Until then,
+`cmd/katl-mkosi-artifacts` is the narrow Go surface for build-side artifact
+metadata policy.
 
 ## Current Script Migration Table
 
@@ -254,9 +256,9 @@ surface for build-side artifact metadata policy.
 | `scripts/vmtest-run` | Supported enabled VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/check-mkosi-smoke` | Operator-friendly build and boot smoke wrapper | Keep as a thin compatibility wrapper around `scripts/vmtest-run` so smoke execution uses the libvirt-backed VM test path. |
-| `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; move the remaining packaging flow behind `katlc` when the compiler exists. |
-| `scripts/bind-install-manifest-image` | Mutates install manifest image references | Replace with `katlc` compile/bind behavior because it performs structured manifest mutation. |
-| `scripts/check-katlos-install-image` | Validates install-image metadata and host-path hygiene | Move to a Go verifier shared with `katlc` and resource tests. |
+| `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; keep generic artifact packaging separate from `katlc` runtime generation apply. |
+| `scripts/bind-install-manifest-image` | Mutates install manifest image references | Replace with typed Go manifest/image binding logic because it performs structured manifest mutation. |
+| `scripts/check-katlos-install-image` | Validates install-image metadata and host-path hygiene | Move to a Go verifier shared with artifact metadata tooling and resource tests. |
 | `scripts/check-runtime-root` | Inspects SquashFS runtime root content | Move policy checks to Go; Go may still call `unsquashfs` as the external inspector. |
 | `scripts/check-runtime-boot-asset` | Validates runtime UKI metadata and command line | Move metadata and compatibility checks to Go. |
 | `scripts/check-kubernetes-sysext` | Validates Kubernetes sysext metadata and payload version | Absorb into `katl-publish-kubernetes-sysext` or a Go verifier. |

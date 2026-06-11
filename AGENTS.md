@@ -1,16 +1,17 @@
 # Agent Guidelines
 
-Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with that boundary.
+Katl produces and maintains KatlOS: an installable, upgradeable, systemd-native Kubernetes node OS. Keep changes aligned with that boundary.
 
 ## Project Direction
 
-- Treat `katlc` as the user-facing compiler for configuration, install assets, and update artifacts.
+- Treat `katlc` as the KatlOS state/configuration command. It accepts user-supplied Katl YAML or configuration, validates it, compiles it into generation-scoped sysext/confext payloads, and applies, stages, reports, or rolls back that runtime state.
 - Use Go for Katl product logic: `katlc`, installer state machines, node/update agents, config validation, disk/update planners, and reusable libraries that need unit tests.
 - Do not write Go just to wrap `mkosi`, `podman`, hypervisor binaries, or `virsh` during early scaffolding. Start with thin scripts for build/boot orchestration and promote to Go only when the wrapper has meaningful parsing, state, or testable behavior. The current supported VM test path is the libvirt-backed `scripts/vmtest-run` world.
 - Keep shell limited to small mkosi hooks and glue where a shell script is the clearest tool. Shell may orchestrate tools; it must not contain installer policy, disk layout decisions, or update state machines.
 - Keep mkosi as the image builder. Do not turn mkosi hooks or build scripts into the installer engine.
+- Keep mkosi and artifact production as implementation details behind KatlOS install/update flows; Katl is the OS product, not an end-user OS generator.
 - Do not turn Katl into a Kubernetes distribution. Katl prepares kubeadm-ready nodes; kubeadm and user-managed GitOps take over from there.
-- Do not hide native systemd configuration behind a lossy abstraction. Convenience config must compile to native artifacts and allow passthrough.
+- Do not hide native systemd configuration behind a lossy abstraction. User YAML/configuration must compile to native artifacts and allow passthrough where that is the clearest supported interface.
 - Do not bake host-specific paths into committed project config. In particular, avoid `/run/current-system`, `/nix/store`, `/etc/profiles`, and user home paths. Use `PATH`, repo-relative paths, containerized builders, or explicit environment variables for local overrides.
 
 ## Scaffolding Boundary
@@ -19,7 +20,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Build paths should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
 - Boot paths should use `scripts/vmtest-run` for automated libvirt VM tests, with `mkosi vm` left only as a manual first-look tool when useful. Do not add a separate VM runner unless the user explicitly asks for it or the wrapper has meaningful state/parsing that needs tests.
 - The first smoke check may be a simple timeout plus serial-log match for `Katl hello`.
-- Keep new VM orchestration beyond the supported libvirt `scripts/vmtest-run` path, multi-node orchestration, CI/end-user publishing, real disk installation, and `katlc` implementation out of first-boot scaffolding unless the user explicitly changes the scope.
+- Keep new VM orchestration beyond the supported libvirt `scripts/vmtest-run` path, multi-node orchestration, CI/end-user publishing, and real disk installation out of first-boot scaffolding unless the user explicitly changes the scope.
 
 ## Runtime Model
 
