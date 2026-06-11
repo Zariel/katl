@@ -311,6 +311,14 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return preseedMedia{}, err
 	}
+	networkDir := filepath.Join(dir, "etc/systemd/network")
+	if err := os.MkdirAll(networkDir, 0o755); err != nil {
+		return preseedMedia{}, err
+	}
+	network := "[Match]\nName=*\n\n[Network]\nDHCP=yes\n"
+	if err := os.WriteFile(filepath.Join(networkDir, "80-katl-vmtest-installer-dhcp.network"), []byte(network), 0o644); err != nil {
+		return preseedMedia{}, err
+	}
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
 		return preseedMedia{}, err
 	}

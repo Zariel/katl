@@ -23,6 +23,7 @@ type InputApplyRequest struct {
 	Commands    CommandRunner
 	RunDir      string
 	EtcDir      string
+	NetworkDir  string
 	Stdout      io.Writer
 }
 
@@ -58,6 +59,10 @@ func ApplyInput(request InputApplyRequest) error {
 	if etcDir == "" {
 		etcDir = "/etc/katl"
 	}
+	networkDir := request.NetworkDir
+	if networkDir == "" {
+		networkDir = "/etc/systemd/network"
+	}
 	stdout := request.Stdout
 	if stdout == nil {
 		stdout = io.Discard
@@ -68,7 +73,7 @@ func ApplyInput(request InputApplyRequest) error {
 
 	applied := 0
 	for _, dir := range request.PreseedDirs {
-		n, err := applyDir(dir, runDir, etcDir, stdout)
+		n, err := applyDir(dir, runDir, etcDir, networkDir, stdout)
 		if err != nil {
 			return err
 		}
@@ -191,7 +196,7 @@ func waitSeedDevice(ctx context.Context, devices []string, wait time.Duration) (
 	}
 }
 
-func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
+func applyDir(dir, runDir, etcDir, networkDir string, stdout io.Writer) (int, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -223,6 +228,14 @@ func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {
 				}
 			}
 		}
+	}
+	ok, err := copyOptionalPreseedPayload(filepath.Join(dir, "etc/systemd/network"), networkDir)
+	if err != nil {
+		return applied, fmt.Errorf("copy preseed systemd network: %w", err)
+	}
+	if ok {
+		applied++
+		fmt.Fprintf(stdout, "katl input: copied %s to %s\n", filepath.Join(dir, "etc/systemd/network"), networkDir)
 	}
 	return applied, nil
 }
@@ -366,16 +379,21 @@ func copyOptionalPreseedPayload(src, dst string) (bool, error) {
 }
 
 func copyPreseedPayloadWithInfo(src, dst string, info os.FileInfo) (bool, error) {
-	if _, err := os.Stat(dst); err == nil {
-		return false, nil
-	} else if !os.IsNotExist(err) {
-		return false, fmt.Errorf("stat destination %s: %w", dst, err)
-	}
 	if info.IsDir() {
+		if existing, err := os.Stat(dst); err == nil && !existing.IsDir() {
+			return false, fmt.Errorf("destination %s exists and is not a directory", dst)
+		} else if err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("stat destination %s: %w", dst, err)
+		}
 		return true, copyPreseedDir(src, dst, info.Mode().Perm())
 	}
 	if !info.Mode().IsRegular() {
 		return false, fmt.Errorf("%s is not a regular file or directory", src)
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("stat destination %s: %w", dst, err)
 	}
 	return true, copyPreseedFile(src, dst, info.Mode().Perm())
 }
@@ -421,6 +439,9 @@ func copyPreseedFile(src, dst string, mode os.FileMode) error {
 	}
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
 	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {

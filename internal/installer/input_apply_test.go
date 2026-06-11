@@ -81,6 +81,55 @@ func TestApplyInputCopiesManifestKubeadmDirs(t *testing.T) {
 	}
 }
 
+func TestApplyInputMergesManifestKubeadmDirs(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-manifest.json"), `{"kind":"InstallManifest"}`)
+	writeTestFile(t, filepath.Join(preseed, KubeadmConfigObjectsDir, "existing.yaml"), "preseed object")
+	writeTestFile(t, filepath.Join(preseed, KubeadmConfigObjectsDir, "new.yaml"), "new object")
+	writeTestFile(t, filepath.Join(runDir, KubeadmConfigObjectsDir, "existing.yaml"), "existing object")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, KubeadmConfigObjectsDir, "existing.yaml"), "existing object")
+	assertFile(t, filepath.Join(runDir, KubeadmConfigObjectsDir, "new.yaml"), "new object")
+	if got := stdout.String(); !strings.Contains(got, KubeadmConfigObjectsDir) {
+		t.Fatalf("stdout = %q, want kubeadm dir copy log", got)
+	}
+}
+
+func TestApplyInputCopiesInitrdNetworkd(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	networkDir := filepath.Join(root, "network")
+	content := "[Match]\nName=*\n\n[Network]\nDHCP=yes\n"
+	writeTestFile(t, filepath.Join(preseed, "etc/systemd/network/80-katl-vmtest-dhcp.network"), content)
+	writeTestFile(t, filepath.Join(networkDir, "10-existing.network"), "[Match]\nName=lo\n")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		NetworkDir:  networkDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(networkDir, "80-katl-vmtest-dhcp.network"), content)
+	assertFile(t, filepath.Join(networkDir, "10-existing.network"), "[Match]\nName=lo\n")
+	if got := stdout.String(); !strings.Contains(got, "etc/systemd/network") {
+		t.Fatalf("stdout = %q, want networkd copy log", got)
+	}
+}
+
 func TestApplyInputRejectsUnsafeManifestLocalRef(t *testing.T) {
 	root := t.TempDir()
 	preseed := filepath.Join(root, "seed")

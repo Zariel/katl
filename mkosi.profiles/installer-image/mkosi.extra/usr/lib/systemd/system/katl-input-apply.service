@@ -3,7 +3,7 @@ Description=Apply Katl installer preseed input
 DefaultDependencies=no
 Wants=systemd-udevd.service systemd-udev-trigger.service
 After=systemd-udevd.service systemd-udev-trigger.service
-Before=katlos-install.service initrd.target
+Before=systemd-networkd.service katlos-install.service initrd.target
 
 [Service]
 Type=oneshot

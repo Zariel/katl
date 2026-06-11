@@ -199,6 +199,13 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-manifest.json")); !os.IsNotExist(err) {
 		t.Fatalf("handoff seed should not contain install manifest: %v", err)
 	}
+	network, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "etc/systemd/network/80-katl-vmtest-installer-dhcp.network"))
+	if err != nil {
+		t.Fatalf("read handoff seed networkd file: %v", err)
+	}
+	if !strings.Contains(string(network), "DHCP=yes") {
+		t.Fatalf("handoff seed networkd file = %q", network)
+	}
 }
 
 func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
