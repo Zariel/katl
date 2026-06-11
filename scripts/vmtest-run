@@ -42,9 +42,7 @@ cap_sfdisk="disabled"
 cap_sha256sum="disabled"
 cap_awk="disabled"
 cap_realpath="disabled"
-cap_systemd_nspawn="disabled"
 cap_kubectl="disabled"
-nspawn_checks="${KATL_VMTEST_NSPAWN:-1}"
 require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
 missing_capabilities=()
 setup_failures=()
@@ -108,12 +106,6 @@ capability_hint() {
             ;;
         kubectl)
             printf "install kubectl or set KATL_VMTEST_KUBECTL to the kubectl binary"
-            ;;
-        systemd-nspawn)
-            printf "install systemd-nspawn"
-            ;;
-        nspawn-privileges)
-            printf "systemd-nspawn is installed, but this run is not privileged; run with sudo or set KATL_NSPAWN_ALLOW_UNPRIVILEGED=1 after configuring rootless systemd-nspawn"
             ;;
         *)
             printf "see %s for recorded host capability state" "$host_capabilities_json"
@@ -306,28 +298,9 @@ probe_fixture_tool_capabilities() {
     fi
 }
 
-probe_nspawn_capabilities() {
-    if [[ "$nspawn_checks" == 0 || "$nspawn_checks" == false || "$nspawn_checks" == disabled ]]; then
-        cap_systemd_nspawn="disabled"
-        return
-    fi
-    if have_command systemd-nspawn; then
-        if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
-            cap_systemd_nspawn="passed"
-        else
-            missing_capabilities+=("nspawn-privileges")
-            cap_systemd_nspawn="$(missing_status missing)"
-        fi
-    else
-        missing_capabilities+=("systemd-nspawn")
-        cap_systemd_nspawn="$(missing_status missing)"
-    fi
-}
-
 probe_capabilities() {
     probe_vm_capabilities
     probe_fixture_tool_capabilities
-    probe_nspawn_capabilities
 }
 
 ipv4_to_int() {
@@ -459,7 +432,6 @@ write_host_capabilities() {
         --arg sha256sum "$cap_sha256sum" \
         --arg awk "$cap_awk" \
         --arg realpath "$cap_realpath" \
-        --arg systemdNspawn "$cap_systemd_nspawn" \
         --arg kubectl "$cap_kubectl" \
         --args \
         '{
@@ -478,8 +450,7 @@ write_host_capabilities() {
             sha256sum: $sha256sum,
             awk: $awk,
             realpath: $realpath,
-            kubectl: $kubectl,
-            "systemd-nspawn": $systemdNspawn
+            kubectl: $kubectl
           },
           missing: $ARGS.positional
         }' -- "${missing_capabilities[@]}" >"$host_capabilities_json"
@@ -512,7 +483,6 @@ write_world() {
         --arg sha256sum "$cap_sha256sum" \
         --arg awk "$cap_awk" \
         --arg realpath "$cap_realpath" \
-        --arg systemdNspawn "$cap_systemd_nspawn" \
         --arg kubectl "$cap_kubectl" \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -549,8 +519,7 @@ write_world() {
             awk: $awk,
             realpath: $realpath,
             kubectl: $kubectl,
-            vsock: $vsock,
-            "systemd-nspawn": $systemdNspawn
+            vsock: $vsock
           }
         }' >"$world_manifest"
 }

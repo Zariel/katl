@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/zariel/katl/internal/nspawntest"
 )
 
 const statePartUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -301,33 +299,6 @@ func TestStateUnitsVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)
 	}
-}
-
-func TestStateUnitsVerifyNspawn(t *testing.T) {
-	root := t.TempDir()
-	writeStateVerifyFixture(t, root)
-
-	const guestRoot = "/mnt/katl-generated-units"
-	options := nspawntest.DefaultOptions()
-	options.Missing = nspawntest.MissingSkips
-	if err := nspawntest.PrepareDefaultRoot(t.Context(), &options, repoRoot(t)); err != nil {
-		t.Fatalf("prepare nspawn userspace fixture: %v", err)
-	}
-	nspawntest.NewRunner(options).Run(t, nspawntest.Scenario{
-		Name: "state unit verify",
-		Binds: []nspawntest.Bind{{
-			Source: root,
-			Target: guestRoot,
-		}},
-		Commands: []nspawntest.Command{{
-			Name: "systemd-analyze verify",
-			Argv: append([]string{
-				"systemd-analyze",
-				"verify",
-				"--root=" + guestRoot,
-			}, stateVerifyUnits()...),
-		}},
-	})
 }
 
 func writeStateVerifyFixture(t *testing.T, root string) {

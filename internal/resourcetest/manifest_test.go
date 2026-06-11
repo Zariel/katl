@@ -128,7 +128,7 @@ func validManifest() Manifest {
 			PackageSetRef: "runtime",
 		}},
 		HostCapabilities: []HostCapability{{
-			Name:    "systemd-nspawn",
+			Name:    "libvirt",
 			Present: true,
 		}},
 		Artifacts: []Artifact{{
@@ -139,20 +139,20 @@ func validManifest() Manifest {
 			SizeBytes: 1024,
 		}},
 		Fixtures: []Fixture{{
-			Name:         "nspawn-root",
-			Kind:         "nspawn-root",
-			Path:         "build/nspawn/root",
-			Manifest:     "build/nspawn/nspawn-fixture.json",
+			Name:         "installed-runtime",
+			Kind:         "installed-runtime",
+			Path:         "build/vmtest/fixtures/installed-runtime",
+			Manifest:     "build/vmtest/fixtures/installed-runtime.json",
 			ArtifactRefs: []string{"runtime-root"},
 		}},
 		Scenarios: []Scenario{{
-			Name:                 "state unit verify",
-			Suite:                "nspawn",
+			Name:                 "installed runtime agent smoke",
+			Suite:                "vmtest",
 			Status:               StatusPassed,
-			ResultPath:           "build/nspawn/state-unit-verify/result.json",
-			RunDir:               "build/nspawn/state-unit-verify",
-			FixtureRefs:          []string{"nspawn-root"},
-			RequiredCapabilities: []string{"systemd-nspawn"},
+			ResultPath:           "build/vmtest/installed-runtime-agent/result.json",
+			RunDir:               "build/vmtest/installed-runtime-agent",
+			FixtureRefs:          []string{"installed-runtime"},
+			RequiredCapabilities: []string{"libvirt"},
 		}},
 	}
 }

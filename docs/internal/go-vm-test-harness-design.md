@@ -113,14 +113,6 @@ inside the world and discover guest addresses from libvirt DHCP leases.
 
 Katl does not support ad hoc host networking as a current path.
 
-## Relationship To Nspawn
-
-Nspawn checks share `scripts/vmtest-run` and world setup where useful, but they
-remain userspace checks. They can prove generated systemd/config syntax and
-runtime helper behavior before boot. VM tests remain responsible for firmware,
-disk layout, boot selection, kubelet startup, kubeadm flows, update behavior,
-and rollback behavior.
-
 ## Failure Semantics
 
 Enabled VM tests should not silently skip because fixtures were absent. Missing

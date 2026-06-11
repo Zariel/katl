@@ -62,7 +62,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.Network.Backend != NetworkLibvirt || world.Network.Name != "default" || world.Network.CIDR != "192.168.122.0/24" || world.Network.Gateway != "192.168.122.1" || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
 		t.Fatalf("world network = %#v", world.Network)
 	}
-	for _, capability := range []string{"image-tool", "libvirt", "libvirt-network", "libvirt-storage-pool", "ovmf", "kvm", "vsock", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "kubectl", "systemd-nspawn"} {
+	for _, capability := range []string{"image-tool", "libvirt", "libvirt-network", "libvirt-storage-pool", "ovmf", "kvm", "vsock", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "kubectl"} {
 		if world.Capabilities[capability] != WorldStatusPassed {
 			t.Fatalf("capability %s = %q", capability, world.Capabilities[capability])
 		}
@@ -771,7 +771,6 @@ esac
 	writeExecutable(t, filepath.Join(dir, "sha256sum"), "#!/usr/bin/env bash\nprintf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  %s\\n' \"${1:-}\"\n")
 	writeExecutable(t, filepath.Join(dir, "awk"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "realpath"), "#!/usr/bin/env bash\nprintf '%s\\n' \"${@: -1}\"\n")
-	writeExecutable(t, filepath.Join(dir, "systemd-nspawn"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, tools.kubectl, "#!/usr/bin/env bash\nexit 0\n")
 	if err := os.WriteFile(tools.ovmfCode, []byte("code"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.ovmfCode, err)
@@ -801,7 +800,6 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.imageTool), "prebuilt-artifacts.json"),
-		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
 		"PATH="+filepath.Dir(tools.imageTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)

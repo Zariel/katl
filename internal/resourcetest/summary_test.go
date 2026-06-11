@@ -19,22 +19,22 @@ func TestAggregateClassifiesScenarioArtifacts(t *testing.T) {
 	}{
 		{
 			name:    "passed",
-			result:  scenarioArtifact{Status: "passed", RunDir: "build/nspawn/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{Status: "passed", RunDir: "build/vmtest/run"},
+			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusPassed,
 			summary: SummaryPassed,
 		},
 		{
 			name:    "failed",
-			result:  scenarioArtifact{Status: "failed", RunDir: "build/nspawn/run", FailureSummary: "unit verify failed"},
-			goJSON:  goTestEventLine("fail", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{Status: "failed", RunDir: "build/vmtest/run", FailureSummary: "agent smoke failed"},
+			goJSON:  goTestEventLine("fail", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "fixture missing skip",
-			result:  scenarioArtifact{Status: "skipped", RunDir: "build/nspawn/run", FailureSummary: "set KATL_NSPAWN_ROOT"},
-			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{Status: "skipped", RunDir: "build/vmtest/run", FailureSummary: "fixture missing"},
+			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
@@ -42,45 +42,45 @@ func TestAggregateClassifiesScenarioArtifacts(t *testing.T) {
 			name: "host capability skip",
 			result: scenarioArtifact{
 				Status: "skipped",
-				RunDir: "build/nspawn/run",
+				RunDir: "build/vmtest/run",
 				Missing: []MissingPrerequisite{{
-					Name:   "systemd-nspawn",
-					Detail: "not found in PATH",
+					Name:   "libvirt",
+					Detail: "virsh cannot connect",
 				}},
 			},
-			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusHostSkipped,
 			summary: SummaryPassed,
 		},
 		{
 			name:    "interrupted planned result",
-			result:  scenarioArtifact{Status: "planned", RunDir: "build/nspawn/run"},
-			goJSON:  goTestEventLine("run", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{Status: "planned", RunDir: "build/vmtest/run"},
+			goJSON:  goTestEventLine("run", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "stale result",
-			result:  scenarioArtifact{ScenarioName: "previous scenario", Status: "passed", RunDir: "build/nspawn/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{ScenarioName: "previous scenario", Status: "passed", RunDir: "build/vmtest/run"},
+			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "stale run",
-			result:  scenarioArtifact{ScenarioName: "state unit verify", RunID: "previous-run", Status: "passed", RunDir: "build/nspawn/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", ""),
+			result:  scenarioArtifact{ScenarioName: "installed runtime agent smoke", RunID: "previous-run", Status: "passed", RunDir: "build/vmtest/run"},
+			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manifest := aggregateManifest("build/nspawn/run/result.json")
+			manifest := aggregateManifest("build/vmtest/run/result.json")
 			summary, err := Aggregate(AggregateRequest{
 				Manifest:   manifest,
 				GoTestJSON: strings.NewReader(tt.goJSON),
-				ReadFile:   resultReader("build/nspawn/run/result.json", tt.result, nil),
+				ReadFile:   resultReader("build/vmtest/run/result.json", tt.result, nil),
 			})
 			if err != nil {
 				t.Fatalf("Aggregate() error = %v", err)
@@ -116,13 +116,13 @@ func TestAggregateMissingResultIsSetupFailed(t *testing.T) {
 }
 
 func TestAggregateRecordsGoTestFailures(t *testing.T) {
-	manifest := aggregateManifest("build/nspawn/run/result.json")
-	goJSON := goTestEventLine("output", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", "boom\n") +
-		goTestEventLine("fail", "github.com/zariel/katl/internal/installer/generation", "TestStateUnitsVerifyNspawn", "")
+	manifest := aggregateManifest("build/vmtest/run/result.json")
+	goJSON := goTestEventLine("output", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "boom\n") +
+		goTestEventLine("fail", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "")
 	summary, err := Aggregate(AggregateRequest{
 		Manifest:   manifest,
 		GoTestJSON: strings.NewReader(goJSON),
-		ReadFile:   resultReader("build/nspawn/run/result.json", scenarioArtifact{Status: "failed", RunDir: "build/nspawn/run"}, nil),
+		ReadFile:   resultReader("build/vmtest/run/result.json", scenarioArtifact{Status: "failed", RunDir: "build/vmtest/run"}, nil),
 	})
 	if err != nil {
 		t.Fatalf("Aggregate() error = %v", err)
@@ -143,8 +143,8 @@ func TestEncodeSummary(t *testing.T) {
 		Status:     SummaryPassed,
 		Counts:     map[Status]int{StatusPassed: 1},
 		Scenarios: []ScenarioSummary{{
-			Name:   "state unit verify",
-			Suite:  "nspawn",
+			Name:   "installed runtime agent smoke",
+			Suite:  "vmtest",
 			Status: StatusPassed,
 		}},
 	}
@@ -161,14 +161,14 @@ func aggregateManifest(resultPath string) Manifest {
 	manifest := validManifest()
 	manifest.RunID = "resource-run"
 	manifest.Scenarios = []Scenario{{
-		Name:                 "state unit verify",
-		Suite:                "nspawn",
-		GoPackage:            "github.com/zariel/katl/internal/installer/generation",
-		GoTest:               "TestStateUnitsVerifyNspawn",
+		Name:                 "installed runtime agent smoke",
+		Suite:                "vmtest",
+		GoPackage:            "github.com/zariel/katl/internal/vmtest",
+		GoTest:               "TestInstalledRuntimeVMTestAgentSmoke",
 		Status:               StatusSetupFailed,
 		ResultPath:           resultPath,
-		FixtureRefs:          []string{"nspawn-root"},
-		RequiredCapabilities: []string{"systemd-nspawn"},
+		FixtureRefs:          []string{"installed-runtime"},
+		RequiredCapabilities: []string{"libvirt"},
 	}}
 	return manifest
 }

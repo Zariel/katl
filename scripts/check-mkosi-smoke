@@ -5,6 +5,4 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 test_package="${KATL_SMOKE_PACKAGE:-./internal/vmtest}"
 test_pattern="${KATL_SMOKE_RUN:-^TestFirstInstallTargetDiskSerialSmoke$}"
 
-export KATL_VMTEST_NSPAWN="${KATL_VMTEST_NSPAWN:-0}"
-
 exec "$repo_root/scripts/vmtest-run" "$test_package" -run "$test_pattern" -count=1 "$@"

@@ -57,9 +57,8 @@ updates, GUI tools, and end-user asset publishing.
 
 - `scripts/mkosi`: builds installer, runtime, Kubernetes sysext, and KatlOS
   image artifacts through the containerized mkosi builder.
-- `scripts/vmtest-run`: runs enabled nspawn, VM, first-install,
-  installed-runtime, and multinode kubeadm smokes through a runner-created
-  world.
+- `scripts/vmtest-run`: runs enabled VM, first-install, installed-runtime, and
+  multinode kubeadm smokes through a runner-created world.
 - `libvirt`/`virsh`: defines, starts, observes, and tears down local VM test
   domains.
 - KVM access: the VM test runner should see `/dev/kvm`.
@@ -135,14 +134,13 @@ The host must provide:
 - `/dev/net/tun` and `vhost_net`: useful for libvirt networks and richer VM
   networking.
 
-## VM And Nspawn Test Worlds
+## VM Test Worlds
 
-Enabled nspawn, VM, first-install, installed-runtime, and multinode kubeadm
-smokes run through one runner-created world. Use `scripts/vmtest-run` instead of
-preparing fixture environment files or invoking `scripts/vmtest-exec` directly:
+Enabled VM, first-install, installed-runtime, and multinode kubeadm smokes run
+through one runner-created world. Use `scripts/vmtest-run` instead of preparing
+fixture environment files or invoking `scripts/vmtest-exec` directly:
 
 ```sh
-scripts/vmtest-run ./internal/vmtest -run Nspawn -count=1
 scripts/vmtest-run ./internal/vmtest \
   -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply' -count=1
 scripts/vmtest-run ./internal/vmtest/scenarios \
@@ -160,17 +158,17 @@ the harness execution needed to route compiled package test binaries through
 `go test` owns the terminal output and exit status. Scenario artifacts remain
 under the world directory for later inspection or aggregation by another tool.
 
-Plain `go test ./...` keeps VM and nspawn scenarios disabled. If an enabled
-smoke is invoked directly without the world manifest, it fails with a setup
-error naming `scripts/vmtest-run`.
+Plain `go test ./...` keeps enabled VM scenarios disabled. If an enabled smoke
+is invoked directly without the world manifest, it fails with a setup error
+naming `scripts/vmtest-run`.
 
 World-backed smokes derive their fixture inputs from repo-controlled artifacts:
 mkosi artifact indexes, KatlOS install images, runtime roots, generated install
-manifests, per-node metadata, target disks, ESP artifact trees, nspawn userspace
-roots, and installed-runtime fixtures. First-install smokes publish installed
-runtime fixtures inside the world; installed-runtime and multinode kubeadm
-smokes consume those world-published fixtures instead of asking the developer to
-export disk, ESP, metadata, fixture, or node-address variables.
+manifests, per-node metadata, target disks, ESP artifact trees, and
+installed-runtime fixtures. First-install smokes publish installed runtime
+fixtures inside the world; installed-runtime and multinode kubeadm smokes
+consume those world-published fixtures instead of asking the developer to export
+disk, ESP, metadata, fixture, or node-address variables.
 
 Build artifacts first when the local world cannot discover suitable outputs:
 
@@ -182,14 +180,14 @@ scripts/mkosi build-katlos-install-image
 
 World run directories and scenario manifests are the supported inspection path
 for already-produced artifacts during harness development. Lower-level helper
-scripts are not the supported way to run enabled nspawn, VM, or kubeadm suites.
+scripts are not the supported way to run enabled VM or kubeadm suites.
 
 ### Capable-Host Proof
 
 Run the full enabled world suite from the Nix VM shell on a host with readable
 OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
-`systemd-nspawn` privileges, libvirt system access, an active libvirt network,
-and an active libvirt storage pool:
+libvirt system access, an active libvirt network, and an active libvirt storage
+pool:
 
 ```sh
 nix develop .#vm -c env \

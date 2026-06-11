@@ -148,7 +148,7 @@ test, but not reimplement their state machines.
 lock verification. Shell may call it, but package drift policy and manifest JSON
 belong in Go.
 
-`scripts/vmtest-run` is the standard enabled nspawn and VM test entrypoint. It
+`scripts/vmtest-run` is the standard enabled VM test entrypoint. It
 creates a world, records host capability state, exports the world environment,
 and tail-calls `go test -exec scripts/vmtest-exec` with caller arguments.
 Complex fixture building, lease allocation, result classification, and
@@ -182,8 +182,7 @@ internal/resourcetest
 
 internal/vmtest
   VM world manifests, host capability records, lease allocation, fixture
-  builders, scenario directories, libvirt/nspawn helpers, and guest-agent
-  clients.
+  builders, scenario directories, libvirt helpers, and guest-agent clients.
 
 internal/installer/*
   Install manifest parsing, disk planning, generated confext rendering,
@@ -252,7 +251,7 @@ surface for build-side artifact metadata policy.
 | Script | Current role | Policy action |
 | --- | --- | --- |
 | `scripts/mkosi` | Supported build entrypoint and containerized mkosi adapter | Keep as the top-level mkosi adapter while scaffolding. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`; move Kubernetes repository mutation and remaining build policy into Go or mkosi config as they stabilize. |
-| `scripts/vmtest-run` | Supported enabled nspawn/VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
+| `scripts/vmtest-run` | Supported enabled VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/check-mkosi-smoke` | Operator-friendly build and boot smoke wrapper | Keep as a thin compatibility wrapper around `scripts/vmtest-run` so smoke execution uses the libvirt-backed VM test path. |
 | `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; move the remaining packaging flow behind `katlc` when the compiler exists. |
@@ -262,7 +261,6 @@ surface for build-side artifact metadata policy.
 | `scripts/check-runtime-boot-asset` | Validates runtime UKI metadata and command line | Move metadata and compatibility checks to Go. |
 | `scripts/check-kubernetes-sysext` | Validates Kubernetes sysext metadata and payload version | Absorb into `katl-publish-kubernetes-sysext` or a Go verifier. |
 | `scripts/check-mkosi-size` | Size budget checks for generated artifacts | May remain as a simple CI check while it only uses `stat`/`du`; move to Go if budgets become artifact metadata or release policy. |
-| `scripts/prepare-nspawn-userspace-fixture` | Builds nspawn userspace fixture from runtime root | Move behind `internal/vmtest`/`internal/nspawntest` world fixture helpers. Keep only as a debug validator until tests no longer call it directly. |
 
 ## Devshell And Host Tools
 
