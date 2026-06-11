@@ -17,7 +17,14 @@ func DialVSock(ctx context.Context, cid, port uint32) (*os.File, error) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- unix.Connect(fd, &unix.SockaddrVM{CID: cid, Port: port})
+		for {
+			err := unix.Connect(fd, &unix.SockaddrVM{CID: cid, Port: port})
+			if err == unix.EINTR {
+				continue
+			}
+			done <- err
+			return
+		}
 	}()
 	select {
 	case err := <-done:
@@ -54,6 +61,9 @@ func ListenVSock(ctx context.Context, port uint32, handler func(*os.File)) error
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if err == unix.EINTR {
+				continue
 			}
 			return err
 		}

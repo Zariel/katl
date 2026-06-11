@@ -417,6 +417,7 @@ func checkHost(requirements HostRequirements, probe probe) error {
 	}
 	if requirements.Libvirt {
 		missing = appendCommand(missing, probe, "virsh")
+		missing = appendCommand(missing, probe, "script")
 	}
 	if requirements.OVMF {
 		code := first(requirements.OVMFCode, probe.env("KATL_OVMF_CODE"))

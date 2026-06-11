@@ -50,7 +50,8 @@ func TestVMPlan(t *testing.T) {
 		`<source file="` + filepath.Join(result.VMDir, "vdb.snapshot.qcow2") + `"></source>`,
 		`<source file="` + filepath.Join(result.DiskDir, "00-root.qcow2") + `"></source>`,
 		`<serial>katl-root</serial>`,
-		`<serial type="file">`,
+		`<serial type="pty">`,
+		`<console type="pty">`,
 	} {
 		if !strings.Contains(plan.DomainXML, want) {
 			t.Fatalf("domain XML missing %q:\n%s", want, plan.DomainXML)
@@ -163,6 +164,69 @@ func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
 	}
 	if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
 		t.Fatalf("TMPDIR was not created: %v", err)
+	}
+}
+
+func TestLibvirtVMExecutorCapturesConsole(t *testing.T) {
+	tmp := t.TempDir()
+	virsh := filepath.Join(tmp, "virsh")
+	script := filepath.Join(tmp, "script")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine)
+        exit 0
+        ;;
+    console)
+        printf 'Katl installer ready\n'
+        exit 0
+        ;;
+    domstate)
+        sleep 0.05
+        printf 'shut off\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	writeExecutable(t, script, `#!/usr/bin/env bash
+set -euo pipefail
+while (($# > 0)); do
+    case "$1" in
+        --command)
+            shift
+            exec bash -lc "$1"
+            ;;
+    esac
+    shift
+done
+exit 42
+`)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	var serial strings.Builder
+	err := LibvirtVMExecutor{
+		VirshPath:     virsh,
+		ScriptPath:    script,
+		URI:           "qemu:///system",
+		DomainName:    "katl-run-1",
+		DomainXMLFile: xmlPath,
+		PollInterval:  time.Millisecond,
+	}.Run(context.Background(), "", nil, &serial)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(serial.String(), "Katl installer ready") {
+		t.Fatalf("serial capture = %q", serial.String())
 	}
 }
 

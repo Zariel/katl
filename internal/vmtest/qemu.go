@@ -35,6 +35,7 @@ type VMConfig struct {
 	MediaRunner       DiskRunner
 	QEMUPath          string
 	VirshPath         string
+	ScriptPath        string
 	ImageTool         string
 	LibvirtURI        string
 	LibvirtNetwork    string
@@ -110,6 +111,7 @@ const defaultSerialIdleTimeout = 45 * time.Second
 type VMPlan struct {
 	QEMUPath       string
 	VirshPath      string
+	ScriptPath     string
 	Args           []string
 	Accel          string
 	DomainName     string
@@ -159,6 +161,7 @@ func (e ExecVMExecutor) Run(ctx context.Context, name string, args []string, ser
 type LibvirtVMExecutor struct {
 	TempDir        string
 	VirshPath      string
+	ScriptPath     string
 	URI            string
 	DomainName     string
 	DomainXMLFile  string
@@ -166,7 +169,7 @@ type LibvirtVMExecutor struct {
 	CleanupTimeout time.Duration
 }
 
-func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, _ io.Writer) error {
+func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial io.Writer) error {
 	if e.TempDir != "" {
 		if err := os.MkdirAll(e.TempDir, 0o755); err != nil {
 			return err
@@ -187,6 +190,21 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, _ io.W
 	defer func() {
 		_ = e.cleanupVirsh("destroy", e.DomainName)
 	}()
+	consoleCtx, stopConsole := context.WithCancel(ctx)
+	consoleDone, err := e.startConsoleCapture(consoleCtx, serial)
+	if err != nil {
+		stopConsole()
+		return err
+	}
+	defer func() {
+		stopConsole()
+		if consoleDone != nil {
+			select {
+			case <-consoleDone:
+			case <-time.After(e.cleanupTimeout()):
+			}
+		}
+	}()
 	interval := e.PollInterval
 	if interval <= 0 {
 		interval = 250 * time.Millisecond
@@ -206,19 +224,35 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, _ io.W
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err, ok := <-consoleDone:
+			if !ok {
+				consoleDone = nil
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err != nil {
+				return fmt.Errorf("libvirt console capture for %q exited: %w", e.DomainName, err)
+			}
+			consoleDone = nil
 		case <-ticker.C:
 		}
 	}
 }
 
 func (e LibvirtVMExecutor) cleanupVirsh(args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), e.cleanupTimeout())
+	defer cancel()
+	return e.virsh(ctx, args...)
+}
+
+func (e LibvirtVMExecutor) cleanupTimeout() time.Duration {
 	timeout := e.CleanupTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return e.virsh(ctx, args...)
+	return timeout
 }
 
 func (e LibvirtVMExecutor) virsh(ctx context.Context, args ...string) error {
@@ -227,6 +261,60 @@ func (e LibvirtVMExecutor) virsh(ctx context.Context, args ...string) error {
 }
 
 func (e LibvirtVMExecutor) virshOutput(ctx context.Context, args ...string) (string, error) {
+	cmd := e.virshCommand(ctx, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w: %s", cmd.Path, strings.Join(cmd.Args[1:], " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+func (e LibvirtVMExecutor) startConsoleCapture(ctx context.Context, serial io.Writer) (<-chan error, error) {
+	if serial == nil {
+		return nil, nil
+	}
+	cmd := e.consoleCommand(ctx)
+	cmd.Stdout = serial
+	cmd.Stderr = serial
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start libvirt console capture for %q: %w", e.DomainName, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+		close(done)
+	}()
+	return done, nil
+}
+
+func (e LibvirtVMExecutor) consoleCommand(ctx context.Context) *exec.Cmd {
+	virsh, virshArgs := e.virshInvocation("console", e.DomainName, "--force")
+	parts := make([]string, 0, len(virshArgs)+1)
+	parts = append(parts, shellQuote(virsh))
+	for _, arg := range virshArgs {
+		parts = append(parts, shellQuote(arg))
+	}
+	script := e.ScriptPath
+	if script == "" {
+		script = "script"
+	}
+	cmd := exec.CommandContext(ctx, script, "--return", "--flush", "--quiet", "--command", strings.Join(parts, " "), "/dev/null")
+	if e.TempDir != "" {
+		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
+	}
+	return cmd
+}
+
+func (e LibvirtVMExecutor) virshCommand(ctx context.Context, args ...string) *exec.Cmd {
+	virsh, fullArgs := e.virshInvocation(args...)
+	cmd := exec.CommandContext(ctx, virsh, fullArgs...)
+	if e.TempDir != "" {
+		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
+	}
+	return cmd
+}
+
+func (e LibvirtVMExecutor) virshInvocation(args ...string) (string, []string) {
 	virsh := e.VirshPath
 	if virsh == "" {
 		virsh = "virsh"
@@ -236,15 +324,14 @@ func (e LibvirtVMExecutor) virshOutput(ctx context.Context, args ...string) (str
 		fullArgs = append(fullArgs, "-c", e.URI)
 	}
 	fullArgs = append(fullArgs, args...)
-	cmd := exec.CommandContext(ctx, virsh, fullArgs...)
-	if e.TempDir != "" {
-		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
+	return virsh, fullArgs
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
 	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", virsh, strings.Join(fullArgs, " "), err, strings.TrimSpace(string(output)))
-	}
-	return string(output), nil
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 type VMRunner struct {
@@ -318,6 +405,7 @@ func defaultVMExecutor(result Result, plan VMPlan) VMExecutor {
 	return LibvirtVMExecutor{
 		TempDir:       filepath.Join(result.VMDir, "tmp"),
 		VirshPath:     plan.VirshPath,
+		ScriptPath:    plan.ScriptPath,
 		URI:           plan.LibvirtURI,
 		DomainName:    plan.DomainName,
 		DomainXMLFile: plan.DomainXMLFile,
@@ -571,6 +659,17 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		}
 		virsh = found
 	}
+	script := config.ScriptPath
+	if script == "" {
+		found, err := probe.lookPath("script")
+		if err != nil {
+			return VMPlan{}, PrereqError{Missing: []MissingPrerequisite{{
+				Name:   "script",
+				Detail: "not found in PATH",
+			}}}
+		}
+		script = found
+	}
 	libvirtURI := first(config.LibvirtURI, probe.env("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
 	libvirtNetwork := first(config.LibvirtNetwork, probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
 	directKernel := config.Boot.Kernel != ""
@@ -645,6 +744,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	return VMPlan{
 		QEMUPath:       virsh,
 		VirshPath:      virsh,
+		ScriptPath:     script,
 		Args:           args,
 		Accel:          accel,
 		DomainName:     domainName,
@@ -916,9 +1016,9 @@ type domainDiskTarget struct {
 }
 
 type domainSerial struct {
-	Type   string             `xml:"type,attr"`
-	Source domainSerialSource `xml:"source"`
-	Target domainSerialTarget `xml:"target"`
+	Type   string              `xml:"type,attr"`
+	Source *domainSerialSource `xml:"source,omitempty"`
+	Target domainSerialTarget  `xml:"target"`
 }
 
 type domainSerialSource struct {
@@ -931,7 +1031,7 @@ type domainSerialTarget struct {
 
 type domainConsole struct {
 	Type   string              `xml:"type,attr"`
-	Source domainSerialSource  `xml:"source"`
+	Source *domainSerialSource `xml:"source,omitempty"`
 	Target domainConsoleTarget `xml:"target"`
 }
 
@@ -1049,13 +1149,11 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 				Model:  domainInterfaceModel{Type: "virtio"},
 			},
 			Serial: domainSerial{
-				Type:   "file",
-				Source: domainSerialSource{Path: domain.SerialLog},
+				Type:   "pty",
 				Target: domainSerialTarget{Port: 0},
 			},
 			Console: domainConsole{
-				Type:   "file",
-				Source: domainSerialSource{Path: domain.SerialLog},
+				Type:   "pty",
 				Target: domainConsoleTarget{Type: "serial", Port: 0},
 			},
 		},
