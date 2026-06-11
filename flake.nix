@@ -47,6 +47,7 @@
             jq
             kubectl
             libvirt
+            virt-manager
             mkosi
             mtools
             openssl

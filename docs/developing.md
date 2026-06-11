@@ -117,6 +117,17 @@ packages. It does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`,
 networks, storage pools, or polkit access; keep those in the NixOS host
 configuration.
 
+The host must provide:
+
+- A running system libvirt daemon reachable at `qemu:///system`, or an explicit
+  `KATL_VMTEST_LIBVIRT_URI` override.
+- User access to the system libvirt daemon through the host's libvirt group,
+  polkit policy, or an explicit privileged manual session.
+- An active libvirt network named `default`, or
+  `KATL_VMTEST_LIBVIRT_NETWORK` set to the active test network.
+- An active libvirt storage pool named `default`, or
+  `KATL_VMTEST_LIBVIRT_STORAGE_POOL` set to the active test pool.
+
 ## Optional During The Current Loop
 
 - `virt-install`: useful for manual libvirt VM creation.
@@ -232,6 +243,10 @@ If `virsh -c qemu:///system list --all` fails with a polkit error, run it from a
 session with a polkit agent, configure the host's libvirt access policy, or use
 an explicit privileged manual check. Katl automation should not depend on a GUI
 polkit prompt.
+
+On NixOS, the usual local setup is to enable `virtualisation.libvirtd`, enable
+the default libvirt network and storage pool, and put the development user in a
+group or polkit rule that can access `qemu:///system`.
 
 If `qemu:///session` fails under Codex or another sandbox, prefer
 `qemu:///system` for manual libvirt checks. The vmtest runner defaults to
