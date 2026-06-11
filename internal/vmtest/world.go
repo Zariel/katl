@@ -41,7 +41,6 @@ type WorldLibvirt struct {
 type WorldNetwork struct {
 	Backend   NetworkBackend `json:"backend"`
 	Name      string         `json:"name"`
-	Bridge    string         `json:"bridge,omitempty"`
 	CIDR      string         `json:"cidr"`
 	Gateway   string         `json:"gateway"`
 	LeaseFile string         `json:"leaseFile"`
@@ -51,7 +50,6 @@ type NetworkBackend string
 
 const (
 	NetworkLibvirt NetworkBackend = "libvirt"
-	NetworkBridge  NetworkBackend = "bridge"
 )
 
 type WorldStatus string
@@ -183,13 +181,6 @@ func validateWorldNetwork(network WorldNetwork) error {
 	case NetworkLibvirt:
 		if strings.TrimSpace(network.Name) == "" {
 			return errors.New("network.name is required for libvirt backend")
-		}
-	case NetworkBridge:
-		if strings.TrimSpace(network.Bridge) == "" {
-			return errors.New("network.bridge is required for bridge backend")
-		}
-		if err := validateBridgeName(network.Bridge); err != nil {
-			return fmt.Errorf("network.bridge: %w", err)
 		}
 	case "":
 		return errors.New("network.backend is required")

@@ -125,7 +125,7 @@ func TestRequirePlannedVMHostWritesFailedResult(t *testing.T) {
 		},
 		probe: probe{
 			lookPath: func(string) (string, error) {
-				return "", errors.New("missing qemu")
+				return "", errors.New("missing VM command")
 			},
 		},
 		now: func() time.Time {

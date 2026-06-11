@@ -130,11 +130,11 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 	}
 	runner := contract.Runner
 	if err := runner.CheckHost(HostRequirements{
-		Libvirt: true,
-		QEMUImg: true,
-		OVMF:    true,
-		KVM:     runner.options().KVM,
-		MTools:  true,
+		Libvirt:   true,
+		ImageTool: true,
+		OVMF:      true,
+		KVM:       runner.options().KVM,
+		MTools:    true,
 	}); err != nil {
 		return ProducedInstalledRuntimeFixture{}, err
 	}

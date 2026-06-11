@@ -101,7 +101,7 @@ func TestOptIn(t *testing.T) {
 			}
 			result := runner.Run(tb, Scenario{
 				Name: "boot",
-				Host: HostRequirements{QEMU: true},
+				Host: HostRequirements{Libvirt: true},
 			})
 			if result.Status != tt.want {
 				t.Fatalf("Status = %q", result.Status)
@@ -109,7 +109,7 @@ func TestOptIn(t *testing.T) {
 			if tb.skipped != tt.skip || tb.failed != tt.fail {
 				t.Fatalf("skipped=%v failed=%v", tb.skipped, tb.failed)
 			}
-			if tt.options.Enabled && !strings.Contains(tb.message, "qemu-system-x86_64") {
+			if tt.options.Enabled && !strings.Contains(tb.message, "virsh") {
 				t.Fatalf("message %q missing tool name", tb.message)
 			}
 		})
@@ -149,7 +149,7 @@ func TestStrictWorldFailsMissingPrerequisites(t *testing.T) {
 	}
 	result := runner.Run(tb, Scenario{
 		Name: "boot",
-		Host: HostRequirements{QEMU: true},
+		Host: HostRequirements{Libvirt: true},
 	})
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q, want %q", result.Status, StatusFailed)
@@ -161,12 +161,12 @@ func TestStrictWorldFailsMissingPrerequisites(t *testing.T) {
 
 func TestHostCheck(t *testing.T) {
 	err := checkHost(HostRequirements{
-		QEMU: true,
-		OVMF: true,
-		KVM:  KVMOn,
+		Libvirt: true,
+		OVMF:    true,
+		KVM:     KVMOn,
 	}, probe{
 		lookPath: func(name string) (string, error) {
-			if name == "qemu-system-x86_64" {
+			if name == "virsh" || name == "script" {
 				return "/usr/bin/" + name, nil
 			}
 			return "", fmt.Errorf("%s missing", name)
@@ -232,142 +232,6 @@ func TestRunnerCheckHostUsesRunnerProbe(t *testing.T) {
 	}
 }
 
-func TestHostCheckSharedBridge(t *testing.T) {
-	err := checkHost(HostRequirements{
-		SharedBridge: true,
-	}, probe{
-		stat: func(path string) (fs.FileInfo, error) {
-			switch path {
-			case "/sys/class/net/katlbr0", "/dev/net/tun", "/usr/lib/qemu/qemu-bridge-helper":
-				return nil, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		env: func(name string) string {
-			if name == "KATL_VMTEST_BRIDGE" {
-				return "katlbr0"
-			}
-			return ""
-		},
-		readFile: func(path string) ([]byte, error) {
-			if path != "/etc/qemu/bridge.conf" {
-				return nil, os.ErrNotExist
-			}
-			return []byte("allow katlbr0\n"), nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("checkHost() error = %v", err)
-	}
-
-	err = checkHost(HostRequirements{
-		SharedBridge: true,
-	}, probe{
-		stat: func(string) (fs.FileInfo, error) {
-			return nil, os.ErrNotExist
-		},
-		env: func(string) string { return "" },
-	})
-	if err == nil {
-		t.Fatal("checkHost() error = nil, want missing bridge prerequisites")
-	}
-	var prereq PrereqError
-	if !errors.As(err, &prereq) {
-		t.Fatalf("error type = %T", err)
-	}
-	text := err.Error()
-	for _, want := range []string{"KATL_VMTEST_BRIDGE", "/dev/net/tun"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("error %q missing %q", text, want)
-		}
-	}
-
-	err = checkHost(HostRequirements{
-		SharedBridge: true,
-	}, probe{
-		stat: func(path string) (fs.FileInfo, error) {
-			switch path {
-			case "/sys/class/net/katlbr0", "/dev/net/tun":
-				return nil, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		env: func(name string) string {
-			if name == "KATL_VMTEST_BRIDGE" {
-				return "katlbr0"
-			}
-			return ""
-		},
-		readFile: func(path string) ([]byte, error) {
-			return nil, os.ErrNotExist
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "qemu-bridge-helper") {
-		t.Fatalf("checkHost() error = %v, want missing helper", err)
-	}
-
-	err = checkHost(HostRequirements{
-		SharedBridge: true,
-	}, probe{
-		stat: func(path string) (fs.FileInfo, error) {
-			switch path {
-			case "/sys/class/net/katlbr0", "/dev/net/tun", "/usr/lib/qemu/qemu-bridge-helper":
-				return nil, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		env: func(name string) string {
-			if name == "KATL_VMTEST_BRIDGE" {
-				return "katlbr0"
-			}
-			return ""
-		},
-		readFile: func(path string) ([]byte, error) {
-			if path != "/etc/qemu/bridge.conf" {
-				return nil, os.ErrNotExist
-			}
-			return []byte("allow otherbr0\n"), nil
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "must allow katlbr0") {
-		t.Fatalf("checkHost() error = %v, want bridge ACL rejection", err)
-	}
-}
-
-func TestHostCheckSharedBridgeUsesExplicitBridge(t *testing.T) {
-	err := checkHost(HostRequirements{
-		SharedBridge: true,
-		Bridge:       "worldbr0",
-	}, probe{
-		stat: func(path string) (fs.FileInfo, error) {
-			switch path {
-			case "/sys/class/net/worldbr0", "/dev/net/tun", "/usr/lib/qemu/qemu-bridge-helper":
-				return nil, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		env: func(name string) string {
-			if name == "KATL_VMTEST_BRIDGE" {
-				return "wrongbr0"
-			}
-			return ""
-		},
-		readFile: func(path string) ([]byte, error) {
-			if path != "/etc/qemu/bridge.conf" {
-				return nil, os.ErrNotExist
-			}
-			return []byte("allow worldbr0\n"), nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("checkHost() error = %v", err)
-	}
-}
-
 func TestPlanPaths(t *testing.T) {
 	result, err := NewRunner(Options{
 		StateRoot: "/tmp/katl-vmtest",
@@ -425,7 +289,7 @@ func TestPersistPass(t *testing.T) {
 	tb := &fakeTB{}
 	result := runner.Run(tb, Scenario{
 		Name: "installer boot",
-		Host: HostRequirements{QEMU: true},
+		Host: HostRequirements{Libvirt: true},
 		Disks: []DiskFixture{
 			TargetDisk("root", "qcow2", "20G"),
 		},
@@ -480,7 +344,7 @@ func TestPersistFail(t *testing.T) {
 	tb := &fakeTB{}
 	result := runner.Run(tb, Scenario{
 		Name: "installer boot",
-		Host: HostRequirements{QEMU: true},
+		Host: HostRequirements{Libvirt: true},
 	})
 	if !tb.failed {
 		t.Fatalf("failed = false")
@@ -492,13 +356,13 @@ func TestPersistFail(t *testing.T) {
 	if loaded.Status != StatusFailed {
 		t.Fatalf("persisted Status = %q", loaded.Status)
 	}
-	if !strings.Contains(loaded.FailureSummary, "qemu-system-x86_64") {
+	if !strings.Contains(loaded.FailureSummary, "virsh") {
 		t.Fatalf("failure = %q", loaded.FailureSummary)
 	}
 	if loaded.DurationMS != 1000 {
 		t.Fatalf("DurationMS = %d", loaded.DurationMS)
 	}
-	if len(loaded.Missing) != 1 {
+	if len(loaded.Missing) != 2 {
 		t.Fatalf("missing = %#v", loaded.Missing)
 	}
 }

@@ -92,17 +92,17 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	done := make(chan error, 1)
 	go func() {
 		defer file.Close()
-		done <- executor.Run(runCtx, first(plan.VirshPath, plan.QEMUPath), plan.Args, file)
+		done <- executor.Run(runCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, file)
 	}()
-	qemuDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
+	domainDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
 		stop()
-		if !qemuDone {
+		if !domainDone {
 			<-done
 		}
 		return fail(err)
 	}
-	if qemuDone {
+	if domainDone {
 		return fail(fmt.Errorf("libvirt domain exited after serial signal before installed runtime node %q could be used", name))
 	}
 	if err := runner.checkAgent(runCtx, result, vm); err != nil {

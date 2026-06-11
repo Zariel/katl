@@ -159,11 +159,11 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 
 	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
-		Libvirt: true,
-		QEMUImg: true,
-		OVMF:    true,
-		KVM:     runner.options().KVM,
-		MTools:  true,
+		Libvirt:   true,
+		ImageTool: true,
+		OVMF:      true,
+		KVM:       runner.options().KVM,
+		MTools:    true,
 	})
 	scenario.RunID = result.RunID
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -227,11 +227,11 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	}
 
 	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
-		Libvirt: true,
-		QEMUImg: true,
-		OVMF:    true,
-		KVM:     runner.options().KVM,
-		MTools:  true,
+		Libvirt:   true,
+		ImageTool: true,
+		OVMF:      true,
+		KVM:       runner.options().KVM,
+		MTools:    true,
 	})
 	scenario.RunID = result.RunID
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)

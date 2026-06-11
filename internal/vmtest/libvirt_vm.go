@@ -33,7 +33,7 @@ type VMConfig struct {
 	PreseedDir        string
 	PreseedImage      string
 	MediaRunner       DiskRunner
-	QEMUPath          string
+	CommandPath       string
 	VirshPath         string
 	ScriptPath        string
 	ImageTool         string
@@ -72,15 +72,12 @@ type SerialHookEvent struct {
 type VMNetworkMode string
 
 const (
-	VMNetworkUser   VMNetworkMode = "user"
-	VMNetworkBridge VMNetworkMode = "bridge"
+	VMNetworkUser VMNetworkMode = "user"
 )
 
 type VMNetworkConfig struct {
-	Mode   VMNetworkMode
-	Bridge string
-	Helper string
-	MAC    string
+	Mode VMNetworkMode
+	MAC  string
 }
 
 type HostForward struct {
@@ -109,7 +106,7 @@ type AgentControlConfig struct {
 const defaultSerialIdleTimeout = 45 * time.Second
 
 type VMPlan struct {
-	QEMUPath       string
+	CommandPath    string
 	VirshPath      string
 	ScriptPath     string
 	Args           []string
@@ -386,7 +383,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	serial := io.Writer(file)
 	done := make(chan error, 1)
 	go func() {
-		done <- executor.Run(ctx, first(plan.VirshPath, plan.QEMUPath), plan.Args, serial)
+		done <- executor.Run(ctx, first(plan.VirshPath, plan.CommandPath), plan.Args, serial)
 	}()
 	if config.Expect != "" {
 		return r.waitSerial(ctx, cancel, done, result, config, plan, started)
@@ -394,7 +391,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	if err := <-done; err != nil {
 		summary := fmt.Sprintf("libvirt domain exited: %v", err)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			summary = qemuTimeoutSummary(plan.SerialLog)
+			summary = libvirtTimeoutSummary(plan.SerialLog)
 		}
 		return finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC())
 	}
@@ -499,18 +496,18 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return finishVM(result, phaseName(config), StatusFailed, qemuTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
+			return finishVM(result, phaseName(config), StatusFailed, libvirtTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
 		case <-ticker.C:
 			if config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= config.SerialIdleTimeout {
 				cancel()
 				<-done
-				return finishVM(result, phaseName(config), StatusFailed, qemuSerialIdleSummary(plan.SerialLog, config.SerialIdleTimeout), started, time.Now().UTC())
+				return finishVM(result, phaseName(config), StatusFailed, libvirtSerialIdleSummary(plan.SerialLog, config.SerialIdleTimeout), started, time.Now().UTC())
 			}
 		}
 	}
 }
 
-func qemuTimeoutSummary(serialLog string) string {
+func libvirtTimeoutSummary(serialLog string) string {
 	const prefix = "libvirt domain timed out"
 	tail := serialTail(serialLog, 12, 4000)
 	if tail == "" {
@@ -519,7 +516,7 @@ func qemuTimeoutSummary(serialLog string) string {
 	return prefix + "; serial tail:\n" + tail
 }
 
-func qemuSerialIdleSummary(serialLog string, idle time.Duration) string {
+func libvirtSerialIdleSummary(serialLog string, idle time.Duration) string {
 	prefix := fmt.Sprintf("libvirt domain serial idle timed out after %s", idle)
 	tail := serialTail(serialLog, 12, 4000)
 	if tail == "" {
@@ -699,7 +696,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 			return VMPlan{}, fmt.Errorf("OVMF vars not readable: %w", err)
 		}
 	}
-	accel, err := qemuAccel(config.KVM, probe)
+	accel, err := libvirtAccel(config.KVM, probe)
 	if err != nil {
 		return VMPlan{}, err
 	}
@@ -742,7 +739,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	xmlFile := result.Artifacts.DomainXML
 	args := []string{"-c", libvirtURI, "define", xmlFile}
 	return VMPlan{
-		QEMUPath:       virsh,
+		CommandPath:    virsh,
 		VirshPath:      virsh,
 		ScriptPath:     script,
 		Args:           args,
@@ -868,7 +865,7 @@ func readSerial(path string) string {
 	return string(data)
 }
 
-func qemuAccel(policy KVMPolicy, probe probe) (string, error) {
+func libvirtAccel(policy KVMPolicy, probe probe) (string, error) {
 	switch policy {
 	case KVMOff:
 		return "qemu", nil
@@ -1201,22 +1198,6 @@ func firstPath(ok bool, path string) string {
 		return ""
 	}
 	return path
-}
-
-func validateBridgeName(value string) error {
-	if value == "" {
-		return errors.New("bridge name is required")
-	}
-	if len(value) > 15 {
-		return fmt.Errorf("bridge name %q is longer than 15 characters", value)
-	}
-	for _, r := range value {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
-		if !ok {
-			return fmt.Errorf("bridge name %q contains unsupported character %q", value, r)
-		}
-	}
-	return nil
 }
 
 var cidReservations = struct {

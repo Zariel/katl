@@ -49,16 +49,13 @@ type Scenario struct {
 }
 
 type HostRequirements struct {
-	QEMU         bool      `json:"qemu,omitempty"`
-	QEMUImg      bool      `json:"qemuImg,omitempty"`
-	Libvirt      bool      `json:"libvirt,omitempty"`
-	OVMF         bool      `json:"ovmf,omitempty"`
-	KVM          KVMPolicy `json:"kvm,omitempty"`
-	OVMFCode     string    `json:"ovmfCode,omitempty"`
-	OVMFVars     string    `json:"ovmfVars,omitempty"`
-	MTools       bool      `json:"mtools,omitempty"`
-	SharedBridge bool      `json:"sharedBridge,omitempty"`
-	Bridge       string    `json:"bridge,omitempty"`
+	ImageTool bool      `json:"imageTool,omitempty"`
+	Libvirt   bool      `json:"libvirt,omitempty"`
+	OVMF      bool      `json:"ovmf,omitempty"`
+	KVM       KVMPolicy `json:"kvm,omitempty"`
+	OVMFCode  string    `json:"ovmfCode,omitempty"`
+	OVMFVars  string    `json:"ovmfVars,omitempty"`
+	MTools    bool      `json:"mtools,omitempty"`
 }
 
 type Options struct {
@@ -409,10 +406,7 @@ func normalizeScenario(scenario Scenario, options Options) Scenario {
 func checkHost(requirements HostRequirements, probe probe) error {
 	probe = probe.withDefaults()
 	var missing []MissingPrerequisite
-	if requirements.QEMU {
-		missing = appendCommand(missing, probe, "qemu-system-x86_64")
-	}
-	if requirements.QEMUImg {
+	if requirements.ImageTool {
 		missing = appendCommand(missing, probe, "qemu-img")
 	}
 	if requirements.Libvirt {
@@ -438,88 +432,10 @@ func checkHost(requirements HostRequirements, probe probe) error {
 			})
 		}
 	}
-	if requirements.SharedBridge {
-		bridge := first(requirements.Bridge, probe.env("KATL_VMTEST_BRIDGE"))
-		if bridge == "" {
-			missing = append(missing, MissingPrerequisite{
-				Name:   "KATL_VMTEST_BRIDGE",
-				Detail: "set KATL_VMTEST_BRIDGE or Scenario.Host.Bridge for shared VM networking",
-			})
-		} else if err := validateBridgeName(bridge); err != nil {
-			missing = append(missing, MissingPrerequisite{
-				Name:   "bridge device",
-				Detail: err.Error(),
-			})
-		} else {
-			missing = appendFile(missing, probe, "bridge device", filepath.Join("/sys/class/net", bridge), "create bridge or set KATL_VMTEST_BRIDGE")
-		}
-		missing = appendFile(missing, probe, "/dev/net/tun", "/dev/net/tun", "required for QEMU bridge networking")
-		missing = appendBridgeHelper(missing, probe, bridge)
-	}
 	if len(missing) > 0 {
 		return PrereqError{Missing: missing}
 	}
 	return nil
-}
-
-func appendBridgeHelper(missing []MissingPrerequisite, probe probe, bridge string) []MissingPrerequisite {
-	helper, ok := findBridgeHelper(probe)
-	if !ok {
-		return append(missing, MissingPrerequisite{
-			Name:   "qemu-bridge-helper",
-			Detail: "set KATL_QEMU_BRIDGE_HELPER or install qemu-bridge-helper",
-		})
-	}
-	if _, err := probe.stat(helper); err != nil {
-		missing = append(missing, MissingPrerequisite{
-			Name:   "qemu-bridge-helper",
-			Detail: helper + ": " + err.Error(),
-		})
-	}
-	const bridgeConf = "/etc/qemu/bridge.conf"
-	data, err := probe.readFile(bridgeConf)
-	if err != nil {
-		return append(missing, MissingPrerequisite{
-			Name:   "qemu bridge ACL",
-			Detail: bridgeConf + ": " + err.Error(),
-		})
-	}
-	if strings.TrimSpace(bridge) != "" && !bridgeAllowedByQEMU(bridge, data) {
-		return append(missing, MissingPrerequisite{
-			Name:   "qemu bridge ACL",
-			Detail: bridgeConf + " must allow " + bridge + " or all",
-		})
-	}
-	return missing
-}
-
-func findBridgeHelper(probe probe) (string, bool) {
-	if helper := strings.TrimSpace(probe.env("KATL_QEMU_BRIDGE_HELPER")); helper != "" {
-		return helper, true
-	}
-	for _, helper := range []string{
-		"/usr/lib/qemu/qemu-bridge-helper",
-		"/usr/libexec/qemu-bridge-helper",
-		"/usr/lib64/qemu/qemu-bridge-helper",
-	} {
-		if _, err := probe.stat(helper); err == nil {
-			return helper, true
-		}
-	}
-	return "", false
-}
-
-func bridgeAllowedByQEMU(bridge string, data []byte) bool {
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if line == "allow all" || line == "allow "+bridge {
-			return true
-		}
-	}
-	return false
 }
 
 func appendCommand(missing []MissingPrerequisite, probe probe, name string) []MissingPrerequisite {

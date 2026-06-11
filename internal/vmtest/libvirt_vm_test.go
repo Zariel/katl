@@ -153,7 +153,7 @@ func TestVMPrepare(t *testing.T) {
 }
 
 func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
-	tmp := filepath.Join(t.TempDir(), "qemu-tmp")
+	tmp := filepath.Join(t.TempDir(), "vm-tmp")
 	var serial strings.Builder
 	err := (ExecVMExecutor{TempDir: tmp}).Run(context.Background(), "sh", []string{"-c", "printf %s \"$TMPDIR\""}, &serial)
 	if err != nil {
@@ -768,9 +768,9 @@ func TestVMSerialIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestQEMUTimeoutSummaryWithoutSerial(t *testing.T) {
-	if got := qemuTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "libvirt domain timed out" {
-		t.Fatalf("qemuTimeoutSummary() = %q", got)
+func TestLibvirtTimeoutSummaryWithoutSerial(t *testing.T) {
+	if got := libvirtTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "libvirt domain timed out" {
+		t.Fatalf("libvirtTimeoutSummary() = %q", got)
 	}
 }
 

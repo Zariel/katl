@@ -222,7 +222,7 @@ func (e longRunningVMExec) Run(ctx context.Context, _ string, _ []string, serial
 type failingVMExec struct{}
 
 func (f failingVMExec) Run(context.Context, string, []string, io.Writer) error {
-	return errors.New("qemu failed")
+	return errors.New("vm command failed")
 }
 
 func readNodeResult(t *testing.T, path string) Result {
