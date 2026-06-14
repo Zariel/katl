@@ -131,6 +131,7 @@ exist on the state partition:
 | `/var/lib/katl/operations/<id>/journal` | `root:root` | `0700` | Append-only operation event journal used for crash recovery |
 | `/var/lib/katl/operations/<id>/journal/<seq>.<event-id>.json` | `root:root` | `0600` | One durable operation event |
 | `/var/lib/katl/operations/<id>/attachments` | `root:root` | `0700` | Redacted diagnostic artifacts referenced by the operation record |
+| `/var/lib/katl/config-requests` | `root:root` | `0750` | Request decision index for node configuration changes; accepted entries link to canonical operation IDs |
 | `/var/lib/katl/identity` | `root:root` | `0755` | Stable machine identity backing files |
 | `/var/lib/katl/identity/machine-id` | `root:root` | `0444` | Random install-generated systemd machine ID backing file |
 | `/var/lib/katl/kubernetes` | `root:root` | `0755` | Kubernetes projected state namespace |
@@ -150,10 +151,11 @@ as "current" should not live inside an individual generation directory.
 
 Operation records may reference generation IDs, install checkpoints, or
 Kubernetes artifacts, but they are not generation artifacts and must not be
-activated through sysext/confext selection. Existing workflow-specific records
-such as install status, config apply status, bootstrap run records, and upgrade
-records should conform to the shared `OperationRecord` model even when their
-storage paths differ during scaffolding.
+activated through sysext/confext selection. Canonical operation records live
+under `/var/lib/katl/operations/<id>/`. Existing workflow-specific files such as
+install status, config apply status, bootstrap summaries, and upgrade summaries
+may remain as compatibility read models, but they are not authoritative for
+crash recovery unless they are backed by the `katlc`-owned operation journal.
 
 `record.json` is a snapshot, not the only durable truth. Once an operation
 becomes durable, journal entries under
@@ -165,7 +167,10 @@ rebuilds it from the highest valid journal sequence.
 machine ID during install. It is stable across normal boots and updates because
 it lives on the state partition, but it is not deterministic and does not need
 to survive a destructive reinstall. The backing file should be root-owned and
-write-protected after install.
+write-protected after install. `katlos-install` also renders that same value
+into generation 0 boot metadata with `systemd.machine_id=<id>`. Future
+generation writers must preserve the persistent value and reject loader entries
+or kernel arguments that would introduce a different machine ID.
 
 ## Activation State
 
@@ -190,6 +195,11 @@ operation records.
 durable selection or commit state. Durable generation selection must come from
 generation spec plus `/var/lib/katl/boot/selection.json`, not from a mutable
 `current` symlink inside a generation directory.
+
+Boot-selection state changes must follow the transaction model in
+`docs/internal/boot-selection-transaction.md`. GPT labels, sysupdate filenames,
+and `/run` links are validation or execution details, not the persistent default
+or known-good source of truth.
 
 The default activation mechanism is a service, not a systemd generator:
 

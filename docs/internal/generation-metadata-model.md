@@ -53,7 +53,7 @@ Required `GenerationStatus` fields:
 | --- | --- |
 | `generationID` | Generation this status belongs to |
 | `specDigest` | Canonical digest of the matching `spec.json` |
-| `commitState` | Mutable candidate, committed, superseded, or abandoned commit/default state |
+| `commitState` | Mutable candidate, committed, superseded, or abandoned acceptance state |
 | `bootState` | Mutable pending, trying, good, or failed boot-attempt state |
 | `healthState` | Mutable unknown, healthy, unhealthy, or deferred runtime health state |
 | `updatedAt` | Last status update timestamp |
@@ -130,10 +130,11 @@ bootState: pending
 healthState: unknown
 ```
 
-That commit makes the generation the persistent desired host state for future
-boots, but it does not make the generation known-good. Generation 1 becomes
-known-good only after a later boot reaches `katl-boot-complete.target` and
-updates `bootState: good` and `healthState: healthy`.
+That commit accepts the generation as desired host state, but it does not move
+the persistent boot default and does not make the generation known-good.
+Generation 1 becomes known-good only after a later boot reaches
+`katl-boot-complete.target`, updates `bootState: good` and
+`healthState: healthy`, and the boot-selection transaction promotes it.
 
 The first install path does not need inactive-slot rollback because there is no
 previous installed generation.
@@ -165,12 +166,14 @@ write a same-filesystem temporary status file, fsync it, rename it over
 `status.json`, and fsync the generation directory. They must not rewrite
 `spec.json` while updating status.
 
-`commitState` records generation acceptance and default selection. `bootState`
-records boot trial status only. It is not the live configuration apply phase.
-`healthState` records generation boot health. Live apply progress, diagnostics,
-rollback attempts, and external mutation boundaries belong in an operation
-record such as `config-apply-status.json` until the generation later boots and
-reaches `katl-boot-complete.target`.
+`commitState` records generation acceptance only. It does not record persistent
+boot default selection or known-good promotion. `bootState` records boot trial
+status only. It is not the live configuration apply phase. `healthState` records
+generation boot health. Live apply progress, diagnostics, rollback attempts, and
+external mutation boundaries belong in a `katlc`-owned `OperationRecord` under
+`/var/lib/katl/operations/<operation-id>/`. A generation-local
+`config-apply-status.json` may exist as a compatibility summary, but it is not
+the authoritative recovery record.
 
 Valid commit transitions are:
 
@@ -222,6 +225,12 @@ the kubeadm phase and planned kubelet restart have completed and local health
 checks pass. Mutable gate state for target kubelet activation belongs in the
 operation record, not in `spec.json`.
 
+Until a later ADR selects and tests the target kubeadm access mode and target
+kubelet activation gate, `katlc` must reject or record plan-only Kubernetes
+sysext changes on already bootstrapped nodes. It must not select a bootable
+candidate, globally activate a target Kubernetes sysext, run kubeadm upgrade, or
+restart kubelet for those requests.
+
 Katl uses `systemd-sysupdate` as the default resource transfer and staging
 primitive for KatlOS runtime root and UKI updates, but the Katl generation
 spec/status remains authoritative for the complete selected runtime state. The
@@ -234,6 +243,11 @@ extension activation, native mount units for state projections, tmpfiles for
 Katl-owned directory preparation, and boot health targets for known-good
 promotion. Generation spec, status, and boot selection state are the Katl
 coordination layer around those native mechanisms.
+
+Boot selection updates are transactional state changes across
+`/var/lib/katl/boot/selection.json`, systemd-boot one-shot or boot-counted
+entries, and generation status. The write order and recovery rules are defined
+in `docs/internal/boot-selection-transaction.md`.
 
 Runtime configuration changes are confext-only generations unless they are
 combined with an explicit root or sysext update. The apply-mode decision for

@@ -418,8 +418,9 @@ SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
   SSH overrides are deferred; machine-id is not user supplied in the current
   manifest;
-  katlos-install generates a random machine-id during install and records it in
-  persistent state and boot settings
+  katlos-install generates a random machine-id during install, records it under
+  /var/lib/katl/identity/machine-id, and renders it into generation 0 boot
+  metadata with systemd.machine_id=
 
 extra disks
   selectors must not resolve to the target root disk or its partitions; mount
@@ -759,7 +760,7 @@ katlc selects the bundled Kubernetes sysext whose payload version exactly matche
   node.kubernetes.version, such as katl-kube-1.36.1.sysext
 katlc renders known configuration domains into generation 1 confext
 katlc writes candidate generation spec/status and activates it for kubeadm readiness
-katlctl runs kubeadm init or join
+katlc runs kubeadm init or join under systemd supervision
 katlc commits the candidate generation only after kubeadm and operation health
   checks pass; boot health remains pending until a later boot
 ```
@@ -814,7 +815,8 @@ containerd
 runc or crun
 katlc
 katl node/update services, when they exist
-katlctl, when it exists
+optional katlctl client binary for local operator convenience; node state remains
+  owned by katlc
 ```
 
 This is the core of the runtime OS: kernel, systemd, SSH access, and enough host
@@ -996,6 +998,10 @@ the target kubelet until the upgrade workflow has had access to target `kubeadm`
 and has recorded the explicit handoff for kubeadm upgrade work. Katl's role in
 this gate is OS-side ordering and evidence; kubeadm remains the tool that
 performs Kubernetes upgrade actions and mutates Kubernetes node or cluster state.
+Until a follow-up ADR selects the target kubeadm access mode and kubelet
+activation gate, `katlc` must reject or record plan-only Kubernetes sysext
+changes on already bootstrapped nodes rather than globally activating the target
+sysext or restarting kubelet.
 
 Tests should be layered rather than waiting for a full VM flow:
 
@@ -1009,9 +1015,9 @@ VM install-to-runtime tests prove generation 0 boots from disk, mounts /var,
   activates baseline extensions/config, exposes operator access, and reaches
   installed-runtime health
 VM bootstrap tests prove `katlctl cluster bootstrap` asks `katlc` to create and
-  activate generation 1, selects the manifest-requested Kubernetes sysext,
-  exposes writable /etc/kubernetes, reaches katl-kubeadm-ready.target, runs
-  kubeadm, and commits only after kubeadm and health checks succeed
+  activate generation 1, select the manifest-requested Kubernetes sysext, expose
+  writable /etc/kubernetes, reach katl-kubeadm-ready.target, run kubeadm through
+  a node-local operation, and commit only after kubeadm and health checks succeed
 ```
 
 The readiness check should avoid implying that Katl owns cluster lifecycle. Katl
@@ -1183,19 +1189,18 @@ the root and steady-state `/etc` are otherwise immutable. The base root should
 ship an empty `/etc/machine-id` placeholder, and Katl must establish a stable
 machine ID before normal services depend on it.
 
-Candidate mechanisms:
-
-```text
-installer writes a per-node boot entry with systemd.machine_id=
-initrd establishes /etc/machine-id from persistent state before systemd proper
-an early mount path binds /var/lib/katl/identity/machine-id onto /etc/machine-id
-```
-
-Initial recommendation: `katlos-install` generates the stable machine ID during
+Generation 0 decision: `katlos-install` generates the stable machine ID during
 install, records it under `/var/lib/katl/identity/machine-id`, and renders
-`systemd.machine_id=<id>` into the installed generation's boot entry. That gives
-PID 1 the identity before normal mounts or services run. Later work can move
-this into the initrd if kernel command line exposure becomes unacceptable.
+`systemd.machine_id=<id>` into the installed generation's boot entry. The
+persistent `/var/lib/katl/identity/machine-id` file is the source of truth, and
+`systemd.machine_id=` is the early transport that gives PID 1 the identity before
+normal mounts or services run.
+
+Initrd projection and a later `/etc/machine-id` bind mount are deferred
+alternatives, not the Generation 0 mechanism. A normal service or mount is too
+late for PID 1 consumers; an initrd mechanism needs a separate design and VM
+tests. Kernel command line exposure is an accepted Generation 0 tradeoff for the
+first implementation.
 
 The generated value is random per install. It is not derived from hardware,
 hostname, manifest content, or build inputs, and Katl does not preserve it across
@@ -1326,6 +1331,8 @@ explicit boot counting. A candidate must not become the permanent known-good
 default until it reaches the boot-complete target.
 The focused boot health decision is recorded in
 `docs/internal/boot-health-semantics.md`.
+The boot-selection write order and recovery behavior are recorded in
+`docs/internal/boot-selection-transaction.md`.
 
 `katlos-install` must render final loader entries on the target node because the
 entries need final partition UUIDs, the install-generated machine-id value, boot
@@ -1341,7 +1348,8 @@ activation in this shape:
 root slot mounted read-only
 /var mounted from KATL_STATE
 optional /var/lib/etcd mounted
-stable machine-id established by the chosen early-boot mechanism
+stable machine-id established by the generation loader entry
+  systemd.machine_id= mechanism
 baseline systemd-sysext activated, when selected
 baseline systemd-confext activated
 network online

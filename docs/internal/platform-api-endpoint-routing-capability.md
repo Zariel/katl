@@ -1,6 +1,8 @@
 # Platform API Endpoint Routing Capability
 
-Status: current decision for an opt-in day-2 node application capability.
+Status: deferred proposal. This is not a supported Katl capability until the
+optional app sysext contract, helper status path, operation/apply/rollback
+behavior, and ownership rules are defined and tested.
 
 Katl needs a way to support greenfield clusters where Cilium must reach the
 Kubernetes API before Cilium can advertise any service or API VIP. The
@@ -23,6 +25,22 @@ operator story for endpoint reachability. This document only covers the opt-in
 dynamic-routing helper for users who do not already have an independently
 reachable platform API endpoint.
 
+## Deferral Gate
+
+This document must not be used as implementation approval. `katlc` must reject
+platform API endpoint helper input, and `katlctl` must not expose helper
+enablement, until follow-up docs define:
+
+```text
+optional app sysext metadata, compatibility, unit, config, health, and status
+  contract
+exact helper status path, schema, durability, redaction, and owner
+node-local operation records for enable, disable, live apply, withdrawal,
+  rollback, and repair
+ownership boundaries between Katl, the app sysext, Cilium, GitOps, and user
+  infrastructure
+```
+
 ## Decision
 
 Katl treats pre-Cilium Kubernetes API reachability as platform or external
@@ -38,8 +56,9 @@ Endpoint roles are separate:
 
 ```text
 bootstrap API reachability
-  the path used by katlctl after kubeadm init and while coordinating joins; this
-  path must already be reachable before cluster add-ons are user-installed
+  the path used by katlctl after kubeadm init and while sequencing explicit join
+  operation requests; this path must already be reachable before cluster add-ons
+  are user-installed
 
 stable API identity
   the kubeadm controlPlaneEndpoint used for certificate SANs, kubeconfig output,
@@ -51,7 +70,7 @@ external API advertisement
   after Cilium readiness
 ```
 
-## Supported Shape
+## Future Required Shape
 
 Preferred implementation:
 
@@ -61,11 +80,12 @@ Katl-provided app sysext
   systemd units, health gate, status reporter, and compatibility metadata
 ```
 
-Supported extension path:
+Deferred extension path:
 
 ```text
 user-provided app sysext
-  implements the same unit, config, status, health, and compatibility contract
+  possible only after the same app sysext contract exists; until then Katl must
+  not accept arbitrary user sysexts as managed endpoint helpers
 ```
 
 Bounded native config:
@@ -90,7 +110,7 @@ static-network VIP system.
 
 ## Inputs
 
-The helper design should use typed, bounded inputs:
+A future helper design should use typed, bounded inputs:
 
 ```text
 api endpoint address or VIP prefix
@@ -105,8 +125,9 @@ advertisement enablement policy
 status output path and retention policy
 ```
 
-The field-level schema and validation contract are defined in
-`docs/internal/platform-api-endpoint-helper-input-schema.md`.
+The field-level schema proposal is sketched in
+`docs/internal/platform-api-endpoint-helper-input-schema.md`; it is not an
+accepted implementation contract.
 
 Static and no-dynamic-routing fabrics are allowed as user-owned environments,
 but they are not first-class for this helper.
@@ -204,8 +225,15 @@ cluster mutations in generated confext activation.
 
 ## Status
 
+The exact status path is not defined here. The app sysext contract must define
+whether current helper state is runtime-only, durable, or copied into operation
+records; the concrete path must be added to the persistent state inventory
+before implementation. `katlc` owns node-local status collection and reporting.
+`katlctl` may display helper status only by querying node-local Katl state; it
+must not become the owner of helper state.
+
 Status must be readable without inspecting raw daemon internals. It should
-report:
+eventually report:
 
 ```text
 configured endpoint and prefix
@@ -223,12 +251,25 @@ selected generation or app sysext version
 Debug bundles may include richer daemon logs, but normal status must be bounded
 and redacted.
 
-## Live And Next-Boot Apply
+## Deferred Apply And Rollback Contract
 
-Next-boot changes stage a new generation and become active after boot selection.
+No live helper apply is supported until a node-local `katlc` operation model
+exists for this capability. The design must define operation kinds, resource
+locks, preflight checks, withdrawal behavior, rollback limits, recovery-required
+states, and status snapshots.
 
-Live changes are allowed only after domain-specific preflight proves operator
-access and routing safety. Examples that require fail-closed preflight include:
+Generation rollback may switch selected sysext and confext as a unit, but it
+must not claim to roll back user fabric state, Cilium state, GitOps resources, or
+Kubernetes API objects. Failed helper activation must fail closed, withdraw
+advertisement where the contract permits, and report explicit operator action
+when safe restoration is not proven.
+
+Future next-boot changes stage a new generation and become active after boot
+selection.
+
+Future live changes are allowed only after domain-specific preflight proves
+operator access and routing safety. Examples that require fail-closed preflight
+include:
 
 ```text
 changing the API endpoint address or prefix
@@ -282,11 +323,13 @@ package installation.
 Implementation must be split into focused follow-up work:
 
 ```text
-design the app sysext contract for optional node applications
+accept the app sysext contract for optional node applications
 
-define the platform API endpoint helper input schema and generated artifacts
+finalize the platform API endpoint helper input schema and candidate generated
+artifacts after the app sysext contract exists
 
-package BIRD or equivalent helper as a Katl or fixture app sysext
+package BIRD or equivalent helper as a Katl or fixture app sysext only after the
+contract defines metadata, unit, status, and compatibility requirements
 
 implement the advertisement health gate and status record
 

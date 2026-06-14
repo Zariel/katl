@@ -18,6 +18,12 @@ katl-boot-complete.target reached
 The target is generation-scoped. The required local services depend on the
 selected generation's capability profile.
 
+For generation 0, "machine identity available" means PID 1 received the
+install-generated value through `systemd.machine_id=`, `/etc/machine-id`
+resolves to that same value during runtime, and
+`/var/lib/katl/identity/machine-id` persists the same 32-character lowercase hex
+ID. A mismatch is a boot-health failure.
+
 Generation 0 installed-runtime profile:
 
 ```text
@@ -89,7 +95,8 @@ candidate
   host state
 
 committed
-  accepted persistent desired host state for future boots
+  accepted desired host state; persistent default boot selection is tracked
+  separately in /var/lib/katl/boot/selection.json
 
 superseded
   previously committed generation replaced by a newer committed generation, but
@@ -157,8 +164,11 @@ candidate.
 
 Later work may use systemd-boot boot counting for multiple attempts, but the
 first policy should keep rollback behavior easy to validate in VM tests.
-Rollback selection is defined in
-`docs/internal/rollback-selection-rules.md`.
+Systemd executes the bounded attempt; `katlc` records boot-selection state,
+validates the boot result, and promotes or rolls back through the transaction
+model. Rollback selection is defined in
+`docs/internal/rollback-selection-rules.md`; transaction details are defined in
+`docs/internal/boot-selection-transaction.md`.
 
 ## First Install
 

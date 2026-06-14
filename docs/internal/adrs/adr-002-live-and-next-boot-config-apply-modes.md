@@ -53,8 +53,8 @@ rendering or activating partial state.
 The render step happens on the node that receives the request. A successful
 request creates local generation artifacts from trusted Katl config: generated
 confext content, sysext activation metadata, generation spec/status, and apply
-status. The request is not a transport for prebuilt confext images or arbitrary
-systemd extension activation paths.
+status linked to a node-local `OperationRecord`. The request is not a transport
+for prebuilt confext images or arbitrary systemd extension activation paths.
 Unsupported config never produces partial generation artifacts.
 
 Install-time materialization has no apply mode; it creates the first selected
@@ -184,21 +184,23 @@ Mutable generation status lives in:
 /var/lib/katl/generations/<generation-id>/status.json
 ```
 
-Mutable apply results live in a generation-local sibling operation record:
+Mutable apply results live in a canonical node-local operation record:
 
 ```text
-/var/lib/katl/generations/<generation-id>/config-apply-status.json
+/var/lib/katl/operations/<operation-id>/
 ```
 
-That status record stores phase, live action results, diagnostics, rollback
-target, rollback result, timestamps, and redacted failure reasons. This keeps
-the current generation spec rule intact: the generation selects root, sysext,
-and confext together, and Katl must not mutate an existing generation's immutable
+That operation record stores phase, live action results, diagnostics, rollback
+target, rollback result, timestamps, and redacted failure reasons. This keeps the
+current generation spec rule intact: the generation selects root, sysext, and
+confext together, and Katl must not mutate an existing generation's immutable
 selection fields in place.
 
-`config-apply-status.json` is the generation-scoped operation record for the
-configuration apply attempt. The filename may remain workflow-specific, but the
-fields should follow the shared `OperationRecord` model from
+A generation-local
+`/var/lib/katl/generations/<generation-id>/config-apply-status.json` may remain
+as a compatibility summary of the latest apply attempt, but it is not the
+authoritative recovery record. Authoritative phase, retry, and rollback state
+comes from the `katlc`-owned operation journal described in
 `docs/internal/generations-and-operations.md`.
 
 For `next-boot`, Katl renders and validates the candidate, writes
@@ -209,7 +211,7 @@ keeps the previous active generation and no live activation occurs.
 For `live`, Katl renders and validates the candidate, writes `pending` and
 `unknown` generation status with `commitState: candidate`, exposes only that
 selected generated confext in the current boot, runs the accepted live apply
-action plan, and records progress in `config-apply-status.json`.
+action plan, and records progress in the node-local `OperationRecord`.
 `operationPhase: live-active` means the current boot is using the candidate
 confext and accepted live actions passed. It does not mean the generation has
 passed boot health.
@@ -293,7 +295,8 @@ Implementation follow-up work must cover:
 ```text
 planner unit tests for live, next-boot, staged-only, and rejected-live decisions
 golden tests for generation spec/status fields and generated confext paths
-golden tests for config-apply-status.json
+golden tests for OperationRecord snapshots and any config-apply-status.json
+  compatibility summary
 negative tests proving mixed live requests fail atomically
 negative tests proving kubeadm and /etc/kubernetes changes are never live-applied
 status serialization tests with redaction

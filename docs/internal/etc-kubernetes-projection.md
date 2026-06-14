@@ -36,9 +36,10 @@ katl-kubeadm-ready.target
 ```
 
 The projection is part of the Kubernetes-capable generation created when
-`katlctl cluster bootstrap` asks `katlc` to validate stored intent and prepare the
-node for kubeadm. Generation 0 may create or validate safe backing paths, but
-generation 0 boot health does not require the projection to be mounted.
+`katlctl cluster bootstrap` asks node-local `katlc` to validate stored intent and
+activate the node for kubeadm. Generation 0 may create or validate safe backing
+paths, but generation 0 boot health does not require the projection to be
+mounted.
 
 The mount unit should use ordering equivalent to:
 
@@ -107,8 +108,8 @@ Kubeadm and kubelet own the projected subtree:
 
 Katl-generated kubeadm input should live under `/etc/katl/kubeadm/<name>/`, for
 example `/etc/katl/kubeadm/control-plane/config.yaml`. Operator-run bootstrap
-tools or test harnesses call kubeadm with those config paths. Kubeadm output
-remains in projected `/etc/kubernetes`.
+tools or test harnesses request a node-local `katlc` operation that calls kubeadm
+with those config paths. Kubeadm output remains in projected `/etc/kubernetes`.
 
 This projection does not make Katl the owner of kubeadm live state. Katl owns the
 mount wiring and the rendered desired input under `/etc/katl`; kubeadm and

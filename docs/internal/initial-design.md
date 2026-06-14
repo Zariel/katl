@@ -26,8 +26,9 @@ KatlOS source
   -> katlos-install installs KatlOS generation 0 with stored cluster intent
   -> katlctl cluster bootstrap asks katlc to create the first
      Kubernetes-capable generation from that intent
-  -> katlctl coordinates kubeadm bootstrap or join and commits the generation
-     after kubeadm and health checks succeed
+  -> katlctl sequences explicit node requests while katlc runs kubeadm bootstrap
+     or join operations and commits the generation after kubeadm and health
+     checks succeed
   -> later explicit kubeadm-aware operations upgrade, repair, or recover nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
   -> after bootstrap, the user installs and owns cluster add-ons, GitOps, and
@@ -45,6 +46,7 @@ Katl-owned surfaces:
 
 ```text
 katlc KatlOS state/configuration command
+katlctl control client with only connection and known-node configuration
 installer-image build inputs
 katlos-install
 runtime root artifact build inputs
@@ -272,8 +274,8 @@ step is `katlctl cluster bootstrap`. That operation asks `katlc` to validate
 stored intent, create and activate the first Kubernetes-capable candidate
 generation, select the manifest-requested Kubernetes sysext, render kubeadm input
 under `/etc/katl`, project writable kubeadm output at `/etc/kubernetes`, run
-kubeadm, and commit the generation only after kubeadm and local health checks
-succeed.
+kubeadm through a node-local operation, and commit the generation only after
+kubeadm and local health checks succeed.
 
 The first proof should stay local: build or inspect the bundled sysext artifact,
 boot generation 0 in the VM runner, run `katlctl cluster bootstrap`, verify that
@@ -386,9 +388,10 @@ with a bind mount. Generated confext must not own `/etc/kubernetes`.
 
 `/etc/machine-id` is also special. `katlos-install` generates a random machine
 ID during install, persists it under `/var/lib/katl/identity/machine-id`, and
-exposes it early enough for systemd and D-Bus consumers. The file should be
-write-protected after install and stable across runtime boots and updates, but
-it does not need to be deterministic or preserved across reinstalling the node.
+renders it into the selected boot entry with `systemd.machine_id=` so PID 1 and
+D-Bus consumers see the value early enough. The file should be write-protected
+after install and stable across runtime boots and updates, but it does not need
+to be deterministic or preserved across reinstalling the node.
 
 `/run` is ephemeral. It may hold boot-local activation links and handoff state,
 but it must not hold persistent node identity.
@@ -465,7 +468,7 @@ render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering
 reach katl-kubeadm-ready.target before kubeadm runs
-run kubeadm init or join
+run kubeadm init or join through a node-local katlc operation
 commit generation 1 only after kubeadm and operation health checks succeed;
 boot health remains pending until a later boot
 ```
@@ -494,6 +497,10 @@ docs/internal/boot-health-semantics.md
 
 docs/internal/rollback-selection-rules.md
   Known-good generation selection and rollback rules.
+
+docs/internal/boot-selection-transaction.md
+  Transactional boot-selection state, systemd-boot arming, promotion, and
+  recovery rules.
 
 docs/internal/persistent-state-inventory.md
   Persistent node and Kubernetes state inventory.

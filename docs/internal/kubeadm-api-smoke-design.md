@@ -5,8 +5,9 @@ Status: working design.
 This document defines the first single-node bootstrap VM proof. The goal is to
 boot generation 0, run `katlctl cluster bootstrap`, have that operation ask
 `katlc` to create the first Kubernetes-capable candidate generation, run
-`kubeadm init`, persist kubeadm-owned output, start the kube-apiserver static
-pod, and prove the Kubernetes API server responds to `kubectl`.
+`kubeadm init` through a node-local `BootstrapCluster` operation, persist
+kubeadm-owned output, start the kube-apiserver static pod, and prove the
+Kubernetes API server responds to `kubectl`.
 
 This is a test and readiness proof, not a product expansion. Katl prepares
 kubeadm-ready candidate generations during explicit bootstrap operations. The
@@ -216,8 +217,8 @@ The implementation should grow in small gates:
    selected Kubernetes sysext.
 9. Verify `/etc/katl/kubeadm/control-plane/config.yaml` was rendered for the test
    VM.
-10. Run `kubeadm init` with add-on phases skipped through the bootstrap
-    operation.
+10. Run `kubeadm init` with add-on phases skipped through the node-local
+    bootstrap operation.
 11. Assert kubeadm output appeared under `/etc/kubernetes`.
 12. Assert the control-plane static pod manifests exist.
 13. Wait for the kube-apiserver container to be running.

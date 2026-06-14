@@ -202,7 +202,7 @@ An upgrade image uses the same `KatlOSImage` schema with `imageRole: upgrade`.
 It contains the payload needed to create a candidate generation from one
 user-facing artifact.
 
-Supported upgrade shapes:
+Representable upgrade image shapes:
 
 ```text
 KatlOS-only
@@ -229,17 +229,20 @@ A Kubernetes upgrade image may still contain a single Kubernetes sysext for the
 target steady state. The upgrade operation, not the image schema, must define
 how target kubeadm is made available before target kubelet activation. Splitting
 kubeadm into a separate tool component is an implementation option, not a
-current image contract.
+current image contract. These shapes are representable in the image model, but
+Kubernetes upgrade execution remains disabled until the target kubeadm access
+mode and kubelet activation gate are selected, implemented, and tested.
 
 This is an explicit upgrade sequencing requirement, not an image-schema feature
 and not a kubeadm replacement. If the target Kubernetes sysext contains both
 `kubeadm` and `kubelet`, the upgrade path must provide a pre-kubelet gate: the
 target `kubeadm` binary must be available for the operator, test harness, or a
-future kubeadm-aware `katlctl` step before target `kubelet.service` is started or
-restarted from that same payload. The mechanism is intentionally deferred. Valid
-directions include service ordering, a held kubelet start condition, temporary
-target-kubeadm exposure, or a split kubeadm tool payload. The image contract only
-requires that the ordering be representable and testable.
+future kubeadm-aware node-local `katlc` operation before target
+`kubelet.service` is started or restarted from that same payload. The mechanism
+is intentionally deferred. Valid directions include service ordering, a held
+kubelet start condition, temporary target-kubeadm exposure, or a split kubeadm
+tool payload. The image contract only requires that the ordering be representable
+and testable.
 
 ## Node Configuration References
 

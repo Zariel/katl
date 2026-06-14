@@ -20,8 +20,9 @@ KatlOS source
   -> katlos-install installs KatlOS generation 0 with stored cluster intent
   -> katlctl cluster bootstrap asks katlc to validate that intent and create the
      first Kubernetes-capable candidate generation
-  -> katlctl coordinates kubeadm bootstrap or join and commits the generation
-     only after kubeadm and health checks succeed
+  -> katlctl sequences explicit node requests while katlc runs kubeadm bootstrap
+     or join operations and commits the generation only after kubeadm and health
+     checks succeed
   -> later explicit kubeadm-aware operations upgrade, repair, or recover nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
   -> after bootstrap, the user installs and owns cluster add-ons, GitOps, and
@@ -30,7 +31,7 @@ KatlOS source
 
 ## Product Shape
 
-Katl has three durable product surfaces:
+Katl has four durable product surfaces:
 
 ```text
 katlc
@@ -42,6 +43,13 @@ katlc
 katlos-install
   Runs in the installer environment, applies a user-supplied install manifest,
   owns Katl disk layout, writes runtime generations, and records install state.
+
+katlctl
+  Runs as an operator control client. It keeps only client configuration for how
+  to communicate with the cluster and known nodes. It submits explicit requests
+  to node-local katlc, observes returned operation IDs, sequences bounded
+  multi-node workflows, and relays requested client-side output. It does not
+  generate or own node state.
 
 KatlOS runtime
   Boots installed nodes into a small, systemd-native Linux environment with the
@@ -117,14 +125,14 @@ returns to a complete previously selected generation.
 
 Operations are explicit stateful workflows that move reality toward a desired
 generation or cluster state. `katlc` owns node-local planning and status,
-systemd executes and supervises node-local operation units, `katlctl` may
-coordinate operator-driven multi-node workflows, and kubeadm remains
+systemd executes and supervises node-local operation units, `katlctl` may submit
+and sequence operator-driven multi-node requests, and kubeadm remains
 authoritative for Kubernetes cluster mutation.
 
-Multi-node operator workflows may use bounded `katlctl` coordinator run records
-that aggregate explicit node operation attempts. Those records provide audit,
-retry, and diagnostics; they do not make Katl a continuous cluster lifecycle
-controller.
+Multi-node operator workflows link bounded node-local operation records returned
+by `katlc`. `katlctl` may display non-authoritative invocation summaries for
+operator convenience, but recovery remains possible from node-local state without
+`katlctl`, and Katl does not become a continuous cluster lifecycle controller.
 
 Update machinery should use native systemd functions where they fit:
 systemd-boot selection and boot counting, systemd-sysext and systemd-confext
@@ -202,10 +210,11 @@ Kubernetes binaries activated and no cluster state created. The user runs
 `katlctl cluster bootstrap`, which asks `katlc` to validate the stored intent,
 create and activate the first Kubernetes-capable candidate generation, select
 the requested Kubernetes sysext, render kubeadm input, and expose the writable
-kubeadm output paths. `katlctl` then coordinates kubeadm init or join and the
-generation is committed only after kubeadm succeeds and health checks pass. Once
-cluster bootstrap completes, the user installs CNI, DNS, GitOps, policies,
-storage, and applications with their chosen cluster tooling.
+kubeadm output paths. `katlctl` then sequences the requested nodes while
+node-local `katlc` runs kubeadm init or join operations. The generation is
+committed only after kubeadm succeeds and health checks pass. Once cluster
+bootstrap completes, the user installs CNI, DNS, GitOps, policies, storage, and
+applications with their chosen cluster tooling.
 
 Updates follow the same model. A new desired state compiles into a new
 generation. Online-applicable configuration can apply immediately through a
@@ -270,6 +279,7 @@ Generation, health, update, and rollback:
 docs/internal/generation-metadata-model.md
 docs/internal/boot-health-semantics.md
 docs/internal/rollback-selection-rules.md
+docs/internal/boot-selection-transaction.md
 ```
 
 Persistent state:

@@ -73,10 +73,12 @@ Katl currently models logical slots as `root-a` and `root-b` and uses fixed GPT
 labels such as `KATL_ROOT_A` and `KATL_ROOT_B` during install planning.
 Sysupdate partition targets instead discover available slots by partition type
 and use partition labels for version state, including the special `_empty`
-label. The prototype must resolve this friction explicitly. Katl generation
-metadata should keep the logical slot and selected PARTUUID as authority; the
-sysupdate-facing partition label may become version-bearing implementation
-state after first install.
+label. The prototype must resolve this friction explicitly: Katl generation
+metadata keeps the logical slot and selected PARTUUID as authority, and
+`/var/lib/katl/boot/selection.json` keeps mutable default and trial pointers. The
+sysupdate-facing partition label may become version-bearing implementation state
+after first install, but it is not the generation identity or boot-selection
+source of truth.
 
 The UKI transfer is deliberately ordered after the root transfer. `sysupdate.d`
 finalizes transfers alphabetically, and the boot entry is the runtime entry
@@ -125,7 +127,9 @@ Boot counting renames the booted UKI after a successful boot. Katl generation
 spec should record the canonical final UKI path. Mutable trial boot path state,
 including boot-counted `+@l-@d` filenames, belongs in
 `/var/lib/katl/boot/selection.json` while a generation is trying. The sysupdate
-version and boot-counted filename are not the generation identity.
+version and boot-counted filename are not the generation identity. The concrete
+write order for `selection.json`, systemd-boot state, and generation status is
+defined in `docs/internal/boot-selection-transaction.md`.
 
 ## Single KatlOS Image Publication
 
@@ -216,9 +220,10 @@ passes. Initial activation should either use systemd-boot one-shot selection or
 boot-counting entries with the previous known-good generation still available.
 
 A successful sysupdate transfer is staging, not activation or commit. Commit
-order is: transfer resources, write candidate metadata, arm bounded boot
-selection, boot candidate, reach `katl-boot-complete.target`, mark
-`good/healthy`, then make the candidate the persistent default.
+order for a normal booted update is: transfer resources, write candidate
+metadata, arm bounded boot selection, boot candidate, reach
+`katl-boot-complete.target`, mark `good/healthy`, then promote the candidate to
+the persistent default through the boot-selection transaction.
 
 After health passes, Katl updates generation status to:
 
@@ -232,6 +237,11 @@ become the persistent default in boot selection state and the previous healthy
 generation be marked `commitState: superseded`. Making a candidate the
 persistent default is bootloader and boot-selection state, not mutation of
 generation selection fields.
+
+Bootstrap and join are the live-activation exception: the first
+Kubernetes-capable generation may become `commitState: committed` after kubeadm
+and operation health pass, while boot health and persistent default promotion
+remain pending until a later boot.
 
 If boot health fails, Katl marks the candidate failed/unhealthy and selects the
 previous known-good generation. Sysupdate may later vacuum obsolete transferred
@@ -276,7 +286,8 @@ This decision preserves the one-image install and upgrade contract while using
 systemd's native A/B transfer machinery where it fits. It adds a publication
 requirement: releases need either a generated sysupdate component view or a
 local/offline flow that mounts the verified KatlOS image and presents its
-components as regular-file sources.
+components as regular-file sources. It also leaves Katl generation metadata and
+the boot-selection transaction authoritative over sysupdate labels and filenames.
 
 The next implementation step is a small prototype that stages a root partition
 and UKI into an installed VM, creates Katl generation spec/status from the

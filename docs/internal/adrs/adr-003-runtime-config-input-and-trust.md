@@ -188,10 +188,12 @@ example:
 /var/lib/katl/config-requests/<source-id>/<desired-version>.json
 ```
 
-Accepted runtime changes also write immutable generation spec/status and the
-generation-local `config-apply-status.json` described by ADR-002. That status
-file is the generation-scoped operation record for the apply attempt, using the
-shared operation model even if the filename stays workflow-specific.
+Accepted runtime changes also write immutable generation spec/status and a
+canonical node-local `OperationRecord` under
+`/var/lib/katl/operations/<operation-id>/`, as described by ADR-002. A
+generation-local `config-apply-status.json` may remain as a compatibility summary
+linked from the operation record, but it is not the authoritative recovery
+record.
 
 A rejected request may reuse common decision/status fields, but it does not
 become a mutating operation record and must not create partial generation
@@ -241,7 +243,7 @@ GitOps controllers
 If rendered kubeadm desired input differs from the live cluster state or from
 the selected kubeadm metadata, the planner records
 `kubeadm.explicitActionRequired=true` in generation spec/status and
-`config-apply-status.json`. Applying that desired input to a live cluster is a
+the operation record. Applying that desired input to a live cluster is a
 separate kubeadm-aware operator action with its own planner, status, rollback
 story, and VM tests.
 

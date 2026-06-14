@@ -84,9 +84,9 @@ or:
 kubeadm join --config /etc/katl/kubeadm/worker/config.yaml
 ```
 
-Katl may later provide thin kubeadm helpers or the higher-level
-`katlctl cluster bootstrap` coordinator. When Katl runs those helpers, they
-should record a bounded operation/run record, but they remain explicit operator
+Katl may later provide thin kubeadm helper operations requested through
+`katlctl` or another operator client. When Katl runs those helpers, node-local
+`katlc` records a bounded `OperationRecord`, but they remain explicit operator
 actions and are never implied by node configuration, install manifest
 processing, or the kubeadm-ready target.
 
@@ -254,9 +254,10 @@ kubeadm-managed Kubernetes API objects
 ```
 
 Applying desired kubeadm changes to a running cluster must be an explicit
-kubeadm-aware operator action. Later `katlctl` commands may help plan or apply
-those operations, but they must report which kubeadm and Kubernetes objects
-will change and must not be hidden inside normal confext activation.
+kubeadm-aware operator action. Later `katlctl` commands may request node-local
+`katlc` planning or execution, but `katlc` must report which kubeadm and
+Kubernetes objects will change and the action must not be hidden inside normal
+confext activation.
 
 The same rule applies during Kubernetes upgrades. Rendering new desired kubeadm
 or kubelet input into a candidate generation does not make that input live by
@@ -284,14 +285,15 @@ run katlctl cluster bootstrap against the installed generation 0 node
 verify the bootstrap operation asks katlc to create and activate generation 1
 wait for katl-kubeadm-ready.target before kubeadm runs
 verify /etc/katl/kubeadm/control-plane/config.yaml exists
-run kubeadm init through the bootstrap operation with that rendered config
+run kubeadm init through the node-local katlc bootstrap operation with that
+  rendered config
 assert kubeadm output under projected /etc/kubernetes
 assert kubectl can reach /readyz
 ```
 
 This keeps the smoke test honest: Katl proves it can deliver validated kubeadm
-input and a kubeadm-ready OS; `katlctl` proves the explicit operation boundary;
-kubeadm proves it can bootstrap the control plane.
+input and a kubeadm-ready OS; `katlctl` proves the explicit control-client
+boundary; kubeadm proves it can bootstrap the control plane.
 
 ## Open Questions
 

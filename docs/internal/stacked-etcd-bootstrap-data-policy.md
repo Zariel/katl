@@ -50,9 +50,10 @@ when to take or restore etcd snapshots
 whether a failed or stale member should be repaired or rebuilt
 ```
 
-Katl may provide thin helper commands for these operator actions, but they must
-remain kubeadm-aware actions rather than hidden effects of install, boot, or
-normal confext activation.
+Katl may provide thin control-client commands for these operator actions, but
+they must submit explicit node-local `katlc` operations. They remain
+kubeadm-aware actions rather than hidden effects of install, boot, or normal
+confext activation.
 
 ## Data Placement
 
@@ -129,21 +130,22 @@ Required order:
 2. select exactly one init control-plane node
 3. ask `katlc` on the init node to create and activate its Kubernetes-capable
    candidate generation, then wait for katl-kubeadm-ready.target
-4. run kubeadm init on the selected node
+4. katlc runs kubeadm init on the selected node
 5. wait for API readiness and local etcd health on the init node
 6. create or upload the control-plane join material with a certificate key
 7. ask `katlc` on the second control-plane node to create and activate its
    Kubernetes-capable candidate generation, then wait for katl-kubeadm-ready.target
-8. join the second control-plane node
+8. katlc runs kubeadm join on the second control-plane node
 9. wait for API readiness, node visibility, static pod health, and etcd member
    health
 10. ask `katlc` on the third control-plane node to create and activate its
     Kubernetes-capable candidate generation, then wait for katl-kubeadm-ready.target
-11. join the third control-plane node
+11. katlc runs kubeadm join on the third control-plane node
 12. wait for API readiness, node visibility, static pod health, etcd member
    health, and quorum
-13. prepare and join workers, verify the cluster bootstrap result, write
-    kubeconfig/status, commit successful candidate generations, and exit
+13. prepare and join workers through node-local katlc operations, verify the
+    cluster bootstrap result, export kubeconfig output or status as requested,
+    commit successful candidate generations, and exit
 ```
 
 Additional control-plane joins must not run in parallel. A failed join can leave
@@ -156,9 +158,9 @@ The bootstrap helper must never respond to a failed init by running
 `kubeadm init` on another node against the same partially initialized cluster.
 That is an explicit operator recovery decision.
 
-Each kubeadm init or join step updates the bootstrap run record as a
-`BootstrapCluster` or `JoinCluster` attempt. Failed control-plane joins must stop
-the coordinator run and require explicit retry or repair; Katl must not
+Each kubeadm init or join step updates a node-local `BootstrapCluster` or
+`JoinCluster` `OperationRecord`. Failed control-plane joins must stop the
+control-client rollout and require explicit retry or repair; Katl must not
 automatically keep reconciling membership.
 
 Certificate-key handling must be explicit and redacted in normal logs, run

@@ -102,9 +102,10 @@ domains with their own design and tests. They must not enter through a generic
 patch layer.
 
 The opt-in platform API endpoint routing capability is the current durable
-example for this boundary. Its contract is documented in
-`docs/internal/platform-api-endpoint-routing-capability.md`; it does not make
-BIRD or API VIP advertisement part of the initial node configuration API.
+example for this boundary. A proposal is documented in
+`docs/internal/platform-api-endpoint-routing-capability.md`; its app sysext
+contract is not accepted yet, and it does not make BIRD or API VIP advertisement
+part of the initial node configuration API.
 The helper's future typed input schema is documented in
 `docs/internal/platform-api-endpoint-helper-input-schema.md` and remains bounded
 to Katl-owned render paths.

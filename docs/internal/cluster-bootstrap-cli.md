@@ -4,9 +4,11 @@ Status: current decision.
 
 This document defines the operator-run command that turns already installed
 generation 0 Katl nodes into a Kubernetes cluster. It does not change the Katl
-runtime boundary: the command asks `katlc` to create and activate the first
-Kubernetes-capable generation from stored intent, coordinates kubeadm init/join,
-and users/operators own the cluster contents after bootstrap.
+runtime boundary: the command is a control client that asks node-local `katlc` to
+create and activate the first Kubernetes-capable generation from stored intent,
+run the appropriate kubeadm init/join workflow under systemd supervision, and
+report node-local operation status. Users/operators own the cluster contents
+after bootstrap.
 
 ## Command Shape
 
@@ -36,7 +38,7 @@ Important options:
   stable endpoint is declared and verified
 
 --kubeconfig-out <path>
-  write the operator kubeconfig here
+  export operator kubeconfig output here
 
 --overwrite-kubeconfig
   replace an existing kubeconfig instead of requiring an exact idempotent match
@@ -49,37 +51,40 @@ Important options:
   joined-nodes-observed, and control-plane-healthy
 
 --bootstrap-stable-endpoint <host:port>
-  stable API endpoint to verify before writing kubeconfig that uses it
+  stable API endpoint to verify before exporting kubeconfig output that uses it
 ```
 
-The command is a bounded coordinator. It runs phases, writes outputs, reports
-status, and exits. It is not a daemon, reconciler, add-on manager, CNI manager,
-Flux manager, BIRD manager, or cluster lifecycle controller.
+The command is a bounded control client. It sequences explicit node-local
+operation requests, relays operator-requested outputs, reports status, and exits.
+Its only persistent state is `katlctl` client configuration for communication
+profiles and known nodes. It is not a daemon, reconciler, add-on manager, CNI
+manager, Flux manager, BIRD manager, or cluster lifecycle controller.
 
-## Operation And Run Record Boundary
+## Operation Record Boundary
 
-`katlctl cluster bootstrap` is a bounded coordinator for explicit
-`BootstrapCluster` and `JoinCluster` operation attempts. The command writes one
-bootstrap run record for the coordinator invocation. The selected init node gets
-a `BootstrapCluster` attempt; each worker or later control-plane join gets a
-`JoinCluster` attempt. Each attempt asks node-local `katlc` to validate stored
-intent and create the first Kubernetes-capable candidate generation before
-kubeadm runs.
+`katlctl cluster bootstrap` submits explicit `BootstrapCluster` and
+`JoinCluster` operation requests to node-local `katlc`. The selected init node
+gets a `BootstrapCluster` operation; each worker or later control-plane join gets
+a `JoinCluster` operation. Each accepted attempt asks node-local `katlc` to
+validate stored intent, create the first Kubernetes-capable candidate generation,
+activate it for kubeadm readiness, run kubeadm, and write a canonical
+`OperationRecord` under `/var/lib/katl/operations/<operation-id>/`.
 
-The run record stores ordering, phase state, selected inputs, CLI overrides,
-redacted diagnostics, retry context, and whether kubeadm has mutated node or
-cluster state. It is not desired cluster state. The source of truth after
-mutation remains kubeadm output, node-local state, and Kubernetes API state. The
-command must not remain resident, watch the cluster, or continuously reconcile
-failed or missing joins.
+`katlctl` may display a non-authoritative invocation summary that links returned
+node operation IDs, selected inputs, CLI overrides, redacted diagnostics, and
+rollout ordering. That summary is a client view only. It must not be used as
+node crash recovery state, and it must not become desired cluster state. The
+source of truth after mutation remains kubeadm output, node-local Katl state, and
+Kubernetes API state. The command must not remain resident, watch the cluster, or
+continuously reconcile failed or missing joins.
 
-The run record must identify the candidate generation ID, the phase where kubeadm
-first mutated state, and which mutation scopes were touched. `kubeadm init` can
-mutate `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, and Kubernetes API
-objects. `kubeadm join` can mutate `/etc/kubernetes`, `/var/lib/kubelet`, node
-objects, and, for control-plane joins, etcd membership. Host rollback after a
-failed bootstrap or join does not clean this partial state; retry must inspect
-actual kubeadm and Kubernetes state.
+Each node-local `OperationRecord` must identify the candidate generation ID, the
+phase where kubeadm first mutated state, and which mutation scopes were touched.
+`kubeadm init` can mutate `/etc/kubernetes`, `/var/lib/kubelet`,
+`/var/lib/etcd`, and Kubernetes API objects. `kubeadm join` can mutate
+`/etc/kubernetes`, `/var/lib/kubelet`, node objects, and, for control-plane
+joins, etcd membership. Host rollback after a failed bootstrap or join does not
+clean this partial state; retry must inspect actual kubeadm and Kubernetes state.
 
 Each node-local attempt must also record:
 
@@ -95,9 +100,10 @@ systemdInvocationID
 resourceLocks[] including kubeadm-state.lock
 ```
 
-When kubeadm and post-kubeadm operation checks succeed, the operation commits
-the generation by setting `commitState: committed`, but leaves boot health
-pending until a later boot reaches `katl-boot-complete.target`.
+When kubeadm and post-kubeadm operation checks succeed, `katlc` commits the
+generation by setting `commitState: committed`. That accepts desired host state,
+but leaves persistent default selection and boot health pending until a later
+boot reaches `katl-boot-complete.target`.
 
 Bootstrap and join records use the shared operation evidence model. Required
 `BootstrapCluster` evidence includes:
@@ -191,8 +197,9 @@ bootstrap.stableEndpoint
 
 Addresses may come from the cluster plan, inventory, or `--node-address`
 overrides. CLI address overrides are operator conveniences for lab and VM tests;
-they must be recorded in the bootstrap run record so diagnostics show what was
-actually used.
+they must be included in the submitted operation request and recorded in the
+relevant node-local operation records, with any invocation summary linking the same
+values, so diagnostics show what was actually used.
 
 `systemRole` is the only source of kubeadm bootstrap role:
 
@@ -225,8 +232,9 @@ if no control-plane node exists
   fail before contacting nodes
 ```
 
-The selected init node is recorded in the plan and in the run record. The
-command must never try `kubeadm init` on more than one node in one run.
+The selected init node is recorded in the plan, the selected node's
+`BootstrapCluster` operation request, and any invocation summary. The command
+must never ask more than one node to run `kubeadm init` in one invocation.
 
 ## Readiness And Access
 
@@ -259,9 +267,9 @@ or running kubeadm anywhere.
 
 The bootstrap command runs phases in this order:
 
-These are coordinator phases. Phases that run `kubeadm init` or `kubeadm join`
-must also update the corresponding `BootstrapCluster` or `JoinCluster` attempt
-in the bootstrap run record.
+These are control-client phases. Phases that run `kubeadm init` or
+`kubeadm join` are executed by node-local `katlc` and must update the
+corresponding `BootstrapCluster` or `JoinCluster` `OperationRecord`.
 
 ```text
 1. load and validate inventory or compiled plan
@@ -270,17 +278,18 @@ in the bootstrap run record.
 4. verify access and generation 0 installed-runtime state on every node
 5. ask katlc on each target node to validate stored intent and create the first
    Kubernetes-capable candidate generation
-6. activate the candidate generation and wait for katl-kubeadm-ready.target on
-   nodes before their kubeadm phase
-7. run kubeadm init only on the selected init node
+6. ask katlc to activate the candidate generation and wait for
+   katl-kubeadm-ready.target on nodes before their kubeadm phase
+7. ask katlc to run kubeadm init only on the selected init node
 8. collect or create join material
-9. join remaining worker nodes
+9. ask katlc to join remaining worker nodes
 10. join additional control-plane nodes later, when that path is implemented
 11. wait for API readiness using the init or declared endpoint
-12. run post-kubeadm health checks and commit each successful candidate generation
+12. katlc runs post-kubeadm health checks and commits each successful candidate
+    generation
 13. optionally verify the declared stable endpoint for operator kubeconfig output
-14. write operator kubeconfig, using a declared stable endpoint only after the
-    endpoint wait succeeds
+14. export operator kubeconfig output, using a declared stable endpoint only
+    after the endpoint wait succeeds
 15. print next steps and exit
 ```
 
@@ -297,8 +306,8 @@ ownership, quorum, join ordering, and rollback limits are defined in
 
 ## kubeadm Material
 
-The command runs kubeadm against rendered Katl input created in the candidate
-generation:
+The node-local `katlc` operation runs kubeadm against rendered Katl input
+created in the candidate generation:
 
 ```text
 kubeadm init --config /etc/katl/kubeadm/<name>/config.yaml
@@ -314,10 +323,11 @@ material are generated or collected during the operator action. They are not
 stored in normal Katl node config, generated confext, or committed inventory
 fixtures.
 
-When join material is needed on a node, the command supplies it through a
-temporary restricted join configuration or redacted command arguments. Any
-temporary file is mode `0600`, lives outside `/etc/katl`, is deleted on a
-best-effort basis after use, and is never copied into the run record.
+When join material is needed on a node, `katlctl` supplies it through the
+operation request or transport. Node-local `katlc` materializes any temporary
+restricted join configuration needed to run kubeadm. Any temporary file is mode
+`0600`, lives outside `/etc/katl`, is deleted on a best-effort basis after use,
+and is never copied into the normal `OperationRecord` or invocation summary.
 
 Normal output redacts:
 
@@ -332,7 +342,8 @@ bearer tokens
 ```
 
 Debug bundles may contain sensitive artifacts only when the operator explicitly
-requests that mode; the default run record is redacted.
+requests that mode; the default `OperationRecord` and any invocation summary are
+redacted.
 
 ## Control-Plane Endpoint
 
@@ -351,8 +362,8 @@ stable endpoint verification
 
 Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
 as part of this command. The command may verify a declared stable endpoint before
-writing kubeconfig that uses it. It does not apply the user resources that might
-later advertise or replace that endpoint.
+exporting kubeconfig output that uses it. It does not apply the user resources
+that might later advertise or replace that endpoint.
 
 Do not add kubePrism as an initial requirement.
 
@@ -365,8 +376,9 @@ documented in `docs/internal/platform-api-endpoint-user-story.md`.
 
 ## Kubeconfig Output
 
-After kubeadm init succeeds and the API is reachable, the command writes an
-operator kubeconfig.
+After kubeadm init succeeds and the API is reachable, the command may export
+operator kubeconfig output when explicitly requested. This is client-side output,
+not Katl node state, an operation record, or desired cluster state.
 
 Rules:
 
@@ -414,10 +426,11 @@ if join material expired
   create fresh join material from the control-plane API
 ```
 
-The bootstrap run record stores enough coordinator and per-operation-attempt
-state for diagnostics and safe retry. It is not authoritative over kubeadm or
-Kubernetes state; retry decisions must re-check the selected nodes and API
-server.
+Node-local `OperationRecord`s store enough request, phase, mutation, and
+diagnostic state for safe retry decisions on each node. Any `katlctl` client
+view may help the operator resume rollout order, but it is not authoritative over
+kubeadm or Kubernetes state. Retry decisions must re-check the selected nodes and
+API server.
 
 Retry must not assume host generation rollback cleaned a failed kubeadm phase.
 It must inspect `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd` where
@@ -428,7 +441,7 @@ Retry is operator-triggered through an explicit `katlctl cluster bootstrap`
 rerun or repair command. Boot-time operation reconciliation only classifies
 node-local attempts and records diagnostics. It must not automatically rerun
 `kubeadm init`, rerun `kubeadm join`, refresh expired join material, or continue
-coordinator ordering after power loss.
+multi-node rollout ordering after power loss.
 
 ## Failure Diagnostics
 
@@ -443,7 +456,8 @@ containerd and kubelet status snippets
 static pod manifest presence
 selected endpoint reachability
 API readyz/livez errors
-run record with init node, addresses, roles, phases, and artifact versions
+node-local operation IDs plus any invocation summary with init node, addresses,
+roles, phases, and artifact versions
 ```
 
 Diagnostics should identify what to retry and what must be repaired manually.

@@ -42,8 +42,8 @@ valid `status.json.specDigest`, `healthState: healthy`, `bootState: good`, and
 `commitState: committed` or `commitState: superseded` that is not the currently
 failed or currently tried generation. Superseded means a healthy generation is
 no longer the active default, not that it is unsafe for rollback.
-`config-apply-status.json` health is not sufficient for known-good rollback
-selection.
+`config-apply-status.json`, a client summary, or any workflow-specific status
+view is not sufficient for known-good rollback selection.
 
 ## Failed Boot Rollback
 
@@ -161,6 +161,12 @@ The boot selection record stores `defaultGenerationID`, `trialGenerationID`,
 loader or UKI paths for the default, trial, previous known-good, and booted
 entries. Boot-counted trial filenames and recovery flags belong in this boot
 selection record, not in immutable generation spec.
+
+The exact write order and recovery behavior for changing this record and
+systemd-boot state is defined in
+`docs/internal/boot-selection-transaction.md`. GPT labels, sysupdate versions,
+boot-counted filenames, and `/run` activation links are validation or execution
+details; they are not authoritative rollback target selection.
 
 The first implementation should keep the previous known-good generation as the
 default boot entry and try a candidate with systemd-boot one-shot selection. A

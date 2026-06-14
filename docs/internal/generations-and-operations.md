@@ -102,8 +102,15 @@ live-active generation
   boot by a node-local operation; live-active is not boot health
 
 committed generation
-  a generation with commitState committed; it is the persistent desired host
-  state for future boots, but it may still have bootState pending
+  a generation with commitState committed; its desired host state has been
+  accepted by the responsible install, apply, bootstrap, join, or upgrade path,
+  but it may still have bootState pending and may not be the persistent boot
+  default
+
+boot-selected generation
+  the generation named by boot selection state for a specific purpose:
+  defaultGenerationID for persistent default boot, trialGenerationID for bounded
+  trial boot, or bootedGenerationID for the current boot
 
 known-good generation
   a committed or superseded generation whose status has bootState good and
@@ -157,23 +164,36 @@ run mutating tools such as kubeadm, coordinate external state, or repair state
 outside normal generation apply.
 
 `BootstrapCluster` and `JoinCluster` are operation types initiated by
-`katlctl cluster bootstrap`. For bounded multi-node workflows, the durable record
-may be a coordinator run record rather than only a node-local systemd operation
-record. A coordinator run record must capture per-node operation attempts,
-candidate generation IDs, phase state, redacted diagnostics, and whether kubeadm
-has mutated node or cluster state.
+`katlctl cluster bootstrap`, but the accepted operation attempts are created by
+node-local `katlc`. For bounded multi-node workflows, `katlctl` may display an
+invocation summary that links returned node-local operation IDs, candidate
+generation IDs, phase state, redacted diagnostics, and mutation boundaries. That
+summary is not an `OperationRecord`, not persistent Katl state, and not used for
+node crash recovery.
+
+`UpgradeControlPlane` and `UpgradeWorker` name operation boundaries. They do not
+make Kubernetes upgrade execution supported before the target kubeadm access
+mode and target kubelet activation gate are selected, implemented, and tested.
 
 ## Operation Records
 
-An `OperationRecord` is the canonical durable run record for an accepted Katl
-lifecycle workflow. Terms such as run record, checkpoint, config-apply status,
-and upgrade operation record are workflow-specific storage views of the same
-model, not separate lifecycle models.
+An `OperationRecord` is the canonical durable operation record for an accepted
+node-local Katl lifecycle workflow. Canonical `OperationRecord`s are owned by
+`katlc` and live under:
 
-One record tracks one explicit attempt from request acceptance to terminal
-result. Records may be node-local or coordinator-scoped. A multi-node `katlctl`
-workflow may have one coordinator record plus linked node-local records for each
-node mutation.
+```text
+/var/lib/katl/operations/<operation-id>/
+```
+
+The authoritative recovery source is the operation journal under that directory.
+`record.json` is a rebuildable snapshot. Terms such as checkpoint, config-apply
+status, bootstrap summary, and upgrade status are summaries or views unless they
+name that storage root.
+
+One record tracks one explicit node-local attempt from request acceptance to
+terminal result. Multi-node workflows link returned node-local operation IDs.
+Any `katlctl` invocation summary is non-authoritative and must not be used for
+node crash recovery.
 
 Common fields:
 
@@ -184,9 +204,9 @@ schemaVersion
 operationID
 operationKind
 scope: install-state | host-generation | kubeadm-state | etcd-state |
-  destructive-reset | coordinator
+  destructive-reset
 parentOperationID, when present
-coordinatorOperationID, when present
+clientRequestID, when present
 actor
 requestDigest
 recordRevision
@@ -306,9 +326,11 @@ or Kubernetes API state, Katl must durably write and fsync a pre-exec mutation
 marker. After that marker exists, recovery must classify the operation as
 post-mutation or mutation-unknown unless later evidence proves a safer state.
 
-This shared model normalizes lifecycle vocabulary. Workflow-specific storage
-views such as install checkpoints, config apply status, bootstrap run records,
-and upgrade records must conform to this model once they become durable.
+This shared model normalizes lifecycle vocabulary. Workflow-specific files such
+as install checkpoints, config apply status, bootstrap summaries, and upgrade
+summaries may remain as compatibility read models, but once a workflow is an
+accepted operation, authoritative state and recovery data must be in the
+`katlc`-owned `OperationRecord`.
 
 ## Command And System Boundaries
 
@@ -316,13 +338,23 @@ and upgrade records must conform to this model once they become durable.
 selects candidate generations, plans operation records, launches
 systemd-supervised operation units, and records node-local status.
 
-`katlctl` is the operator UX and remote or multi-node orchestration layer. It
-may connect to installed nodes, submit explicit operation requests, coordinate
-bootstrap or rolling upgrade order, and report cluster-level progress.
-`katlctl` may create bounded coordinator run records for operator-triggered
-bootstrap, join, or rollout workflows. Those records are operation status for the
-requested run, not desired cluster state and not instructions for a background
-reconciler.
+`katlctl` is a control client. It may keep local client configuration for
+connection profiles and known node details, read inventory or compiled plans,
+connect to installed nodes, submit explicit requests to node-local `katlc`, wait
+on returned operation IDs, stream status, sequence multi-node requests, and
+relay explicit client-side outputs such as kubeconfig data when requested. Its
+own persistent state is limited to communication and known-node config. It
+must not generate, create, own, or persist generation specs, generation status,
+`OperationRecord`s, retry state, or authoritative node lifecycle state. Any
+aggregate status it displays is a client view, not desired cluster state and not
+instructions for a background reconciler.
+
+Machine identity follows the same ownership split. `katlos-install` creates the
+initial machine ID, stores it under `/var/lib/katl/identity/machine-id`, and
+renders it into generation 0 boot metadata with `systemd.machine_id=<id>`.
+Future generation planning by `katlc` preserves and validates that value.
+`katlctl` must not write machine-id files, loader entries, kernel arguments, or
+`/run` activation state.
 
 Systemd executes and supervises node-local operations. It owns unit ordering,
 dependency management, restart handling, logging, health targets, and boot
@@ -366,7 +398,7 @@ katl-operation-reconcile.service
 This service is a boot-time audit and finalizer, not a daemon and not a cluster
 reconciler. It may classify stale records, finish idempotent host bookkeeping,
 and record diagnostics. It must not run kubeadm, kubectl, mutate etcd, join
-nodes, continue coordinator rollout order, refresh expired join material, or
+nodes, continue multi-node rollout order, refresh expired join material, or
 clean Kubernetes state.
 
 Kubeadm remains authoritative for Kubernetes cluster mutation. It owns
@@ -403,41 +435,44 @@ Cluster bootstrap creates and commits the first Kubernetes-capable generation:
 ```text
 katlctl cluster bootstrap
   -> ask katlc to validate stored cluster intent
-  -> create candidate generation 1
-  -> select the requested bundled Kubernetes sysext
-  -> render kubeadm input and required host configuration
-  -> project /etc/kubernetes from writable state
-  -> activate generation 1 as a candidate
-  -> verify containerd, kubelet wiring, kubeadm tools, and local readiness
-  -> run kubeadm init or kubeadm join
-  -> run post-kubeadm health checks
-  -> commit generation 1 only after kubeadm and operation health checks succeed
+  -> katlc creates candidate generation 1
+  -> katlc selects the requested bundled Kubernetes sysext
+  -> katlc renders kubeadm input and required host configuration
+  -> katlc projects /etc/kubernetes from writable state
+  -> katlc activates generation 1 as a candidate
+  -> katlc verifies containerd, kubelet wiring, kubeadm tools, and local readiness
+  -> katlc runs kubeadm init or kubeadm join under systemd supervision
+  -> katlc runs post-kubeadm health checks
+  -> katlc commits generation 1 only after kubeadm and operation health checks succeed
 ```
 
 The Kubernetes-capable generation is host state, but its first commit is gated by
 the bootstrap or join operation because kubeadm mutates persistent node or
 cluster state. That commit records the accepted desired host state. It does not
-make the generation known-good until a later boot reaches
-`katl-boot-complete.target`.
+move the persistent boot default or make the generation known-good. Known-good
+promotion requires a later boot to reach `katl-boot-complete.target`.
 
 Cluster bootstrap and node join use the same operation model:
 
 ```text
 BootstrapCluster
-  -> create and activate the first Kubernetes-capable generation as a candidate
-  -> run kubeadm init
-  -> verify local control-plane health
-  -> commit the candidate generation
-  -> publish bootstrap artifacts and mark operation complete
+  -> katlc creates and activates the first Kubernetes-capable generation as a candidate
+  -> katlc runs kubeadm init
+  -> katlc verifies local control-plane health
+  -> katlc commits the candidate generation
+  -> katlc records bootstrap artifacts and marks operation complete
 
 JoinCluster
-  -> create and activate the first Kubernetes-capable generation as a candidate
-  -> run kubeadm join
-  -> verify node-local join health
-  -> commit the candidate generation and mark operation complete
+  -> katlc creates and activates the first Kubernetes-capable generation as a candidate
+  -> katlc runs kubeadm join
+  -> katlc verifies node-local join health
+  -> katlc commits the candidate generation and marks operation complete
 ```
 
-Kubernetes upgrades use the same pattern after bootstrap:
+Kubernetes upgrades will use the same operation pattern after the upgrade
+execution gate is closed. Until an ADR selects the target kubeadm access mode
+and target kubelet activation gate, upgrade requests stop at rejected or
+plan-only `katlc` status:
 
 ```text
 Generation N
@@ -447,16 +482,16 @@ Generation N+1
   Kubernetes 1.36.1
 
 UpgradeControlPlane or UpgradeWorker
-  -> run kubeadm upgrade apply or kubeadm upgrade node
-  -> restart kubelet at the planned point
-  -> verify local health
-  -> update generation N+1 status and commit only through the operation record
+  -> katlc validates and records a plan-only or refused operation
+  -> no bootable candidate is selected
+  -> no target Kubernetes sysext is globally activated
+  -> no kubeadm upgrade or kubelet restart runs
 ```
 
-During Kubernetes upgrades, target-version kubeadm availability is part of the
-operation execution context. Target-version kubelet activation is a later
-operation phase. This preserves generation semantics while matching kubeadm's
-required ordering.
+Post-ADR Kubernetes upgrade execution must keep target-version kubeadm
+availability in the operation execution context and target-version kubelet
+activation as an explicit operation phase. This preserves generation semantics
+while matching kubeadm's required ordering.
 
 ## Generation State Transitions
 
@@ -483,17 +518,29 @@ health promotion
   after katl-boot-complete.target, set bootState good and healthState healthy
 
 commit
-  set commitState committed and make the generation the persistent desired host
-  default; if another generation was the previous committed default, mark it
-  superseded only after the new default is accepted
+  set commitState committed after the accepting path's preconditions pass; this
+  accepts the generation as desired host state but does not change the persistent
+  boot default or prove boot health
+
+boot selection update
+  update /var/lib/katl/boot/selection.json and systemd-boot state; unproven
+  generations use trialGenerationID, one-shot selection, or boot counting, while
+  defaultGenerationID moves only after known-good promotion
+
+known-good promotion
+  after katl-boot-complete.target, set bootState good and healthState healthy;
+  the boot-selection path may then make this generation the persistent default
+  and mark the previous committed generation superseded
 
 failed boot
   set the tried candidate failed/unhealthy, then select the previous known-good
   generation
 
 live apply
-  use config-apply-status.json for live phases; live activation does not by
-  itself prove boot health or known-good eligibility
+  record live phases in the katlc-owned OperationRecord; an optional
+  generation-local config-apply-status.json may mirror the latest summary, but
+  it is not authoritative. Live activation does not by itself prove boot health
+  or known-good eligibility
 ```
 
 ## Failure And Rollback
@@ -570,7 +617,7 @@ explicitly marked resumable. Examples include finishing host rollback
 bookkeeping, rebuilding `record.json` from a valid journal, or completing a
 generation commit whose preconditions were already durably recorded. Automatic
 resume is refused for kubeadm init/join/upgrade, kubectl, etcd mutation,
-coordinator workflow continuation, expired join material refresh, and all
+multi-node workflow continuation, expired join material refresh, and all
 stale-ambiguous records.
 
 Stale-post-mutation and stale-ambiguous records must keep `recoveryRequired`
@@ -581,6 +628,45 @@ failure.
 
 Recovery operation shapes are deferred until implemented. Unsupported recovery
 requests must be refused with diagnostics rather than partially executed.
+`katlctl` may submit an explicit recovery request to node-local `katlc`, but
+`katlc` is the only authority that validates, plans, records, and executes node
+recovery.
+
+### Recovery Operation Contract Requirements
+
+Before a recovery kind can be implemented, its contract must define:
+
+```text
+request envelope
+  operationKind, targetOperationID, scope, actor, explicitIntent, expected node
+  identity, expected request/generation/member/snapshot digests as applicable,
+  authorized mutation scopes, and dry-run or plan-only mode
+
+common preflights
+  target record exists; journal is valid or reconstructable; stale
+  classification is known; resource locks are available; node identity matches;
+  requested scope matches the failed operation; live state has been re-probed;
+  requested mutations are authorized by the operation-specific contract
+
+common forbidden behavior
+  no boot-time automatic recovery; no hidden kubeadm, kubectl, or etcd
+  mutation; no multi-node workflow continuation; no request replacement; no
+  target disk reinterpretation; no deletion of /etc/kubernetes,
+  /var/lib/kubelet, or /var/lib/etcd unless the specific destructive contract
+  allows it
+
+common evidence
+  parent record digest, stale classification inputs, live probe results,
+  redacted tool output, pre/post state digests, mutation markers,
+  skipped/rerun phase decisions, and refusal reason
+
+common refusal states
+  unsupported-recovery-kind, missing-target-record, record-digest-mismatch,
+  node-identity-mismatch, stale-ambiguous, scope-not-authorized,
+  live-state-conflict, insufficient-evidence, data-loss-not-acknowledged,
+  quorum-risk, version-incompatible, and concurrent-operation
+```
+
 Recovery operation scope must be explicit:
 
 ```text
@@ -591,12 +677,20 @@ etcd-state
 destructive-reset
 ```
 
-Each scope needs its own preflights, allowed mutations, forbidden mutations, and
-validation gates. Deferred recovery operation types include
-`RepairInstallState`, `RepairGenerationStatus`, `RetryOperation`,
-`RenewCertificates`, `ResetNode`, `ReplaceEtcdMember`, and
-`RestoreEtcdSnapshot`. Naming them documents boundaries only; it does not make
-them supported behavior.
+### Deferred Recovery Operation Matrix
+
+Naming these operation types documents boundaries only; it does not make them
+supported behavior. Each row must be completed with tests before implementation:
+
+| Operation | Required contract before support |
+| --- | --- |
+| `RepairInstallState` | Scope `install-state`; preflight same request digest, target disk stable ID, GPT/filesystem/root-slot/generation 0/boot-entry probes; allow only same-request checkpoint/status/boot metadata repair; forbid request replacement, target disk switch, Kubernetes or etcd deletion, and destructive reinstall |
+| `RepairGenerationStatus` | Scope `host-generation`; preflight generation spec/status/journal/boot-entry consistency; allow commit/rollback bookkeeping repair only; forbid partial root, sysext, or confext switching |
+| `RetryOperation` | Scope matches the original operation; preflight parent record, stale class, request digest, live probes, and material validity; allow rerun only of idempotent or kind-declared retryable phases as a child operation; forbid automatic retry, stale-ambiguous replay, request changes, and implicit cleanup |
+| `RenewCertificates` | Scope `kubeadm-state`; preflight kubeadm version, certificate expiry, API/static pod state, and redacted kubeconfig access; allow explicit kubeadm certificate renewal and declared restarts; forbid upgrades, etcd membership changes, and config drift repair |
+| `ResetNode` | Scope `destructive-reset`; preflight explicit data-loss acknowledgement, node identity, system role, cluster membership, and etcd handling decision; allow only the declared reset surface; forbid etcd member replacement, snapshot restore, install input replacement, and undeclared disk wipe |
+| `ReplaceEtcdMember` | Scope `etcd-state`; preflight quorum, member identity, peer URLs, certificate compatibility, version skew, and local member mapping; allow only a named member remove/add flow; forbid snapshot restore, stale data reuse without proof, and automatic failed-join cleanup |
+| `RestoreEtcdSnapshot` | Scope `etcd-state`; preflight explicit disaster intent, snapshot path/digest/revision, Kubernetes/etcd version compatibility, topology, participant set, and current-state backup decision; allow only the declared snapshot restore procedure; forbid in-place merge, unknown snapshots, partial topology restore, and treating host rollback as etcd rollback |
 
 ## Testing Contract
 

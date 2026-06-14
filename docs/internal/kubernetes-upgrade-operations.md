@@ -72,10 +72,11 @@ CNI, CoreDNS, kube-proxy, GitOps, and workload-specific policy
 manual recovery when Kubernetes cluster state needs repair
 ```
 
-`katlctl` may provide a higher-level coordinator for operator UX and multi-node
-rollout order, but that coordinator must still submit explicit operations. It
-must not turn the node configuration agent into a continuous Kubernetes
-lifecycle controller.
+`katlctl` may provide a higher-level control-client UX for operator-driven
+multi-node rollout order, but it must only submit explicit requests to
+node-local `katlc` and observe returned operation IDs. It must not generate
+candidate generations, create operation records, own retry state, or turn the
+node configuration agent into a continuous Kubernetes lifecycle controller.
 
 ## Upgrade Flow
 
@@ -149,9 +150,16 @@ stop-source-kubelet-before-kubeadm
 Until one access mode and one kubelet activation gate are selected, implemented,
 and VM-tested, Kubernetes upgrade execution is unsupported by default. `katlc`
 must reject normal apply requests that change the Kubernetes sysext on an
-already bootstrapped node. `katlctl` or `katlc` may produce a plan-only
-operation record, but must not select the candidate for boot, globally activate
-the target sysext, run kubeadm, or restart kubelet.
+already bootstrapped node. `katlc` may produce a rejected or plan-only
+node-local operation record, but must not select the candidate for boot, globally
+activate the target sysext, run kubeadm, or restart kubelet. `katlctl` may only
+request and display that result.
+
+## Post-ADR Execution Sketches
+
+The following role flows are the intended shape after the target kubeadm access
+mode and kubelet activation gate have an accepted ADR, implementation, and VM
+coverage. They are not supported execution paths before that gate is closed.
 
 Control-plane apply node:
 
@@ -193,15 +201,18 @@ commit the candidate host generation or leave boot health pending according to
 ```
 
 Drain and uncordon are intentionally not hidden inside generation activation.
-Katl may offer an explicit operation flag or a higher-level coordinator for
-those steps, but the operation status must show whether they were requested,
+Katl may offer an explicit operation flag or a higher-level control-client flow
+for those steps, but the operation status must show whether they were requested,
 skipped, or left to the operator.
 
 ## State And Status
 
-Every accepted Kubernetes upgrade request creates an `OperationRecord` under the
-Katl writable state tree. It should follow the shared operation model and
-reference both the previous and candidate generation IDs.
+Every accepted Kubernetes upgrade request creates a node-local `OperationRecord`
+under `/var/lib/katl/operations/<operation-id>/`. It should follow the shared
+operation model and reference both the previous and candidate generation IDs
+when a candidate exists. Rejected or plan-only requests before the execution gate
+may omit a candidate generation ID and must record why no mutating execution was
+allowed.
 
 The operation record should include:
 
@@ -290,6 +301,7 @@ Suggested phases:
 
 ```text
 planned
+execution-refused-unsupported
 staged
 kubeadm-plan-running
 kubeadm-plan-complete
@@ -420,7 +432,8 @@ node-local kubeadm output expected for the role exists
 Control-plane API readiness may be checked when local credentials are available,
 but cluster-wide convergence, CNI readiness, add-on health, and workload health
 remain outside the node-local host health contract unless an explicit higher
-level coordinator requests and records those checks.
+level control-client workflow requests and records those checks through
+node-local operations.
 
 ## Testing Contract
 

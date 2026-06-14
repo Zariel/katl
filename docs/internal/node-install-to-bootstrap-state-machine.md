@@ -121,9 +121,9 @@ InstalledRuntimeReady
 
 WaitingForClusterBootstrap
   terminal install handoff state for the node; operator-run katlctl cluster
-  bootstrap may now ask katlc to validate stored intent, create the first
-  Kubernetes-capable candidate generation, and run the appropriate kubeadm
-  workflow
+  bootstrap may now submit an explicit request to node-local katlc, which
+  validates stored intent, creates the first Kubernetes-capable candidate
+  generation, and runs the appropriate kubeadm workflow
 ```
 
 Cluster bootstrap creates the first Kubernetes-capable generation and then runs
@@ -131,26 +131,27 @@ kubeadm:
 
 ```text
 katlctl cluster bootstrap
-  ask katlc to validate stored cluster intent
-  select the bundled Kubernetes sysext whose payload version exactly matches the
-  install manifest version
-  render kubeadm config refs under /etc/katl
-  project /etc/kubernetes from writable state
-  ensure containerd prerequisites, kubelet service wiring, and systemRole
+  submit a BootstrapCluster or JoinCluster request to node-local katlc
+  katlc validates stored cluster intent
+  katlc selects the bundled Kubernetes sysext whose payload version exactly
+  matches the install manifest version
+  katlc renders kubeadm config refs under /etc/katl
+  katlc projects /etc/kubernetes from writable state
+  katlc ensures containerd prerequisites, kubelet service wiring, and systemRole
   metadata
-  create and activate generation 1 as a candidate
+  katlc creates and activates generation 1 as a candidate
 
 KubeadmReady
   reach katl-kubeadm-ready.target after local prerequisites are active
 
 KubeadmOperation
-  record a BootstrapCluster attempt for the init node or a JoinCluster attempt
-  for joining nodes based on cluster inventory and systemRole
-  run kubeadm init or kubeadm join
-  run local post-kubeadm health checks
-  set generation 1 commitState committed only after kubeadm and operation health
-  checks succeed; boot health remains pending until a later boot reaches
-  katl-boot-complete.target
+  katlc records a BootstrapCluster attempt for the init node or a JoinCluster
+  attempt for joining nodes based on cluster inventory and systemRole
+  katlc runs kubeadm init or kubeadm join under systemd supervision
+  katlc runs local post-kubeadm health checks
+  katlc sets generation 1 commitState committed only after kubeadm and operation
+  health checks succeed; boot health and persistent default promotion remain
+  pending until a later boot reaches katl-boot-complete.target
 ```
 
 The install path never runs kubeadm init, kubeadm join, CNI installation, or
@@ -215,19 +216,23 @@ Checkpoint state is diagnostic and resume-oriented. The source of truth for
 already-mutated disk state remains the actual GPT layout, filesystems, installed
 generation spec/status, and boot entries.
 
-After the target state partition exists, installer checkpoint and status files
-are the installer operation record. `state` is the current operation phase, and
-`completedStates[]` is the installer-specific view of completed phases.
-`/var/lib/katl/install/status.json` is the operator-facing run record for the
-install attempt. The other files under `/var/lib/katl/install/` are request,
-plan, artifact, input, or diagnostic attachments referenced by that record.
+After the target state partition exists, the installer writes a canonical
+install `OperationRecord` under `/var/lib/katl/operations/<operation-id>/`.
+Installer checkpoint and status files under `/var/lib/katl/install/` are
+operation attachments and operator-facing summaries. `state` is the current
+operation phase, and `completedStates[]` is the installer-specific view of
+completed phases.
+`/var/lib/katl/install/status.json` is the operator-facing install status
+summary for the install attempt. The other files under `/var/lib/katl/install/`
+are request, plan, artifact, input, or diagnostic attachments referenced by that
+summary.
 Pre-target discovery and validation remain transient and do not need durable
 operation records.
 
 Once the target state partition exists, durable install checkpoint updates must
-follow the shared `OperationRecord` journal protocol. Destructive disk phases
-such as partitioning, formatting, and root-slot writes must durably record a
-pre-exec mutation marker before invoking the mutating tool. The actual GPT
+be backed by the shared `OperationRecord` journal protocol. Destructive disk
+phases such as partitioning, formatting, and root-slot writes must durably record
+a pre-exec mutation marker before invoking the mutating tool. The actual GPT
 layout, filesystems, installed generation spec/status, and boot entries remain
 the source of truth for already-mutated disk state.
 
@@ -358,12 +363,13 @@ runtime-failed-needs-repair
 `waiting-for-cluster-bootstrap` is success for node installation. It means the
 node is installed, generation 0 reached local runtime health, stored cluster
 intent is available, and the node can accept an explicit `katlctl cluster
-bootstrap` operation. It also means Kubernetes binaries are not active and
+bootstrap` request for a node-local `katlc` operation. It also means Kubernetes
+binaries are not active and
 kubeadm has not run.
 
-`cluster-bootstrap-complete` means the bootstrap or join operation created and
-committed the first Kubernetes-capable generation after kubeadm and local health
-checks succeeded.
+`cluster-bootstrap-complete` means node-local `katlc` created and committed the
+first Kubernetes-capable generation through a bootstrap or join operation after
+kubeadm and local health checks succeeded.
 
 ## Tests And Follow-Up Work
 

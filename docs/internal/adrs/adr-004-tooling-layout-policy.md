@@ -30,11 +30,12 @@ domain libraries
 
 The intended product boundary is unchanged: `katlc` is the user-facing KatlOS
 state/configuration command that turns user-supplied Katl YAML or configuration
-into generation-scoped sysext/confext payloads; `katlctl` is the operator CLI
-for cluster bootstrap and later operational workflows; node and runtime behavior
-is implemented as typed Go state transitions. Shell may orchestrate host tools,
-but it must not become the installer engine, the VM test fixture engine, or a
-parallel manifest mutation layer.
+into generation-scoped sysext/confext payloads and owns node-local stateful
+operations; `katlctl` is an operator control client for cluster bootstrap and
+later operational workflows. Node and runtime behavior is implemented as typed
+Go state transitions. Shell may orchestrate host tools, but it must not become
+the installer engine, the VM test fixture engine, or a parallel manifest mutation
+layer.
 
 ## Decision
 
@@ -136,9 +137,14 @@ generation-scoped sysext/confext payloads, metadata, apply plans, status, and
 rollback-aware runtime state. Until `katlc` exists, narrow Go commands may hold
 pieces of that behavior, but scripts should not grow a second compiler.
 
-`katlctl` is the operator CLI. It should consume compiled plans or explicit
-operator input and perform cluster bootstrap or operational actions. VM tests may
-execute `katlctl` as a black-box command, but `cmd/katlctl` must not own VM
+`katlctl` is the operator control client. It may keep local client configuration
+for communication profiles and known node details, consume explicit operator
+input, submit requests to node-local `katlc`, observe returned operation IDs,
+sequence bounded multi-node workflows, and relay explicit client-side outputs.
+Its own persistent state is limited to communication profiles and known-node
+details. It must not generate or own generation specs, generation status,
+`OperationRecord`s, retry state, or any durable node lifecycle state. VM tests
+may execute `katlctl` as a black-box command, but `cmd/katlctl` must not own VM
 world setup or scenario orchestration.
 
 `katlos-install` and runtime helper commands own node-local install and runtime
