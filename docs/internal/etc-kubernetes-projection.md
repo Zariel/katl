@@ -35,6 +35,10 @@ kubeadm init/join automation
 katl-kubeadm-ready.target
 ```
 
+The projection is part of the kubeadm-ready generation produced by `katlc apply`.
+Generation 0 may create or validate safe backing paths, but generation 0 boot
+health does not require the projection to be mounted.
+
 The mount unit should use ordering equivalent to:
 
 ```text
@@ -51,7 +55,7 @@ containerd startup.
 
 ## Validation
 
-Installer and first-boot validation must prove:
+Initial `katlc apply` and kubeadm-ready boot validation must prove:
 
 ```text
 /var is mounted from the installed state partition
@@ -61,6 +65,10 @@ Installer and first-boot validation must prove:
 confext does not contain /etc/kubernetes
 kubelet and kubeadm automation units order after the projection
 ```
+
+Generation 0 validation only needs to prove `/var` is mounted and that any
+reserved `/etc/kubernetes` mountpoint or backing path is safe for later
+projection.
 
 Validation should fail closed if `/etc/kubernetes` is already a non-empty
 non-mount directory supplied by the root image or confext. The only acceptable

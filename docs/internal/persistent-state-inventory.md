@@ -23,7 +23,8 @@ own kubeadm output, SSH host keys, or machine identity.
 
 | Path | Owner | Mutability | Placement |
 | --- | --- | --- | --- |
-| `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation metadata, staged artifacts, activation records, repair state | Native `/var`; primary Katl state root |
+| `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation status, operation records, staged artifacts, activation records, and repair status | Native `/var`; primary Katl state root |
+| `/var/lib/katl/operations` | Katl installer, `katlc`, `katlctl`, KatlOS runtime services | Durable operation records that distinguish host repair from kubeadm or etcd repair | Native `/var`; not generation artifacts and not activated through sysext/confext |
 | `/var/lib/katl/generations/<id>/metadata.json` | Katl installer, `katlc`, KatlOS runtime services | Selection fields immutable after generation creation; bootState/healthState mutable by boot health, rollback, or repair tooling | Native `/var`; selected with boot metadata |
 | `/var/lib/katl/generations/<id>/confext` | Katl installer, `katlc`, KatlOS runtime services | Immutable generated configuration for that generation | Native `/var`; exposed at boot through selected `/run/confexts` activation path |
 | `/var/lib/katl/generations/<id>/sysext` | Katl installer, `katlc`, KatlOS runtime services | Immutable extension artifacts for that generation | Native `/var`; exposed at boot through selected `/run/extensions` activation path |
@@ -67,6 +68,11 @@ kubeadm automation units
 
 The `/etc/kubernetes` bind must be validated after confext activation so a
 confext overlay cannot hide the persistent Kubernetes subtree.
+
+This ordering is dependency ordering for services that exist in a selected
+generation, not a generation 0 boot-health checklist. `/etc/kubernetes`,
+containerd, kubelet, and kubeadm automation become required only for
+kubeadm-ready generations.
 
 The concrete first implementation rules are:
 

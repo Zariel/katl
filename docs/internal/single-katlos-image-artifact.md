@@ -213,6 +213,12 @@ The first implementation may restrict upgrade images to the combined shape if
 that keeps implementation and tests smaller. The schema must not prevent
 KatlOS-only and Kubernetes-only updates later.
 
+A Kubernetes upgrade image may still contain a single Kubernetes sysext for the
+target steady state. The upgrade operation, not the image schema, must define
+how target kubeadm is made available before target kubelet activation. Splitting
+kubeadm into a separate tool component is an implementation option, not a
+current image contract.
+
 ## Node Configuration References
 
 PXE/preseed, USB/local handoff, and VM tests all use the same node configuration

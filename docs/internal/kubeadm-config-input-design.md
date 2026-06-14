@@ -83,9 +83,10 @@ or:
 kubeadm join --config /etc/katl/kubeadm/worker/config.yaml
 ```
 
-Katl may later provide `katlctl kubeadm init --config control-plane` and
-`katlctl kubeadm join --config worker` as thin helpers, but those commands are
-operator actions. They are not implied by node configuration, install manifest
+Katl may later provide thin kubeadm helpers or the higher-level
+`katlctl cluster bootstrap` coordinator. When Katl runs those helpers, they
+should record a bounded operation/run record, but they remain explicit operator
+actions and are never implied by node configuration, install manifest
 processing, or the kubeadm-ready target.
 
 ## API Boundary

@@ -737,9 +737,11 @@ work, but the install-time layout must leave room for it:
 ```text
 receive desired Katl YAML/configuration
 validate trust and policy
+select compatible sysext activation for the target generation
 render known configuration domains into a new generated confext generation
-activate it through systemd-confext
-record success, failure, and rollback metadata
+write immutable generation metadata and apply status
+activate, stage, or reject the generation according to the accepted apply mode
+record success, failure, diagnostics, and rollback metadata
 ```
 
 `katlc` and KatlOS runtime services should not become a general-purpose
@@ -865,6 +867,11 @@ base root artifact.
 
 ## Kubeadm-Ready Runtime
 
+This section describes the generation created by `katlc apply` for kubeadm-ready
+host state, not generation 0 first boot. Kubeadm readiness is produced by normal
+generation creation and activation that selects the Kubernetes sysext and
+generated kubeadm input; it is not a separate Kubernetes operation.
+
 The next runtime step after the installer UKI can install and boot from disk is
 kubeadm readiness, not a complete Kubernetes cluster. Katl should prove that an
 installed node has the host OS, writable state, generated config, and Kubernetes
@@ -950,9 +957,12 @@ package or artifact tests inspect the sysext for expected binaries,
 unit or golden tests cover generated service ordering, mount units, and
   generation metadata for sysext selection
 systemd-analyze verify checks generated units where practical
-VM install-to-runtime tests prove sysext activation, writable /etc/kubernetes,
-  containerd readiness, katl-kubeadm-ready.target, and kubeadm preflight or
-  dry-run evidence
+VM install-to-runtime tests prove generation 0 boots from disk, mounts /var,
+  activates baseline extensions/config, exposes operator access, and reaches
+  installed-runtime health
+VM initial katlc apply tests prove Kubernetes sysext activation, writable
+  /etc/kubernetes, containerd readiness, katl-kubeadm-ready.target, and kubeadm
+  preflight or dry-run evidence
 ```
 
 The readiness check should avoid implying that Katl owns cluster lifecycle. Katl
@@ -1252,21 +1262,29 @@ but not final installed entries.
 
 ## Runtime Mount Ordering
 
-The runtime OS should reach local filesystem and extension activation in this
-shape:
+Generation 0 first boot should reach local filesystem and baseline extension
+activation in this shape:
 
 ```text
 root slot mounted read-only
 /var mounted from KATL_STATE
 optional /var/lib/etcd mounted
 stable machine-id established by the chosen early-boot mechanism
-systemd-sysext activated
-systemd-confext activated
-/etc/kubernetes bind mounted from /var/lib/katl/kubernetes/etc-kubernetes
+baseline systemd-sysext activated, when selected
+baseline systemd-confext activated
 network online
 time synchronized
+installed-runtime health reached
+```
+
+A kubeadm-ready generation additionally requires:
+
+```text
+Kubernetes sysext activated
+kubeadm config rendered under /etc/katl/kubeadm
+/etc/kubernetes bind mounted from /var/lib/katl/kubernetes/etc-kubernetes
 containerd running
-kubelet available
+kubelet available or ordered for kubeadm use
 katl-kubeadm-ready.target reached
 ```
 

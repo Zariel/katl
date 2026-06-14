@@ -190,17 +190,26 @@ current generation metadata rule intact: the generation record selects root,
 sysext, and confext together, and Katl must not mutate an existing generation's
 immutable selection fields in place.
 
-For `next-boot`, the candidate generation is selected as the next boot target and
-starts with normal boot health state such as pending or unknown. The current
-boot keeps the previous active generation.
+`config-apply-status.json` is the generation-scoped operation record for the
+configuration apply attempt. The filename may remain workflow-specific, but the
+fields should follow the shared `OperationRecord` model from
+`docs/internal/generations-and-operations.md`.
 
-For `live`, Katl stages the candidate confext under
-`/var/lib/katl/generations/<generation-id>/confext/`, exposes only that selected
-confext through the explicit activation path, runs the live apply action plan,
-and records the result. After live health checks pass, the same generation
-becomes the selected generation for future boots. If live activation or health
-checks fail, Katl reactivates the previous generation's confext set and records
-the rollback attempt.
+For `next-boot`, Katl renders and validates the candidate, writes `pending` and
+`unknown` generation metadata, records `phase: next-boot`, and arms bounded boot
+selection. The current boot keeps the previous active generation and no live
+activation occurs.
+
+For `live`, Katl renders and validates the candidate, writes `pending` and
+`unknown` generation metadata, exposes only that selected generated confext in
+the current boot, runs the accepted live apply action plan, and records progress
+in `config-apply-status.json`. `phase: active` means the current boot is using
+the candidate confext and accepted live actions passed. It does not mean the
+generation has passed boot health.
+
+After successful live apply, Katl may select the same generation as a bounded
+next-boot candidate. It becomes the persistent default only after a boot reaches
+`katl-boot-complete.target`.
 
 ## Status And Rollback Reporting
 
@@ -228,6 +237,12 @@ running confext activation path and rerunning the bounded apply actions needed
 to make that prior state effective. If rollback cannot restore the live state,
 Katl must leave the previous generation selected for next boot and report that a
 reboot is required.
+
+A failed live apply candidate must not become a rollback target. Failed live
+apply rollback reactivates the previous generation's confext set and reruns only
+the bounded apply actions needed to restore that state. If live rollback fails,
+Katl leaves the previous known-good generation selected for boot and reports that
+reboot or repair is required.
 
 ## Kubeadm And Cluster Boundary
 

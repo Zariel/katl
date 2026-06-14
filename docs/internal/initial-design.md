@@ -26,7 +26,9 @@ KatlOS source
   -> katlos-install installs the runtime OS and seeds generation 0
   -> users supply Katl YAML/configuration
   -> katlc on KatlOS validates and compiles config into generations
-  -> explicit operations prepare Kubernetes, bootstrap, join, or upgrade nodes
+  -> katlc apply creates or stages runtime generations, including kubeadm-ready
+     host state
+  -> explicit kubeadm-aware operations bootstrap, join, or upgrade nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
   -> kubeadm and user-managed GitOps take over
 ```
@@ -119,7 +121,7 @@ The active installer flow is Katl-native:
    generated confext, mount units, identity, SSH policy, and writable state.
 9. The node reboots from the installed disk.
 10. The runtime reaches a local Katl boot-complete target for generation 0 and
-    waits for explicit post-install operations.
+    waits for runtime configuration apply or explicit post-install operations.
 ```
 
 The installer does not build Fedora packages on the target node. It consumes
@@ -204,9 +206,9 @@ before becoming part of the user-facing configuration API.
 Kubeadm configuration is intentionally a thin reference to native kubeadm files,
 not YAML embedded as a string and not an init/join action. Node configuration
 selects a named kubeadm config, Katl validates and renders it under
-`/etc/katl/kubeadm/`, and explicit operations decide when to prepare
-Kubernetes host state, run `kubeadm init`, run `kubeadm join`, or run later
-kubeadm upgrade commands.
+`/etc/katl/kubeadm/`. `katlc apply` creates or updates kubeadm-ready host state,
+and explicit operations decide when to run `kubeadm init`, run `kubeadm join`,
+or run later kubeadm upgrade commands.
 
 ## Rejected Configuration Bootstrap
 
@@ -252,15 +254,14 @@ Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
 KatlOS root, when the selected artifacts are compatible.
 
 After the installer UKI and installed runtime boot path works, the next local
-step is a local `PrepareKubernetes` operation that moves generation 0 to a
-kubeadm-ready generation. That means the base runtime has containerd and the
-host plumbing kubeadm expects, a Kubernetes sysext supplies `kubeadm`, `kubelet`,
-`kubectl`, and tightly related binaries, generated config places kubeadm input
-under `/etc/katl`, and writable kubeadm output is projected at
-`/etc/kubernetes`.
+step is an initial `katlc apply` that creates the kubeadm-ready generation. That
+means the base runtime has containerd and the host plumbing kubeadm expects, a
+Kubernetes sysext supplies `kubeadm`, `kubelet`, `kubectl`, and tightly related
+binaries, generated config places kubeadm input under `/etc/katl`, and writable
+kubeadm output is projected at `/etc/kubernetes`.
 
 The first proof should stay local: build or inspect the sysext artifact, boot
-generation 0 in the VM runner, run `PrepareKubernetes` to activate the
+generation 0 in the VM runner, run initial `katlc apply` to activate the
 Kubernetes sysext and generated config, reach `katl-kubeadm-ready.target`, and
 run a bounded kubeadm preflight or dry-run check that proves the node is
 prepared for `kubeadm init`. CI-built downloadable artifacts are a later
@@ -442,7 +443,7 @@ The next step after that loop is still local and test-driven:
 
 ```text
 build a Kubernetes sysext with kubeadm, kubelet, kubectl, and related binaries
-boot generation 0 and run PrepareKubernetes as a node-local operation
+boot generation 0 and run initial katlc apply
 activate the sysext as part of the kubeadm-ready generation
 render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
@@ -467,9 +468,8 @@ docs/internal/generation-metadata-model.md
   Generation record shape and how a generation selects root/sysext/confext.
 
 docs/internal/generations-and-operations.md
-  Shared model separating declarative host generations from explicit,
-  auditable operations such as Kubernetes preparation, bootstrap, join, and
-  upgrade.
+  Shared model separating normal generation apply from explicit, auditable
+  operations such as bootstrap, join, and upgrade.
 
 docs/internal/boot-health-semantics.md
   Local boot health contract and generation status transitions.

@@ -25,6 +25,13 @@ operation metadata for the kubeadm upgrade step
 local host health expectations after the operation
 ```
 
+The candidate generation describes the desired steady state after the upgrade
+operation completes. It does not mean every service may immediately consume the
+target Kubernetes sysext. Target-version kubeadm access before kubelet restart
+is operation-scoped tool access, not a second generation and not a partial sysext
+selection. The generation still selects one Kubernetes sysext as the
+post-operation host state.
+
 The upgrade operation is not a normal runtime configuration apply. It is a
 kubeadm-aware action with its own plan, status, diagnostics, and failure
 semantics. Normal confext activation must not run `kubeadm upgrade`, `kubectl`,
@@ -77,9 +84,9 @@ Katl should reject or require explicit operator override for requests that skip
 minor versions, downgrade Kubernetes, or select a Kubernetes sysext incompatible
 with the current KatlOS runtime root and rendered configuration.
 
-The operation starts with a node-local plan. This is the same pattern used by
-the initial `PrepareKubernetes` operation, but the mutating kubeadm phase is
-specific to an already bootstrapped or joined node:
+The operation starts with a node-local plan. It reuses the generation planning
+and status primitives from `katlc apply`, but it is an explicit kubeadm-aware
+operation because it mutates an already bootstrapped or joined node:
 
 ```text
 read current generation metadata
@@ -96,6 +103,17 @@ advanced the node. This matters because Katl currently packages `kubeadm`,
 `kubelet`, and `kubectl` together in one Kubernetes sysext. The upgrade path
 must make target-version kubeadm available for the upgrade operation while
 controlling when target-version kubelet becomes active.
+
+Katl must split target tool availability from target service activation. The
+upgrade unit may use target-version kubeadm from the staged candidate payload,
+but kubelet must remain on the source payload or be stopped until the kubeadm
+phase for that node has completed. Target-version kubelet becomes active only at
+the explicit kubelet restart phase recorded by the operation. Health promotion
+for the candidate generation requires kubelet to be running from the selected
+target sysext.
+
+Normal boot or activation of a candidate Kubernetes upgrade generation must not
+race kubelet into the target payload before the operation gate allows it.
 
 The first implementation should use an explicit upgrade unit or transient unit
 rather than ordinary boot activation alone. That unit runs with the candidate
@@ -145,10 +163,9 @@ skipped, or left to the operator.
 
 ## State And Status
 
-Every accepted Kubernetes upgrade request creates durable operation state under
-the Katl writable state tree. The exact path can be refined when `katlc`
-implements runtime operations, but it should be generation-scoped or reference
-both the previous and candidate generation IDs.
+Every accepted Kubernetes upgrade request creates an `OperationRecord` under the
+Katl writable state tree. It should follow the shared operation model and
+reference both the previous and candidate generation IDs.
 
 The operation record should include:
 
@@ -162,6 +179,10 @@ target Kubernetes version
 current and target Kubernetes sysext digests
 rendered kubeadm config path and digest
 requested drain and uncordon behavior
+target kubeadm access mode and observed kubeadm version
+kubelet activation gate state
+whether kubelet was kept running, stopped, or restarted before kubeadm mutation
+observed kubelet version before and after the planned restart
 phase
 timestamps
 redacted kubeadm output and diagnostic artifact paths
@@ -217,6 +238,14 @@ report whether host generation rollback was performed
 report that Kubernetes state may require kubeadm-aware repair
 ```
 
+If kubeadm has already mutated cluster state but target kubelet has not yet been
+activated, rollback still selects a complete previous host generation. The
+operation status must report that Kubernetes state may now expect the target
+version and that target-version kubeadm repair access may still be required.
+Rollback must not preserve the target sysext as a hidden repair tool. Any
+target-version kubeadm access after rollback remains operation-scoped and must be
+visible in diagnostics.
+
 If host boot fails after staging or after kubelet restart, normal Katl rollback
 selects the previous known-good generation as defined by the generation
 metadata model. The operation status must still report whether kubeadm already
@@ -225,6 +254,13 @@ mutated cluster state before the host rollback occurred.
 Rollback must never independently switch only the root slot, sysext, or confext.
 Host rollback selects a complete previous generation. Kubernetes state repair is
 a separate kubeadm-aware operation.
+
+After kubeadm mutation, `recoveryRequired` may name a deferred kubeadm-aware
+operation type, but Katl must not automatically perform it. The operation status
+should record whether the next safe action is retry, operator inspection,
+kubeadm repair, etcd snapshot restore, or destructive rebuild. Host rollback may
+make the node bootable; it must not report Kubernetes cluster state repaired
+unless a separate kubeadm/etcd-aware operation succeeds.
 
 ## Configuration Changes During Upgrade
 
@@ -302,6 +338,28 @@ failed host boot after sysext staging that rolls back only host generation
 
 Until those VM tests exist, Kubernetes upgrade execution should remain an
 explicit experimental operation rather than an unattended default.
+
+## Open Questions
+
+Open implementation choices:
+
+```text
+How should the upgrade unit obtain target-version kubeadm before the target
+  sysext is globally active: operation-private mount namespace, transient sysext
+  merge with kubelet gated, separate kubeadm tool payload, or another
+  systemd-native mechanism?
+
+Should kubelet continue running from the source payload during kubeadm upgrade
+  phases, or should the operation stop kubelet before invoking target kubeadm for
+  some node roles?
+
+What is the concrete systemd gate for target kubelet activation: generated
+  drop-in, phase file condition, transient mask, dedicated upgrade target, or
+  another unit pattern?
+
+Which choice can be verified without weakening the rule that a generation
+  selects one complete sysext/confext/root state?
+```
 
 ## References
 

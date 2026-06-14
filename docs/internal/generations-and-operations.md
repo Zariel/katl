@@ -74,6 +74,43 @@ installed runtime to accept node-local operations.
 Generation 0 is intentionally not a Kubernetes cluster member. It is the
 post-install KatlOS baseline.
 
+## Generation Lifecycle Terms
+
+The shared lifecycle uses these terms:
+
+```text
+candidate generation
+  a validated generation record whose immutable selection fields exist, but which
+  is not yet active or committed
+
+selected generation
+  the generation chosen for one execution context: next boot, current boot, live
+  apply, or rollback; selection is not commit
+
+active generation
+  the generation whose selected root, UKI, sysext, and confext are currently
+  realized by the running system
+
+committed generation
+  the generation selected as the persistent default for future boots after the
+  required health gate passes
+
+known-good generation
+  a committed generation with healthState healthy and bootState good or
+  superseded
+
+activation
+  realizing a selected generation through systemd-boot, /run extension links,
+  confext links, mount units, and native systemd services
+
+health promotion
+  changing a tried boot generation to bootState good and healthState healthy
+  after katl-boot-complete.target
+
+rollback
+  selecting a previous known-good generation record as a complete unit
+```
+
 ## Operations
 
 An operation represents a stateful workflow required to transition the node,
@@ -82,7 +119,6 @@ host capability set, or Kubernetes cluster state.
 Examples include:
 
 ```text
-PrepareKubernetes
 BootstrapCluster
 JoinCluster
 UpgradeControlPlane
@@ -102,6 +138,60 @@ Operations are explicit. Normal configuration apply and generation activation
 must not silently run kubeadm, kubectl, CNI installers, GitOps controllers,
 package managers, or cluster repair commands.
 
+Normal `katlc apply` is the generation apply path, not a special Kubernetes
+operation merely because it creates or activates a kubeadm-ready generation. It
+may record apply status and diagnostics, but named operations are reserved for
+transactional workflows that run mutating tools such as kubeadm, coordinate
+external state, or repair state outside normal generation apply.
+
+`BootstrapCluster` and `JoinCluster` are operation types even when they are
+initiated by `katlctl cluster bootstrap`. For bounded multi-node workflows, the
+durable record may be a coordinator run record rather than only a node-local
+systemd operation record. A coordinator run record must capture per-node
+operation attempts, phase state, redacted diagnostics, and whether kubeadm has
+mutated node or cluster state.
+
+## Operation Records
+
+An `OperationRecord` is the canonical durable run record for an accepted Katl
+lifecycle workflow. Terms such as run record, checkpoint, config-apply status,
+and upgrade operation record are workflow-specific storage views of the same
+model, not separate lifecycle models.
+
+One record tracks one explicit attempt from request acceptance to terminal
+result. Records may be node-local or coordinator-scoped. A multi-node `katlctl`
+workflow may have one coordinator record plus linked node-local records for each
+node mutation.
+
+Common fields:
+
+```text
+operationID
+operationKind
+scope: install-state | host-generation | kubeadm-state | etcd-state |
+  destructive-reset | coordinator
+actor
+requestDigest
+previousGenerationID, when present
+candidateGenerationID, when present
+phase
+completedPhases[]
+externalMutationStarted
+mutatingToolRan
+diagnosticArtifacts[]
+hostRollback
+recoveryRequired
+retryHint
+result
+createdAt
+updatedAt
+completedAt
+failureReason, redacted
+```
+
+This shared model normalizes lifecycle vocabulary. It does not require every
+workflow to adopt one storage path before the implementation reaches that area.
+
 ## Command And System Boundaries
 
 `katlc` is the node-local authority. It validates node-local input, compiles or
@@ -111,6 +201,10 @@ systemd-supervised operation units, and records node-local status.
 `katlctl` is the operator UX and remote or multi-node orchestration layer. It
 may connect to installed nodes, submit explicit operation requests, coordinate
 bootstrap or rolling upgrade order, and report cluster-level progress.
+`katlctl` may create bounded coordinator run records for operator-triggered
+bootstrap, join, or rollout workflows. Those records are operation status for the
+requested run, not desired cluster state and not instructions for a background
+reconciler.
 
 Systemd executes and supervises node-local operations. It owns unit ordering,
 dependency management, restart handling, logging, health targets, and boot
@@ -144,20 +238,20 @@ Install KatlOS
   -> reach installed-runtime health
 ```
 
-Kubernetes host preparation is the first post-install operation:
+The first post-install `katlc apply` creates the kubeadm-ready generation:
 
 ```text
-PrepareKubernetes
+katlc apply <node configuration>
   -> select Kubernetes sysext
   -> render kubeadm-ready configuration
   -> project /etc/kubernetes from writable state
   -> verify containerd, kubelet wiring, and kubeadm tools
-  -> create generation 1
-  -> mark generation 1 healthy after local checks pass
+  -> create and activate the kubeadm-ready generation
+  -> reach katl-kubeadm-ready.target after local checks pass
 ```
 
-Generation 1 is kubeadm-ready host state. It has not run `kubeadm init` or
-`kubeadm join`.
+The kubeadm-ready generation is ordinary host state. It has not run
+`kubeadm init` or `kubeadm join`.
 
 Cluster bootstrap and node join are later explicit operations:
 
@@ -190,6 +284,44 @@ UpgradeControlPlane or UpgradeWorker
   -> mark generation N+1 healthy
 ```
 
+During Kubernetes upgrades, target-version kubeadm availability is part of the
+operation execution context. Target-version kubelet activation is a later
+operation phase. This preserves generation semantics while matching kubeadm's
+required ordering.
+
+## Generation State Transitions
+
+The common generation state transitions are:
+
+```text
+create candidate
+  write immutable generation metadata with bootState pending and healthState
+  unknown
+
+select for next boot
+  arm the candidate with bounded boot selection; the current boot remains on the
+  previous active generation
+
+boot activation
+  boot with generation identity, recreate selected /run activation links, and
+  enter bootState trying
+
+health promotion
+  after katl-boot-complete.target, set bootState good and healthState healthy
+
+commit
+  make the promoted generation the persistent default and mark the previous
+  healthy default superseded
+
+failed boot
+  set the tried candidate failed/unhealthy, then select the previous known-good
+  generation
+
+live apply
+  use config-apply-status.json for live phases; live activation does not by
+  itself prove boot health
+```
+
 ## Failure And Rollback
 
 Generations provide host rollback. Operations provide transactional status and
@@ -220,6 +352,32 @@ whether kubeadm-aware repair or retry is required
 This keeps host state declarative and rollback-aware while acknowledging that
 some operations are inherently transactional.
 
+## Recovery And Repair
+
+Recovery and repair are explicit operations, not automatic failure handlers. A
+terminal state such as `failed-needs-repair` means Katl stopped before unsafe
+mutation. It does not authorize hidden cleanup, kubeadm repair, etcd mutation,
+request replacement, or destructive reinstall.
+
+Recovery operation shapes are deferred until implemented. Unsupported recovery
+requests must be refused with diagnostics rather than partially executed.
+Recovery operation scope must be explicit:
+
+```text
+install-state
+host-generation
+kubeadm-state
+etcd-state
+destructive-reset
+```
+
+Each scope needs its own preflights, allowed mutations, forbidden mutations, and
+validation gates. Deferred recovery operation types include
+`RepairInstallState`, `RepairGenerationStatus`, `RetryOperation`,
+`RenewCertificates`, `ResetNode`, `ReplaceEtcdMember`, and
+`RestoreEtcdSnapshot`. Naming them documents boundaries only; it does not make
+them supported behavior.
+
 ## Testing Contract
 
 The operation model needs tests at the level where behavior becomes concrete:
@@ -228,7 +386,7 @@ The operation model needs tests at the level where behavior becomes concrete:
 unit tests for operation planning and validation
 golden tests for generated operation records and systemd units
 systemd-analyze verify for generated units where practical
-VM tests for install, PrepareKubernetes, bootstrap, join, upgrade, rollback,
+VM tests for install, initial katlc apply, bootstrap, join, upgrade, rollback,
   and repair workflows as they are implemented
 ```
 

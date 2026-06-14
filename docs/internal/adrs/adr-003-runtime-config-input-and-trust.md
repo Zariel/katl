@@ -189,7 +189,14 @@ example:
 ```
 
 Accepted runtime changes also write immutable generation metadata and the
-generation-local `config-apply-status.json` described by ADR-002.
+generation-local `config-apply-status.json` described by ADR-002. That status
+file is the generation-scoped operation record for the apply attempt, using the
+shared operation model even if the filename stays workflow-specific.
+
+A rejected request may reuse common decision/status fields, but it does not
+become a mutating operation record and must not create partial generation
+artifacts. Idempotent retry returns the existing audit decision and, when
+accepted, the linked operation record.
 
 Rejected requests must record a redacted diagnostic and must not render,
 activate, or partially apply generated confext. Rejection reasons include:

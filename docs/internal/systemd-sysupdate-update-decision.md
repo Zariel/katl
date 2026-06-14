@@ -212,6 +212,11 @@ Katl should not persistently default a candidate generation before health
 passes. Initial activation should either use systemd-boot one-shot selection or
 boot-counting entries with the previous known-good generation still available.
 
+A successful sysupdate transfer is staging, not activation or commit. Commit
+order is: transfer resources, write candidate metadata, arm bounded boot
+selection, boot candidate, reach `katl-boot-complete.target`, mark
+`good/healthy`, then make the candidate the persistent default.
+
 After health passes, Katl updates the generation record to:
 
 ```text

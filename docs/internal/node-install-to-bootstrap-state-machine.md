@@ -3,10 +3,10 @@
 Status: current decision.
 
 This document defines how a node moves from installer boot to the installed
-runtime handoff, then through the first post-install operation that prepares the
-node for kubeadm. It covers both network/PXE-style install with input supplied
-up front and USB/local-handoff install where an operator supplies input after
-the installer boots.
+runtime handoff, then through the first post-install configuration apply that
+creates the kubeadm-ready generation. It covers both network/PXE-style install
+with input supplied up front and USB/local-handoff install where an operator
+supplies input after the installer boots.
 
 Both paths converge on one `ValidatedInstallRequest` before any destructive disk
 mutation. The request references one KatlOS install image payload plus
@@ -112,18 +112,19 @@ ActivateGeneration
 
 InstalledRuntimeReady
   reach local runtime health with writable state, operator access, katlc, and
-  systemd operation wiring available
+  systemd operation wiring available; this generation 0 handoff does not require
+  /etc/kubernetes projection, containerd running, kubelet availability, or
+  katl-kubeadm-ready.target
 
-WaitingForPrepareKubernetes
+WaitingForInitialNodeConfigApply
   terminal install handoff state for the node; katlc or an operator-driven
-  katlctl workflow may now request the PrepareKubernetes operation
+  katlctl workflow may now run katlc apply with node configuration
 ```
 
-`PrepareKubernetes` is the first post-install operation. It creates the
-kubeadm-ready generation:
+The initial node configuration apply creates the kubeadm-ready generation:
 
 ```text
-PrepareKubernetes
+katlc apply <node configuration>
   select the Kubernetes sysext for the next generation
   render kubeadm config refs under /etc/katl
   project /etc/kubernetes from writable state
@@ -136,10 +137,11 @@ KubeadmReady
 
 WaitingForClusterBootstrap
   terminal handoff state for the node; operator-run katlctl cluster bootstrap
-  may now connect and decide init or join based on cluster inventory/systemRole
+  may now record a BootstrapCluster attempt for the init node or a JoinCluster
+  attempt for joining nodes based on cluster inventory and systemRole
 ```
 
-Neither the install path nor `PrepareKubernetes` runs kubeadm init, kubeadm
+Neither the install path nor initial `katlc apply` runs kubeadm init, kubeadm
 join, CNI installation, or cluster lifecycle actions. Those are explicit
 operations after `katl-kubeadm-ready.target`.
 
@@ -200,6 +202,15 @@ Checkpoint state is diagnostic and resume-oriented. The source of truth for
 already-mutated disk state remains the actual GPT layout, filesystems, installed
 generation metadata, and boot entries.
 
+After the target state partition exists, installer checkpoint and status files
+are the installer operation record. `state` is the current operation phase, and
+`completedStates[]` is the installer-specific view of completed phases.
+`/var/lib/katl/install/status.json` is the operator-facing run record for the
+install attempt. The other files under `/var/lib/katl/install/` are request,
+plan, artifact, input, or diagnostic attachments referenced by that record.
+Pre-target discovery and validation remain transient and do not need durable
+operation records.
+
 ## Local Handoff Rules
 
 Local handoff starts only when no valid preseeded input is discovered.
@@ -250,6 +261,9 @@ runtime first boot is interrupted before installed-runtime readiness
   rerun runtime units and re-evaluate generation 0 prerequisites
 ```
 
+Safe retry means deterministic resume through idempotent states using the same
+accepted request digest and target disk identity. It is not repair.
+
 Refuse cases:
 
 ```text
@@ -266,6 +280,15 @@ local handoff receives a second valid request after acceptance
 
 Repair tooling may later make some refuse cases recoverable, but the default
 installer must not silently reinterpret them.
+
+Repair-required cases must stop in `failed-needs-repair` or
+`runtime-failed-needs-repair` and reference a deferred `RepairInstallState`
+operation shape. `RepairInstallState` may inspect checkpoints, disk identity,
+Katl GPT state, generation metadata, and boot entries unless an explicit
+operator request authorizes a named mutation. It must not replace the accepted
+request, reinterpret a different target disk, delete Kubernetes state, delete
+etcd state, or perform destructive reinstall work without a separate
+destructive-reset request.
 
 ## Failure Diagnostics
 
@@ -306,21 +329,21 @@ Runtime terminal states:
 
 ```text
 installed-runtime-ready
-waiting-for-prepare-kubernetes
+waiting-for-initial-node-config-apply
 kubeadm-ready
 waiting-for-cluster-bootstrap
 runtime-booted-not-ready
 runtime-failed-needs-repair
 ```
 
-`waiting-for-prepare-kubernetes` is success for node installation. It means the
-node is installed, generation 0 reached local runtime health, and the node can
-accept an explicit `PrepareKubernetes` operation.
+`waiting-for-initial-node-config-apply` is success for node installation. It
+means the node is installed, generation 0 reached local runtime health, and the
+node can accept an initial `katlc apply`.
 
-`waiting-for-cluster-bootstrap` is success for the Kubernetes preparation
-operation. It means the node has reached `katl-kubeadm-ready.target` and is
-ready for the bounded operator-run cluster bootstrap CLI. It also means neither
-node install nor `PrepareKubernetes` has run `kubeadm init` or `kubeadm join`.
+`waiting-for-cluster-bootstrap` is success for the initial node configuration
+apply. It means the node has reached `katl-kubeadm-ready.target` and is ready for
+the bounded operator-run cluster bootstrap CLI. It also means neither node
+install nor initial `katlc apply` has run `kubeadm init` or `kubeadm join`.
 
 ## Tests And Follow-Up Work
 

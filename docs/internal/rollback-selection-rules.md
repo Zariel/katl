@@ -35,10 +35,11 @@ healthState: healthy
 ```
 
 The previous known-good generation is the newest generation record with
-`healthState: healthy` that is not the currently failed or currently tried
-generation. Its `bootState` may be `good` or `superseded`; superseded means a
+`healthState: healthy` and `bootState: good` or `bootState: superseded` that is
+not the currently failed or currently tried generation. Superseded means a
 healthy generation is no longer the active default, not that it is unsafe for
-rollback.
+rollback. `config-apply-status.json` health is not sufficient for known-good
+rollback selection.
 
 ## Failed Boot Rollback
 
@@ -56,6 +57,11 @@ If there is no previous known-good generation, automatic rollback is not
 available. That is the first-install failure case and requires reinstall or
 repair tooling.
 
+Failed boot rollback marks only the failed tried generation `failed/unhealthy`.
+The rollback target keeps its existing `good` or `superseded` state. `/run`
+activation links are regenerated from the rollback target after that target is
+selected for the running boot.
+
 ## Explicit Rollback
 
 An explicit rollback request uses the same selection path as failed boot
@@ -65,6 +71,19 @@ may be marked superseded or left good depending on the operator action.
 The first implementation should support rolling back to the immediate previous
 known-good generation. Arbitrary generation selection can be added later once
 repair tooling exists.
+
+If the rollback target fails to boot, Katl must report rollback failure rather
+than marking the abandoned generation as repaired.
+
+## Rollback And Repair Boundary
+
+Rollback is host generation selection, not repair. It must not run kubeadm,
+remove etcd members, rewrite `/etc/kubernetes`, replace install input, or clean
+partial bootstrap state.
+
+When rollback cannot select a previous known-good generation, Katl reports
+recovery-required and records diagnostics for a deferred recovery operation. It
+must not invent a rollback target.
 
 ## First Install Seed
 

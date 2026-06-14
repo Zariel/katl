@@ -73,14 +73,15 @@ healthState: unknown
 
 Runtime health completion later marks generation 0 good. Generation 0 must boot
 the installed runtime, mount writable state, expose operator access, and provide
-the Katl/systemd wiring needed to accept node-local operations. It is not
-required to be kubeadm-ready and does not run `kubeadm init` or `kubeadm join`.
+the Katl/systemd wiring needed to accept `katlc apply` requests and later
+node-local operations. It is not required to be kubeadm-ready and does not run
+`kubeadm init` or `kubeadm join`.
 
-The first post-install Kubernetes operation is `PrepareKubernetes`. It creates a
-later generation, commonly described as generation 1, that selects the
-Kubernetes sysext, rendered kubeadm-ready configuration, kubelet/containerd
-wiring, and `/etc/kubernetes` projection. That operation follows the shared
-model in `docs/internal/generations-and-operations.md`.
+The first post-install runtime configuration apply is an initial `katlc apply`.
+It creates a later generation, commonly described as generation 1, that selects
+the Kubernetes sysext, rendered kubeadm-ready configuration, kubelet/containerd
+wiring, and `/etc/kubernetes` projection. This is normal generation creation and
+activation, not a special Kubernetes operation.
 
 The first install path does not need inactive-slot rollback because there is no
 previous installed generation.
@@ -101,6 +102,34 @@ All other fields describe the selected root, UKI, command line, sysext set, and
 generated confext set. Those fields must not be changed in place during a normal
 update. A new desired runtime state gets a new generation directory.
 
+`bootState` records boot trial status only. It is not the live configuration
+apply phase. `healthState` records generation boot health. Live apply progress,
+diagnostics, rollback attempts, and external mutation boundaries belong in an
+operation record such as `config-apply-status.json` until the generation later
+boots and reaches `katl-boot-complete.target`.
+
+Valid boot transitions are:
+
+```text
+pending -> trying -> good
+pending | trying -> failed
+good -> superseded
+```
+
+A runtime config generation created for `live` starts as `pending` and
+`unknown`. If live activation succeeds, its apply status may become active, but
+the generation is not known-good until a boot health promotion marks it
+`good` and `healthy`. A rollback target that is already `good` or `superseded`
+stays known-good; selecting it for rollback must not erase that status.
+
+Explicit repair tooling may update only `bootState` and `healthState` in an
+existing generation record, and only through a durable operation record that
+records previous values, new values, reason, and diagnostics. Repair tooling
+must not change root slot, PARTUUID, UKI path, kernel command line, sysext
+selection, or confext selection in place. If those fields are wrong or missing,
+Katl must create a new generation, roll back to an existing valid generation, or
+refuse.
+
 ## Updates
 
 Updates create a new generation directory before switching boot selection. A new
@@ -111,6 +140,14 @@ current root slot and root artifact digest while selecting new extension content
 KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
 compatible with the new runtime root. Kubernetes-only updates may keep the
 existing KatlOS runtime root when the new sysext is compatible with it.
+
+A Kubernetes upgrade operation may stage a candidate generation before every
+service consumes it. That does not create an intermediate generation with mixed
+Kubernetes tooling. The record still selects the target Kubernetes sysext as one
+complete post-operation state; operation metadata controls when kubelet is
+allowed to consume that payload. A candidate Kubernetes upgrade generation must
+remain `healthState: unknown` or deferred until the kubeadm phase and planned
+kubelet restart have completed and local health checks pass.
 
 Katl uses `systemd-sysupdate` as the default resource transfer and staging
 primitive for KatlOS runtime root and UKI updates, but the Katl generation

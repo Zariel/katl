@@ -19,7 +19,9 @@ KatlOS source
   -> katlos-install installs KatlOS and seeds generation 0
   -> users supply Katl YAML/configuration
   -> katlc on KatlOS validates and compiles config into generations
-  -> explicit operations prepare Kubernetes, bootstrap, join, or upgrade nodes
+  -> katlc apply creates or stages runtime generations, including kubeadm-ready
+     host state
+  -> explicit kubeadm-aware operations bootstrap, join, or upgrade nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
   -> kubeadm and user-managed GitOps bring the cluster to its desired state
 ```
@@ -113,6 +115,11 @@ systemd executes and supervises node-local operation units, `katlctl` may
 coordinate operator-driven multi-node workflows, and kubeadm remains
 authoritative for Kubernetes cluster mutation.
 
+Multi-node operator workflows may use bounded `katlctl` coordinator run records
+that aggregate explicit node operation attempts. Those records provide audit,
+retry, and diagnostics; they do not make Katl a continuous cluster lifecycle
+controller.
+
 Update machinery should use native systemd functions where they fit:
 systemd-boot selection and boot counting, systemd-sysext and systemd-confext
 activation, native mount ordering, tmpfiles, and health targets. Katl agents
@@ -183,13 +190,12 @@ artifacts, partitions and formats the Katl-owned root disk, writes generation 0,
 persists identity and state layout, installs boot metadata, and reboots.
 
 The installed runtime reaches a local health target for generation 0. The user
-applies Katl YAML/configuration with `katlc` on KatlOS. `katlc` validates the
-input, rejects unsafe or unsupported domains, and explicit operations such as
-`PrepareKubernetes` compile and activate later generations with rollback-aware
-status. After `PrepareKubernetes` reaches the kubeadm-ready handoff, the user or
-`katlctl` can run the appropriate kubeadm bootstrap or join operation. Once the
-API server is reachable, the user's GitOps stack installs CNI, CoreDNS, Flux,
-policies, storage, and applications.
+applies Katl YAML/configuration with `katlc apply` on KatlOS. `katlc` validates
+the input, rejects unsafe or unsupported domains, creates and activates the
+kubeadm-ready generation, and reports rollback-aware status. After the
+kubeadm-ready handoff, the user or `katlctl` can run the appropriate kubeadm
+bootstrap or join operation. Once the API server is reachable, the user's GitOps
+stack installs CNI, CoreDNS, Flux, policies, storage, and applications.
 
 Updates follow the same model. A new desired state compiles into a new
 generation. Online-applicable configuration can apply immediately through a

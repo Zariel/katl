@@ -111,6 +111,13 @@ directory can be reused after a new greenfield install unless the recovery
 workflow proves member identity, certificates, peer URLs, and Kubernetes
 version compatibility.
 
+Etcd recovery operation shapes are deferred. `ReplaceEtcdMember` and
+`RestoreEtcdSnapshot` require explicit operator intent, member identity checks,
+certificate compatibility checks, Kubernetes version compatibility checks, and
+redacted diagnostics before any mutation. Until those operations exist and have
+gates, Katl must refuse stale or partial etcd recovery cases instead of
+attempting cleanup implicitly.
+
 ## Bootstrap Ordering
 
 Three-control-plane stacked-etcd bootstrap is serial.
@@ -142,6 +149,11 @@ the failed member or prove it is healthy before retrying.
 The bootstrap helper must never respond to a failed init by running
 `kubeadm init` on another node against the same partially initialized cluster.
 That is an explicit operator recovery decision.
+
+Each kubeadm init or join step updates the bootstrap run record as a
+`BootstrapCluster` or `JoinCluster` attempt. Failed control-plane joins must stop
+the coordinator run and require explicit retry or repair; Katl must not
+automatically keep reconciling membership.
 
 Certificate-key handling must be explicit and redacted in normal logs, run
 records, diagnostics, and artifacts.

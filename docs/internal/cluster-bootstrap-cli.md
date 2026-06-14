@@ -65,6 +65,21 @@ The command is a bounded coordinator. It runs phases, writes outputs, reports
 status, and exits. It is not a daemon, reconciler, add-on manager, CNI manager,
 Flux manager, BIRD manager, or cluster lifecycle controller.
 
+## Operation And Run Record Boundary
+
+`katlctl cluster bootstrap` is a bounded coordinator for explicit
+`BootstrapCluster` and `JoinCluster` operation attempts. The command writes one
+bootstrap run record for the coordinator invocation. The selected init node gets
+a `BootstrapCluster` attempt; each worker or later control-plane join gets a
+`JoinCluster` attempt.
+
+The run record stores ordering, phase state, selected inputs, CLI overrides,
+redacted diagnostics, retry context, and whether kubeadm has mutated node or
+cluster state. It is not desired cluster state. The source of truth after
+mutation remains kubeadm output, node-local state, and Kubernetes API state. The
+command must not remain resident, watch the cluster, or continuously reconcile
+failed or missing joins.
+
 ## Input Model
 
 Bootstrap input describes installed nodes, not install-time desired state. Each
@@ -167,6 +182,10 @@ If any node is not ready, the command fails before running kubeadm anywhere.
 ## Bootstrap Flow
 
 The bootstrap command runs phases in this order:
+
+These are coordinator phases. Phases that run `kubeadm init` or `kubeadm join`
+must also update the corresponding `BootstrapCluster` or `JoinCluster` attempt
+in the bootstrap run record.
 
 ```text
 1. load and validate inventory or compiled plan
@@ -325,8 +344,10 @@ if join material expired
   create fresh join material from the control-plane API
 ```
 
-The run record should store enough phase state for diagnostics, but the source
-of truth remains kubeadm/Kubernetes state on the nodes and API server.
+The bootstrap run record stores enough coordinator and per-operation-attempt
+state for diagnostics and safe retry. It is not authoritative over kubeadm or
+Kubernetes state; retry decisions must re-check the selected nodes and API
+server.
 
 ## Failure Diagnostics
 
