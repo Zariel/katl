@@ -23,10 +23,11 @@ KatlOS source
   -> mkosi builds generic installer/runtime/sysext artifacts
   -> artifacts are published by the user's chosen release process
   -> machines boot installer-image through user-managed boot infrastructure
-  -> katlos-install installs the runtime OS
+  -> katlos-install installs the runtime OS and seeds generation 0
   -> users supply Katl YAML/configuration
-  -> katlc on KatlOS validates and compiles config into a generation
-  -> KatlOS activates, stages, reports, or rolls back that generation
+  -> katlc on KatlOS validates and compiles config into generations
+  -> explicit operations prepare Kubernetes, bootstrap, join, or upgrade nodes
+  -> KatlOS activates, stages, reports, or rolls back host generations
   -> kubeadm and user-managed GitOps take over
 ```
 
@@ -117,8 +118,8 @@ The active installer flow is Katl-native:
 8. katlos-install installs UKIs, systemd-boot entries, generation metadata,
    generated confext, mount units, identity, SSH policy, and writable state.
 9. The node reboots from the installed disk.
-10. The runtime reaches a local Katl boot-complete target and then the
-    kubeadm-ready handoff point.
+10. The runtime reaches a local Katl boot-complete target for generation 0 and
+    waits for explicit post-install operations.
 ```
 
 The installer does not build Fedora packages on the target node. It consumes
@@ -132,7 +133,7 @@ and generated sysext/confext generations.
 Katl configuration is applied to nodes as Katl configuration. Users and external
 automation should not have to prebuild sysext/confext generation content for a
 node. On first install, `katlos-install` validates the manifest and bootstraps
-the initial generation. After install, `katlc` receives trusted Katl
+generation 0. After install, `katlc` receives trusted Katl
 YAML/configuration on KatlOS and locally compiles a new generation that contains
 generated confext and the selected sysext activation set. Sysext payloads are
 prebuilt artifacts; the node-local generation records which compatible sysexts
@@ -203,8 +204,9 @@ before becoming part of the user-facing configuration API.
 Kubeadm configuration is intentionally a thin reference to native kubeadm files,
 not YAML embedded as a string and not an init/join action. Node configuration
 selects a named kubeadm config, Katl validates and renders it under
-`/etc/katl/kubeadm/`, and an operator or test harness decides when to run
-`kubeadm init`, `kubeadm join`, or later kubeadm upgrade commands.
+`/etc/katl/kubeadm/`, and explicit operations decide when to prepare
+Kubernetes host state, run `kubeadm init`, run `kubeadm join`, or run later
+kubeadm upgrade commands.
 
 ## Rejected Configuration Bootstrap
 
@@ -250,19 +252,21 @@ Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
 KatlOS root, when the selected artifacts are compatible.
 
 After the installer UKI and installed runtime boot path works, the next local
-step is a kubeadm-ready installed runtime. That means the base runtime has
-containerd and the host plumbing kubeadm expects, a Kubernetes sysext supplies
-`kubeadm`, `kubelet`, `kubectl`, and tightly related binaries, generated config
-places kubeadm input under `/etc/katl`, and writable kubeadm output is projected
-at `/etc/kubernetes`.
+step is a local `PrepareKubernetes` operation that moves generation 0 to a
+kubeadm-ready generation. That means the base runtime has containerd and the
+host plumbing kubeadm expects, a Kubernetes sysext supplies `kubeadm`, `kubelet`,
+`kubectl`, and tightly related binaries, generated config places kubeadm input
+under `/etc/katl`, and writable kubeadm output is projected at
+`/etc/kubernetes`.
 
-The first proof should stay local: build or inspect the sysext artifact, install
-it with the selected generation, boot the installed runtime in the VM runner, reach
-`katl-kubeadm-ready.target`, and run a bounded kubeadm preflight or dry-run check
-that proves the node is prepared for `kubeadm init`. CI-built downloadable
-artifacts are a later publishing concern, not a blocker for this local loop.
-Artifact compatibility metadata, not matching product versions, decides whether
-a runtime root and Kubernetes sysext can be selected together.
+The first proof should stay local: build or inspect the sysext artifact, boot
+generation 0 in the VM runner, run `PrepareKubernetes` to activate the
+Kubernetes sysext and generated config, reach `katl-kubeadm-ready.target`, and
+run a bounded kubeadm preflight or dry-run check that proves the node is
+prepared for `kubeadm init`. CI-built downloadable artifacts are a later
+publishing concern, not a blocker for this local loop. Artifact compatibility
+metadata, not matching product versions, decides whether a runtime root and
+Kubernetes sysext can be selected together.
 
 ## Host Users And SSH
 
@@ -438,7 +442,8 @@ The next step after that loop is still local and test-driven:
 
 ```text
 build a Kubernetes sysext with kubeadm, kubelet, kubectl, and related binaries
-install and activate the sysext as part of the selected generation
+boot generation 0 and run PrepareKubernetes as a node-local operation
+activate the sysext as part of the kubeadm-ready generation
 render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering
@@ -460,6 +465,11 @@ docs/internal/installer-runtime-design.md
 
 docs/internal/generation-metadata-model.md
   Generation record shape and how a generation selects root/sysext/confext.
+
+docs/internal/generations-and-operations.md
+  Shared model separating declarative host generations from explicit,
+  auditable operations such as Kubernetes preparation, bootstrap, join, and
+  upgrade.
 
 docs/internal/boot-health-semantics.md
   Local boot health contract and generation status transitions.
@@ -485,6 +495,10 @@ docs/internal/go-vm-test-harness-design.md
 
 docs/internal/kubeadm-api-smoke-design.md
   Single-node kubeadm init proof that reaches a kubectl-responsive API server.
+
+docs/internal/kubernetes-upgrade-operations.md
+  Explicit kubeadm-backed Kubernetes upgrade operations selected and supervised
+  through Katl generations.
 
 docs/internal/adrs/adr-001-generated-confext-configuration.md
   Accepted decision for Katl-native configuration and generated confext. The file

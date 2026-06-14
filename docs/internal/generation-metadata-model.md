@@ -50,9 +50,9 @@ Required fields:
 The Go scaffold in `internal/installer/generation` implements this initial
 record shape and deterministic content identifiers for generated trees.
 
-## First Install
+## Generation 0
 
-First install creates exactly one generation:
+First install creates generation 0, the post-install KatlOS baseline:
 
 ```text
 /var/lib/katl/generations/<generation-id>/
@@ -71,9 +71,19 @@ bootState: pending
 healthState: unknown
 ```
 
-Runtime health completion later marks the same generation good. The first
-install path does not need inactive-slot rollback because there is no previous
-installed generation.
+Runtime health completion later marks generation 0 good. Generation 0 must boot
+the installed runtime, mount writable state, expose operator access, and provide
+the Katl/systemd wiring needed to accept node-local operations. It is not
+required to be kubeadm-ready and does not run `kubeadm init` or `kubeadm join`.
+
+The first post-install Kubernetes operation is `PrepareKubernetes`. It creates a
+later generation, commonly described as generation 1, that selects the
+Kubernetes sysext, rendered kubeadm-ready configuration, kubelet/containerd
+wiring, and `/etc/kubernetes` projection. That operation follows the shared
+model in `docs/internal/generations-and-operations.md`.
+
+The first install path does not need inactive-slot rollback because there is no
+previous installed generation.
 
 Boot attempt and health state transitions are defined in
 `docs/internal/boot-health-semantics.md`.

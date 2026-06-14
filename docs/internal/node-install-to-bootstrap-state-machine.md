@@ -2,10 +2,11 @@
 
 Status: current decision.
 
-This document defines how a node moves from installer boot to the kubeadm-ready
-runtime handoff. It covers both network/PXE-style install with input supplied up
-front and USB/local-handoff install where an operator supplies input after the
-installer boots.
+This document defines how a node moves from installer boot to the installed
+runtime handoff, then through the first post-install operation that prepares the
+node for kubeadm. It covers both network/PXE-style install with input supplied
+up front and USB/local-handoff install where an operator supplies input after
+the installer boots.
 
 Both paths converge on one `ValidatedInstallRequest` before any destructive disk
 mutation. The request references one KatlOS install image payload plus
@@ -79,10 +80,10 @@ PrepareTarget
   wipe explicitly authorized target devices, create partitions, format writable
   filesystems, and mount the target
 
-InstallGeneration
+InstallGeneration0
   write the runtime root slot, install boot assets, stage sysexts, materialize
-  generated confext, write mount units, write seed data, and create generation
-  metadata
+  baseline generated confext, write mount units, write seed data, and create
+  generation 0 metadata
 
 WriteInstallRecord
   persist the request, selected image metadata, hardware facts, plan, generation
@@ -92,7 +93,7 @@ SetBootCandidate
   make the verified generation bootable only after target verification succeeds
 
 RebootToRuntime
-  request reboot into the installed runtime generation
+  request reboot into generation 0
 ```
 
 `WaitForLocalConfig` is a non-mutating waiting state, not a failure. It may run
@@ -100,7 +101,7 @@ indefinitely until an operator supplies one valid request or stops the installer
 
 ## Runtime States
 
-After reboot, the installed runtime continues the handoff:
+After reboot, the installed runtime continues the handoff from generation 0:
 
 ```text
 RuntimeFirstBoot
@@ -109,9 +110,26 @@ RuntimeFirstBoot
 ActivateGeneration
   activate selected sysexts and generated confext for the generation
 
-PrepareKubeadmPrereqs
-  project /etc/kubernetes from writable state, ensure containerd prerequisites,
-  kubelet service wiring, kubeadm config refs, and systemRole metadata
+InstalledRuntimeReady
+  reach local runtime health with writable state, operator access, katlc, and
+  systemd operation wiring available
+
+WaitingForPrepareKubernetes
+  terminal install handoff state for the node; katlc or an operator-driven
+  katlctl workflow may now request the PrepareKubernetes operation
+```
+
+`PrepareKubernetes` is the first post-install operation. It creates the
+kubeadm-ready generation:
+
+```text
+PrepareKubernetes
+  select the Kubernetes sysext for the next generation
+  render kubeadm config refs under /etc/katl
+  project /etc/kubernetes from writable state
+  ensure containerd prerequisites, kubelet service wiring, and systemRole
+  metadata
+  create and activate generation 1
 
 KubeadmReady
   reach katl-kubeadm-ready.target after local prerequisites are active
@@ -121,9 +139,9 @@ WaitingForClusterBootstrap
   may now connect and decide init or join based on cluster inventory/systemRole
 ```
 
-The runtime path must not run kubeadm init, kubeadm join, CNI installation, or
-cluster lifecycle actions. Those are explicit operator actions after
-`katl-kubeadm-ready.target`.
+Neither the install path nor `PrepareKubernetes` runs kubeadm init, kubeadm
+join, CNI installation, or cluster lifecycle actions. Those are explicit
+operations after `katl-kubeadm-ready.target`.
 
 ## Durable Checkpoints
 
@@ -228,8 +246,8 @@ interrupted after state partition creation
   reload durable checkpoint, verify requestDigest and target disk identity, and
   continue only through idempotent states
 
-runtime first boot is interrupted before kubeadm-ready
-  rerun runtime units and re-evaluate local prerequisites
+runtime first boot is interrupted before installed-runtime readiness
+  rerun runtime units and re-evaluate generation 0 prerequisites
 ```
 
 Refuse cases:
@@ -287,16 +305,22 @@ reboot-requested
 Runtime terminal states:
 
 ```text
+installed-runtime-ready
+waiting-for-prepare-kubernetes
 kubeadm-ready
 waiting-for-cluster-bootstrap
 runtime-booted-not-ready
 runtime-failed-needs-repair
 ```
 
-`waiting-for-cluster-bootstrap` is success for node installation. It means the
-node is installed, has reached `katl-kubeadm-ready.target`, and is ready for the
-bounded operator-run cluster bootstrap CLI. It also means node install has not
-run `kubeadm init` or `kubeadm join`.
+`waiting-for-prepare-kubernetes` is success for node installation. It means the
+node is installed, generation 0 reached local runtime health, and the node can
+accept an explicit `PrepareKubernetes` operation.
+
+`waiting-for-cluster-bootstrap` is success for the Kubernetes preparation
+operation. It means the node has reached `katl-kubeadm-ready.target` and is
+ready for the bounded operator-run cluster bootstrap CLI. It also means neither
+node install nor `PrepareKubernetes` has run `kubeadm init` or `kubeadm join`.
 
 ## Tests And Follow-Up Work
 
