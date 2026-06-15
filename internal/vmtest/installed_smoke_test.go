@@ -285,16 +285,15 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	_ = targetDiskPath(t, result)
 }
 
-func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
-	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-vmtest-agent", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
-		scenario := Scenario{Name: "installed-runtime-vmtest-agent"}
+func TestDirectRuntimeVMTestAgentSmoke(t *testing.T) {
+	if worldRun, ok := directRuntimeWorldRunFor(t, "direct-runtime-vmtest-agent"); ok {
+		scenario := Scenario{Name: "direct-runtime-vmtest-agent"}
 		result, err := worldRun.Runner.Plan(scenario)
 		if err != nil {
 			t.Fatalf("Plan() error = %v", err)
 		}
 		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
 			Libvirt: true,
-			OVMF:    true,
 			KVM:     worldRun.Runner.options().KVM,
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -312,7 +311,7 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 				Timeout:       20 * time.Second,
 			},
 		}
-		result = RunInstalledRuntime(ctx, result, config, VMRunner{})
+		result = RunDirectRuntime(ctx, result, config, VMRunner{})
 		if err := worldRun.Runner.Write(scenario, result); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
@@ -321,7 +320,7 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 	}
 	options := DefaultOptions()
 	if !options.Enabled {
-		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime vmtest agent smoke")
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run direct runtime vmtest agent smoke")
 	}
 	_ = RequireWorld(t)
 }

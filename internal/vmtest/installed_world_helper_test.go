@@ -32,7 +32,7 @@ func TestPlanInstalledRuntimeWorldRunWritesSetupFailureForMissingPublishedFixtur
 func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	sourceManifest := writePublishedInstalledRuntimeFixture(t, world.RunDir, "first", "cp-1", ControlPlane, time.Unix(10, 0))
+	sourceManifest := writePublishedInstalledRuntimeFixture(t, world.CacheDir, "first", "cp-1", ControlPlane, time.Unix(10, 0))
 
 	run, err := planInstalledRuntimeWorldRun(world, "installed runtime", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
 	if err != nil {
@@ -51,8 +51,8 @@ func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 	if record.NodeName != "cp-1" || record.SystemRole != "control-plane" {
 		t.Fatalf("fixture = %#v", record)
 	}
-	if !pathUnder(run.Fixture.ManifestPath, world.RunDir) {
-		t.Fatalf("fixture = %q, want under world %q", run.Fixture.ManifestPath, world.RunDir)
+	if !pathUnder(run.Fixture.Record.Provenance.SourcePath, world.CacheDir) {
+		t.Fatalf("fixture source = %q, want under world cache %q", run.Fixture.Record.Provenance.SourcePath, world.CacheDir)
 	}
 	if _, err := os.Stat(sourceManifest); err != nil {
 		t.Fatalf("source fixture missing: %v", err)
@@ -61,9 +61,9 @@ func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 
 func TestFindPublishedFirstInstallRuntimeFixtureSelectsNewestMatch(t *testing.T) {
 	repo := t.TempDir()
-	old := writePublishedInstalledRuntimeFixture(t, repo, "old", "cp-1", ControlPlane, time.Unix(10, 0))
-	newestWorker := writePublishedInstalledRuntimeFixture(t, repo, "new-worker", "worker-1", Worker, time.Unix(30, 0))
-	newestCP := writePublishedInstalledRuntimeFixture(t, repo, "new-cp", "cp-1", ControlPlane, time.Unix(20, 0))
+	old := writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "old", "cp-1", ControlPlane, time.Unix(10, 0))
+	newestWorker := writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "new-worker", "worker-1", Worker, time.Unix(30, 0))
+	newestCP := writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "new-cp", "cp-1", ControlPlane, time.Unix(20, 0))
 
 	published, err := FindPublishedFirstInstallRuntimeFixture(repo, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
@@ -84,8 +84,8 @@ func TestPublishedFirstInstallRuntimeFixtureUsesBuildRootPriority(t *testing.T) 
 	repoFixture := writePublishedInstalledRuntimeFixture(t, repoRoot, "repo-cp", "cp-1", ControlPlane, time.Unix(30, 0))
 
 	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{
-		filepath.Join(worldRoot, "_build"),
-		filepath.Join(repoRoot, "_build"),
+		worldRoot,
+		repoRoot,
 	}, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
 		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
@@ -100,7 +100,7 @@ func TestEnsureInstalledRuntimeWorldFixtureProducesMissingFixture(t *testing.T) 
 	produced := false
 	err := ensureInstalledRuntimeWorldFixture(world, NodeSpec{Name: "cp-1", Role: ControlPlane}, func() error {
 		produced = true
-		writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+		writePublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
 		return nil
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestEnsureInstalledRuntimeWorldFixtureProducesMissingFixture(t *testing.T) 
 
 func TestEnsureInstalledRuntimeWorldFixtureUsesExistingWorldFixture(t *testing.T) {
 	world := testWorld(t)
-	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	writePublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
 	produced := false
 	err := ensureInstalledRuntimeWorldFixture(world, NodeSpec{Name: "cp-1", Role: ControlPlane}, func() error {
 		produced = true
@@ -141,7 +141,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testi
 		KVM:   KVMOff,
 		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
 			produced = append(produced, contract.Node.Name)
-			manifest := writePublishedInstalledRuntimeFixture(t, world.RunDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+			manifest := writePublishedInstalledRuntimeFixture(t, world.CacheDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
 			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
 		},
 	})
@@ -152,7 +152,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testi
 		t.Fatalf("produced = %#v", produced)
 	}
 	for _, spec := range []NodeSpec{{Name: "cp-1", Role: ControlPlane}, {Name: "worker-1", Role: Worker}} {
-		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, spec); err != nil {
+		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, spec); err != nil {
 			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%#v) error = %v", spec, err)
 		}
 	}
@@ -213,7 +213,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesWritesSetupFailureForEachFail
 
 func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *testing.T) {
 	world := testWorld(t)
-	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	writePublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
 
 	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, t.TempDir(), []NodeSpec{
 		{Name: "cp-1", Role: ControlPlane},
@@ -229,12 +229,13 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *test
 	}
 }
 
-func TestEnsurePublishedFirstInstallRuntimeFixturesIsolatesSeparateWorlds(t *testing.T) {
+func TestEnsurePublishedFirstInstallRuntimeFixturesReusesCacheAcrossWorlds(t *testing.T) {
 	repo := t.TempDir()
 	input := firstInstallFixtureInputForTest(t)
 	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
 	worldA := testWorld(t)
 	worldB := testWorld(t)
+	worldB.CacheDir = worldA.CacheDir
 
 	ensureWithPublishedFixture := func(world World, name string) PublishedFirstInstallRuntimeFixture {
 		t.Helper()
@@ -242,14 +243,14 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesIsolatesSeparateWorlds(t *tes
 			Input: input,
 			KVM:   KVMOff,
 			Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
-				manifest := writePublishedInstalledRuntimeFixture(t, contract.WorldScenario.World.RunDir, name, contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+				manifest := writePublishedInstalledRuntimeFixture(t, contract.WorldScenario.World.CacheDir, name, contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
 				return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
 			},
 		})
 		if err != nil {
 			t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures(%s) error = %v", name, err)
 		}
-		published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, spec)
+		published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, spec)
 		if err != nil {
 			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%s) error = %v", name, err)
 		}
@@ -258,11 +259,11 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesIsolatesSeparateWorlds(t *tes
 
 	publishedA := ensureWithPublishedFixture(worldA, "world-a")
 	publishedB := ensureWithPublishedFixture(worldB, "world-b")
-	if publishedA.FixtureManifest == publishedB.FixtureManifest {
-		t.Fatalf("separate worlds reused fixture manifest %q", publishedA.FixtureManifest)
+	if publishedA.FixtureManifest != publishedB.FixtureManifest {
+		t.Fatalf("worlds did not reuse cache fixture: a=%q b=%q", publishedA.FixtureManifest, publishedB.FixtureManifest)
 	}
-	if !pathUnder(publishedA.FixtureManifest, worldA.RunDir) || !pathUnder(publishedB.FixtureManifest, worldB.RunDir) {
-		t.Fatalf("published fixtures escaped their worlds: a=%q b=%q", publishedA.FixtureManifest, publishedB.FixtureManifest)
+	if !pathUnder(publishedA.FixtureManifest, worldA.CacheDir) {
+		t.Fatalf("published fixture escaped cache: %q", publishedA.FixtureManifest)
 	}
 }
 
@@ -299,12 +300,12 @@ func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	if !strings.HasPrefix(fixture.ManifestPath, node.ManifestDir) || !strings.HasPrefix(fixture.Disk, node.DiskDir) || !strings.HasPrefix(fixture.ESPArtifacts, node.ArtifactDir) {
 		t.Fatalf("fixture was not staged under node dirs: %#v node=%#v", fixture, node)
 	}
-	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
 		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
 	}
-	if published.FixtureManifest != fixture.ManifestPath {
-		t.Fatalf("published fixture = %q, want %q", published.FixtureManifest, fixture.ManifestPath)
+	if published.FixtureManifest == fixture.ManifestPath || !pathUnder(published.FixtureManifest, world.CacheDir) {
+		t.Fatalf("published fixture = %q, want durable cache copy distinct from scenario fixture %q", published.FixtureManifest, fixture.ManifestPath)
 	}
 	manifest := readScenarioManifest(t, scenario.ManifestPath)
 	if !hasFixtureKind(manifest.Fixtures, FixturePublishedFirstInstall) {
@@ -334,14 +335,14 @@ func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
 	if published.FixtureManifest != fixtureManifest {
 		t.Fatalf("published manifest = %q, want %q", published.FixtureManifest, fixtureManifest)
 	}
-	if !strings.HasPrefix(publishedPath, filepath.Join(root, "_build", "published-first-install-runtime")) {
+	if !strings.HasPrefix(publishedPath, filepath.Join(root, "published-first-install-runtime")) {
 		t.Fatalf("published path = %q", publishedPath)
 	}
 }
 
 func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName string, role NodeRole, modTime time.Time) string {
 	t.Helper()
-	dir := filepath.Join(repo, "_build", "published", name)
+	dir := filepath.Join(repo, "published", name)
 	disk := writeFixtureFile(t, filepath.Join(dir, "installed-runtime.raw"), "disk-"+name)
 	esp := writeFixtureESP(t, filepath.Join(dir, "esp"))
 	metadata := writeFixtureNodeMetadata(t, filepath.Join(dir, "node.json"), Node{Name: nodeName, Role: role})

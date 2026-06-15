@@ -59,10 +59,13 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.RunID != "run-1" || world.RunDir != runDir {
 		t.Fatalf("world = %#v", world)
 	}
+	if world.CacheDir != filepath.Join(repo, "_build", "vmtest") {
+		t.Fatalf("world cache dir = %q", world.CacheDir)
+	}
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
 	}
-	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || !world.AutoRebuild {
+	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || !world.AutoRebuild || world.ArtifactSet != "default" {
 		t.Fatalf("world log/rebuild fields = %#v", world)
 	}
 	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
@@ -103,6 +106,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if childEnv["KATL_VMTEST_WORLD_MANIFEST"] != filepath.Join(runDir, "world.json") {
 		t.Fatalf("child manifest env = %q", childEnv["KATL_VMTEST_WORLD_MANIFEST"])
 	}
+	if childEnv["KATL_VMTEST_CACHE_DIR"] != filepath.Join(repo, "_build", "vmtest") {
+		t.Fatalf("child cache dir env = %q", childEnv["KATL_VMTEST_CACHE_DIR"])
+	}
 	if childEnv["KATL_VMTEST_LIBVIRT_URI"] != "qemu:///system" || childEnv["KATL_VMTEST_LIBVIRT_NETWORK"] != "default" {
 		t.Fatalf("child libvirt env = %#v", childEnv)
 	}
@@ -117,7 +123,10 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if runIndex.RunID != "run-1" || runIndex.WorldManifest != filepath.Join(runDir, "world.json") || runIndex.HostCapabilities != filepath.Join(runDir, "host-capabilities.json") {
 		t.Fatalf("run index paths = %#v", runIndex)
 	}
-	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || !runIndex.AutoRebuild {
+	if runIndex.CacheDir != filepath.Join(repo, "_build", "vmtest") {
+		t.Fatalf("run index cache dir = %q", runIndex.CacheDir)
+	}
+	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || !runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
 		t.Fatalf("run index log/rebuild fields = %#v", runIndex)
 	}
 	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-count=99", "-timeout", "2m"}) {
@@ -208,6 +217,77 @@ exec "$@"
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.Status != "passed" {
 		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+}
+
+func TestVMTestRunBuildsRuntimeOnlyArtifacts(t *testing.T) {
+	realRepo := scriptTestRepoRoot(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
+set -euo pipefail
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_WORLD_STRICT=1
+exec "$@"
+`)
+
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
+		"KATL_VMTEST_RUN_ID=run-runtime-only",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	for _, name := range []string{
+		"KATL_MKOSI_ARTIFACT_INDEX",
+		"KATL_INSTALLER_UKI",
+		"KATL_INSTALLER_KERNEL",
+		"KATL_INSTALLER_INITRD",
+		"KATL_RUNTIME_ARTIFACT",
+		"KATL_INSTALL_MANIFEST",
+	} {
+		env = removeEnv(env, name)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=runtime", "./internal/vmtest", "-run", "NeedsRuntimeOnly")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	mkosiArgs := readLines(t, mkosiArgsPath)
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-runtime"}) {
+		t.Fatalf("mkosi args = %#v", mkosiArgs)
+	}
+	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+	if err != nil {
+		t.Fatalf("LoadWorld() error = %v", err)
+	}
+	if world.ArtifactSet != "runtime" {
+		t.Fatalf("world artifact set = %q", world.ArtifactSet)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.ArtifactSet != "runtime" {
+		t.Fatalf("run index artifact set = %q", runIndex.ArtifactSet)
 	}
 }
 
@@ -726,6 +806,7 @@ set -euo pipefail
 printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
 {
     printf 'KATL_VMTEST_WORLD_MANIFEST=%s\n' "${KATL_VMTEST_WORLD_MANIFEST:-}"
+    printf 'KATL_VMTEST_CACHE_DIR=%s\n' "${KATL_VMTEST_CACHE_DIR:-}"
     printf 'KATL_VMTEST_LIBVIRT_URI=%s\n' "${KATL_VMTEST_LIBVIRT_URI:-}"
     printf 'KATL_VMTEST_LIBVIRT_NETWORK=%s\n' "${KATL_VMTEST_LIBVIRT_NETWORK:-}"
     printf 'KATL_VMTEST_LIBVIRT_STORAGE_POOL=%s\n' "${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-}"
@@ -974,10 +1055,12 @@ type vmtestHostCapabilities struct {
 type vmtestRunIndex struct {
 	Kind                string   `json:"kind"`
 	RunID               string   `json:"runID"`
+	CacheDir            string   `json:"cacheDir"`
 	WorldManifest       string   `json:"worldManifest"`
 	HostCapabilities    string   `json:"hostCapabilities"`
 	GoTestLog           string   `json:"goTestLog"`
 	AutoRebuild         bool     `json:"autoRebuild"`
+	ArtifactSet         string   `json:"artifactSet"`
 	Status              string   `json:"status"`
 	MissingCapabilities []string `json:"missingCapabilities"`
 	GoTestArgs          []string `json:"goTestArgs"`

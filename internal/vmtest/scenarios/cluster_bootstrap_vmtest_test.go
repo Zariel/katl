@@ -1303,10 +1303,10 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	world := twoNodeTestWorld(t)
 	world.RunIndex = filepath.Join(world.RunDir, "custom-run.json")
 	repo := t.TempDir()
-	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", vmtest.ControlPlane)
-	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-worker", "worker-1", vmtest.Worker)
-	writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", vmtest.ControlPlane)
-	writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-worker", "worker-1", vmtest.Worker)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-worker", "worker-1", vmtest.Worker)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-worker", "worker-1", vmtest.Worker)
 
 	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
 	if err != nil {
@@ -1328,8 +1328,8 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 func TestPlanTwoNodeWorldSmokeRunRejectsRepoOnlyPublishedFixtures(t *testing.T) {
 	world := twoNodeTestWorld(t)
 	repo := t.TempDir()
-	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", vmtest.ControlPlane)
-	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-worker", "worker-1", vmtest.Worker)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-worker", "worker-1", vmtest.Worker)
 
 	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
 	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
@@ -1369,6 +1369,7 @@ func twoNodeTestWorld(t *testing.T) vmtest.World {
 		Kind:        vmtest.WorldKind,
 		RunID:       "run-1",
 		RunDir:      root,
+		CacheDir:    filepath.Join(root, "cache"),
 		ArtifactDir: filepath.Join(root, "artifacts"),
 		ScenarioDir: filepath.Join(root, "scenarios"),
 		Network: vmtest.WorldNetwork{

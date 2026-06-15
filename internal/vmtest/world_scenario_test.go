@@ -201,6 +201,7 @@ func testWorld(t *testing.T) World {
 	world := validWorld()
 	world.RunID = "run-1"
 	world.RunDir = root
+	world.CacheDir = filepath.Join(root, "cache")
 	world.ArtifactDir = filepath.Join(root, "artifacts")
 	world.ScenarioDir = filepath.Join(root, "scenarios")
 	world.Network.CIDR = "10.77.0.0/24"

@@ -1038,8 +1038,8 @@ func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *test
 	world.RunIndex = filepath.Join(world.RunDir, "custom-run.json")
 	repo := t.TempDir()
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
-		writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-"+name, name, vmtest.ControlPlane)
-		writeKatlctlPublishedInstalledRuntimeFixture(t, world.RunDir, "world-"+name, name, vmtest.ControlPlane)
+		writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-"+name, name, vmtest.ControlPlane)
+		writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-"+name, name, vmtest.ControlPlane)
 	}
 
 	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
