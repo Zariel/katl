@@ -66,6 +66,7 @@ type OperationRecord struct {
 	CompletedPhases             []string                `json:"completedPhases,omitempty"`
 	Terminal                    bool                    `json:"terminal"`
 	ResourceLocks               []string                `json:"resourceLocks,omitempty"`
+	ExecutorPlan                *ExecutorPlan           `json:"executorPlan,omitempty"`
 	Invocations                 []InvocationRecord      `json:"invocations,omitempty"`
 	ExternalMutationStarted     bool                    `json:"externalMutationStarted"`
 	PreExecMutationMarkers      []PreExecMutationMarker `json:"preExecMutationMarkers,omitempty"`
@@ -87,11 +88,24 @@ type OperationRecord struct {
 	FailureReason               string                  `json:"failureReason,omitempty"`
 }
 
+type ExecutorPlan struct {
+	Phase          string   `json:"phase"`
+	MarkerID       string   `json:"markerID,omitempty"`
+	Timeout        string   `json:"timeout,omitempty"`
+	MutationScopes []string `json:"mutationScopes,omitempty"`
+	Argv           []string `json:"argv"`
+}
+
 type InvocationRecord struct {
 	InvocationID        string     `json:"invocationID"`
 	SystemdInvocationID string     `json:"systemdInvocationID,omitempty"`
 	UnitName            string     `json:"unitName,omitempty"`
 	BootID              string     `json:"bootID,omitempty"`
+	AgentStartID        string     `json:"agentStartID,omitempty"`
+	ExecutorAttemptID   string     `json:"executorAttemptID,omitempty"`
+	ChildProcess        []string   `json:"childProcess,omitempty"`
+	PID                 int        `json:"pid,omitempty"`
+	ExitStatus          int        `json:"exitStatus,omitempty"`
 	StartedAt           time.Time  `json:"startedAt"`
 	CompletedAt         *time.Time `json:"completedAt,omitempty"`
 	Result              string     `json:"result,omitempty"`
@@ -566,6 +580,14 @@ func ValidateRecord(record OperationRecord) error {
 	if record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
 		return fmt.Errorf("operation createdAt and updatedAt are required")
 	}
+	if record.ExecutorPlan != nil {
+		if strings.TrimSpace(record.ExecutorPlan.Phase) == "" {
+			return fmt.Errorf("operation executorPlan phase is required")
+		}
+		if len(record.ExecutorPlan.Argv) == 0 || strings.TrimSpace(record.ExecutorPlan.Argv[0]) == "" {
+			return fmt.Errorf("operation executorPlan argv is required")
+		}
+	}
 	for _, marker := range record.PreExecMutationMarkers {
 		if strings.TrimSpace(marker.MarkerID) == "" || strings.TrimSpace(marker.Tool) == "" || strings.TrimSpace(marker.ArgvDigest) == "" || marker.MarkedAt.IsZero() {
 			return fmt.Errorf("pre-exec mutation marker is incomplete")
@@ -671,6 +693,12 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	record.PhasePlan = cloneStrings(record.PhasePlan)
 	record.CompletedPhases = cloneStrings(record.CompletedPhases)
 	record.ResourceLocks = cloneStrings(record.ResourceLocks)
+	if record.ExecutorPlan != nil {
+		plan := *record.ExecutorPlan
+		plan.MutationScopes = cloneStrings(plan.MutationScopes)
+		plan.Argv = cloneStrings(plan.Argv)
+		record.ExecutorPlan = &plan
+	}
 	record.Invocations = cloneInvocations(record.Invocations)
 	record.PreExecMutationMarkers = cloneMarkers(record.PreExecMutationMarkers)
 	record.MutationScopes = cloneStrings(record.MutationScopes)
@@ -686,6 +714,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 func cloneInvocations(values []InvocationRecord) []InvocationRecord {
 	out := append([]InvocationRecord(nil), values...)
 	for i := range out {
+		out[i].ChildProcess = cloneStrings(out[i].ChildProcess)
 		if out[i].CompletedAt != nil {
 			completedAt := *out[i].CompletedAt
 			out[i].CompletedAt = &completedAt
@@ -707,10 +736,16 @@ func cloneStrings(values []string) []string {
 }
 
 func hasLiveInvocation(record OperationRecord, bootID string, live LiveInvocationFunc) bool {
-	if strings.TrimSpace(bootID) == "" || live == nil {
+	if live == nil {
 		return false
 	}
 	for _, invocation := range record.Invocations {
+		if invocation.CompletedAt == nil && strings.TrimSpace(bootID) != "" && invocation.BootID == bootID && strings.TrimSpace(invocation.AgentStartID) != "" && invocation.PID > 0 && live(invocation) {
+			return true
+		}
+		if strings.TrimSpace(bootID) == "" {
+			continue
+		}
 		if invocation.CompletedAt == nil && strings.TrimSpace(invocation.SystemdInvocationID) != "" && invocation.BootID == bootID && live(invocation) {
 			return true
 		}

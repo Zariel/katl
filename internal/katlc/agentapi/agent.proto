@@ -75,6 +75,7 @@ message OperationStatus {
   repeated DiagnosticArtifact diagnostics = 16;
   bool recovery_required = 17;
   string failure_reason = 18;
+  repeated OperationInvocation invocations = 19;
 }
 
 message DiagnosticArtifact {
@@ -83,6 +84,18 @@ message DiagnosticArtifact {
   string sha256 = 3;
   bool redacted = 4;
   string created_at = 5;
+}
+
+message OperationInvocation {
+  string invocation_id = 1;
+  string agent_start_id = 2;
+  string executor_attempt_id = 3;
+  repeated string child_process = 4;
+  int32 pid = 5;
+  int32 exit_status = 6;
+  string started_at = 7;
+  string completed_at = 8;
+  string result = 9;
 }
 
 message WatchOperationRequest {

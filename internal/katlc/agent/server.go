@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,10 +110,15 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return nil, status.Error(codes.InvalidArgument, "requestDigest does not match normalized request")
 	}
 	req.RequestDigest = digest
+	plan, err := kubeadmPlanFromSubmit(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
+	}
+	plan.Timeout = strings.TrimSpace(req.OperationTimeout)
 	if !req.DryRun && s.Dispatcher == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent executor is not configured")
 	}
-	created, dryRun, err := s.acceptOperation(req, digest)
+	created, dryRun, err := s.acceptOperation(req, digest, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +135,7 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 	return s.acceptedFromRecord(created), nil
 }
 
-func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string, plan toolPlan) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if existing, ok, err := s.findClientRequest(req.ClientRequestId); err != nil {
@@ -176,6 +182,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		Phase:           "accepted",
 		PhasePlan:       []string{"accepted"},
 		ResourceLocks:   locks,
+		ExecutorPlan:    &plan,
 		NextAction:      "queued for katlc agent executor",
 	}
 	created, err := s.Store.Create(record, "accepted", now)
@@ -255,6 +262,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 		timeout, err := time.ParseDuration(req.OperationTimeout)
 		if err != nil || timeout <= 0 {
 			return status.Error(codes.InvalidArgument, "operationTimeout must be a positive Go duration")
+		}
+		if timeout > maxToolTimeout {
+			return status.Errorf(codes.InvalidArgument, "operationTimeout must not exceed %s", maxToolTimeout)
 		}
 	}
 	if strings.TrimSpace(req.ExpectedMachineId) != "" {
@@ -428,6 +438,20 @@ func operationStatus(record operation.OperationRecord) *agentapi.OperationStatus
 			CreatedAt:  formatTime(artifact.CreatedAt),
 		})
 	}
+	invocations := make([]*agentapi.OperationInvocation, 0, len(record.Invocations))
+	for _, invocation := range record.Invocations {
+		invocations = append(invocations, &agentapi.OperationInvocation{
+			InvocationId:      invocation.InvocationID,
+			AgentStartId:      invocation.AgentStartID,
+			ExecutorAttemptId: invocation.ExecutorAttemptID,
+			ChildProcess:      redactArgv(invocation.ChildProcess),
+			Pid:               int32(invocation.PID),
+			ExitStatus:        int32(invocation.ExitStatus),
+			StartedAt:         formatTime(invocation.StartedAt),
+			CompletedAt:       formatTimePtr(invocation.CompletedAt),
+			Result:            invocation.Result,
+		})
+	}
 	return &agentapi.OperationStatus{
 		OperationId:             record.OperationID,
 		OperationKind:           record.OperationKind,
@@ -447,6 +471,7 @@ func operationStatus(record operation.OperationRecord) *agentapi.OperationStatus
 		Diagnostics:             diagnostics,
 		RecoveryRequired:        record.RecoveryRequired,
 		FailureReason:           inventory.Redact(record.FailureReason),
+		Invocations:             invocations,
 	}
 }
 
@@ -490,6 +515,44 @@ func operationScope(kind string) string {
 	}
 }
 
+func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest) (toolPlan, error) {
+	if req == nil || req.Request == nil {
+		return toolPlan{}, fmt.Errorf("request body is required")
+	}
+	values := req.Request.AsMap()
+	if _, ok := values["toolPlan"]; ok {
+		return toolPlan{}, fmt.Errorf("toolPlan is internal executor state and is not accepted over the management API")
+	}
+	rawPath, ok := values["kubeadmConfigPath"].(string)
+	if !ok || strings.TrimSpace(rawPath) == "" {
+		return toolPlan{}, fmt.Errorf("kubeadmConfigPath is required")
+	}
+	configPath := path.Clean(rawPath)
+	if !strings.HasPrefix(configPath, "/etc/katl/kubeadm/") {
+		return toolPlan{}, fmt.Errorf("kubeadmConfigPath must be under /etc/katl/kubeadm")
+	}
+	plan := toolPlan{
+		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
+	}
+	switch req.OperationKind {
+	case "bootstrap-init":
+		plan.Phase = "kubeadm-init"
+		plan.MarkerID = "kubeadm-init"
+		plan.Argv = []string{"/usr/bin/kubeadm", "init", "--config", configPath}
+	case "bootstrap-join-control-plane":
+		plan.Phase = "kubeadm-join-control-plane"
+		plan.MarkerID = "kubeadm-join-control-plane"
+		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
+	case "bootstrap-join-worker":
+		plan.Phase = "kubeadm-join-worker"
+		plan.MarkerID = "kubeadm-join-worker"
+		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
+	default:
+		return toolPlan{}, fmt.Errorf("operationKind %q has no executor plan", req.OperationKind)
+	}
+	return plan, nil
+}
+
 func defaultOperationID(kind string, now time.Time) (string, error) {
 	suffix, err := randomID("")
 	if err != nil {
@@ -519,6 +582,13 @@ func formatTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func formatTimePtr(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return formatTime(*value)
 }
 
 func contains(values []string, want string) bool {

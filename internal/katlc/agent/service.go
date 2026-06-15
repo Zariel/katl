@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -19,6 +20,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+var timeNow = func() time.Time { return time.Now().UTC() }
 
 type ServeConfig struct {
 	Root                           string
@@ -61,7 +64,14 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	defer listener.Close()
 	server := grpc.NewServer(opts...)
 	agentServer := NewServer(root, store)
-	agentServer.Dispatcher = config.Dispatcher
+	if _, err := AuditStartup(store, timeNow()); err != nil {
+		return err
+	}
+	dispatcher := config.Dispatcher
+	if dispatcher == nil {
+		dispatcher = NewExecutor(root, store, agentServer.AgentStartID)
+	}
+	agentServer.Dispatcher = dispatcher
 	agentapi.RegisterKatlcAgentServer(server, agentServer)
 	errc := make(chan error, 1)
 	go func() {

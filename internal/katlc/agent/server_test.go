@@ -195,9 +195,18 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 	}{
 		{name: "missing body", edit: func(req *agentapi.SubmitOperationRequest) { req.Request = nil }},
 		{name: "empty body", edit: func(req *agentapi.SubmitOperationRequest) { req.Request.Fields = nil }},
+		{name: "missing kubeadm config", edit: func(req *agentapi.SubmitOperationRequest) { delete(req.Request.Fields, "kubeadmConfigPath") }},
+		{name: "public tool plan", edit: func(req *agentapi.SubmitOperationRequest) {
+			plan, err := structpb.NewValue(map[string]any{"argv": []any{"/bin/sh"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Request.Fields["toolPlan"] = plan
+		}},
 		{name: "expected generation", edit: func(req *agentapi.SubmitOperationRequest) { req.ExpectedCurrentGenerationId = "gen-1" }},
 		{name: "expected cluster intent", edit: func(req *agentapi.SubmitOperationRequest) { req.ExpectedClusterIntentDigest = strings.Repeat("0", 64) }},
 		{name: "bad timeout", edit: func(req *agentapi.SubmitOperationRequest) { req.OperationTimeout = "-1s" }},
+		{name: "too large timeout", edit: func(req *agentapi.SubmitOperationRequest) { req.OperationTimeout = "26m" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,7 +317,8 @@ func newTestServer(t *testing.T) *Server {
 
 func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 	body, err := structpb.NewStruct(map[string]any{
-		"cluster": "test",
+		"cluster":           "test",
+		"kubeadmConfigPath": "/etc/katl/kubeadm/init.yaml",
 	})
 	if err != nil {
 		panic(err)
