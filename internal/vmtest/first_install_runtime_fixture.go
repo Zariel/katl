@@ -61,18 +61,18 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 }
 
 func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
-	buildRoot := filepath.Join(world.RunDir, "_build")
-	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
+	cacheDir := WorldFixtureCacheDir(world)
+	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec); err == nil {
 		return nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return err
 	}
-	unlock, err := lockLeaseFile(filepath.Join(buildRoot, "locks", FirstInstallRuntimeFixtureScenarioName(spec)))
+	unlock, err := lockLeaseFile(filepath.Join(cacheDir, "locks", FirstInstallRuntimeFixtureScenarioName(spec)))
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
+	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec); err == nil {
 		return nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return err
@@ -87,7 +87,7 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 		}
 		return err
 	}
-	_, err = FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec)
+	_, err = FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec)
 	return err
 }
 
@@ -226,7 +226,11 @@ func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureC
 	if err := factory.replaceRecord(FixtureInstalledRuntime, fixture.Record); err != nil {
 		return ProducedInstalledRuntimeFixture{}, err
 	}
-	if _, err := WritePublishedFirstInstallRuntimeFixture(contract.WorldScenario.World.RunDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), fixture.ManifestPath, DiskQCOW2); err != nil {
+	cached, err := packageInstalledRuntimeFixture(contract, filepath.Join(WorldFixtureCacheDir(contract.WorldScenario.World), "fixtures", FirstInstallRuntimeFixtureScenarioName(contract.Node)), installedDisk, fixtureESP)
+	if err != nil {
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("cache first-install runtime fixture: %w", err)
+	}
+	if _, err := WritePublishedFirstInstallRuntimeFixture(WorldFixtureCacheDir(contract.WorldScenario.World), FirstInstallRuntimeFixtureScenarioName(contract.Node), cached.ManifestPath, DiskQCOW2); err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("publish first-install runtime fixture: %w", err)
 	}
 	return ProducedInstalledRuntimeFixture{
@@ -238,6 +242,10 @@ func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureC
 
 func packageFirstInstallRuntimeFixture(contract FirstInstallRuntimeFixtureContract, firstResult Result, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
+	return packageInstalledRuntimeFixture(contract, fixtureDir, installedDisk, fixtureESP)
+}
+
+func packageInstalledRuntimeFixture(contract FirstInstallRuntimeFixtureContract, fixtureDir, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {
 	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
 	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
 	packagedESP := filepath.Join(fixtureDir, "esp")

@@ -10,6 +10,7 @@ go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
+cache_dir="${KATL_VMTEST_CACHE_DIR:-$repo_root/_build/vmtest}"
 artifact_dir="$run_dir/artifacts"
 scenario_dir="$run_dir/scenarios"
 network_dir="$run_dir/network"
@@ -46,6 +47,7 @@ cap_realpath="disabled"
 cap_kubectl="disabled"
 require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
 auto_rebuild="${KATL_VMTEST_AUTO_REBUILD:-1}"
+artifact_set="${KATL_VMTEST_ARTIFACT_SET:-default}"
 go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
@@ -183,6 +185,12 @@ parse_runner_args() {
                         ;;
                 esac
                 ;;
+            --artifact-set=*)
+                artifact_set="${arg#*=}"
+                ;;
+            --runtime-artifacts)
+                artifact_set="runtime"
+                ;;
             --)
                 shift
                 go_test_input_args+=("$@")
@@ -224,14 +232,29 @@ build_default_artifacts() {
     fi
 
     local -a targets=()
-    if ! has_explicit_installer_artifact; then
-        targets+=("build-installer")
-    fi
-    if ! has_explicit_install_manifest; then
-        targets+=("build-katlos-install-image")
-    elif ! has_explicit_runtime_artifact; then
-        targets+=("build-runtime")
-    fi
+    case "$artifact_set" in
+        default | install)
+            if ! has_explicit_installer_artifact; then
+                targets+=("build-installer")
+            fi
+            if ! has_explicit_install_manifest; then
+                targets+=("build-katlos-install-image")
+            elif ! has_explicit_runtime_artifact; then
+                targets+=("build-runtime")
+            fi
+            ;;
+        runtime)
+            if ! has_explicit_runtime_artifact; then
+                targets+=("build-runtime")
+            fi
+            ;;
+        none)
+            ;;
+        *)
+            setup_failures+=("invalid vmtest artifact set: $artifact_set")
+            return 1
+            ;;
+    esac
     if [[ "${#targets[@]}" -eq 0 ]]; then
         return 0
     fi
@@ -511,11 +534,13 @@ write_world() {
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
+        --arg cacheDir "$cache_dir" \
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
         --arg runIndex "$run_index" \
         --arg goTestLog "$go_test_log" \
         --arg autoRebuild "$auto_rebuild" \
+        --arg artifactSet "$artifact_set" \
         --arg libvirtURI "$libvirt_uri" \
         --arg libvirtNetwork "$libvirt_network" \
         --arg libvirtStoragePool "$libvirt_storage_pool" \
@@ -542,11 +567,13 @@ write_world() {
           kind: "VMTestWorld",
           runID: $runID,
           runDir: $runDir,
+          cacheDir: $cacheDir,
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
           goTestLog: $goTestLog,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
+          artifactSet: $artifactSet,
           libvirt: {
             uri: $libvirtURI,
             network: $libvirtNetwork,
@@ -591,12 +618,14 @@ write_run_index() {
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
+        --arg cacheDir "$cache_dir" \
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
         --arg goTestLog "$go_test_log" \
         --arg autoRebuild "$auto_rebuild" \
+        --arg artifactSet "$artifact_set" \
         --arg leaseFile "$lease_file" \
         --arg status "$status" \
         --arg setupFailures "$setup_failure_text" \
@@ -607,12 +636,14 @@ write_run_index() {
           kind: "VMTestRun",
           runID: $runID,
           runDir: $runDir,
+          cacheDir: $cacheDir,
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
           goTestLog: $goTestLog,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
+          artifactSet: $artifactSet,
           networkLeaseFile: $leaseFile,
           status: $status,
           missingCapabilities: $missingCapabilities,
@@ -622,7 +653,7 @@ write_run_index() {
 }
 
 need jq
-mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
+mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 : >"$go_test_log"
 parse_runner_args "$@"
 set -- "${go_test_input_args[@]}"
@@ -649,6 +680,7 @@ if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
 fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"
+export KATL_VMTEST_CACHE_DIR="$cache_dir"
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
 export KATL_VMTEST_LIBVIRT_URI="$libvirt_uri"
 export KATL_VMTEST_LIBVIRT_NETWORK="$libvirt_network"

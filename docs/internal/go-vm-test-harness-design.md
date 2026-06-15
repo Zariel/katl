@@ -14,6 +14,7 @@ The developer entrypoint is conventional Go test syntax wrapped by the world
 runner:
 
 ```sh
+scripts/vmtest-run --artifact-set=runtime ./internal/vmtest -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1
 scripts/vmtest-run ./internal/vmtest -run '^TestFirstInstallTargetDiskSerialSmoke$' -count=1
 scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' -count=1
 ```
@@ -22,6 +23,17 @@ scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' 
 exports `KATL_VMTEST_WORLD_MANIFEST`, and executes the requested package tests
 through `go test -exec scripts/vmtest-exec`. `go test` owns test selection,
 output, timeout flags, and exit status.
+
+Tests that do not need installer side effects should not first manufacture an
+installed disk. They should direct-boot the runtime root squashfs with
+libvirt's kernel/initrd boot path, attach the squashfs as `/dev/vda`, and use
+volatile state plus systemd masks for installed-state units. That fast tier is
+the default smoke for runtime reachability and `katl-vmtest-agent` health.
+
+Tests that need generation state, installed ESP contents, kubeadm host paths,
+or first-install handoff semantics still use installer-produced installed
+runtime fixtures. Those fixtures are cached under the world cache directory so
+one successful first-install run can feed later kubeadm and bootstrap tests.
 
 The harness records enough state for debugging:
 
@@ -83,6 +95,23 @@ serial log paths
 vsock device settings
 expected serial signals and timeouts
 ```
+
+`scripts/vmtest-run` has an artifact-set selector for the build phase:
+
+```text
+--artifact-set=runtime
+  build or reuse only the runtime root squashfs for direct runtime tests
+
+--artifact-set=default
+  build or reuse the installer and KatlOS install image for installer-backed
+  tests
+
+--no-rebuild
+  rely entirely on already-provided artifacts and indexes
+```
+
+The runtime-only gate should be the first VM feedback path for changes that can
+be proven without installer, disk layout, ESP, or generation-state behavior.
 
 The runner writes libvirt domain XML with Go's XML encoder. Tests should assert
 semantic XML and lifecycle behavior rather than hard-coding direct process argv.

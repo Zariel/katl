@@ -35,6 +35,7 @@ func TestWorldManifestJSONShape(t *testing.T) {
   "kind": "VMTestWorld",
   "runID": "20260606T120000Z-abc123",
   "runDir": "/tmp/katl-vmtest/20260606T120000Z-abc123",
+  "cacheDir": "/repo/_build/vmtest",
   "artifactDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
   "scenarioDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
   "libvirt": {
@@ -81,6 +82,11 @@ func TestDecodeWorldRejectsRequiredFields(t *testing.T) {
 			name:   "run dir",
 			mutate: func(world *World) { world.RunDir = "" },
 			want:   "runDir is required",
+		},
+		{
+			name:   "cache dir",
+			mutate: func(world *World) { world.CacheDir = "" },
+			want:   "cacheDir is required",
 		},
 		{
 			name:   "artifact dir",
@@ -248,6 +254,11 @@ func TestDecodeWorldRejectsRelativePaths(t *testing.T) {
 			want:   "runDir must be an absolute path",
 		},
 		{
+			name:   "cache dir",
+			mutate: func(world *World) { world.CacheDir = "_build/vmtest" },
+			want:   "cacheDir must be an absolute path",
+		},
+		{
 			name:   "artifact dir",
 			mutate: func(world *World) { world.ArtifactDir = "artifacts" },
 			want:   "artifactDir must be an absolute path",
@@ -381,6 +392,7 @@ func validWorld() World {
 		Kind:        WorldKind,
 		RunID:       "20260606T120000Z-abc123",
 		RunDir:      "/tmp/katl-vmtest/20260606T120000Z-abc123",
+		CacheDir:    "/repo/_build/vmtest",
 		ArtifactDir: "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
 		ScenarioDir: "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
 		Libvirt: WorldLibvirt{

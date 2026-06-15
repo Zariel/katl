@@ -22,11 +22,13 @@ type World struct {
 	Kind         string                 `json:"kind"`
 	RunID        string                 `json:"runID"`
 	RunDir       string                 `json:"runDir"`
+	CacheDir     string                 `json:"cacheDir"`
 	ArtifactDir  string                 `json:"artifactDir"`
 	ScenarioDir  string                 `json:"scenarioDir"`
 	RunIndex     string                 `json:"runIndex,omitempty"`
 	GoTestLog    string                 `json:"goTestLog,omitempty"`
 	AutoRebuild  bool                   `json:"autoRebuild,omitempty"`
+	ArtifactSet  string                 `json:"artifactSet,omitempty"`
 	Libvirt      WorldLibvirt           `json:"libvirt"`
 	Network      WorldNetwork           `json:"network"`
 	Capabilities map[string]WorldStatus `json:"capabilities"`
@@ -126,6 +128,7 @@ func ValidateWorld(world World) error {
 	}
 	for name, path := range map[string]string{
 		"runDir":      world.RunDir,
+		"cacheDir":    world.CacheDir,
 		"artifactDir": world.ArtifactDir,
 		"scenarioDir": world.ScenarioDir,
 		"leaseFile":   world.Network.LeaseFile,

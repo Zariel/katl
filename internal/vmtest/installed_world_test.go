@@ -60,8 +60,8 @@ func writeInstalledRuntimeWorldFixtureSetupFailure(world World, name string, err
 }
 
 func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func() error) error {
-	buildRoot := filepath.Join(world.RunDir, "_build")
-	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
+	cacheDir := WorldFixtureCacheDir(world)
+	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec); err == nil {
 		return nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return err
@@ -69,7 +69,7 @@ func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func
 	if err := produce(); err != nil {
 		return err
 	}
-	_, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec)
+	_, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec)
 	return err
 }
 
@@ -80,7 +80,7 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	}
 	run := installedRuntimeWorldRun{Scenario: scenario}
 	node, err := AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
-		filepath.Join(world.RunDir, "_build"),
+		WorldFixtureCacheDir(world),
 	}, spec)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -102,15 +102,15 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 func TestPlanInstalledRuntimeWorldRunUsesWorldPublishedFixture(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	writePublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
-	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(20, 0))
+	writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	writePublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", ControlPlane, time.Unix(20, 0))
 
 	run, err := planInstalledRuntimeWorldRun(world, "installed-runtime-kubeadm-api-smoke", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
 	if err != nil {
 		t.Fatalf("planInstalledRuntimeWorldRun() error = %v", err)
 	}
-	if !pathUnder(run.Fixture.ManifestPath, world.RunDir) {
-		t.Fatalf("installed runtime fixture = %q, want under world %q", run.Fixture.ManifestPath, world.RunDir)
+	if !pathUnder(run.Fixture.Record.Provenance.SourcePath, world.CacheDir) {
+		t.Fatalf("installed runtime fixture source = %q, want under world cache %q", run.Fixture.Record.Provenance.SourcePath, world.CacheDir)
 	}
 	if !pathUnder(run.Config.FixtureManifest, run.Scenario.Dir) {
 		t.Fatalf("staged fixture manifest = %q, want under scenario %q", run.Config.FixtureManifest, run.Scenario.Dir)
@@ -123,7 +123,7 @@ func TestPlanInstalledRuntimeWorldRunUsesWorldPublishedFixture(t *testing.T) {
 func TestPlanInstalledRuntimeWorldRunRejectsRepoOnlyPublishedFixture(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	writePublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "repo-cp", "cp-1", ControlPlane, time.Unix(10, 0))
 
 	run, err := planInstalledRuntimeWorldRun(world, "installed-runtime-kubeadm-api-smoke", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff)
 	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {

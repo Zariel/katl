@@ -29,7 +29,7 @@ The hermetic runner should:
 
 ```text
 create all mutable output under TMPDIR
-print the run directory and link the latest run from _build/vmtest/
+print the run directory and keep durable VM test caches under _build/vmtest/
 probe configured host capabilities before handing off to go test
 verify libvirt VM networking before handing off to tests
 record the selected libvirt network without inferring it from Go test arguments
@@ -61,10 +61,14 @@ ${TMPDIR:-/tmp}/katl-vmtest/<run-id>/
 ```
 
 Repo-local `build/` should not be the primary scratch root for hermetic runs.
-It may contain only durable pointers or small summaries produced by separate
-aggregation tooling, for example:
+Repo-local `_build/vmtest/` is the durable VM test cache root shared across
+world runs. It may contain installed-runtime fixtures published from successful
+first-install runs, and it may also contain durable pointers or small summaries
+produced by separate aggregation tooling, for example:
 
 ```text
+_build/vmtest/published-first-install-runtime/
+_build/vmtest/fixtures/
 _build/vmtest/latest -> ${TMPDIR:-/tmp}/katl-vmtest/<run-id>
 _build/vmtest/latest-summary.json
 ```
@@ -90,6 +94,7 @@ The manifest is the only required ambient input for hermetic VM tests:
   "kind": "VMTestWorld",
   "runID": "20260606T120000Z-abc123",
   "runDir": "/tmp/katl-vmtest/20260606T120000Z-abc123",
+  "cacheDir": "/repo/_build/vmtest",
   "artifactDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
   "scenarioDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
   "libvirt": {
@@ -118,9 +123,10 @@ The manifest is the only required ambient input for hermetic VM tests:
 }
 ```
 
-The world provides the selected libvirt network, CIDR, gateway, and DHCP lease
-artifact. It should not encode that a two-node test needs `cp-1` at one address
-and `worker-1` at another. That allocation belongs to the scenario.
+The world provides the durable cache directory, selected libvirt network, CIDR,
+gateway, and DHCP lease artifact. It should not encode that a two-node test
+needs `cp-1` at one address and `worker-1` at another. That allocation belongs
+to the scenario.
 
 ## Scenario Ownership
 
@@ -190,6 +196,23 @@ VM suites should use `-count=1`; callers or higher-level check commands should
 pass that flag explicitly because `scripts/vmtest-run` forwards ordinary Go test
 controls with Go's usual meaning.
 
+The wrapper also accepts a small set of runner controls before Go test
+arguments:
+
+```text
+--artifact-set=runtime
+  build only the runtime root artifact before running tests
+
+--artifact-set=default
+  build the installer and install image needed by installer-backed tests
+
+--no-rebuild
+  skip wrapper-managed artifact builds
+```
+
+Use the runtime artifact set for tests that direct-boot the runtime squashfs and
+do not need installer output.
+
 ## Resource Generation
 
 The world runner should prepare shared resources and expose fixture factories
@@ -198,10 +221,11 @@ from repo-controlled conventions:
 ```text
 mkosi artifacts and artifact indexes
 runtime roots and KatlOS install images
+direct runtime squashfs boot inputs
 node metadata templates
 install manifest templates
 tmpdir workspace for first-install target disks
-tmpdir workspace for published installed-runtime fixtures
+durable cache workspace for published installed-runtime fixtures
 scenario manifests and result paths
 ```
 
@@ -210,6 +234,12 @@ A two-node kubeadm test asks for `cp-1` and `worker-1`; a stacked-etcd test asks
 for `cp-1`, `cp-2`, and `cp-3`. The world does not need to know those shapes in
 advance. It provides the artifact set, scratch roots, network CIDR, and locking
 needed to make the requests deterministic and isolated.
+
+Scenarios that only need to prove the runtime image boots should attach the
+runtime root squashfs directly and avoid first-install fixture production.
+Scenarios that need generation 0 state, ESP contents, kubeadm paths, or
+bootstrap node state should use cached installed-runtime fixtures published
+under `cacheDir`.
 
 ## Failure Semantics
 
@@ -269,11 +299,13 @@ developer to export a list of fixture paths and addresses.
 6. Convert the two-node and three-control-plane tests to consume the world
    manifest, move them out of `cmd/katlctl`, and allocate their own node
    topology.
-7. Add world-backed fixture factories so scenarios can generate first-install
-   and installed-runtime fixtures from their declared node specs.
-8. Remove legacy resolver, wrapper, and environment-variable VM entrypoints, or
+7. Add direct runtime squashfs scenarios for VM tests that do not need installer
+   state.
+8. Add world-backed fixture factories so scenarios can generate and cache
+   first-install and installed-runtime fixtures from their declared node specs.
+9. Remove legacy resolver, wrapper, and environment-variable VM entrypoints, or
    move any still-needed policy into typed helpers behind `scripts/vmtest-run`.
-9. Update developer and CI documentation so `scripts/vmtest-run` is the only
+10. Update developer and CI documentation so `scripts/vmtest-run` is the only
    supported VM suite entrypoint.
 
 ## Open Questions

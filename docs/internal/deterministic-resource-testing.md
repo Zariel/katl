@@ -16,7 +16,8 @@ The standard heavy-test entrypoint should:
 check host capabilities
 build or reuse locked mkosi artifacts
 generate deterministic install and node fixtures
-run first-install VM setup to publish installed-runtime fixtures
+direct-boot runtime squashfs tests that do not need installer state
+run first-install VM setup only for scenarios that publish installed-runtime fixtures
 run installed-runtime, config-apply, kubeadm, and multi-node scenarios
 summarize passed, failed, host-skipped, and setup-failed scenarios
 ```
@@ -62,6 +63,10 @@ mkosi artifacts
   installer UKI or kernel/initrd pair, runtime root, KatlOS install image,
   Kubernetes sysext image, and generated artifact index
 
+direct-runtime fixtures
+  runtime root squashfs, kernel, initrd, and kernel command line used to boot a
+  volatile-state VM without generation 0 installer state
+
 node inputs
   cp-1, worker-1, cp-2, cp-3 metadata, install manifests, target disk selectors,
   deterministic addresses, and optional network topology
@@ -80,6 +85,8 @@ pre-hermetic VM path. Once `scripts/vmtest-run` provides world fixture
 factories, VM-backed suites should not keep manually supplied fixture
 environment as a supported path. Any still-needed cache selection should be
 expressed through the world manifest and recorded with artifact digests.
+The shared VM test cache root is `_build/vmtest`; per-run scratch output remains
+under `${TMPDIR:-/tmp}/katl-vmtest/<run-id>`.
 
 ## Failure Semantics
 
@@ -133,7 +140,8 @@ preflight host capabilities and write host-capabilities.json
 run mkosi builds through scripts/mkosi
 write and verify the mkosi artifact index
 generate node manifests and metadata under _build/resource-tests/<run-id>/
-run first-install VM setup and publish installed-runtime fixtures
+direct-boot runtime squashfs tests when installer state is not required
+run first-install VM setup and publish installed-runtime fixtures into _build/vmtest
 exec go test with the caller's arguments and resource-test strict mode
 ```
 
@@ -146,7 +154,10 @@ go test ./...
   pure unit, parser, planner, golden, and helper tests; no privileged resources
 
 scripts/vmtest-run ./internal/vmtest -count=1
-  libvirt first-install and installed-runtime checks
+  direct-runtime squashfs, first-install, and installed-runtime checks
+
+scripts/vmtest-run --artifact-set=runtime ./internal/vmtest -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1
+  fastest libvirt runtime-image smoke without installer fixture setup
 
 scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' -count=1
   multi-node kubeadm and stacked-etcd checks
@@ -173,12 +184,13 @@ classification are the immediate sources of determinism.
 
 1. Define the resource-test manifest schema and status taxonomy.
 2. Add strict result aggregation that fails on unexpected enabled-suite skips.
-3. Add the first-install installed-runtime fixture factory as the primary VM
-   setup path.
-4. Add package-set recording and strict lock verification around mkosi builds.
-5. Generate deterministic multi-node fixture inputs from source-controlled
+3. Add direct runtime squashfs tests as the first VM feedback tier.
+4. Add the first-install installed-runtime fixture factory for scenarios that
+   need installed state.
+5. Add package-set recording and strict lock verification around mkosi builds.
+6. Generate deterministic multi-node fixture inputs from source-controlled
    templates.
-6. Wire CI to call the same command, with VM suites on runners that provide the
+7. Wire CI to call the same command, with VM suites on runners that provide the
    declared host capabilities.
 
 ## Open Questions

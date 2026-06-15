@@ -117,6 +117,7 @@ type ArtifactPaths struct {
 	RuntimeSerial          string `json:"runtimeSerial"`
 	InstallManifest        string `json:"installManifest,omitempty"`
 	InstalledRuntime       string `json:"installedRuntime,omitempty"`
+	DirectRuntime          string `json:"directRuntime,omitempty"`
 	InstalledESP           string `json:"installedESP,omitempty"`
 	HandoffRequest         string `json:"handoffRequest,omitempty"`
 	HandoffResponse        string `json:"handoffResponse,omitempty"`
@@ -562,6 +563,7 @@ func pathsFor(runDir string) ArtifactPaths {
 		RuntimeSerial:          filepath.Join(runDir, "vm", "runtime-serial.log"),
 		InstallManifest:        filepath.Join(runDir, "manifests", "install-manifest.json"),
 		InstalledRuntime:       filepath.Join(runDir, "manifests", "installed-runtime.json"),
+		DirectRuntime:          filepath.Join(runDir, "manifests", "direct-runtime.json"),
 		InstalledESP:           filepath.Join(runDir, "installed-esp"),
 		HandoffRequest:         filepath.Join(runDir, "manifests", "handoff-request.json"),
 		HandoffResponse:        filepath.Join(runDir, "manifests", "handoff-response.json"),
