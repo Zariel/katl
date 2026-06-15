@@ -239,7 +239,10 @@ Scenarios that only need to prove the runtime image boots should attach the
 runtime root squashfs directly and avoid first-install fixture production.
 Scenarios that need generation 0 state, ESP contents, kubeadm paths, or
 bootstrap node state should use cached installed-runtime fixtures published
-under `cacheDir`.
+under `cacheDir`. The desired form of those fixtures is the content-keyed
+installed KatlOS baseline described in
+`docs/internal/installed-katlos-vmtest-framework.md`; scenarios should boot
+private qcow2 overlays of that baseline instead of rerunning install.
 
 ## Failure Semantics
 

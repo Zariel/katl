@@ -34,6 +34,10 @@ Tests that need generation state, installed ESP contents, kubeadm host paths,
 or first-install handoff semantics still use installer-produced installed
 runtime fixtures. Those fixtures are cached under the world cache directory so
 one successful first-install run can feed later kubeadm and bootstrap tests.
+The target fast path for those tests is the installed KatlOS VM test framework
+defined in `docs/internal/installed-katlos-vmtest-framework.md`: first install
+publishes a content-keyed generation-0 fixture once, and later scenarios boot
+private overlays of that installed baseline.
 
 The harness records enough state for debugging:
 
@@ -112,6 +116,9 @@ expected serial signals and timeouts
 
 The runtime-only gate should be the first VM feedback path for changes that can
 be proven without installer, disk layout, ESP, or generation-state behavior.
+For changes that need installed state but not installer behavior, the preferred
+gate is an installed KatlOS fixture overlay rather than a fresh first-install
+boot loop.
 
 The runner writes libvirt domain XML with Go's XML encoder. Tests should assert
 semantic XML and lifecycle behavior rather than hard-coding direct process argv.

@@ -80,6 +80,12 @@ installed-runtime fixtures
   manifests published from first-install runs
 ```
 
+The installed-runtime fixture should evolve into the installed KatlOS VM test
+framework described in `docs/internal/installed-katlos-vmtest-framework.md`.
+That framework makes content-keyed, first-install-produced generation-0
+fixtures the default substrate for VM tests that need installed state but do not
+need to exercise installer behavior.
+
 Manual fixture environment variables are transitional scaffolding for the
 pre-hermetic VM path. Once `scripts/vmtest-run` provides world fixture
 factories, VM-backed suites should not keep manually supplied fixture
