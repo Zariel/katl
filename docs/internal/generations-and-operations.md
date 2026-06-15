@@ -380,6 +380,285 @@ must not generate, create, own, or persist generation specs, generation status,
 aggregate status it displays is a client view, not desired cluster state and not
 instructions for a background reconciler.
 
+## Day-One `katlc` Agent API
+
+The day-one node agent is a systemd-managed long-running `katlc` process that
+accepts explicit local lifecycle operation requests. The selected transport is
+gRPC over a Unix domain socket. The preferred systemd shape is socket
+activation:
+
+```text
+katlc-agent.socket
+  ListenStream=/run/katl/katlc/agent.sock
+  SocketMode=0660
+  SocketUser=root
+  SocketGroup=katl-admin
+
+katlc-agent.service
+  ExecStart=/usr/bin/katlc agent serve --listen fd://katlc-agent.socket
+  RequiresMountsFor=/var/lib/katl
+  After=local-fs.target katl-generation-activate.service
+  After=katl-operation-reconcile.service
+```
+
+If day-one implementation chooses a self-listening long-running service instead,
+it must not also install a socket unit for the same path. The endpoint path and
+permissions remain the same either way.
+
+`katl-dty.11.25.7.2` owns the exact unit files. This contract fixes the API and
+observable endpoint shape those units must expose.
+
+Endpoint discovery is local-first:
+
+```text
+/run/katl/katlc/agent.sock
+/run/katl/katlc/endpoint.json
+```
+
+`endpoint.json` is ephemeral discovery data owned by the running agent. It must
+contain the Unix socket path, API version, node machine ID, agent start time, and
+supported operation kinds. It may be world-readable because it contains no
+secret material. It is not durable lifecycle state. Remote `katlctl` connections
+for day one use an operator-controlled transport such as SSH to run a local proxy
+or forward the Unix socket. A direct TCP listener is not part of the day-one
+contract. Existing VM harness RPCs such as `RunCommand` and `ReadFile` are
+pre-agent test plumbing; they may verify that the socket, endpoint discovery
+file, and `katlc` CLI work, but API-level VM tests should move to a proxy for
+this node-local gRPC API when the proxy exists.
+
+The minimum gRPC surface is:
+
+```text
+KatlcAgent.GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus)
+KatlcAgent.SubmitOperation(SubmitOperationRequest) returns (OperationAccepted)
+KatlcAgent.GetOperation(GetOperationRequest) returns (OperationStatus)
+KatlcAgent.WatchOperation(WatchOperationRequest) returns (stream OperationEvent)
+```
+
+`GetNodeStatus` reports generation 0 readiness, current boot selection,
+machine identity, supported API versions, supported operation kinds, and whether
+conflicting operation locks are held. It must not synthesize authoritative state
+from `katlctl` summaries.
+
+`SubmitOperationRequest` has the common envelope:
+
+```text
+apiVersion: katl.dev/v1alpha1
+kind: SubmitOperationRequest
+clientRequestID
+operationKind: bootstrap-init | bootstrap-join-control-plane |
+  bootstrap-join-worker
+actor
+expectedMachineID
+expectedCurrentGenerationID
+expectedClusterIntentDigest
+requestDigest
+dryRun
+operationTimeout
+request:
+  kind-specific request body
+```
+
+The bootstrap request body contains only the data needed for node-local `katlc`
+to validate stored intent and render or select the first Kubernetes-capable
+candidate generation:
+
+```text
+inventoryNodeName
+systemRole
+kubernetesPayloadVersion
+bootstrapProfileRef
+controlPlaneEndpoint, when required
+stableEndpoint, when requested
+candidateGenerationID, optional client hint
+kubeadmInputDigest or compiled profile digest, when supplied by a plan
+joinMaterialRef or secret envelope for join operations
+```
+
+`katlc` must revalidate the request against `/var/lib/katl/cluster/intent.json`,
+the selected generation records, available KatlOS image artifacts, and live
+machine identity before accepting it. Client-supplied fields are constraints and
+provenance, not authority to rewrite node-local state.
+
+`requestDigest` is the canonical SHA-256 digest of the normalized, schema-valid
+operation request envelope and kind-specific non-secret fields with
+`requestDigest` omitted from the canonical input. The client may provide it as
+an idempotency check, but `katlc` must compute the digest itself and reject a
+supplied mismatch before accepting the request. Secret-bearing fields are
+represented in the digest by stable redacted descriptors and separate secret
+material digests. A repeated `clientRequestID` with the same
+`requestDigest` is idempotent and returns the existing operation status. A
+repeated `clientRequestID` with a different digest is rejected. A request with
+the same operation intent but no matching idempotency key may create a new
+operation only if the relevant locks and live-state preflights allow it.
+
+`dryRun: true` validates the request against stored intent, live machine
+identity, available artifacts, and lock availability, then returns a redacted
+plan summary without creating an `OperationRecord`, generation, material files,
+or systemd operation unit. It is a client-visible validation result, not
+authoritative lifecycle state. The existing `katlctl cluster bootstrap
+--dry-run` path may use this API or perform equivalent preflight checks, but a
+real operation is accepted only with `dryRun: false`.
+
+On acceptance, `katlc` writes and fsyncs the canonical `OperationRecord` under
+`/var/lib/katl/operations/<operation-id>/` before creating or activating a
+candidate generation, materializing kubeadm input, or launching kubeadm. The
+response contains:
+
+```text
+operationID
+operationKind
+requestDigest
+recordPath
+acceptedAt
+initialStatus
+```
+
+`OperationStatus` is a redacted read model built from the node-local operation
+record and current live probes:
+
+```text
+operationID
+operationKind
+requestDigest
+phase
+phaseIndex
+completedPhases[]
+terminal
+result
+candidateGenerationID
+activationState
+generationCommitState
+postKubeadmHealthState
+bootHealthPending
+externalMutationStarted
+mutationScopes[]
+resourceLocks[]
+latestJournalSeq
+updatedAt
+nextAction
+diagnostics[], redacted
+```
+
+`GetOperationRequest` identifies one accepted operation:
+
+```text
+operationID
+expectedRequestDigest, optional
+includeDiagnostics: normal | verbose
+```
+
+`WatchOperationRequest` identifies one accepted operation and stream start:
+
+```text
+operationID
+expectedRequestDigest, optional
+afterJournalSeq
+watchTimeout
+```
+
+`OperationEvent` contains:
+
+```text
+operationID
+journalSeq
+eventType
+phase
+terminal
+status: OperationStatus
+diagnostics[], redacted
+```
+
+`WatchOperation` streams operation events starting after `afterJournalSeq`.
+Watches are convenience streams only. They may disconnect, time out, or be
+unavailable without changing operation state. `katlctl` must fall back to
+`GetOperation` polling and must treat the node-local operation record as
+authoritative.
+Any aggregate `katlctl` summary built from status responses is disposable client
+output; crash recovery and retry decisions use `/var/lib/katl/operations` on the
+node.
+
+Timeouts are explicit:
+
+```text
+operationTimeout
+  upper bound requested for the node-local operation attempt; `katlc` may reject
+  unsupported or unsafe values and records the accepted timeout in the operation
+  record. When it expires, `katlc` records a timeout event, asks systemd to stop
+  the operation unit, re-probes mutation markers and live state, writes a
+  terminal result of timed-out or failed-needs-repair based on whether mutation
+  may have started, and releases only locks that are safe to release after that
+  classification
+
+watchTimeout
+  client-side stream lifetime; expiry does not cancel the operation
+
+pollTimeout
+  client-side wait budget; expiry does not cancel the operation
+```
+
+Day-one cancellation is limited to client waiting. Once `SubmitOperation`
+returns accepted, stopping `katlctl`, dropping SSH, or timing out a watch does
+not cancel the node-local operation. A future explicit cancel or repair API must
+create its own operation record and must not erase the original attempt.
+
+Concurrency is lock-based. Mutating operations declare required resource locks
+before acceptance:
+
+```text
+generation-state.lock
+kubeadm-state.lock
+boot-selection.lock, when boot state is changed
+install-state.lock, only for installer or install repair operations
+```
+
+`GetNodeStatus`, `GetOperation`, and `WatchOperation` may run concurrently.
+`SubmitOperation` rejects conflicting mutating requests while an operation holds
+or has reserved a required lock. For day one, at most one bootstrap or join
+operation may be active on a node. Multi-node sequencing belongs to `katlctl`,
+but every node-local acceptance decision is made independently by that node's
+`katlc`.
+
+Diagnostic redaction is part of the API contract. Normal API responses, watch
+events, operation summaries, and diagnostic artifacts exposed through the agent
+must redact:
+
+```text
+private keys
+kubeconfigs and client certificates
+kubeadm bootstrap tokens
+certificate keys and upload-certs material
+bearer tokens and Authorization headers
+URLs with embedded credentials
+full secret-bearing node config
+raw kubeadm stdout/stderr when it may contain secrets
+```
+
+Redacted diagnostics may include command names, exit status, phase names,
+redacted URLs, certificate fingerprints, token fingerprints, digests, and paths
+to root-only redacted artifacts. Secret material required to run kubeadm may be
+accepted over the local API and stored only in root-owned operation material
+files under `/var/lib/katl/operations/<operation-id>/material/` with mode
+`0600`; it must not be echoed in normal status.
+
+Day-one security is intentionally small and local:
+
+```text
+no unauthenticated TCP listener
+Unix socket access limited to root and katl-admin
+remote access relies on operator-managed SSH or an equivalent trusted local
+  transport to the Unix socket
+no multi-tenant RBAC beyond local OS user/group permissions
+no Kubernetes API, kubeconfig, or cluster identity required before bootstrap
+node-local katlc revalidates machine ID, stored intent, request digest, and
+  operation locks before accepting a mutating request
+```
+
+This is sufficient for home-ops day one and VM validation. Stronger remote
+authentication, certificate enrollment, audit export, and policy authorization
+can be added later without changing the boundary that authoritative lifecycle
+state lives on the node under `/var/lib/katl`.
+
 Machine identity follows the same ownership split. `katlos-install` creates the
 initial machine ID, stores it under `/var/lib/katl/identity/machine-id`, and
 renders it into generation 0 boot metadata with `systemd.machine_id=<id>`.
