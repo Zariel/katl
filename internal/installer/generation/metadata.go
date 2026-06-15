@@ -45,7 +45,8 @@ type RootSelection struct {
 }
 
 type BootSelection struct {
-	UKIPath string `json:"ukiPath"`
+	UKIPath         string `json:"ukiPath"`
+	LoaderEntryPath string `json:"loaderEntryPath,omitempty"`
 }
 
 type ExtensionRef struct {

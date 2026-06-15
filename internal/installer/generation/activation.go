@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,30 @@ type ActivationLink struct {
 }
 
 func ReadRecord(path string) (Record, error) {
+	if filepath.Base(path) == "metadata.json" {
+		dir := filepath.Dir(path)
+		if _, err := os.Stat(filepath.Join(dir, "spec.json")); err == nil {
+			spec, status, splitErr := ReadSplitRecords(dir)
+			if splitErr == nil {
+				return RecordFromSplit(spec, status), nil
+			}
+			return Record{}, splitErr
+		}
+	}
+	record, err := readRecordFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && filepath.Base(path) == "metadata.json" {
+			spec, status, splitErr := ReadSplitRecords(filepath.Dir(path))
+			if splitErr == nil {
+				return RecordFromSplit(spec, status), nil
+			}
+		}
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func readRecordFile(path string) (Record, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Record{}, fmt.Errorf("read generation metadata: %w", err)
