@@ -51,6 +51,16 @@ func TestOperationReconcileBootRebuildsSnapshotAndMarksAmbiguous(t *testing.T) {
 	assertExists(t, filepath.Join(root, "var/lib/katl/operations", created.OperationID, "record.json"))
 }
 
+func TestHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage: katlc") || !strings.Contains(stdout.String(), "operation run-tool") {
+		t.Fatalf("help output = %q", stdout.String())
+	}
+}
+
 func TestOperationRunToolRecordsInvocationMarkerArtifactsAndPhase(t *testing.T) {
 	root := t.TempDir()
 	store := testOperationStore(t, root)

@@ -449,6 +449,7 @@ func defaultAgentCommands() map[string]bool {
 		"install":           true,
 		"ip":                true,
 		"journalctl":        true,
+		"katlc":             true,
 		"kubeadm":           true,
 		"kubectl":           true,
 		"networkctl":        true,

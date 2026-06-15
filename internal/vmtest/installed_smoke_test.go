@@ -431,7 +431,7 @@ func requireInstalledRuntimeKubeadmReadyTranscript(t *testing.T, result Result) 
 	if err != nil {
 		t.Fatalf("read vsock transcript: %v", err)
 	}
-	if !strings.Contains(string(transcript), `"method":"RunCommand"`) || !strings.Contains(string(transcript), "katl-kubeadm-ready.target") {
+	if !strings.Contains(string(transcript), `"method":"RunCommand"`) || !strings.Contains(string(transcript), "katl-kubeadm-ready.target") || !strings.Contains(string(transcript), "/usr/bin/katlc") {
 		t.Fatalf("vsock transcript did not record kubeadm-ready checks: %s", transcript)
 	}
 }

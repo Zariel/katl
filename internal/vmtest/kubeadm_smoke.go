@@ -131,6 +131,9 @@ func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAP
 	if err := waitKubeadmReady(ctx, guest, plan); err != nil {
 		return err
 	}
+	if err := RunKatlcSmoke(ctx, guest); err != nil {
+		return err
+	}
 	if _, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "kubeadm-config", Argv: []string{"test", "-f", plan.ConfigPath}}); err != nil {
 		return err
 	}

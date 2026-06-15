@@ -57,6 +57,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("command is required")
 	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		_, err := fmt.Fprint(stdout, helpText())
+		return err
+	}
 	if args[0] == "--version" || args[0] == "version" {
 		fmt.Fprintf(stdout, "katlc version=%s commit=%s date=%s\n", version, commit, date)
 		return nil
@@ -65,6 +69,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
 	}
 	return runOperation(ctx, args[1:], stdout, stderr)
+}
+
+func helpText() string {
+	return `Usage: katlc <command> [args]
+
+Commands:
+  version                 Print build version metadata.
+  operation reconcile     Reconcile operation records at boot.
+  operation execute       Execute an accepted operation under systemd.
+  operation run-tool      Run one bounded tool phase for an operation.
+
+`
 }
 
 func runOperation(ctx context.Context, args []string, stdout, stderr io.Writer) error {

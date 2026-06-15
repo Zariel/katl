@@ -76,6 +76,9 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	}
 	defer client.Close()
 	guest := NewGuestControl(node.Result, client)
+	if err := RunKatlcSmoke(ctx, guest); err != nil {
+		t.Fatalf("katlc runtime smoke: %v", err)
+	}
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
 	uploadConfigApplySmokeInputs(t, ctx, guest, helper)
 	runConfigApplyModeSmoke(t, ctx, guest, currentGeneration)
