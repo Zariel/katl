@@ -134,6 +134,180 @@ state projections are allowed; kubeadm-owned contents are not. If any of that
 state exists, the node is no longer a clean generation 0 bootstrap target and
 must go through explicit reset, recovery, or destructive wipe/reinstall.
 
+## Generation 0 Runtime Contract
+
+Generation 0 is the installed KatlOS baseline that VM handoff tests and later
+bootstrap operations can share as a checklist. It is successful only after the
+installed runtime reaches `waiting-for-cluster-bootstrap`.
+
+This is the target contract for the operation-backed generation lifecycle. Older
+scaffolding that uses `katl-kubeadm-ready.target` as the first-boot handoff,
+writes only generation `metadata.json`, or records a Kubernetes sysext as
+generation 0 selected state is pre-contract behavior. The generation 0 refit
+must move that behavior to the split generation records and explicit bootstrap
+operation boundary below. VM tests written for the refit should treat legacy-only
+state as a failure unless they are explicitly testing transition compatibility.
+
+Required systemd state:
+
+```text
+local-fs.target reached with the installed writable state partition mounted
+katl-generation-activate.service completed for generation 0
+systemd-sysext.service and systemd-confext.service completed or reported no
+  selected extension work for generation 0
+katl-operation-reconcile.service completed its boot audit
+katl-boot-complete.target reached for the installed-runtime profile
+katl-kubeadm-ready.target not reached and not required
+kubelet.service disabled, inactive, or absent
+kubeadm init/join/upgrade automation units inactive or absent
+```
+
+The generation 0 activation set is KatlOS-only. It may activate generated
+confext for host configuration and Katl services, but it must not activate a
+Kubernetes sysext or make kubeadm/kubelet readiness part of installed-runtime
+health.
+
+Required state under `/var/lib/katl`:
+
+```text
+/var/lib/katl/install/status.json
+/var/lib/katl/install/state.json
+/var/lib/katl/install/input-source.json
+/var/lib/katl/install/request.json
+/var/lib/katl/install/manifest.json
+/var/lib/katl/install/katlos-image.json
+/var/lib/katl/install/hardware-facts.json
+/var/lib/katl/install/plan.json
+/var/lib/katl/install/logs/
+/var/lib/katl/generations/0/spec.json
+/var/lib/katl/generations/0/status.json
+/var/lib/katl/boot/selection.json
+/var/lib/katl/identity/machine-id
+/var/lib/katl/cluster/intent.json
+/var/lib/katl/operations/
+```
+
+The install files are operator-facing summaries and attachments for the install
+operation. Generation and boot records are the host-state source of truth.
+Operation recovery state is authoritative only under
+`/var/lib/katl/operations/<operation-id>/`.
+
+Generation 0 `spec.json` must select:
+
+```text
+generationID: 0
+runtime root slot and root PARTUUID written by install
+installed UKI or loader entry for the selected root
+kernel command line containing the installed machine identity
+generated confext needed for host configuration, operator access, and Katl
+  service wiring
+empty selected Kubernetes sysext list
+no /etc/kubernetes projection requirement
+```
+
+Generation 0 `status.json` starts as:
+
+```text
+commitState: committed
+bootState: pending
+healthState: unknown
+```
+
+After installed-runtime health succeeds, generation 0 status becomes:
+
+```text
+commitState: committed
+bootState: good
+healthState: healthy
+```
+
+`/var/lib/katl/boot/selection.json` must name generation 0 as the current boot
+and persistent default, with no trial generation and no pending Kubernetes
+health validation. Later bootstrap may create and activate a candidate
+generation, but generation 0 handoff itself has no Kubernetes-capable candidate.
+
+Machine identity requirements:
+
+```text
+/var/lib/katl/identity/machine-id exists, is non-empty, and matches the
+  machine identity used by the running system
+the generation 0 kernel command line or equivalent boot metadata preserves that
+  identity for repeat boots
+host static hostname and inventory node name are stored as install/cluster
+  intent, not inferred from Kubernetes Node objects
+```
+
+Stored cluster intent requirements:
+
+```text
+systemRole from the accepted install request
+requested Kubernetes payload version from the accepted manifest
+bootstrap profile refs or resolved profile identifiers
+inventory node identity and operator-facing node labels/taints needed to render
+  later kubeadm input
+endpoint intent or resolved control-plane endpoint fields needed for later
+  kubeadm and kubeconfig rendering
+requestDigest and source KatlOS image digest tying the intent to the install
+```
+
+Cluster intent is desired input for a later explicit operation. It is not proof
+of Kubernetes membership and must not include kubeadm-generated PKI,
+kubeconfigs, static pod manifests, bootstrap tokens, or live API state.
+
+Required day-one `katlc` operation wiring:
+
+```text
+katlc is installed in the runtime
+a node-local katlc agent endpoint is discoverable on the node as defined by the
+  day-one agent API contract
+katlctl can submit an explicit bootstrap-init, bootstrap-join-control-plane, or
+  bootstrap-join-worker request to that endpoint
+accepted operations create node-local OperationRecords under
+  /var/lib/katl/operations/<operation-id>/
+katl-operation-reconcile.service can audit nonterminal operation records at boot
+operation units run under systemd supervision, for example
+  katl-operation@<operation-id>.service
+```
+
+Until the day-one agent API contract is implemented, generation 0 VM tests may
+assert only the installed `katlc` binary and systemd operation wiring. Endpoint
+path, socket activation details, health RPC, and remote `katlctl` discovery
+belong to that API contract.
+
+Operator access before Kubernetes:
+
+```text
+console or configured SSH/local access reaches the installed node
+operator can inspect systemd status, journal output, and /var/lib/katl summaries
+operator can run katlc locally or katlctl remotely against the node-local
+  endpoint according to the day-one agent API contract
+no Kubernetes API, kubeconfig, CNI, or GitOps controller is required for access
+```
+
+Forbidden generation 0 Kubernetes state:
+
+```text
+selected Kubernetes sysext in generation 0 spec or active extension links
+enabled or active kubelet membership
+/var/lib/katl/kubernetes/etc-kubernetes/pki/*
+/var/lib/katl/kubernetes/etc-kubernetes/*.conf
+/var/lib/katl/kubernetes/etc-kubernetes/manifests/*
+/etc/kubernetes as a non-empty root/confext-owned directory
+/var/lib/kubelet/bootstrap-kubeconfig
+/var/lib/kubelet/kubeconfig
+/var/lib/kubelet/config.yaml
+/var/lib/kubelet/pki/*
+/var/lib/etcd/* or Katl-managed stacked-etcd partition contents
+OperationRecord evidence that kubeadm init, join, or upgrade crossed or may have
+  crossed a mutation boundary for this node, including pre-exec mutation markers,
+  externalMutationStarted, mutatingToolRan, or non-empty mutationScopes[]
+```
+
+Empty reserved directories and mountpoint placeholders are allowed only when
+they are safe for later projection validation. VM tests for generation 0 should
+check both positive handoff facts and the forbidden-state list. A node that
+fails either side of the checklist is not a clean generation 0 bootstrap target.
+
 Cluster bootstrap creates the first Kubernetes-capable generation and then runs
 kubeadm:
 
