@@ -45,6 +45,12 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if strings.Contains(string(output), `{"Action":"run"`) {
 		t.Fatalf("vmtest-run emitted JSON without caller -json:\n%s", output)
 	}
+	if strings.Contains(string(output), "=== RUN") || strings.Contains(string(output), "ok  \tfake/vmtest") {
+		t.Fatalf("vmtest-run emitted go test output instead of logging it:\n%s", output)
+	}
+	if !strings.Contains(string(output), "vmtest go test log: "+filepath.Join(runDir, "go-test.log")) {
+		t.Fatalf("output missing go test log path:\n%s", output)
+	}
 
 	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
 	if err != nil {
@@ -55,6 +61,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	}
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
+	}
+	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || !world.AutoRebuild {
+		t.Fatalf("world log/rebuild fields = %#v", world)
 	}
 	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
 		t.Fatalf("world libvirt = %#v", world.Libvirt)
@@ -102,11 +111,14 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	}
 
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
-	if runIndex.Kind != "VMTestRun" || runIndex.Status != "go-test" {
+	if runIndex.Kind != "VMTestRun" || runIndex.Status != "passed" {
 		t.Fatalf("run index = %#v", runIndex)
 	}
 	if runIndex.RunID != "run-1" || runIndex.WorldManifest != filepath.Join(runDir, "world.json") || runIndex.HostCapabilities != filepath.Join(runDir, "host-capabilities.json") {
 		t.Fatalf("run index paths = %#v", runIndex)
+	}
+	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || !runIndex.AutoRebuild {
+		t.Fatalf("run index log/rebuild fields = %#v", runIndex)
 	}
 	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-count=99", "-timeout", "2m"}) {
 		t.Fatalf("run index go test args = %#v", runIndex.GoTestArgs)
@@ -115,8 +127,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("go-test.log exists unexpectedly: %v", err)
+	goLog := readFile(t, filepath.Join(runDir, "go-test.log"))
+	if !strings.Contains(goLog, "=== RUN   TestForwarded") || !strings.Contains(goLog, "ok  \tfake/vmtest") {
+		t.Fatalf("go-test.log missing go test output:\n%s", goLog)
 	}
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
 }
@@ -193,8 +206,84 @@ exec "$@"
 		t.Fatalf("go args = %#v", goArgs)
 	}
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
-	if runIndex.Status != "go-test" {
+	if runIndex.Status != "passed" {
 		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+}
+
+func TestVMTestRunCanDisableDefaultArtifactBuilds(t *testing.T) {
+	realRepo := scriptTestRepoRoot(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
+set -euo pipefail
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_WORLD_STRICT=1
+exec "$@"
+`)
+
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
+		"KATL_VMTEST_RUN_ID=run-no-rebuild",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	for _, name := range []string{
+		"KATL_MKOSI_ARTIFACT_INDEX",
+		"KATL_INSTALLER_UKI",
+		"KATL_INSTALLER_KERNEL",
+		"KATL_INSTALLER_INITRD",
+		"KATL_RUNTIME_ARTIFACT",
+		"KATL_INSTALL_MANIFEST",
+	} {
+		env = removeEnv(env, name)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--no-rebuild", "./internal/vmtest", "-run", "NeedsArtifacts")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	if _, err := os.Stat(mkosiArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mkosi ran with --no-rebuild, stat err = %v", err)
+	}
+	goArgs := readLines(t, goArgsPath)
+	if !reflect.DeepEqual(goArgs, []string{
+		"test",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-timeout",
+		"90m",
+		"./internal/vmtest",
+		"-run",
+		"NeedsArtifacts",
+	}) {
+		t.Fatalf("go args = %#v", goArgs)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.AutoRebuild {
+		t.Fatalf("run index autoRebuild = true, want false")
 	}
 }
 
@@ -231,8 +320,12 @@ func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 	if !contains(goArgs, "-json") {
 		t.Fatalf("go args missing caller -json: %#v", goArgs)
 	}
-	if !strings.Contains(string(output), `{"Action":"run","Package":"fake/vmtest"}`) {
-		t.Fatalf("output missing JSON events:\n%s", output)
+	if strings.Contains(string(output), `{"Action":"run","Package":"fake/vmtest"}`) {
+		t.Fatalf("output included JSON events instead of logging them:\n%s", output)
+	}
+	goLog := readFile(t, filepath.Join(runDir, "go-test.log"))
+	if !strings.Contains(goLog, `{"Action":"run","Package":"fake/vmtest"}`) {
+		t.Fatalf("go-test.log missing JSON events:\n%s", goLog)
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
@@ -295,8 +388,8 @@ func TestVMTestRunPreservesArbitraryGoTestArgs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("go-test.log exists unexpectedly: %v", err)
+	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); err != nil {
+		t.Fatalf("go-test.log missing: %v", err)
 	}
 }
 
@@ -403,7 +496,7 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 				}
 			}
 			runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
-			if !contains(runIndex.MissingCapabilities, tt.capability) || runIndex.Status != "go-test" {
+			if !contains(runIndex.MissingCapabilities, tt.capability) || runIndex.Status != "passed" {
 				t.Fatalf("run index = %#v", runIndex)
 			}
 			for _, unexpected := range tt.notMissing {
@@ -514,8 +607,12 @@ func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "ok  \tfake/vmtest") {
-		t.Fatalf("output missing go test success:\n%s", output)
+	if strings.Contains(string(output), "ok  \tfake/vmtest") {
+		t.Fatalf("output included go test success instead of logging it:\n%s", output)
+	}
+	goLog := readFile(t, filepath.Join(runDir, "go-test.log"))
+	if !strings.Contains(goLog, "ok  \tfake/vmtest") {
+		t.Fatalf("go-test.log missing go test success:\n%s", goLog)
 	}
 }
 
@@ -879,6 +976,8 @@ type vmtestRunIndex struct {
 	RunID               string   `json:"runID"`
 	WorldManifest       string   `json:"worldManifest"`
 	HostCapabilities    string   `json:"hostCapabilities"`
+	GoTestLog           string   `json:"goTestLog"`
+	AutoRebuild         bool     `json:"autoRebuild"`
 	Status              string   `json:"status"`
 	MissingCapabilities []string `json:"missingCapabilities"`
 	GoTestArgs          []string `json:"goTestArgs"`

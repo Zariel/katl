@@ -16,6 +16,7 @@ network_dir="$run_dir/network"
 world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
 run_index="$run_dir/run.json"
+go_test_log="$run_dir/go-test.log"
 lease_file="$network_dir/leases.json"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
 libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
@@ -44,6 +45,8 @@ cap_awk="disabled"
 cap_realpath="disabled"
 cap_kubectl="disabled"
 require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
+auto_rebuild="${KATL_VMTEST_AUTO_REBUILD:-1}"
+go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
 
@@ -151,6 +154,48 @@ has_go_test_timeout() {
     return 1
 }
 
+parse_runner_args() {
+    local arg value
+    while (($# > 0)); do
+        arg="$1"
+        case "$arg" in
+            -args)
+                go_test_input_args+=("$@")
+                return 0
+                ;;
+            --no-rebuild | --no-auto-rebuild)
+                auto_rebuild=0
+                ;;
+            --rebuild | --auto-rebuild)
+                auto_rebuild=1
+                ;;
+            --rebuild=* | --auto-rebuild=*)
+                value="${arg#*=}"
+                case "$value" in
+                    1 | true | yes | on)
+                        auto_rebuild=1
+                        ;;
+                    0 | false | no | off)
+                        auto_rebuild=0
+                        ;;
+                    *)
+                        setup_failures+=("invalid ${arg%%=*} value: $value")
+                        ;;
+                esac
+                ;;
+            --)
+                shift
+                go_test_input_args+=("$@")
+                return 0
+                ;;
+            *)
+                go_test_input_args+=("$arg")
+                ;;
+        esac
+        shift
+    done
+}
+
 has_explicit_artifact_index() {
     [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]
 }
@@ -168,6 +213,12 @@ has_explicit_install_manifest() {
 }
 
 build_default_artifacts() {
+    case "$auto_rebuild" in
+        0 | false | no | off)
+            return 0
+            ;;
+    esac
+
     if has_explicit_artifact_index; then
         return 0
     fi
@@ -463,6 +514,8 @@ write_world() {
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
         --arg runIndex "$run_index" \
+        --arg goTestLog "$go_test_log" \
+        --arg autoRebuild "$auto_rebuild" \
         --arg libvirtURI "$libvirt_uri" \
         --arg libvirtNetwork "$libvirt_network" \
         --arg libvirtStoragePool "$libvirt_storage_pool" \
@@ -492,6 +545,8 @@ write_world() {
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
+          goTestLog: $goTestLog,
+          autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           libvirt: {
             uri: $libvirtURI,
             network: $libvirtNetwork,
@@ -540,6 +595,8 @@ write_run_index() {
         --arg scenarioDir "$scenario_dir" \
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
+        --arg goTestLog "$go_test_log" \
+        --arg autoRebuild "$auto_rebuild" \
         --arg leaseFile "$lease_file" \
         --arg status "$status" \
         --arg setupFailures "$setup_failure_text" \
@@ -554,6 +611,8 @@ write_run_index() {
           scenarioDir: $scenarioDir,
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
+          goTestLog: $goTestLog,
+          autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           networkLeaseFile: $leaseFile,
           status: $status,
           missingCapabilities: $missingCapabilities,
@@ -564,6 +623,9 @@ write_run_index() {
 
 need jq
 mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
+: >"$go_test_log"
+parse_runner_args "$@"
+set -- "${go_test_input_args[@]}"
 jq -n '{}' >"$lease_file"
 write_host_capabilities
 write_run_index "setup" "$@"
@@ -596,21 +658,34 @@ export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 
 final_status="go-test"
 write_run_index "$final_status" "$@"
+printf 'vmtest run id: %s\n' "$run_id" >&2
 printf 'vmtest run dir: %s\n' "$run_dir" >&2
+printf 'vmtest world: %s\n' "$world_manifest" >&2
+printf 'vmtest host capabilities: %s\n' "$host_capabilities_json" >&2
+printf 'vmtest scenarios: %s\n' "$scenario_dir" >&2
+printf 'vmtest go test log: %s\n' "$go_test_log" >&2
 go_test_args=()
 if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
     go_test_args+=("-timeout" "$go_test_timeout")
 fi
 set +e
-"$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@"
+"$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
+if [[ "$exit_code" -ne 0 ]]; then
+    write_run_index "failed" "$@"
+    printf 'vmtest failed: go test exited %d\n' "$exit_code" >&2
+    exit "$exit_code"
+fi
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
     if ! find "$scenario_dir" -mindepth 2 -maxdepth 4 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
         printf 'vmtest run dir: %s\n' "$run_dir" >&2
+        printf 'vmtest go test log: %s\n' "$go_test_log" >&2
         exit 3
     fi
 fi
+write_run_index "passed" "$@"
+printf 'vmtest passed\n' >&2
 exit "$exit_code"

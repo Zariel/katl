@@ -25,6 +25,8 @@ type World struct {
 	ArtifactDir  string                 `json:"artifactDir"`
 	ScenarioDir  string                 `json:"scenarioDir"`
 	RunIndex     string                 `json:"runIndex,omitempty"`
+	GoTestLog    string                 `json:"goTestLog,omitempty"`
+	AutoRebuild  bool                   `json:"autoRebuild,omitempty"`
 	Libvirt      WorldLibvirt           `json:"libvirt"`
 	Network      WorldNetwork           `json:"network"`
 	Capabilities map[string]WorldStatus `json:"capabilities"`
@@ -137,6 +139,9 @@ func ValidateWorld(world World) error {
 	}
 	if strings.TrimSpace(world.RunIndex) != "" && !filepath.IsAbs(world.RunIndex) {
 		return fmt.Errorf("runIndex must be an absolute path: %s", world.RunIndex)
+	}
+	if strings.TrimSpace(world.GoTestLog) != "" && !filepath.IsAbs(world.GoTestLog) {
+		return fmt.Errorf("goTestLog must be an absolute path: %s", world.GoTestLog)
 	}
 	if err := validateWorldLibvirt(world.Libvirt); err != nil {
 		return err

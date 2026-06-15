@@ -149,14 +149,18 @@ scripts/vmtest-run ./internal/vmtest/scenarios \
 ```
 
 The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
-host capabilities, records `world.json` and `host-capabilities.json`, exports the
-world environment, and then executes `go test` with the caller's package patterns
-and flags. Argument meaning belongs to `go test`; `scripts/vmtest-run` only adds
-the harness execution needed to route compiled package test binaries through
-`scripts/vmtest-exec`.
+host capabilities, records `world.json`, `host-capabilities.json`, `run.json`,
+and `go-test.log`, exports the world environment, and then executes `go test`
+with the caller's package patterns and flags. Argument meaning belongs to
+`go test`; `scripts/vmtest-run` only adds the harness execution needed to route
+compiled package test binaries through `scripts/vmtest-exec`.
 
-`go test` owns the terminal output and exit status. Scenario artifacts remain
-under the world directory for later inspection or aggregation by another tool.
+The runner keeps terminal output minimal: it prints the world paths, writes the
+full `go test` stream to `go-test.log`, and reports a concise final outcome.
+Scenario artifacts remain under the world directory for later inspection or
+aggregation by another tool. Pass `--no-rebuild` before the `go test` arguments
+to skip the runner's automatic `scripts/mkosi` artifact builds and use only
+already-discoverable artifacts.
 
 Plain `go test ./...` keeps enabled VM scenarios disabled. If an enabled smoke
 is invoked directly without the world manifest, it fails with a setup error
