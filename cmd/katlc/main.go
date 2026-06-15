@@ -18,6 +18,7 @@ import (
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/katlc/agent"
 )
 
 var (
@@ -65,10 +66,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "katlc version=%s commit=%s date=%s\n", version, commit, date)
 		return nil
 	}
-	if args[0] != "operation" {
-		return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
+	if args[0] == "agent" {
+		return runAgent(ctx, args[1:], stdout, stderr)
 	}
-	return runOperation(ctx, args[1:], stdout, stderr)
+	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
 }
 
 func helpText() string {
@@ -76,11 +77,63 @@ func helpText() string {
 
 Commands:
   version                 Print build version metadata.
-  operation reconcile     Reconcile operation records at boot.
-  operation execute       Execute an accepted operation under systemd.
-  operation run-tool      Run one bounded tool phase for an operation.
+  agent serve             Run the KatlOS node management agent.
+  agent init-token        Create the day-one agent bearer token if missing.
 
 `
+}
+
+func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("agent command is required")
+	}
+	switch args[0] {
+	case "serve":
+		return runAgentServe(ctx, args[1:], stdout, stderr)
+	case "init-token":
+		return runAgentInitToken(args[1:], stdout, stderr)
+	default:
+		return fmt.Errorf("unsupported agent command %q", args[0])
+	}
+}
+
+func runAgentServe(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlc agent serve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
+	listen := flags.String("listen", agent.DefaultListen, "TCP listen address such as tcp://0.0.0.0:9443")
+	authTokenFile := flags.String("auth-token-file", "/var/lib/katl/agent/token", "bearer token file for day-one management API")
+	allowUnauthenticated := flags.Bool("allow-unauthenticated-for-testing", false, "disable API authentication for tests only")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	fmt.Fprintf(stdout, "katlc agent serve listen=%s\n", *listen)
+	return agent.Serve(ctx, agent.ServeConfig{
+		Root:                           *root,
+		Listen:                         *listen,
+		AuthTokenFile:                  *authTokenFile,
+		AllowUnauthenticatedForTesting: *allowUnauthenticated,
+	})
+}
+
+func runAgentInitToken(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlc agent init-token", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("path", "/var/lib/katl/agent/token", "bearer token path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if err := agent.InitToken(*path); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "katlc agent token ready path=%s\n", *path)
+	return nil
 }
 
 func runOperation(ctx context.Context, args []string, stdout, stderr io.Writer) error {

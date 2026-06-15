@@ -27,7 +27,7 @@ func TestOperationReconcileBootRebuildsSnapshotAndMarksAmbiguous(t *testing.T) {
 	restoreBoot := setBootID("boot-reconcile")
 	defer restoreBoot()
 	var stdout, stderr bytes.Buffer
-	if err := run(t.Context(), []string{"operation", "reconcile", "--boot", "--root", root}, &stdout, &stderr); err != nil {
+	if err := runOperation(t.Context(), []string{"reconcile", "--boot", "--root", root}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr:\n%s", err, stderr.String())
 	}
 
@@ -56,8 +56,19 @@ func TestHelp(t *testing.T) {
 	if err := run(t.Context(), []string{"--help"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr:\n%s", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Usage: katlc") || !strings.Contains(stdout.String(), "operation run-tool") {
+	if !strings.Contains(stdout.String(), "Usage: katlc") || !strings.Contains(stdout.String(), "agent serve") {
 		t.Fatalf("help output = %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "operation run-tool") || strings.Contains(stdout.String(), "operation execute") {
+		t.Fatalf("help output exposes legacy operation CLI: %q", stdout.String())
+	}
+}
+
+func TestPublicOperationCommandIsRemoved(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(t.Context(), []string{"operation", "run-tool"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `unsupported command "operation run-tool"`) {
+		t.Fatalf("run() error = %v, want unsupported operation command", err)
 	}
 }
 
@@ -81,8 +92,7 @@ func TestOperationRunToolRecordsInvocationMarkerArtifactsAndPhase(t *testing.T) 
 	t.Setenv("KATL_OPERATION_UNIT", "katl-operation@op-tool.service")
 
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{
-		"operation", "run-tool",
+	err := runOperationTool(t.Context(), []string{
 		"--root", root,
 		"--operation-id", created.OperationID,
 		"--phase", "kubeadm-init",
@@ -146,8 +156,7 @@ func TestOperationRunToolManualDoesNotClaimSystemdOwnership(t *testing.T) {
 	defer restoreRunner()
 
 	var stdout, stderr bytes.Buffer
-	if err := run(t.Context(), []string{
-		"operation", "run-tool",
+	if err := runOperationTool(t.Context(), []string{
 		"--root", root,
 		"--operation-id", created.OperationID,
 		"--phase", "kubeadm-init",
@@ -188,8 +197,7 @@ func TestOperationRunToolRecordsFailure(t *testing.T) {
 	defer restoreRunner()
 
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{
-		"operation", "run-tool",
+	err := runOperationTool(t.Context(), []string{
 		"--root", root,
 		"--operation-id", created.OperationID,
 		"--phase", "kubeadm-init",
@@ -225,8 +233,7 @@ func TestOperationRunToolTimeoutRecordsTerminalRepair(t *testing.T) {
 	defer restoreRunner()
 
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{
-		"operation", "run-tool",
+	err := runOperationTool(t.Context(), []string{
 		"--root", root,
 		"--operation-id", created.OperationID,
 		"--phase", "kubeadm-init",
@@ -262,8 +269,7 @@ func TestOperationRunToolRejectsDisabledTimeout(t *testing.T) {
 	created := createOperation(t, store, "op-tool-zero-timeout", "bootstrap-init", "kubeadm-state")
 
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{
-		"operation", "run-tool",
+	err := runOperationTool(t.Context(), []string{
 		"--root", root,
 		"--operation-id", created.OperationID,
 		"--phase", "kubeadm-init",
@@ -308,7 +314,7 @@ func TestOperationExecuteRunsToolPlan(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	if err := run(t.Context(), []string{"operation", "execute", "--root", root, "--operation-id", created.OperationID}, &stdout, &stderr); err != nil {
+	if err := runOperationExecute(t.Context(), []string{"--root", root, "--operation-id", created.OperationID}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr:\n%s", err, stderr.String())
 	}
 	read, err := store.Read(created.OperationID)
@@ -331,7 +337,7 @@ func TestOperationExecuteRefusesMissingToolPlan(t *testing.T) {
 	defer restoreClock()
 
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{"operation", "execute", "--root", root, "--operation-id", created.OperationID}, &stdout, &stderr)
+	err := runOperationExecute(t.Context(), []string{"--root", root, "--operation-id", created.OperationID}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "run-tool.json") {
 		t.Fatalf("run() error = %v, want missing plan", err)
 	}

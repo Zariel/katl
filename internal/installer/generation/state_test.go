@@ -41,6 +41,7 @@ WantedBy=local-fs.target
 		"d /var/lib/katl/generations 0755 root root -",
 		"d /var/lib/katl/install/logs 0755 root root -",
 		"d /var/lib/katl/operations 0750 root root -",
+		"d /var/lib/katl/agent 0700 root root -",
 		"d /var/lib/katl/cluster 0750 root root -",
 		"d /var/lib/katl/config-requests 0750 root root -",
 		"d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -",
@@ -171,8 +172,8 @@ func TestKubeadmReadyRuntimeUnits(t *testing.T) {
 	wantTarget := `[Unit]
 Description=Katl kubeadm-ready handoff point
 Documentation=man:systemd.target(5)
-Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service
-After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service
+Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service
+After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service
 
 [Install]
 WantedBy=multi-user.target
@@ -200,56 +201,55 @@ RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
 	}
 }
 
-func TestOperationRuntimeUnits(t *testing.T) {
+func TestAgentRuntimeUnit(t *testing.T) {
 	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
-	wantOperation := `[Unit]
-Description=Run Katl operation %i
-Documentation=man:systemd.service(5)
-RequiresMountsFor=/var/lib/katl/operations
-After=katl-operation-reconcile.service
-Before=katl-kubeadm-ready.target
-
-[Service]
-Type=oneshot
-StandardOutput=journal+console
-StandardError=journal+console
-SyslogIdentifier=katl-operation
-Environment=KATL_OPERATION_ID=%i
-Environment=KATL_OPERATION_UNIT=katl-operation@%i.service
-ExecStart=/usr/bin/katlc operation execute --operation-id %i --root=/
-TimeoutStartSec=30min
-`
-	if assets.OperationService != wantOperation {
-		t.Fatalf("katl-operation@.service:\n%s\nwant:\n%s", assets.OperationService, wantOperation)
-	}
-	wantReconcile := `[Unit]
-Description=Reconcile Katl operation records
+	want := `[Unit]
+Description=Run Katl node management agent
 Documentation=man:systemd.service(5)
 Requires=var.mount katl-generation-activate.service
-RequiresMountsFor=/var/lib/katl/operations
-After=local-fs.target var.mount katl-generation-activate.service systemd-sysext.service systemd-confext.service
-Before=katl-kubeadm-ready.target katl-boot-complete.target katl-operation@.service
+Wants=network-online.target
+After=local-fs.target var.mount katl-generation-activate.service network-online.target
+Before=katl-kubeadm-ready.target
+RequiresMountsFor=/var/lib/katl
 
 [Service]
-Type=oneshot
-StandardOutput=journal+console
-StandardError=journal+console
-SyslogIdentifier=katl-operation-reconcile
-ExecStart=/usr/bin/katlc operation reconcile --boot --root=/
+Type=simple
+ExecStartPre=/usr/bin/katlc agent init-token --path /var/lib/katl/agent/token
+ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443 --auth-token-file /var/lib/katl/agent/token
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=katlc-agent
+NoNewPrivileges=yes
 
 [Install]
-RequiredBy=katl-kubeadm-ready.target
+WantedBy=multi-user.target
 `
-	if assets.OperationReconcile != wantReconcile {
-		t.Fatalf("katl-operation-reconcile.service:\n%s\nwant:\n%s", assets.OperationReconcile, wantReconcile)
+	if assets.AgentService != want {
+		t.Fatalf("katlc-agent.service:\n%s\nwant:\n%s", assets.AgentService, want)
 	}
 }
 
 func TestWriteState(t *testing.T) {
 	root := t.TempDir()
+	legacySystemdRoot := filepath.Join(root, "etc/systemd/system")
+	if err := os.MkdirAll(filepath.Join(legacySystemdRoot, "katl-kubeadm-ready.target.requires"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacySystemdRoot, "katl-operation@.service"), []byte("old operation unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacySystemdRoot, "katl-operation-reconcile.service"), []byte("old reconcile unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../katl-operation-reconcile.service", filepath.Join(legacySystemdRoot, "katl-kubeadm-ready.target.requires/katl-operation-reconcile.service")); err != nil {
+		t.Fatal(err)
+	}
+
 	assets, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID})
 	if err != nil {
 		t.Fatalf("WriteState() error = %v", err)
@@ -266,9 +266,11 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-state-projection-check.service"), assets.StateCheckService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-runtime-handoff-status.service"), assets.RuntimeStatus)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service"), "../katl-runtime-handoff-status.service")
-	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-operation@.service"), assets.OperationService)
-	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-operation-reconcile.service"), assets.OperationReconcile)
-	assertSymlink(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"), "../katl-operation-reconcile.service")
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katlc-agent.service"), assets.AgentService)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katlc-agent.service"), "../katlc-agent.service")
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-operation@.service"))
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-operation-reconcile.service"))
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"))
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/kubelet.service"))
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-init.service"))
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-join.service"))
@@ -278,6 +280,7 @@ func TestWriteState(t *testing.T) {
 	assertDir(t, filepath.Join(root, "var/lib/katl/generations"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/install/logs"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/operations"), 0o750)
+	assertDir(t, filepath.Join(root, "var/lib/katl/agent"), 0o700)
 	assertDir(t, filepath.Join(root, "var/lib/katl/cluster"), 0o750)
 	assertDir(t, filepath.Join(root, "var/lib/katl/config-requests"), 0o750)
 	assertDir(t, filepath.Join(root, "var/lib/katl/kubernetes/etc-kubernetes"), 0o755)
@@ -304,18 +307,20 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-state-projection-check.service"), assets.StateCheckService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-runtime-handoff-status.service"), assets.RuntimeStatus)
-	assertRepoFile(t, filepath.Join(systemdRoot, "katl-operation@.service"), assets.OperationService)
-	assertRepoFile(t, filepath.Join(systemdRoot, "katl-operation-reconcile.service"), assets.OperationReconcile)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katlc-agent.service"), assets.AgentService)
 	assertRepoFile(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 
 	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/var.mount"), "../var.mount")
 	assertMissing(t, filepath.Join(systemdRoot, "local-fs.target.wants/etc-kubernetes.mount"))
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-ready.target"), "../katl-kubeadm-ready.target")
+	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katlc-agent.service"), "../katlc-agent.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-state-projection-check.service"), "../katl-state-projection-check.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "systemd-sysext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "systemd-confext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service"), "../katl-runtime-handoff-status.service")
-	assertSymlink(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"), "../katl-operation-reconcile.service")
+	assertMissing(t, filepath.Join(systemdRoot, "katl-operation@.service"))
+	assertMissing(t, filepath.Join(systemdRoot, "katl-operation-reconcile.service"))
+	assertMissing(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"))
 }
 
 func TestRenderStateRejectsUUID(t *testing.T) {
@@ -377,6 +382,7 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/containerd.service", "[Unit]\nDescription=Containerd\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/network-online.target", "[Unit]\nDescription=Network Online\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-generation-activate", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-runtime-status", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/katlc", "#!/bin/sh\nexit 0\n")
@@ -407,8 +413,7 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-state-projection-check.service",
 		"/etc/systemd/system/katl-runtime-handoff-status.service",
-		"/etc/systemd/system/katl-operation@.service",
-		"/etc/systemd/system/katl-operation-reconcile.service",
+		"/etc/systemd/system/katlc-agent.service",
 		"/usr/lib/systemd/system/containerd.service",
 		"/usr/lib/systemd/system/kubelet.service",
 	}

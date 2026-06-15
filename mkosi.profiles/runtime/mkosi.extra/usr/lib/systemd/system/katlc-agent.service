@@ -1,0 +1,22 @@
+[Unit]
+Description=Run Katl node management agent
+Documentation=man:systemd.service(5)
+Requires=var.mount katl-generation-activate.service
+Wants=network-online.target
+After=local-fs.target var.mount katl-generation-activate.service network-online.target
+Before=katl-kubeadm-ready.target
+RequiresMountsFor=/var/lib/katl
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/katlc agent init-token --path /var/lib/katl/agent/token
+ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443 --auth-token-file /var/lib/katl/agent/token
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=katlc-agent
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

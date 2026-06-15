@@ -252,10 +252,13 @@ terminal
 resourceLocks[]
 invocations[]
   invocationID
-  systemdInvocationID
-  unitName
+  agentStartID
+  executorAttemptID
+  childProcess, when present
+  pid, when present
   startedAt
   completedAt
+  exitStatus, when present
   result
 externalMutationStarted
 preExecMutationMarkers[]
@@ -366,65 +369,65 @@ accepted operation, authoritative state and recovery data must be in the
 ## Command And System Boundaries
 
 `katlc` is the node-local authority. It validates node-local input, compiles or
-selects candidate generations, plans operation records, launches
-systemd-supervised operation units, and records node-local status.
+selects candidate generations, plans operation records, executes accepted
+operations through its long-running agent, configures KatlOS state, and records
+node-local status.
 
 `katlctl` is a control client. It may keep local client configuration for
 connection profiles and known node details, read inventory or compiled plans,
-connect to installed nodes, submit explicit requests to node-local `katlc`, wait
-on returned operation IDs, stream status, sequence multi-node requests, and
-relay explicit client-side outputs such as kubeconfig data when requested. Its
-own persistent state is limited to communication and known-node config. It
-must not generate, create, own, or persist generation specs, generation status,
-`OperationRecord`s, retry state, or authoritative node lifecycle state. Any
-aggregate status it displays is a client view, not desired cluster state and not
-instructions for a background reconciler.
+connect from an operator workstation to installed nodes, submit explicit
+requests to node-local `katlc`, wait on returned operation IDs, stream status,
+sequence multi-node requests, and relay explicit client-side outputs such as
+kubeconfig data when requested. Its own persistent state is limited to
+communication and known-node config. It must not generate, create, own, or
+persist generation specs, generation status, `OperationRecord`s, retry state, or
+authoritative node lifecycle state. Any aggregate status it displays is a client
+view, not desired cluster state and not instructions for a background
+reconciler.
 
 ## Day-One `katlc` Agent API
 
-The day-one node agent is a systemd-managed long-running `katlc` process that
-accepts explicit local lifecycle operation requests. The selected transport is
-gRPC over a Unix domain socket. The preferred systemd shape is socket
-activation:
+The agent architecture, command/query split, executor, storage backend, and
+non-reconciler boundary are defined in
+`docs/internal/katlc-agent-architecture.md`.
+
+The day-one node agent is a systemd-managed long-running `katlc` process on each
+KatlOS host. It accepts explicit lifecycle operation requests from `katlctl`
+running on an operator workstation. The selected transport is gRPC over TCP on a
+configured management endpoint. `katlctl` must connect to that endpoint directly
+from the workstation; it must not SSH to nodes, run remote shell commands, or
+depend on a host-local socket forwarding path.
 
 ```text
-katlc-agent.socket
-  ListenStream=/run/katl/katlc/agent.sock
-  SocketMode=0660
-  SocketUser=root
-  SocketGroup=katl-admin
-
 katlc-agent.service
-  ExecStart=/usr/bin/katlc agent serve --listen fd://katlc-agent.socket
+  ExecStart=/usr/bin/katlc agent serve --listen tcp://<management-address>
   RequiresMountsFor=/var/lib/katl
   After=local-fs.target katl-generation-activate.service
-  After=katl-operation-reconcile.service
 ```
 
-If day-one implementation chooses a self-listening long-running service instead,
-it must not also install a socket unit for the same path. The endpoint path and
-permissions remain the same either way.
+Optional on-host diagnostics must not create a second supported operation
+submission path. If `katlc` grows local debug commands, they are for inspecting
+or repairing the local agent under operator break-glass access, not for normal
+bootstrap, apply, upgrade, or rollback workflows.
 
 `katl-dty.11.25.7.2` owns the exact unit files. This contract fixes the API and
 observable endpoint shape those units must expose.
 
-Endpoint discovery is local-first:
+Endpoint discovery is client-driven for `katlctl` and node-local only for
+operator inspection:
 
 ```text
-/run/katl/katlc/agent.sock
-/run/katl/katlc/endpoint.json
+katlctl inventory or client config -> node address and TCP management endpoint
+/run/katl/katlc/endpoint.json -> local read-only view of the running agent
 ```
 
 `endpoint.json` is ephemeral discovery data owned by the running agent. It must
-contain the Unix socket path, API version, node machine ID, agent start time, and
-supported operation kinds. It may be world-readable because it contains no
-secret material. It is not durable lifecycle state. Remote `katlctl` connections
-for day one use an operator-controlled transport such as SSH to run a local proxy
-or forward the Unix socket. A direct TCP listener is not part of the day-one
-contract. Existing VM harness RPCs such as `RunCommand` and `ReadFile` are
-pre-agent test plumbing; they may verify that the socket, endpoint discovery
-file, and `katlc` CLI work, but API-level VM tests should move to a proxy for
-this node-local gRPC API when the proxy exists.
+contain the API version, node machine ID, agent start time, supported operation
+kinds, and the locally observed listener details. It may be world-readable if it
+contains no secret material. It is not durable lifecycle state. Existing VM
+harness RPCs such as `RunCommand` and `ReadFile` are pre-agent test plumbing;
+API-level VM tests should exercise the same TCP gRPC path an operator
+workstation uses.
 
 The minimum gRPC surface is:
 
@@ -495,7 +498,7 @@ operation only if the relevant locks and live-state preflights allow it.
 `dryRun: true` validates the request against stored intent, live machine
 identity, available artifacts, and lock availability, then returns a redacted
 plan summary without creating an `OperationRecord`, generation, material files,
-or systemd operation unit. It is a client-visible validation result, not
+or operation executor task. It is a client-visible validation result, not
 authoritative lifecycle state. The existing `katlctl cluster bootstrap
 --dry-run` path may use this API or perform equivalent preflight checks, but a
 real operation is accepted only with `dryRun: false`.
@@ -584,11 +587,11 @@ Timeouts are explicit:
 operationTimeout
   upper bound requested for the node-local operation attempt; `katlc` may reject
   unsupported or unsafe values and records the accepted timeout in the operation
-  record. When it expires, `katlc` records a timeout event, asks systemd to stop
-  the operation unit, re-probes mutation markers and live state, writes a
-  terminal result of timed-out or failed-needs-repair based on whether mutation
-  may have started, and releases only locks that are safe to release after that
-  classification
+  record. When it expires, `katlc` records a timeout event, stops or abandons
+  the internal operation executor task, re-probes mutation markers and live
+  state, writes a terminal result of timed-out or failed-needs-repair based on
+  whether mutation may have started, and releases only locks that are safe to
+  release after that classification
 
 watchTimeout
   client-side stream lifetime; expiry does not cancel the operation
@@ -598,9 +601,10 @@ pollTimeout
 ```
 
 Day-one cancellation is limited to client waiting. Once `SubmitOperation`
-returns accepted, stopping `katlctl`, dropping SSH, or timing out a watch does
-not cancel the node-local operation. A future explicit cancel or repair API must
-create its own operation record and must not erase the original attempt.
+returns accepted, stopping `katlctl`, dropping the TCP connection, or timing out
+a watch does not cancel the node-local operation. A future explicit cancel or
+repair API must create its own operation record and must not erase the original
+attempt.
 
 Concurrency is lock-based. Mutating operations declare required resource locks
 before acceptance:
@@ -637,17 +641,22 @@ raw kubeadm stdout/stderr when it may contain secrets
 Redacted diagnostics may include command names, exit status, phase names,
 redacted URLs, certificate fingerprints, token fingerprints, digests, and paths
 to root-only redacted artifacts. Secret material required to run kubeadm may be
-accepted over the local API and stored only in root-owned operation material
+accepted over the agent API and stored only in root-owned operation material
 files under `/var/lib/katl/operations/<operation-id>/material/` with mode
 `0600`; it must not be echoed in normal status.
 
-Day-one security is intentionally small and local:
+Day-one security is intentionally small but must still match the remote-client
+shape:
 
 ```text
-no unauthenticated TCP listener
-Unix socket access limited to root and katl-admin
-remote access relies on operator-managed SSH or an equivalent trusted local
-  transport to the Unix socket
+no unauthenticated management listener
+katlctl runs off-node and connects to the katlc management endpoint advertised
+  by inventory or client configuration
+katlctl does not SSH to nodes or execute remote shell commands
+home-ops authentication may be minimal, for example an operator-managed key,
+  token, certificate, or trusted transport, but it must be explicit
+any on-host debug command is secondary to the TCP gRPC contract and must not be
+  required for normal operation submission or status
 no multi-tenant RBAC beyond local OS user/group permissions
 no Kubernetes API, kubeconfig, or cluster identity required before bootstrap
 node-local katlc revalidates machine ID, stored intent, request digest, and
@@ -666,50 +675,29 @@ Future generation planning by `katlc` preserves and validates that value.
 `katlctl` must not write machine-id files, loader entries, kernel arguments, or
 `/run` activation state.
 
-Systemd executes and supervises node-local operations. It owns unit ordering,
-dependency management, restart handling, logging, health targets, and boot
-success tracking.
+Systemd supervises `katlc-agent.service`, boot health targets, and ordinary
+KatlOS services. It is not the operation submission or dispatch API, and Katl
+must not model normal operations as systemd re-execution of `katlc` CLI
+subcommands. The target runtime must remove the systemd-run `katlc operation`
+execution path, including templated operation units and any public operation
+execution CLI entrypoints used only for that re-exec model.
 
-Node-local operations run under systemd-supervised units, usually a templated
-service such as:
-
-```text
-katl-operation@<operationID>.service
-```
-
-External commands should be launched through a `katlc` operation wrapper such as:
-
-```text
-katlc operation run-tool --operation-id <id> --phase <phase> -- <tool> <args>
-```
-
-The wrapper records systemd `INVOCATION_ID`, writes the pre-exec mutation marker
-immediately before launching the tool, captures redacted output and exit status,
-and updates the operation journal. Record locks are held only while writing
-journal or snapshot state. Resource locks such as `generation-state.lock`,
+Accepted operations run inside the long-running `katlc` agent under an internal
+operation executor. The executor may invoke kubeadm, systemd tools, or other
+bounded external commands as child processes when the operation contract
+requires them. It must write the pre-exec mutation marker immediately before
+launching a mutating tool, capture redacted output and exit status, and update
+the operation journal. Record locks are held only while writing journal or
+snapshot state. Resource locks such as `generation-state.lock`,
 `kubeadm-state.lock`, and install disk locks are held across the bounded
 mutating phase they protect.
 
-At boot, `katl-operation-reconcile.service` audits nonterminal operation
-records after generation activation and before boot-complete or kubeadm-ready
-targets:
-
-```text
-katl-operation-reconcile.service
-  Type=oneshot
-  ExecStart=/usr/bin/katlc operation reconcile --boot
-  RequiresMountsFor=/var/lib/katl
-  After=local-fs.target katl-generation-activate.service
-  After=systemd-sysext.service systemd-confext.service
-  Before=katl-kubeadm-ready.target katl-boot-complete.target
-  Before=katl-operation@.service
-```
-
-This service is a boot-time audit and finalizer, not a daemon and not a cluster
-reconciler. It may classify stale records, finish idempotent host bookkeeping,
-and record diagnostics. It must not run kubeadm, kubectl, mutate etcd, join
-nodes, continue multi-node rollout order, refresh expired join material, or
-clean Kubernetes state.
+Boot-time bookkeeping belongs to the agent startup path and explicit boot-health
+logic, not to a separate user-visible operation entrypoint. The agent may
+classify stale records, finish idempotent host bookkeeping, and record
+diagnostics. It must not run kubeadm, kubectl, mutate etcd, join nodes, continue
+multi-node rollout order, refresh expired join material, or clean Kubernetes
+state as an automatic reconcile loop.
 
 Kubeadm remains authoritative for Kubernetes cluster mutation. It owns
 bootstrap, join workflows, control-plane upgrades, node upgrades, kubelet
@@ -751,7 +739,7 @@ katlctl cluster bootstrap
   -> katlc projects /etc/kubernetes from writable state
   -> katlc activates generation 1 as a candidate
   -> katlc verifies containerd, kubelet wiring, kubeadm tools, and local readiness
-  -> katlc runs kubeadm init or kubeadm join under systemd supervision
+  -> katlc runs kubeadm init or kubeadm join through the agent executor
   -> katlc runs post-kubeadm health checks
   -> katlc commits generation 1 only after kubeadm and operation health checks succeed
 ```
@@ -900,11 +888,12 @@ cleanup, kubeadm repair, etcd mutation, request replacement, or destructive
 reinstall. The associated operation record must say whether mutation had already
 started and which mutation scopes were touched.
 
-Boot-time operation reconciliation classifies stale records:
+Katlc agent startup audit classifies stale records:
 
 ```text
 not-stale
-  terminal record, or owned by a live systemd invocation from the current boot
+  terminal record, or owned by a live agent executor attempt from the current
+  agent start
 
 stale-pre-mutation
   nonterminal record from an earlier boot where externalMutationStarted=false,

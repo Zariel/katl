@@ -115,7 +115,7 @@ ActivateGeneration
 
 InstalledRuntimeReady
   reach local runtime health with writable state, operator access, katlc, and
-  systemd operation wiring available; this generation 0 handoff does not activate
+  katlc agent wiring available; this generation 0 handoff does not activate
   Kubernetes binaries, require /etc/kubernetes projection, containerd running,
   kubelet availability, or katl-kubeadm-ready.target
 
@@ -155,7 +155,7 @@ local-fs.target reached with the installed writable state partition mounted
 katl-generation-activate.service completed for generation 0
 systemd-sysext.service and systemd-confext.service completed or reported no
   selected extension work for generation 0
-katl-operation-reconcile.service completed its boot audit
+katlc-agent.service completed startup audit of operation state
 katl-boot-complete.target reached for the installed-runtime profile
 katl-kubeadm-ready.target not reached and not required
 kubelet.service disabled, inactive, or absent
@@ -258,20 +258,21 @@ Required day-one `katlc` operation wiring:
 
 ```text
 katlc is installed in the runtime
-a node-local katlc agent endpoint is discoverable on the node as defined by the
-  day-one agent API contract
+a katlc TCP gRPC management endpoint is reachable from the operator workstation
+  as defined by inventory or client configuration
+local katlc endpoint details are inspectable on the node for debugging only
 katlctl can submit an explicit bootstrap-init, bootstrap-join-control-plane, or
   bootstrap-join-worker request to that endpoint
 accepted operations create node-local OperationRecords under
   /var/lib/katl/operations/<operation-id>/
-katl-operation-reconcile.service can audit nonterminal operation records at boot
-operation units run under systemd supervision, for example
-  katl-operation@<operation-id>.service
+katlc-agent.service can classify nonterminal operation records at startup
+katlc executes accepted operations through its internal executor, not through
+  systemd re-execution of katlc CLI subcommands
 ```
 
 Until the day-one agent API contract is implemented, generation 0 VM tests may
-assert only the installed `katlc` binary and systemd operation wiring. Endpoint
-path, socket activation details, health RPC, and remote `katlctl` discovery
+assert only the installed `katlc` binary and baseline agent service wiring.
+Endpoint listener configuration, health RPC, and remote `katlctl` discovery
 belong to that API contract.
 
 Operator access before Kubernetes:
@@ -279,8 +280,8 @@ Operator access before Kubernetes:
 ```text
 console or configured SSH/local access reaches the installed node
 operator can inspect systemd status, journal output, and /var/lib/katl summaries
-operator can run katlc locally or katlctl remotely against the node-local
-  endpoint according to the day-one agent API contract
+operator uses katlctl from the workstation against the node management endpoint;
+  local katlc commands, if present, are break-glass debug tools only
 no Kubernetes API, kubeconfig, CNI, or GitOps controller is required for access
 ```
 
@@ -331,7 +332,7 @@ KubeadmOperation
   katlc records a bootstrap-init attempt for the init node or a role-specific
   bootstrap-join attempt for joining nodes based on cluster inventory and
   systemRole
-  katlc runs kubeadm init or kubeadm join under systemd supervision
+  katlc runs kubeadm init or kubeadm join through the agent executor
   katlc runs local post-kubeadm health checks
   katlc sets generation 1 commitState committed only after kubeadm and operation
   health checks succeed; boot health and persistent default promotion remain

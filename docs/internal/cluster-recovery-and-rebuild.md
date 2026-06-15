@@ -170,10 +170,12 @@ kubeadm-reset
 ```
 
 Each operation must be accepted by node-local `katlc`, persisted as an
-`OperationRecord`, executed under systemd supervision, and health-gated. A
-`katlctl` command may coordinate requests, but it must not become the recovery
-state store. General wipe/reinstall uses the installer or a future destructive
-reset contract, not a cluster recovery operation.
+`OperationRecord`, executed by the long-running `katlc` agent's internal
+executor, and health-gated. Systemd may supervise the agent and normal KatlOS
+services, but it is not the operation dispatcher. A `katlctl` command may
+coordinate requests, but it must not become the recovery state store. General
+wipe/reinstall uses the installer or a future destructive reset contract, not a
+cluster recovery operation.
 
 ## Backup Requirements
 

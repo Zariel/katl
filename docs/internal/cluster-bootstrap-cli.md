@@ -4,11 +4,11 @@ Status: current decision.
 
 This document defines the operator-run command that turns already installed
 generation 0 Katl nodes into a Kubernetes cluster. It does not change the Katl
-runtime boundary: the command is a control client that asks node-local `katlc` to
-create and activate the first Kubernetes-capable generation from stored intent,
-run the appropriate kubeadm init/join workflow under systemd supervision, and
-report node-local operation status. Users/operators own the cluster contents
-after bootstrap.
+runtime boundary: the command runs from the operator workstation as a control
+client, asks node-local `katlc` on each KatlOS host to create and activate the
+first Kubernetes-capable generation from stored intent, run the appropriate
+kubeadm init/join workflow through the agent executor, and report node-local
+operation status. Users/operators own the cluster contents after bootstrap.
 
 ## Command Shape
 
@@ -54,11 +54,13 @@ Important options:
   stable API endpoint to verify before exporting kubeconfig output that uses it
 ```
 
-The command is a bounded control client. It sequences explicit node-local
-operation requests, relays operator-requested outputs, reports status, and exits.
-Its only persistent state is `katlctl` client configuration for communication
-profiles and known nodes. It is not a daemon, reconciler, add-on manager, CNI
-manager, Flux manager, BIRD manager, or cluster lifecycle controller.
+The command is a bounded off-node control client. It runs on the operator
+workstation, connects to each KatlOS host's `katlc` management endpoint,
+sequences explicit node-local operation requests, relays operator-requested
+outputs, reports status, and exits. Its only persistent state is `katlctl`
+client configuration for communication profiles and known nodes. It is not a
+daemon, reconciler, add-on manager, CNI manager, Flux manager, BIRD manager, or
+cluster lifecycle controller.
 
 Authority rule: `katlctl` may load operator input, transport requests, sequence
 bounded multi-node workflows, wait on returned operation IDs, and summarize
@@ -113,7 +115,10 @@ generationCommitState: candidate | committed | abandoned
 postKubeadmHealthState: not-run | running | passed | failed
 bootHealthPending: true | false
 preExecMutationMarkers[]
-systemdInvocationID
+agentStartID
+executorAttemptID
+childProcess, when present
+pid and exitStatus, when present
 resourceLocks[] including kubeadm-state.lock
 ```
 
@@ -294,12 +299,12 @@ stored systemRole and selected bootstrap profile intent are consistent
 node-local katlc can accept an operation request
 ```
 
-Initial access may be SSH. VM tests may use vsock or harness agents where
-available, but the command contract should not depend on a test-harness-only
-transport.
-All transports must return structured command results with stdout/stderr
-redaction. Kubernetes API access starts only after `kubeadm init` has produced a
-usable kubeconfig; the API is not a pre-bootstrap coordination channel.
+Initial access is the `katlc` management API over TCP gRPC. `katlctl` must not
+SSH to nodes, run remote shell commands, or depend on a test-harness-only
+transport for the supported bootstrap path. VM tests should exercise the same
+remote API shape where practical. Kubernetes API access starts only after
+`kubeadm init` has produced a usable kubeconfig; the API is not a pre-bootstrap
+coordination channel.
 
 If any node cannot pass pre-bootstrap checks, the command fails before preparing
 or running kubeadm anywhere.
@@ -481,9 +486,9 @@ applicable, and Kubernetes API state before deciding whether to skip, rerun, or
 require repair.
 
 Retry is operator-triggered through an explicit `katlctl cluster bootstrap`
-rerun or repair command. Boot-time operation reconciliation only classifies
-node-local attempts and records diagnostics. It must not automatically rerun
-`kubeadm init`, rerun `kubeadm join`, refresh expired join material, or continue
+rerun or repair command. Katlc agent startup audit only classifies node-local
+attempts and records diagnostics. It must not automatically rerun `kubeadm
+init`, rerun `kubeadm join`, refresh expired join material, or continue
 multi-node rollout ordering after power loss.
 
 ## Failure Diagnostics

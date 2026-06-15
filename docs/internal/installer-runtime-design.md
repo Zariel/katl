@@ -762,7 +762,7 @@ katlc renders known configuration domains into generation 1 confext
 katlc writes the bootstrap/join OperationRecord
 katlc writes candidate generation spec/status and activates it for local
   kubeadm-ready host prerequisites
-katlc runs kubeadm init or join under systemd supervision
+katlc runs kubeadm init or join through the agent executor
 katlc commits the candidate generation only after kubeadm and operation health
   checks pass; boot health remains pending until a later boot
 ```

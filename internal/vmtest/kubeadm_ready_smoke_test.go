@@ -17,7 +17,7 @@ func TestKubeadmReadySmokeChecksRuntimeHandoff(t *testing.T) {
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
-		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\noperation run-tool\n")},
+		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
 		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand("/dev/vdb4[/lib/katl/kubernetes/etc-kubernetes]\n")},
 		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
@@ -58,7 +58,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
-		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\noperation run-tool\n")},
+		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
 		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
 		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},

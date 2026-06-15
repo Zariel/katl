@@ -31,8 +31,7 @@ type StateAssets struct {
 	KubeletDropIn      string
 	StateCheckService  string
 	RuntimeStatus      string
-	OperationService   string
-	OperationReconcile string
+	AgentService       string
 	Tmpfiles           string
 	Dirs               []StateDir
 	MountPoints        []StateDir
@@ -80,8 +79,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		KubeletDropIn:      renderKubeletDropIn(),
 		StateCheckService:  renderStateCheckService(),
 		RuntimeStatus:      renderRuntimeStatusService(),
-		OperationService:   renderOperationService(),
-		OperationReconcile: renderOperationReconcileService(),
+		AgentService:       renderAgentService(),
 		Tmpfiles:           renderTmpfiles(dirs),
 		Dirs:               dirs,
 		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
@@ -142,8 +140,8 @@ func renderKubeadmReadyTarget() string {
 		"[Unit]",
 		"Description=Katl kubeadm-ready handoff point",
 		"Documentation=man:systemd.target(5)",
-		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service",
-		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service",
+		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service",
+		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service",
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
@@ -214,47 +212,30 @@ func renderRuntimeStatusService() string {
 	}, "\n")
 }
 
-func renderOperationService() string {
+func renderAgentService() string {
 	return strings.Join([]string{
 		"[Unit]",
-		"Description=Run Katl operation %i",
-		"Documentation=man:systemd.service(5)",
-		"RequiresMountsFor=/var/lib/katl/operations",
-		"After=katl-operation-reconcile.service",
-		"Before=katl-kubeadm-ready.target",
-		"",
-		"[Service]",
-		"Type=oneshot",
-		"StandardOutput=journal+console",
-		"StandardError=journal+console",
-		"SyslogIdentifier=katl-operation",
-		"Environment=KATL_OPERATION_ID=%i",
-		"Environment=KATL_OPERATION_UNIT=katl-operation@%i.service",
-		"ExecStart=/usr/bin/katlc operation execute --operation-id %i --root=/",
-		"TimeoutStartSec=30min",
-		"",
-	}, "\n")
-}
-
-func renderOperationReconcileService() string {
-	return strings.Join([]string{
-		"[Unit]",
-		"Description=Reconcile Katl operation records",
+		"Description=Run Katl node management agent",
 		"Documentation=man:systemd.service(5)",
 		"Requires=var.mount katl-generation-activate.service",
-		"RequiresMountsFor=/var/lib/katl/operations",
-		"After=local-fs.target var.mount katl-generation-activate.service systemd-sysext.service systemd-confext.service",
-		"Before=katl-kubeadm-ready.target katl-boot-complete.target katl-operation@.service",
+		"Wants=network-online.target",
+		"After=local-fs.target var.mount katl-generation-activate.service network-online.target",
+		"Before=katl-kubeadm-ready.target",
+		"RequiresMountsFor=/var/lib/katl",
 		"",
 		"[Service]",
-		"Type=oneshot",
-		"StandardOutput=journal+console",
-		"StandardError=journal+console",
-		"SyslogIdentifier=katl-operation-reconcile",
-		"ExecStart=/usr/bin/katlc operation reconcile --boot --root=/",
+		"Type=simple",
+		"ExecStartPre=/usr/bin/katlc agent init-token --path /var/lib/katl/agent/token",
+		"ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443 --auth-token-file /var/lib/katl/agent/token",
+		"Restart=on-failure",
+		"RestartSec=5s",
+		"StandardOutput=journal",
+		"StandardError=journal",
+		"SyslogIdentifier=katlc-agent",
+		"NoNewPrivileges=yes",
 		"",
 		"[Install]",
-		"RequiredBy=katl-kubeadm-ready.target",
+		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
 }
@@ -303,13 +284,15 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service", "../katl-runtime-handoff-status.service"); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/katl-operation@.service", assets.OperationService, 0o644); err != nil {
+	for _, rel := range legacyOperationUnitPaths() {
+		if err := removePath(root, rel); err != nil {
+			return StateAssets{}, err
+		}
+	}
+	if err := writeFile(root, "etc/systemd/system/katlc-agent.service", assets.AgentService, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/katl-operation-reconcile.service", assets.OperationReconcile, 0o644); err != nil {
-		return StateAssets{}, err
-	}
-	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service", "../katl-operation-reconcile.service"); err != nil {
+	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katlc-agent.service", "../katlc-agent.service"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/tmpfiles.d/katl-state.conf", assets.Tmpfiles, 0o644); err != nil {
@@ -327,6 +310,14 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	return assets, nil
 }
 
+func legacyOperationUnitPaths() []string {
+	return []string{
+		"etc/systemd/system/katl-operation@.service",
+		"etc/systemd/system/katl-operation-reconcile.service",
+		"etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service",
+	}
+}
+
 func stateDirs() []StateDir {
 	return []StateDir{
 		{Path: "/var/lib/katl", Mode: 0o755},
@@ -336,6 +327,7 @@ func stateDirs() []StateDir {
 		{Path: "/var/lib/katl/install/logs", Mode: 0o755},
 		{Path: "/var/lib/katl/identity", Mode: 0o755},
 		{Path: "/var/lib/katl/operations", Mode: 0o750},
+		{Path: "/var/lib/katl/agent", Mode: 0o700},
 		{Path: "/var/lib/katl/cluster", Mode: 0o750},
 		{Path: "/var/lib/katl/config-requests", Mode: 0o750},
 		{Path: "/var/lib/katl/kubernetes", Mode: 0o755},
@@ -421,6 +413,14 @@ func writeSymlink(root string, rel string, target string) error {
 	}
 	if err := os.Symlink(target, path); err != nil {
 		return fmt.Errorf("link %s: %w", rel, err)
+	}
+	return nil
+}
+
+func removePath(root string, rel string) error {
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove %s: %w", rel, err)
 	}
 	return nil
 }

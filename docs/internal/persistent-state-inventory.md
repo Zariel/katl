@@ -94,14 +94,14 @@ machine identity available to systemd
 katl-generation-activate.service creates selected sysext/confext activation paths under /run
 systemd-sysext.service
 systemd-confext.service
-katl-operation-reconcile.service
+katlc-agent.service startup audit
 /etc/kubernetes bind mount active
 /etc/ssh host key projection active
 systemd-networkd.service
 sshd.service
 containerd.service
 kubelet.service
-kubeadm automation units
+kubeadm child processes launched by the katlc agent executor
 ```
 
 The `/etc/kubernetes` bind must be validated after confext activation so a

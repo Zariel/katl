@@ -32,8 +32,8 @@ selected baseline sysext/confext activation completed
 machine identity available
 network configuration loaded
 sshd started when enabled
-katlc and systemd operation wiring available
-katl-operation-reconcile.service completed successfully
+katlc-agent.service running
+katlc agent startup audit of operation state completed successfully
 ```
 
 Kubeadm-ready profile, after the bootstrap or join operation asks `katlc` to
@@ -45,7 +45,7 @@ kubeadm input rendered under /etc/katl/kubeadm
 /etc/kubernetes projected from writable state
 containerd active and CRI socket available
 kubelet installed and ordered for kubeadm use
-katl-operation-reconcile.service completed successfully
+katlc agent startup audit of operation state completed successfully
 ```
 
 Kubernetes-upgrade profile, after an explicit upgrade operation reaches the
@@ -57,7 +57,7 @@ kubeadm upgrade phase complete for the node role
 kubelet activation gate released
 kubelet running from the target payload
 local role checks passed
-katl-operation-reconcile.service completed successfully
+katlc agent startup audit of operation state completed successfully
 ```
 
 The first implementation can keep the target conservative and local. It does

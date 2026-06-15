@@ -13,7 +13,7 @@ func TestRunKatlcSmoke(t *testing.T) {
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
 		commandKey("test", "-x", "/usr/bin/katlc"): {okCommand()},
-		commandKey("/usr/bin/katlc", "--help"):     {stdoutCommand("Usage: katlc <command> [args]\noperation run-tool\n")},
+		commandKey("/usr/bin/katlc", "--help"):     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 	}
 	guest := NewGuestControl(result, client)
 

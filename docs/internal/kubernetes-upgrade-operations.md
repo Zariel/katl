@@ -8,9 +8,10 @@ This document applies the generation and operation model from
 Katl uses generations to describe desired host state: KatlOS version,
 Kubernetes sysext version, rendered configuration, and health expectations.
 Kubernetes upgrades remain explicit operations. `katlc` plans and records the
-node-local operation, systemd executes and supervises it with native units,
-targets, health checks, and rollback mechanisms, and kubeadm remains
-authoritative for mutating Kubernetes cluster state.
+node-local operation, executes it through the long-running `katlc` agent, uses
+systemd for service supervision, targets, health checks, and rollback
+mechanisms, and kubeadm remains authoritative for mutating Kubernetes cluster
+state.
 
 ## Decision
 
@@ -44,7 +45,7 @@ artifact verification and compatibility checks
 target Kubernetes sysext selection
 candidate generation creation
 rendered kubeadm input under /etc/katl
-systemd units and targets that execute the node-local operation
+agent-managed execution of the node-local operation
 operation status and diagnostics
 host boot health, host rollback, and retry reporting
 ```
@@ -95,7 +96,7 @@ inspect current Kubernetes and kubelet versions
 select the target Kubernetes sysext
 validate target kubeadm API compatibility for rendered input
 create a candidate generation with explicit upgrade operation metadata
-write a systemd-supervised operation plan and status record
+write an agent-executed operation plan and status record
 ```
 
 The candidate generation is staged before kubeadm mutates cluster state, but
@@ -106,7 +107,7 @@ must make target-version kubeadm available for the upgrade operation while
 controlling when target-version kubelet becomes active.
 
 Katl must split target tool availability from target service activation. The
-upgrade unit may use target-version kubeadm from the staged candidate payload,
+agent executor may use target-version kubeadm from the staged candidate payload,
 but kubelet must remain on the source payload or be stopped until the kubeadm
 phase for that node has completed. Target-version kubelet becomes active only at
 the explicit kubelet restart phase recorded by the operation. Health promotion
@@ -116,10 +117,10 @@ target sysext.
 Normal boot or activation of a candidate Kubernetes upgrade generation must not
 race kubelet into the target payload before the operation gate allows it.
 
-The first implementation should use an explicit upgrade unit or transient unit
-rather than ordinary boot activation alone. That unit runs with the candidate
-generation context, records phase transitions, and restarts kubelet only at the
-point accepted by the kubeadm flow for that node role.
+The first implementation should use an explicit agent-executed upgrade
+operation rather than ordinary boot activation alone. That operation runs with
+the candidate generation context, records phase transitions, and restarts
+kubelet only at the point accepted by the kubeadm flow for that node role.
 
 ## Target Kubeadm Access
 
@@ -129,7 +130,7 @@ be made before Kubernetes upgrade execution is enabled. Candidate mechanisms:
 ```text
 operation-private-sysext
   Run target-version kubeadm from the staged target sysext inside the upgrade
-  unit's private tool view or mount namespace. Global activation stays on the
+  operation executor's private tool view or mount namespace. Global activation stays on the
   source generation until the planned kubelet restart.
 
 separate-kubeadm-tool-payload
@@ -370,8 +371,8 @@ already mutated node or cluster state before the host rollback occurred.
 
 Any reboot during `kubeadm-apply-running`, `kubeadm-node-running`, or unknown
 target-kubelet gate state becomes stale-post-mutation or stale-ambiguous during
-boot-time operation reconciliation. It requires explicit retry or repair; Katl
-must not automatically rerun kubeadm.
+katlc agent startup audit. It requires explicit retry or repair; Katl must not
+automatically rerun kubeadm.
 
 Rollback must never independently switch only the root slot, sysext, or confext.
 Host rollback selects a complete previous generation. Kubernetes state repair is

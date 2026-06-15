@@ -21,7 +21,7 @@ func RunKatlcSmoke(ctx context.Context, guest *GuestControl) error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(output, "Usage: katlc") || !strings.Contains(output, "operation run-tool") {
+	if !strings.Contains(output, "Usage: katlc") || !strings.Contains(output, "agent serve") {
 		return errors.New("katlc --help output did not include expected command summary")
 	}
 	return nil

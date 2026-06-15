@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package katl.agent.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/zariel/katl/internal/katlc/agentapi;agentapi";
+
+service KatlcAgent {
+  rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+  rpc SubmitOperation(SubmitOperationRequest) returns (OperationAccepted);
+  rpc GetOperation(GetOperationRequest) returns (OperationStatus);
+  rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
+}
+
+message GetNodeStatusRequest {}
+
+message NodeStatus {
+  string api_version = 1;
+  string machine_id = 2;
+  string agent_start_id = 3;
+  string agent_started_at = 4;
+  repeated string supported_api_versions = 5;
+  repeated string supported_operation_kinds = 6;
+  bool operation_lock_held = 7;
+  repeated string active_operation_ids = 8;
+}
+
+message SubmitOperationRequest {
+  string api_version = 1;
+  string kind = 2;
+  string client_request_id = 3;
+  string operation_kind = 4;
+  string actor = 5;
+  string expected_machine_id = 6;
+  string expected_current_generation_id = 7;
+  string expected_cluster_intent_digest = 8;
+  string request_digest = 9;
+  bool dry_run = 10;
+  string operation_timeout = 11;
+  google.protobuf.Struct request = 12;
+}
+
+message OperationAccepted {
+  string operation_id = 1;
+  string operation_kind = 2;
+  string request_digest = 3;
+  string record_path = 4;
+  string accepted_at = 5;
+  OperationStatus initial_status = 6;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+  string expected_request_digest = 2;
+  string include_diagnostics = 3;
+}
+
+message OperationStatus {
+  string operation_id = 1;
+  string operation_kind = 2;
+  string request_digest = 3;
+  string phase = 4;
+  int32 phase_index = 5;
+  repeated string completed_phases = 6;
+  bool terminal = 7;
+  string result = 8;
+  string candidate_generation_id = 9;
+  bool external_mutation_started = 10;
+  repeated string mutation_scopes = 11;
+  repeated string resource_locks = 12;
+  int32 latest_journal_seq = 13;
+  string updated_at = 14;
+  string next_action = 15;
+  repeated DiagnosticArtifact diagnostics = 16;
+  bool recovery_required = 17;
+  string failure_reason = 18;
+}
+
+message DiagnosticArtifact {
+  string artifact_id = 1;
+  string path = 2;
+  string sha256 = 3;
+  bool redacted = 4;
+  string created_at = 5;
+}
+
+message WatchOperationRequest {
+  string operation_id = 1;
+  string expected_request_digest = 2;
+  int32 after_journal_seq = 3;
+  string watch_timeout = 4;
+}
+
+message OperationEvent {
+  string operation_id = 1;
+  int32 journal_seq = 2;
+  string event_type = 3;
+  string phase = 4;
+  bool terminal = 5;
+  OperationStatus status = 6;
+}

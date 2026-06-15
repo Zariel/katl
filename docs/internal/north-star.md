@@ -45,11 +45,11 @@ katlos-install
   owns Katl disk layout, writes runtime generations, and records install state.
 
 katlctl
-  Runs as an operator control client. It keeps only client configuration for how
-  to communicate with the cluster and known nodes. It submits explicit requests
-  to node-local katlc, observes returned operation IDs, sequences bounded
-  multi-node workflows, and relays requested client-side output. It does not
-  generate or own node state.
+  Runs on the operator workstation as a control client. It keeps only client
+  configuration for how to communicate with known KatlOS nodes. It submits
+  explicit requests to node-local katlc over the node management API, observes
+  returned operation IDs, sequences bounded multi-node workflows, and relays
+  requested client-side output. It does not generate or own node state.
 
 KatlOS runtime
   Boots installed nodes into a small, systemd-native Linux environment with the
@@ -125,8 +125,9 @@ returns to a complete previously selected generation.
 
 Operations are explicit stateful workflows that move reality toward a desired
 generation or cluster state. `katlc` owns node-local planning and status,
-systemd executes and supervises node-local operation units, `katlctl` may submit
-and sequence operator-driven multi-node requests, and kubeadm remains
+executes accepted node-local operations through its long-running agent, and uses
+systemd for KatlOS service supervision and health semantics. `katlctl` may
+submit and sequence operator-driven multi-node requests, and kubeadm remains
 authoritative for Kubernetes cluster mutation.
 
 Multi-node operator workflows link bounded node-local operation records returned
@@ -281,6 +282,7 @@ docs/internal/single-katlos-image-artifact.md
 docs/internal/installer-boot-artifact-variants.md
 docs/internal/node-install-to-bootstrap-state-machine.md
 docs/internal/generations-and-operations.md
+docs/internal/katlc-agent-architecture.md
 ```
 
 Configuration model and trusted input:
