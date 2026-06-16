@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
@@ -57,24 +59,25 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	release, err := confextRelease(plan.Previous)
+	if err != nil {
+		return Result{}, err
+	}
 	sysext, err := materializeSysext(root, candidate, plan.RuntimeInputs.SelectedKubernetesSysext)
 	if err != nil {
 		return Result{}, err
 	}
-	if _, err := generation.WriteState(root, generation.StateRequest{PartitionUUID: plan.Previous.Root.PartitionUUID}); err != nil {
+	// Installed runtimes already carry the baseline units in /usr/lib; live
+	// operation preparation may run with immutable /etc.
+	if _, err := generation.WriteState(root, generation.StateRequest{PartitionUUID: plan.Previous.Root.PartitionUUID}); err != nil && !errors.Is(err, syscall.EROFS) {
 		return Result{}, fmt.Errorf("write bootstrap runtime systemd state: %w", err)
 	}
 	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{
 		GenerationsRoot: filepath.Join(filepath.Clean(root), "var/lib/katl/generations"),
 		GenerationID:    candidate,
 		Files:           files,
-		Extension: confext.ExtensionRelease{
-			Name:         "katl-node",
-			ID:           "katl",
-			VersionID:    plan.Previous.RuntimeVersion,
-			ConfextLevel: 1,
-		},
-		Chown: func(string, int, int) error { return nil },
+		Extension:       release,
+		Chown:           func(string, int, int) error { return nil },
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("render bootstrap runtime confext: %w", err)
@@ -89,9 +92,9 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		ActivationPath: "/run/confexts/katl-node",
 		SHA256:         confextDigest,
 		Compatibility: generation.ConfextCompatibility{
-			ID:           "katl",
-			VersionID:    plan.Previous.RuntimeVersion,
-			ConfextLevel: 1,
+			ID:           release.ID,
+			VersionID:    release.VersionID,
+			ConfextLevel: release.ConfextLevel,
 		},
 	}
 	next, err := generation.NewRuntimeConfigRecord(generation.RuntimeConfigRequest{
@@ -141,9 +144,28 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	}, nil
 }
 
+func confextRelease(previous generation.GenerationSpec) (confext.ExtensionRelease, error) {
+	for _, ref := range previous.Confexts {
+		if ref.Name == "katl-node" {
+			compat := ref.Compatibility
+			return confext.ExtensionRelease{
+				Name:         "katl-node",
+				ID:           compat.ID,
+				VersionID:    compat.VersionID,
+				ConfextLevel: compat.ConfextLevel,
+			}, nil
+		}
+	}
+	return confext.ExtensionRelease{}, fmt.Errorf("previous generation katl-node confext compatibility is required")
+}
+
 func materializeSysext(root string, candidate string, selected bootstrapplan.SelectedKubernetesSysext) (generation.ExtensionRef, error) {
 	source := filepath.Join(filepath.Clean(root), strings.TrimPrefix(filepath.Clean(selected.Path), string(filepath.Separator)))
-	targetRuntime := "/var/lib/katl/generations/" + candidate + "/sysext/kubernetes.raw"
+	name := filepath.Base(source)
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		return generation.ExtensionRef{}, fmt.Errorf("bundled Kubernetes sysext path is invalid")
+	}
+	targetRuntime := "/var/lib/katl/generations/" + candidate + "/sysext/" + name
 	target := filepath.Join(filepath.Clean(root), strings.TrimPrefix(targetRuntime, "/"))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return generation.ExtensionRef{}, fmt.Errorf("create bootstrap sysext directory: %w", err)

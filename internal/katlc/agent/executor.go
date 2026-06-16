@@ -19,6 +19,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/bootstrapplan"
 	"github.com/zariel/katl/internal/installer/bootstrapruntime"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 )
@@ -28,6 +29,7 @@ const (
 	maxToolTimeout           = 25 * time.Minute
 	readinessTimeout         = 2 * time.Minute
 	postKubeadmHealthTimeout = 2 * time.Minute
+	bootRootMountTimeout     = 10 * time.Second
 )
 
 type ToolResult struct {
@@ -40,6 +42,8 @@ type ToolResult struct {
 
 type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
+type BootRootMounter func(context.Context, string) error
+
 type Executor struct {
 	Root          string
 	Store         operation.Store
@@ -48,6 +52,7 @@ type Executor struct {
 	RunTool       ToolRunner
 	RunReadiness  ToolRunner
 	RunPostHealth ToolRunner
+	MountBootRoot BootRootMounter
 	Async         bool
 }
 
@@ -62,6 +67,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunTool:       runChildProcess,
 		RunReadiness:  runReadinessCommand,
 		RunPostHealth: runPostKubeadmHealthCommand,
+		MountBootRoot: mountRuntimeBootRoot,
 		Async:         true,
 	}
 }
@@ -119,7 +125,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return err
 	}
 	record = prepared
-	ready, err := e.gateBootstrapReadiness(ctx, record)
+	ready, err := e.gateBootstrapReadiness(ctx, record, plan)
 	if err != nil {
 		return err
 	}
@@ -201,6 +207,11 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	if len(result.Stderr) > 0 {
 		if _, err := e.Store.AddDiagnosticArtifact(record.OperationID, markerID+"-stderr", []byte(inventory.Redact(string(result.Stderr))), completedAt); err != nil {
+			artifactErr = errors.Join(artifactErr, err)
+		}
+	}
+	if result.Err != nil {
+		if _, err := e.Store.AddDiagnosticArtifact(record.OperationID, markerID+"-error", []byte(inventory.Redact(toolFailure(result))), completedAt); err != nil {
 			artifactErr = errors.Join(artifactErr, err)
 		}
 	}
@@ -303,7 +314,7 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 		record.ActivationState = operation.ActivationStateActiveLive
 		record.GenerationCommitState = operation.GenerationCommitCandidate
 		record.CandidateGenerationID = result.Record.GenerationID
-		record.NextAction = "wait for katl-kubeadm-ready.target before kubeadm"
+		record.NextAction = "run bootstrap runtime readiness checks before kubeadm"
 		record.UpdatedAt = updatedAt
 		return record, nil
 	})
@@ -332,7 +343,7 @@ func (e *Executor) failRecordPhase(operationID string, eventID string, eventType
 	})
 }
 
-func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
+func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.OperationRecord, plan toolPlan) (operation.OperationRecord, error) {
 	if ctx.Err() != nil {
 		return operation.OperationRecord{}, ctx.Err()
 	}
@@ -342,7 +353,7 @@ func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.
 	startedAt := e.clock()
 	if _, err := e.Store.Update(record.OperationID, "bootstrap-runtime-ready-start", "bootstrap-runtime-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "bootstrap-runtime-ready"
-		record.NextAction = "start katl-kubeadm-ready.target before kubeadm"
+		record.NextAction = "run bootstrap runtime readiness checks before kubeadm"
 		record.UpdatedAt = startedAt
 		return record, nil
 	}); err != nil {
@@ -350,7 +361,7 @@ func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.
 	}
 	readyCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
 	defer cancel()
-	result := e.readinessRunner()(readyCtx, nil, func(int) {})
+	result := e.readinessRunner()(readyCtx, bootstrapReadinessArgs(record, plan), func(int) {})
 	if errors.Is(readyCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
 		result.Err = readyCtx.Err()
 		result.ExitStatus = -1
@@ -368,7 +379,7 @@ func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.
 				artifactErr = errors.Join(artifactErr, err)
 			}
 		}
-		cause := fmt.Errorf("katl-kubeadm-ready.target gate failed: %s", toolFailure(result))
+		cause := fmt.Errorf("bootstrap runtime readiness gate failed: %s", toolFailure(result))
 		updated, markErr := e.failRecordPhase(record.OperationID, "bootstrap-runtime-ready-failed", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "bootstrap runtime readiness failed before kubeadm mutation", errors.Join(cause, artifactErr))
 		return updated, errors.Join(cause, artifactErr, markErr)
 	}
@@ -476,7 +487,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if err := e.commitBootstrapGeneration(record, completedAt); err != nil {
+	if err := e.commitBootstrapGeneration(ctx, record, completedAt); err != nil {
 		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "post-kubeadm-health"
 			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
@@ -509,7 +520,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	return errors.Join(err, artifactErr)
 }
 
-func (e *Executor) commitBootstrapGeneration(record operation.OperationRecord, now time.Time) error {
+func (e *Executor) commitBootstrapGeneration(ctx context.Context, record operation.OperationRecord, now time.Time) error {
 	candidate := strings.TrimSpace(record.CandidateGenerationID)
 	if candidate == "" {
 		return fmt.Errorf("candidate generation id is required")
@@ -534,6 +545,18 @@ func (e *Executor) commitBootstrapGeneration(record operation.OperationRecord, n
 		Record:    generation.RecordFromSplit(spec, status),
 		MachineID: machineID,
 	})
+	if err != nil && errors.Is(err, syscall.EROFS) {
+		if e.MountBootRoot == nil {
+			return fmt.Errorf("write candidate loader entry: %w", err)
+		}
+		if mountErr := e.MountBootRoot(ctx, bootRoot); mountErr != nil {
+			return fmt.Errorf("write candidate loader entry: %w; mount boot root: %v", err, mountErr)
+		}
+		entryPath, err = generation.WriteEntry(bootRoot, generation.LoaderRequest{
+			Record:    generation.RecordFromSplit(spec, status),
+			MachineID: machineID,
+		})
+	}
 	if err != nil {
 		return fmt.Errorf("write candidate loader entry: %w", err)
 	}
@@ -649,13 +672,56 @@ func requiresBootstrapInitCommit(record operation.OperationRecord) bool {
 	return record.OperationKind == bootstrapplan.OperationKindInit
 }
 
-func runReadinessCommand(ctx context.Context, _ []string, started func(int)) ToolResult {
+func bootstrapReadinessArgs(record operation.OperationRecord, plan toolPlan) []string {
+	return []string{record.CandidateGenerationID, kubeadmConfigPath(plan.Argv)}
+}
+
+func kubeadmConfigPath(argv []string) string {
+	for i := 0; i < len(argv)-1; i++ {
+		if argv[i] == "--config" {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
+func runReadinessCommand(ctx context.Context, argv []string, started func(int)) ToolResult {
+	candidate := ""
+	configPath := ""
+	if len(argv) > 0 {
+		candidate = strings.TrimSpace(argv[0])
+	}
+	if len(argv) > 1 {
+		configPath = strings.TrimSpace(argv[1])
+	}
 	commands := [][]string{
 		{"/usr/bin/systemctl", "daemon-reload"},
-		{"/usr/bin/systemctl", "restart", "systemd-sysext.service"},
-		{"/usr/bin/systemctl", "restart", "systemd-confext.service"},
-		{"/usr/bin/systemctl", "start", "katl-kubeadm-ready.target"},
-		{"/usr/bin/systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"},
+	}
+	if candidate != "" {
+		commands = append(commands,
+			[]string{"/usr/lib/katl/runtime/katl-generation-activate", "--root=/", "--generation", candidate},
+			[]string{"/usr/bin/systemd-sysext", "refresh"},
+			[]string{"/usr/bin/systemd-confext", "refresh"},
+		)
+	} else {
+		commands = append(commands,
+			[]string{"/usr/bin/systemctl", "restart", "systemd-sysext.service"},
+			[]string{"/usr/bin/systemctl", "restart", "systemd-confext.service"},
+		)
+	}
+	commands = append(commands,
+		[]string{"/usr/bin/test", "-x", "/usr/bin/kubelet"},
+		[]string{"/usr/bin/systemctl", "start", "etc-kubernetes.mount"},
+		[]string{"/usr/bin/systemctl", "start", "containerd.service"},
+		[]string{"/usr/bin/systemctl", "start", "katl-state-projection-check.service"},
+		[]string{"/usr/bin/systemctl", "start", "katl-kubeadm-ready.target"},
+		[]string{"/usr/bin/systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"},
+		[]string{"/usr/bin/systemctl", "is-active", "--quiet", "containerd.service"},
+		[]string{"/usr/bin/test", "-x", "/usr/bin/kubeadm"},
+		[]string{"/usr/bin/test", "-x", "/usr/bin/crictl"},
+	)
+	if configPath != "" {
+		commands = append(commands, []string{"/usr/bin/test", "-s", configPath})
 	}
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
@@ -691,6 +757,57 @@ func runPostKubeadmHealthCommand(ctx context.Context, _ []string, started func(i
 		}
 	}
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+}
+
+func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
+	bootRoot = strings.TrimSpace(bootRoot)
+	if bootRoot == "" {
+		return fmt.Errorf("boot root is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if mounted, err := bootRootIsMountpoint(ctx, bootRoot); err != nil {
+		return err
+	} else if mounted {
+		return nil
+	}
+	var errs []error
+	for _, source := range runtimeBootRootSources() {
+		mountCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
+		result := runChildProcess(mountCtx, []string{"/usr/bin/mount", source, bootRoot}, nil)
+		cancel()
+		if result.Err == nil && result.ExitStatus == 0 {
+			return nil
+		}
+		errs = append(errs, fmt.Errorf("mount %s on %s: %s", source, bootRoot, toolFailure(result)))
+	}
+	return errors.Join(errs...)
+}
+
+func runtimeBootRootSources() []string {
+	return []string{
+		"/dev/disk/by-label/KATLEFI",
+		"/dev/disk/by-id/virtio-katl-efi",
+		"/dev/disk/by-id/virtio-katl-efi-part1",
+		"/dev/disk/by-partlabel/" + disk.GPTLabelESP,
+	}
+}
+
+func bootRootIsMountpoint(ctx context.Context, bootRoot string) (bool, error) {
+	mountCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
+	result := runChildProcess(mountCtx, []string{"/usr/bin/mountpoint", "-q", bootRoot}, nil)
+	cancel()
+	if result.Err == nil && result.ExitStatus == 0 {
+		return true, nil
+	}
+	if errors.Is(result.Err, os.ErrNotExist) {
+		return false, nil
+	}
+	if result.ExitStatus == 1 || result.ExitStatus == 32 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check boot root mountpoint %s: %s", bootRoot, toolFailure(result))
 }
 
 func runChildProcess(ctx context.Context, argv []string, started func(int)) ToolResult {
@@ -862,7 +979,11 @@ func appendMissing(values []string, additions ...string) []string {
 }
 
 func redactArgv(argv []string) []string {
-	return []string{inventory.Redact(strings.Join(argv, " "))}
+	out := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		out = append(out, inventory.Redact(arg))
+	}
+	return out
 }
 
 type postHealthEvidence struct {

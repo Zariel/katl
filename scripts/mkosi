@@ -85,7 +85,7 @@ cache_input_matches_target() {
             ;;
         runtime)
             case "$path" in
-                cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/vmtest/* | mkosi.profiles/runtime/*)
+                cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/runtime/*)
                     return 0
                     ;;
             esac
@@ -99,7 +99,7 @@ cache_input_matches_target() {
             ;;
         katlos-install-image)
             case "$path" in
-                scripts/build-katlos-install-image | cmd/katlos-install/* | cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/vmtest/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/* | mkosi.profiles/kubernetes-sysext/*)
+                scripts/build-katlos-install-image | cmd/katlos-install/* | cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/* | mkosi.profiles/kubernetes-sysext/*)
                     return 0
                     ;;
             esac

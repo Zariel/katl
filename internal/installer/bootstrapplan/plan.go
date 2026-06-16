@@ -378,7 +378,7 @@ func selectBundledSysext(root string, previous generation.GenerationSpec, kubern
 		SHA256:           strings.ToLower(kubernetes.SysextSHA256),
 		SizeBytes:        uint64(info.Size()),
 		PayloadVersion:   kubernetes.PayloadVersion,
-		ActivationPath:   "/run/extensions/kubernetes.raw",
+		ActivationPath:   "/run/extensions/katl-kubernetes.raw",
 		Architecture:     previous.Root.Architecture,
 		RuntimeInterface: previous.Root.RuntimeInterface,
 	}, nil

@@ -28,6 +28,9 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	ready := false
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		assertBootstrapRuntimePrepared(t, server.Root, "bootstrap-init-01-candidate")
+		if strings.Join(argv, " ") != "bootstrap-init-01-candidate /etc/katl/kubeadm/default/config.yaml" {
+			t.Fatalf("readiness argv = %v, want candidate generation and kubeadm config path", argv)
+		}
 		ready = true
 		return ToolResult{ExitStatus: 0}
 	}
@@ -89,6 +92,9 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	if invocation.AgentStartID != "agent-test" || invocation.ExecutorAttemptID == "" || invocation.PID != 123 || invocation.ExitStatus != 0 {
 		t.Fatalf("invocation missing agent executor metadata: %+v", invocation)
 	}
+	if strings.Join(invocation.ChildProcess, "\x00") != strings.Join([]string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"}, "\x00") {
+		t.Fatalf("invocation child process = %#v, want kubeadm argv", invocation.ChildProcess)
+	}
 	for _, scope := range []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"} {
 		if !contains(record.MutationScopes, scope) {
 			t.Fatalf("mutation scopes = %v, missing %s", record.MutationScopes, scope)
@@ -107,6 +113,26 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	}
 	if len(status.Invocations) != 1 || status.Invocations[0].AgentStartId != "agent-test" || status.Invocations[0].ExitStatus != 0 {
 		t.Fatalf("status invocations = %+v", status.Invocations)
+	}
+}
+
+func TestRuntimeBootRootSourcesPreferActiveVMESP(t *testing.T) {
+	got := runtimeBootRootSources()
+	wantPrefix := []string{
+		"/dev/disk/by-label/KATLEFI",
+		"/dev/disk/by-id/virtio-katl-efi",
+		"/dev/disk/by-id/virtio-katl-efi-part1",
+	}
+	if len(got) < len(wantPrefix)+1 {
+		t.Fatalf("runtime boot root sources = %#v", got)
+	}
+	for i, want := range wantPrefix {
+		if got[i] != want {
+			t.Fatalf("runtime boot root sources = %#v, want active EFI source %q at index %d", got, want, i)
+		}
+	}
+	if got[len(got)-1] != "/dev/disk/by-partlabel/KATL_ESP" {
+		t.Fatalf("runtime boot root fallback = %q, want installed disk ESP last", got[len(got)-1])
 	}
 }
 
@@ -274,8 +300,8 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	if !read.Terminal || !read.RecoveryRequired || read.Phase != "bootstrap-runtime-ready" || read.ExternalMutationStarted || len(read.PreExecMutationMarkers) != 0 || read.MutatingToolRan {
 		t.Fatalf("record = %+v, want pre-kubeadm readiness failure", read)
 	}
-	if !strings.Contains(read.FailureReason, "katl-kubeadm-ready.target") {
-		t.Fatalf("failure reason = %q, want readiness target", read.FailureReason)
+	if !strings.Contains(read.FailureReason, "bootstrap runtime readiness gate") {
+		t.Fatalf("failure reason = %q, want readiness gate", read.FailureReason)
 	}
 	if got := readFirstArtifact(t, server.Store, read); !strings.Contains(got, "containerd.service failed") {
 		t.Fatalf("readiness artifact = %q", got)
@@ -623,7 +649,7 @@ func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "fedora",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -720,7 +746,7 @@ func assertBootstrapRuntimePrepared(t *testing.T, root string, candidate string)
 	}
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/kubeadm/default/config.yaml"), "InitConfiguration")
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/bootstrap-runtime.json"), `"systemRole": "control-plane"`)
-	assertSymlinkTarget(t, filepath.Join(root, "run/extensions/kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/kubernetes.raw")
+	assertSymlinkTarget(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/katl-kubernetes.raw")
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
 		t.Fatal(err)

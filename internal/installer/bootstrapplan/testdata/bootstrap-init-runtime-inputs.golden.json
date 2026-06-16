@@ -4,7 +4,7 @@
     "sha256": "62a593c2b073c433c173b8b17c708a8d2fca31ff2288ff6a07a2da80bfa744af",
     "sizeBytes": 25,
     "payloadVersion": "v1.36.1",
-    "activationPath": "/run/extensions/kubernetes.raw",
+    "activationPath": "/run/extensions/katl-kubernetes.raw",
     "architecture": "x86_64",
     "runtimeInterface": "katl-runtime-1"
   },

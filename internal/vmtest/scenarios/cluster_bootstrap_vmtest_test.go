@@ -14,8 +14,338 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/operation"
 	"github.com/zariel/katl/internal/vmtest"
+	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 )
+
+func TestInstalledRuntimeOperationBackedBootstrapSmoke(t *testing.T) {
+	if run, ok := operationBackedWorldSmokeRun(t); ok {
+		runOperationBackedBootstrapSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run operation-backed bootstrap smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
+type operationBackedSmokeRun struct {
+	WorldScenario *vmtest.WorldScenario
+	Options       vmtest.Options
+	Runner        vmtest.Runner
+	Scenario      vmtest.Scenario
+	Result        vmtest.Result
+	Inputs        operationBackedSmokeInputs
+	LibvirtURI    string
+	Network       string
+}
+
+type operationBackedSmokeInputs struct {
+	ControlPlaneDisk       string
+	ControlPlaneDiskFormat string
+	ControlPlaneESP        string
+	ControlPlaneFixture    string
+	ControlPlaneMetadata   string
+	ControlPlaneAddress    string
+	ControlPlaneMAC        string
+	KubernetesVersion      string
+	WorldProvenance        multiNodeWorldProvenancePaths
+}
+
+func operationBackedWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
+		return operationBackedSmokeRun{}, false
+	}
+	world := vmtest.RequireWorld(t)
+	world = operationBackedFreshFixtureWorld(world)
+	repo := katlRepoRoot(t)
+	kvm := vmtest.DefaultOptions().KVM
+	specs := []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
+		failWorldFixtureSetup(t, world, "installed-runtime-operation-backed-bootstrap", err)
+	}
+	run, err := planOperationBackedWorldSmokeRun(world, repo, operationBackedKubernetesVersion(t, repo), kvm)
+	if err != nil {
+		failTwoNodeWorldSetup(t, run.WorldScenario, err)
+	}
+	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "operation-backed bootstrap smoke prerequisites missing", missing)
+	return run, true
+}
+
+func operationBackedFreshFixtureWorld(world vmtest.World) vmtest.World {
+	world.CacheDir = filepath.Join(world.RunDir, "operation-backed-fixtures")
+	return world
+}
+
+func operationBackedKubernetesVersion(t *testing.T, repo string) string {
+	t.Helper()
+	if version := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), os.Getenv("KATL_KUBERNETES_PAYLOAD_VERSION")); version != "" {
+		return version
+	}
+	for _, path := range []string{
+		os.Getenv("KATL_KUBERNETES_SYSEXT_METADATA"),
+		filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json"),
+	} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var metadata struct {
+			PayloadVersion string `json:"payloadVersion"`
+		}
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			t.Fatalf("decode Kubernetes sysext metadata %s: %v", path, err)
+		}
+		if strings.TrimSpace(metadata.PayloadVersion) != "" {
+			return metadata.PayloadVersion
+		}
+	}
+	return "v1.36.1"
+}
+
+func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (operationBackedSmokeRun, error) {
+	scenario, err := world.PlanScenario("installed-runtime-operation-backed-bootstrap")
+	if err != nil {
+		return operationBackedSmokeRun{}, err
+	}
+	run := operationBackedSmokeRun{WorldScenario: scenario}
+	buildRoots := publishedRuntimeBuildRoots(world, repo)
+	cp, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	options := vmtest.Options{
+		Enabled:   true,
+		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
+		Keep:      vmtest.KeepFailed,
+		KVM:       kvm,
+		Missing:   vmtest.MissingFails,
+	}
+	runner := vmtest.NewRunner(options)
+	vmScenario := vmtest.Scenario{Name: "installed-runtime-operation-backed-bootstrap"}
+	result, err := runner.Plan(vmScenario)
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	result.Started = time.Now().UTC()
+	return operationBackedSmokeRun{
+		WorldScenario: scenario,
+		Options:       options,
+		Runner:        runner,
+		Scenario:      vmScenario,
+		Result:        result,
+		LibvirtURI:    world.Libvirt.URI,
+		Network:       world.Libvirt.Network,
+		Inputs: operationBackedSmokeInputs{
+			ControlPlaneDisk:       cp.Config.Disk,
+			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
+			ControlPlaneESP:        cp.Config.ESPArtifacts,
+			ControlPlaneFixture:    cp.Config.FixtureManifest,
+			ControlPlaneMetadata:   cp.Config.NodeMetadata,
+			ControlPlaneAddress:    cp.Node.Address,
+			ControlPlaneMAC:        cp.Node.MACAddress,
+			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
+			WorldProvenance:        multiNodeWorldProvenanceForSpecs(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}),
+		},
+	}, nil
+}
+
+func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun) {
+	t.Helper()
+	options := smoke.Options
+	runner := smoke.Runner
+	scenario := smoke.Scenario
+	result := smoke.Result
+	inputs := smoke.Inputs
+	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
+		Libvirt: true,
+		OVMF:    true,
+		KVM:     options.KVM,
+	})
+	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
+	tokenPath := filepath.Join(result.RunDir, "katlc-agent.token")
+	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
+	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
+	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
+	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
+	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
+	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
+	artifactManifestPath := filepath.Join(result.ManifestDir, "operation-backed-bootstrap-artifacts.json")
+	plannedResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, vmtest.RunningInstalledRuntimeNode{Name: "cp-1", Result: plannedResult}, operationBackedArtifacts{
+		Inventory:          inventoryPath,
+		Kubeconfig:         kubeconfigPath,
+		KubeconfigMetadata: kubeconfigMetadataPath,
+		BootstrapStdout:    stdoutPath,
+		BootstrapStderr:    stderrPath,
+		KubectlOutput:      kubectlOut,
+		EvidenceDir:        evidenceDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
+		Name: "cp-1",
+		Runtime: vmtest.InstalledRuntimeConfig{
+			Disk:            inputs.ControlPlaneDisk,
+			DiskFormat:      vmtest.DiskFormat(inputs.ControlPlaneDiskFormat),
+			ESPArtifacts:    inputs.ControlPlaneESP,
+			FixtureManifest: inputs.ControlPlaneFixture,
+			NodeMetadata:    inputs.ControlPlaneMetadata,
+			VM:              operationBackedVMConfigForRun(smoke, inputs.ControlPlaneMAC, 43301),
+		},
+	}, vmtest.VMRunner{})
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("start control-plane VM: %v", err)
+	}
+	defer stopNode(t, cpNode)
+
+	cpAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
+	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, cpAddress); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	beforeSelection, err := readNodeFileWithRetry(ctx, cpNode, "/var/lib/katl/boot/selection.json", 128<<10, 2*time.Minute)
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("read boot selection before bootstrap: %v", err)
+	}
+	beforeSelectionPath := filepath.Join(evidenceDir, "boot-selection-before.json")
+	if err := os.WriteFile(beforeSelectionPath, beforeSelection, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertGeneration0Selection(t, beforeSelection)
+	token, err := readNodeFileWithRetry(ctx, cpNode, "/var/lib/katl/agent/token", 4<<10, 2*time.Minute)
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("read katlc agent token: %v", err)
+	}
+	if err := os.WriteFile(tokenPath, token, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, cpNode, operationBackedArtifacts{
+		Inventory:           inventoryPath,
+		Kubeconfig:          kubeconfigPath,
+		KubeconfigMetadata:  kubeconfigMetadataPath,
+		BootstrapStdout:     stdoutPath,
+		BootstrapStderr:     stderrPath,
+		KubectlOutput:       kubectlOut,
+		EvidenceDir:         evidenceDir,
+		BootSelectionBefore: beforeSelectionPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--init-node", "cp-1",
+		"--control-plane-endpoint", cpAddress + ":6443",
+		"--node-address", "cp-1=" + cpAddress,
+		"--agent-token-file", tokenPath,
+		"--kubeconfig-out", kubeconfigPath,
+		"--overwrite-kubeconfig",
+	}, bootstrapFixtureInputsFromEnv()), &stdout, &stderr)
+	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
+	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
+	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
+	if err != nil {
+		collectOperationBackedFailureEvidence(ctx, cpNode, evidenceDir)
+		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	recordPath, record, err := collectOperationBackedEvidence(ctx, cpNode, evidenceDir)
+	if err != nil {
+		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("collect operation evidence: %v", err)
+	}
+	assertOperationBackedRecord(t, record, cpAddress+":6443")
+	assertOperationJournalOrder(t, evidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-init-complete", "post-kubeadm-health-start", "operation-complete")
+	assertOperationBackedBootstrapPhases(t, stdout.String())
+	generationPath, generationRecord, err := collectGenerationEvidence(ctx, cpNode, evidenceDir, record.CandidateGenerationID)
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("collect generation evidence: %v", err)
+	}
+	assertCommittedGeneration(t, generationRecord, record.CandidateGenerationID)
+	selectionPath, selection, err := collectBootSelectionEvidence(ctx, cpNode, evidenceDir)
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("collect boot selection evidence: %v", err)
+	}
+	assertPostBootstrapSelection(t, selection, record.CandidateGenerationID)
+	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
+	output, err := cmd.CombinedOutput()
+	_ = os.WriteFile(kubectlOut, output, 0o644)
+	if err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "node/cp-1") {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing node/cp-1")
+		t.Fatalf("kubectl output missing node/cp-1:\n%s", output)
+	}
+	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
+	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, cpNode, operationBackedArtifacts{
+		Inventory:           inventoryPath,
+		Kubeconfig:          kubeconfigPath,
+		KubeconfigMetadata:  kubeconfigMetadataPath,
+		BootstrapStdout:     stdoutPath,
+		BootstrapStderr:     stderrPath,
+		KubectlOutput:       kubectlOut,
+		EvidenceDir:         evidenceDir,
+		BootSelectionBefore: beforeSelectionPath,
+		BootSelectionAfter:  selectionPath,
+		OperationRecord:     recordPath,
+		OperationJournal:    filepath.Join(evidenceDir, "operation-journal-files.txt"),
+		GenerationMetadata:  generationPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid uint32) vmtest.VMConfig {
+	config := twoNodeVMConfig(run.Options.KVM, cid)
+	config.LibvirtURI = run.LibvirtURI
+	config.LibvirtNetwork = run.Network
+	config.Network.MAC = mac
+	return config
+}
 
 func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	if run, ok := twoNodeWorldSmokeRun(t); ok {
@@ -469,6 +799,122 @@ nodes:
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
+func writeOperationBackedInventory(path, kubernetesVersion, address string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data := `controlPlaneEndpoint: ""
+kubernetesVersion: ` + kubernetesVersion + `
+nodes:
+- name: cp-1
+  address: ` + address + `
+  systemRole: control-plane
+  access:
+    method: agent
+    credentialRef: katlc-agent-token
+  kubeadmConfig:
+    ref: control-plane
+    path: /etc/katl/kubeadm/control-plane/config.yaml
+    intent: control-plane
+  kubernetesVersion: ` + kubernetesVersion + `
+`
+	return os.WriteFile(path, []byte(data), 0o644)
+}
+
+type operationBackedArtifacts struct {
+	Inventory           string `json:"inventory"`
+	Kubeconfig          string `json:"kubeconfig"`
+	KubeconfigMetadata  string `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout     string `json:"bootstrapStdout"`
+	BootstrapStderr     string `json:"bootstrapStderr"`
+	KubectlOutput       string `json:"kubectlOutput"`
+	EvidenceDir         string `json:"evidenceDir"`
+	BootSelectionBefore string `json:"bootSelectionBefore,omitempty"`
+	BootSelectionAfter  string `json:"bootSelectionAfter,omitempty"`
+	OperationRecord     string `json:"operationRecord,omitempty"`
+	OperationJournal    string `json:"operationJournal,omitempty"`
+	GenerationMetadata  string `json:"generationMetadata,omitempty"`
+}
+
+type operationBackedArtifactManifest struct {
+	VMTestRun                string                      `json:"vmtestRun,omitempty"`
+	WorldManifest            string                      `json:"worldManifest,omitempty"`
+	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
+	ControlPlaneRunDir       string                      `json:"controlPlaneRunDir"`
+	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
+	LaunchCommands           map[string]string           `json:"launchCommands,omitempty"`
+	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
+	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                      `json:"inventory"`
+	Kubeconfig               string                      `json:"kubeconfig"`
+	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                      `json:"bootstrapStdout"`
+	BootstrapStderr          string                      `json:"bootstrapStderr"`
+	KubectlOutput            string                      `json:"kubectlOutput"`
+	EvidenceDir              string                      `json:"evidenceDir"`
+	BootSelectionBefore      string                      `json:"bootSelectionBefore,omitempty"`
+	BootSelectionAfter       string                      `json:"bootSelectionAfter,omitempty"`
+	OperationRecord          string                      `json:"operationRecord,omitempty"`
+	OperationJournal         string                      `json:"operationJournal,omitempty"`
+	GenerationMetadata       string                      `json:"generationMetadata,omitempty"`
+	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
+	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
+	NetworkLeases            string                      `json:"networkLeases,omitempty"`
+	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
+}
+
+func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inputs operationBackedSmokeInputs, node vmtest.RunningInstalledRuntimeNode, artifacts operationBackedArtifacts) error {
+	nodes := []vmtest.RunningInstalledRuntimeNode{node}
+	return writeTwoNodeDiagnosticJSON(path, operationBackedArtifactManifest{
+		VMTestRun:              inputs.WorldProvenance.VMTestRun,
+		WorldManifest:          inputs.WorldProvenance.WorldManifest,
+		HostCapabilities:       inputs.WorldProvenance.HostCapabilities,
+		MkosiArtifactIndex:     inputs.WorldProvenance.MkosiArtifactIndex,
+		ControlPlaneRunDir:     node.Result.RunDir,
+		NodeScenarios:          nodeScenarioPaths(nodes),
+		NodeResults:            nodeResultPaths(nodes),
+		LaunchCommands:         launchCommandPaths(nodes),
+		DomainXMLs:             domainXMLPaths(nodes),
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
+		LibvirtLeases:          libvirtLeasePaths(nodes),
+		NodeDomains:            nodeDomainNames(nodes),
+		NodeMACs:               nodeMACAddresses(nodes),
+		NodeIPs:                nodeIPAddresses(nodes),
+		FixtureInputs: map[string]nodeFixtureInput{
+			"cp-1": fixtureInput(inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata),
+		},
+		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
+		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
+		Inventory:                artifacts.Inventory,
+		Kubeconfig:               artifacts.Kubeconfig,
+		KubeconfigMetadata:       artifacts.KubeconfigMetadata,
+		BootstrapStdout:          artifacts.BootstrapStdout,
+		BootstrapStderr:          artifacts.BootstrapStderr,
+		KubectlOutput:            artifacts.KubectlOutput,
+		EvidenceDir:              artifacts.EvidenceDir,
+		BootSelectionBefore:      artifacts.BootSelectionBefore,
+		BootSelectionAfter:       artifacts.BootSelectionAfter,
+		OperationRecord:          artifacts.OperationRecord,
+		OperationJournal:         artifacts.OperationJournal,
+		GenerationMetadata:       artifacts.GenerationMetadata,
+		KubectlDiagnostics:       kubectlDiagnosticPaths(result.RunDir),
+		SerialLogs:               serialLogPaths(nodes),
+		NetworkLeases:            inputs.WorldProvenance.NetworkLeaseFile,
+		Diagnostics:              diagnosticSummaryPaths(nodes),
+	})
+}
+
 type twoNodeArtifactManifest struct {
 	VMTestRun                string                      `json:"vmtestRun,omitempty"`
 	WorldManifest            string                      `json:"worldManifest,omitempty"`
@@ -668,6 +1114,515 @@ func assertBootstrapPhases(t *testing.T, output string) {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("katlctl output contains forbidden phase %q:\n%s", forbidden, output)
 		}
+	}
+}
+
+func assertOperationBackedBootstrapPhases(t *testing.T, output string) {
+	t.Helper()
+	for _, want := range []string{
+		"katlctl cluster bootstrap init-node=cp-1",
+		"phase=bootstrap-init node=cp-1 status=passed",
+		"phase=kubeconfig status=passed",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("katlctl output missing %q:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{
+		"--vmtest-transcript-dir",
+		"phase=worker-join",
+		"phase=control-plane-join",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("katlctl output contains forbidden operation-backed bootstrap text %q:\n%s", forbidden, output)
+		}
+	}
+}
+
+func readNodeFileWithRetry(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		data, err := readNodeFile(ctx, node, path, maxBytes)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32) ([]byte, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	result, err := client.ReadFile(opCtx, &vmtestpb.ReadFileRequest{
+		Path:      path,
+		MaxBytes:  maxBytes,
+		Sensitive: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.Truncated {
+		return nil, fmt.Errorf("guest file %s exceeded %d bytes", path, maxBytes)
+	}
+	return result.Content, nil
+}
+
+func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
+		Argv:        argv,
+		StdoutLimit: stdoutLimit,
+		StderrLimit: 32 << 10,
+	})
+}
+
+func assertGeneration0Selection(t *testing.T, data []byte) {
+	t.Helper()
+	var selection generation.BootSelectionRecord
+	if err := json.Unmarshal(data, &selection); err != nil {
+		t.Fatalf("decode initial boot selection: %v", err)
+	}
+	if selection.DefaultGenerationID != "0" ||
+		selection.TargetBootGenerationID != "" ||
+		selection.TrialGenerationID != "" ||
+		selection.PendingHealthValidation {
+		t.Fatalf("initial boot selection = %#v, want generation 0 persistent default with no pending transaction", selection)
+	}
+	if selection.PersistentDefaultPromotion != "" && selection.PersistentDefaultPromotion != generation.DefaultPromotionDone {
+		t.Fatalf("initial default promotion = %q, want empty or promoted", selection.PersistentDefaultPromotion)
+	}
+}
+
+func collectOperationBackedEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, operation.OperationRecord, error) {
+	result, err := runNodeCommand(ctx, node, []string{"find", "/var/lib/katl/operations", "-name", "record.json", "-print"}, 64<<10)
+	if err != nil {
+		return "", operation.OperationRecord{}, err
+	}
+	if result.ExitStatus != 0 {
+		return "", operation.OperationRecord{}, fmt.Errorf("find operation records exited %d: %s", result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
+	}
+	var selectedPath string
+	var selected operation.OperationRecord
+	var found []string
+	for _, path := range strings.Fields(string(result.Stdout)) {
+		data, err := readNodeFileWithRetry(ctx, node, path, 2<<20, 30*time.Second)
+		if err != nil {
+			return "", operation.OperationRecord{}, err
+		}
+		record, err := decodeOperationRecord(data)
+		if err != nil {
+			return "", operation.OperationRecord{}, fmt.Errorf("decode %s: %w", path, err)
+		}
+		found = append(found, record.OperationID+"="+record.OperationKind)
+		if err := os.WriteFile(filepath.Join(evidenceDir, "operation-record-"+firstString(record.OperationID, filepath.Base(filepath.Dir(path)))+".json"), data, 0o600); err != nil {
+			return "", operation.OperationRecord{}, err
+		}
+		if record.OperationKind != "bootstrap-init" {
+			continue
+		}
+		if selectedPath != "" {
+			return "", operation.OperationRecord{}, fmt.Errorf("multiple bootstrap-init records found: %s and %s", selectedPath, path)
+		}
+		selectedPath = path
+		selected = record
+	}
+	if selectedPath == "" {
+		return "", operation.OperationRecord{}, fmt.Errorf("bootstrap-init operation record not found; found records: %s", strings.Join(found, ", "))
+	}
+	hostRecord := filepath.Join(evidenceDir, "bootstrap-init-record.json")
+	data, err := readNodeFileWithRetry(ctx, node, selectedPath, 2<<20, 30*time.Second)
+	if err != nil {
+		return "", operation.OperationRecord{}, err
+	}
+	if err := os.WriteFile(hostRecord, data, 0o600); err != nil {
+		return "", operation.OperationRecord{}, err
+	}
+	selected, err = decodeOperationRecord(data)
+	if err != nil {
+		return "", operation.OperationRecord{}, fmt.Errorf("decode selected operation record: %w", err)
+	}
+	if err := collectOperationJournalEvidence(ctx, node, evidenceDir, selected.OperationID); err != nil {
+		return "", operation.OperationRecord{}, err
+	}
+	if err := collectOperationDiagnosticArtifacts(ctx, node, evidenceDir, selected); err != nil {
+		return "", operation.OperationRecord{}, err
+	}
+	return hostRecord, selected, nil
+}
+
+func collectOperationBackedFailureEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) {
+	hostRecord, record, err := collectOperationBackedEvidence(ctx, node, evidenceDir)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(evidenceDir, "operation-evidence-error.txt"), []byte(err.Error()+"\n"), 0o644)
+		return
+	}
+	if record.CandidateGenerationID != "" {
+		_, _, _ = collectGenerationEvidence(ctx, node, evidenceDir, record.CandidateGenerationID)
+	}
+	_, _, _ = collectBootSelectionEvidence(ctx, node, evidenceDir)
+	_ = os.WriteFile(filepath.Join(evidenceDir, "failure-evidence-manifest.txt"), []byte(hostRecord+"\n"), 0o644)
+}
+
+func decodeOperationRecord(data []byte) (operation.OperationRecord, error) {
+	var record operation.OperationRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return operation.OperationRecord{}, err
+	}
+	if record.Kind == operation.RecordKind {
+		return record, nil
+	}
+	var snapshot struct {
+		Record operation.OperationRecord `json:"record"`
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return operation.OperationRecord{}, err
+	}
+	return snapshot.Record, nil
+}
+
+func collectOperationJournalEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, operationID string) error {
+	journalDir := "/var/lib/katl/operations/" + operationID + "/journal"
+	result, err := runNodeCommand(ctx, node, []string{"find", journalDir, "-type", "f", "-name", "*.json", "-print"}, 256<<10)
+	if err != nil {
+		return err
+	}
+	if result.ExitStatus != 0 {
+		return fmt.Errorf("find operation journal exited %d: %s", result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
+	}
+	paths := strings.Fields(string(result.Stdout))
+	if len(paths) == 0 {
+		return fmt.Errorf("operation %s journal has no events", operationID)
+	}
+	manifestPath := filepath.Join(evidenceDir, "operation-journal-files.txt")
+	if err := os.WriteFile(manifestPath, []byte(strings.Join(paths, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	hostDir := filepath.Join(evidenceDir, "operation-journal")
+	if err := os.MkdirAll(hostDir, 0o755); err != nil {
+		return err
+	}
+	for _, guestPath := range paths {
+		data, err := readNodeFileWithRetry(ctx, node, guestPath, 2<<20, 30*time.Second)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(hostDir, filepath.Base(guestPath)), data, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectOperationDiagnosticArtifacts(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, record operation.OperationRecord) error {
+	if len(record.DiagnosticArtifacts) == 0 {
+		return nil
+	}
+	hostDir := filepath.Join(evidenceDir, "operation-diagnostics")
+	if err := os.MkdirAll(hostDir, 0o755); err != nil {
+		return err
+	}
+	for _, artifact := range record.DiagnosticArtifacts {
+		if !artifact.Redacted {
+			return fmt.Errorf("diagnostic artifact %s is not marked redacted", artifact.ArtifactID)
+		}
+		if strings.TrimSpace(artifact.ArtifactID) == "" || strings.TrimSpace(artifact.Path) == "" {
+			return fmt.Errorf("diagnostic artifact is missing id or path: %#v", artifact)
+		}
+		guestPath := "/var/lib/katl/operations/" + record.OperationID + "/" + filepath.ToSlash(artifact.Path)
+		data, err := readNodeFileWithRetry(ctx, node, guestPath, 2<<20, 30*time.Second)
+		if err != nil {
+			return err
+		}
+		name := artifact.ArtifactID + filepath.Ext(artifact.Path)
+		if err := os.WriteFile(filepath.Join(hostDir, name), data, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func assertOperationBackedRecord(t *testing.T, record operation.OperationRecord, endpoint string) {
+	t.Helper()
+	if record.OperationKind != "bootstrap-init" ||
+		record.ExpectedCurrentGenerationID != "0" ||
+		record.CandidateGenerationID == "" ||
+		record.CandidateGenerationID == "0" {
+		t.Fatalf("operation identity = kind %q current %q candidate %q", record.OperationKind, record.ExpectedCurrentGenerationID, record.CandidateGenerationID)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != operation.HostBookkeepingCompletionPhase {
+		t.Fatalf("operation terminal state = terminal %v result %q phase %q failure %q", record.Terminal, record.Result, record.Phase, record.FailureReason)
+	}
+	if record.ActivationState != operation.ActivationStateActiveLive ||
+		record.GenerationCommitState != operation.GenerationCommitCommitted ||
+		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
+		!record.BootHealthPending {
+		t.Fatalf("operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
+	}
+	if record.BootstrapRequest == nil ||
+		record.BootstrapRequest.InventoryNodeName != "cp-1" ||
+		record.BootstrapRequest.SystemRole != "control-plane" ||
+		record.BootstrapRequest.ControlPlaneEndpoint != endpoint {
+		t.Fatalf("bootstrap request = %#v, want cp-1 control-plane endpoint %s", record.BootstrapRequest, endpoint)
+	}
+	if record.ExecutorPlan == nil ||
+		record.ExecutorPlan.Phase != "kubeadm-init" ||
+		!stringSliceEqual(record.ExecutorPlan.Argv, []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}) {
+		t.Fatalf("executor plan = %#v, want kubeadm init through katlc agent executor", record.ExecutorPlan)
+	}
+	if !record.ExternalMutationStarted || !record.MutatingToolRan || len(record.PreExecMutationMarkers) == 0 {
+		t.Fatalf("mutation tracking = external %v tool %v markers %d", record.ExternalMutationStarted, record.MutatingToolRan, len(record.PreExecMutationMarkers))
+	}
+	if !containsAllStrings(record.ResourceLocks, "generation-state.lock", "kubeadm-state.lock") {
+		t.Fatalf("resource locks = %#v", record.ResourceLocks)
+	}
+	if !containsAllStrings(record.MutationScopes, "etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects") {
+		t.Fatalf("mutation scopes = %#v", record.MutationScopes)
+	}
+	if !containsAllStrings(record.CompletedPhases, "accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-init", "post-kubeadm-health", operation.HostBookkeepingCompletionPhase) {
+		t.Fatalf("completed phases = %#v", record.CompletedPhases)
+	}
+	if !phaseOrder(record.CompletedPhases, "accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-init", "post-kubeadm-health", operation.HostBookkeepingCompletionPhase) {
+		t.Fatalf("completed phases out of order = %#v", record.CompletedPhases)
+	}
+	if !hasSuccessfulInvocation(record.Invocations, "/usr/bin/kubeadm", "init") {
+		t.Fatalf("invocations missing successful kubeadm init: %#v", record.Invocations)
+	}
+	if len(record.DiagnosticArtifacts) == 0 {
+		t.Fatalf("operation diagnostic artifacts are missing")
+	}
+	for _, artifact := range record.DiagnosticArtifacts {
+		if !artifact.Redacted {
+			t.Fatalf("diagnostic artifact %s is not marked redacted", artifact.ArtifactID)
+		}
+	}
+}
+
+func assertOperationJournalOrder(t *testing.T, evidenceDir string, events ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(evidenceDir, "operation-journal"))
+	if err != nil {
+		t.Fatalf("read operation journal evidence: %v", err)
+	}
+	positions := make(map[string]int)
+	for i, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		for _, event := range events {
+			if strings.HasSuffix(name, "."+event+".json") {
+				positions[event] = i
+			}
+		}
+	}
+	last := -1
+	for _, event := range events {
+		position, ok := positions[event]
+		if !ok {
+			t.Fatalf("operation journal missing event %q in %v", event, positions)
+		}
+		if position <= last {
+			t.Fatalf("operation journal event %q is out of order: %v", event, positions)
+		}
+		last = position
+	}
+}
+
+func phaseOrder(phases []string, wants ...string) bool {
+	last := -1
+	for _, want := range wants {
+		found := -1
+		for i, phase := range phases {
+			if phase == want {
+				found = i
+				break
+			}
+		}
+		if found <= last {
+			return false
+		}
+		last = found
+	}
+	return true
+}
+
+type operationBackedGenerationRecord struct {
+	Spec   generation.GenerationSpec   `json:"spec"`
+	Status generation.GenerationStatus `json:"status"`
+}
+
+func collectGenerationEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir, generationID string) (string, operationBackedGenerationRecord, error) {
+	specData, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/generations/"+generationID+"/spec.json", 2<<20, 30*time.Second)
+	if err != nil {
+		return "", operationBackedGenerationRecord{}, err
+	}
+	statusData, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/generations/"+generationID+"/status.json", 2<<20, 30*time.Second)
+	if err != nil {
+		return "", operationBackedGenerationRecord{}, err
+	}
+	var record operationBackedGenerationRecord
+	if err := json.Unmarshal(specData, &record.Spec); err != nil {
+		return "", operationBackedGenerationRecord{}, fmt.Errorf("decode generation spec: %w", err)
+	}
+	if err := json.Unmarshal(statusData, &record.Status); err != nil {
+		return "", operationBackedGenerationRecord{}, fmt.Errorf("decode generation status: %w", err)
+	}
+	hostPath := filepath.Join(evidenceDir, "generation-"+generationID+".json")
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", operationBackedGenerationRecord{}, err
+	}
+	if err := os.WriteFile(hostPath, append(data, '\n'), 0o600); err != nil {
+		return "", operationBackedGenerationRecord{}, err
+	}
+	return hostPath, record, nil
+}
+
+func assertCommittedGeneration(t *testing.T, record operationBackedGenerationRecord, generationID string) {
+	t.Helper()
+	if record.Spec.GenerationID != generationID || record.Status.GenerationID != generationID {
+		t.Fatalf("generation IDs = spec %q status %q want %q", record.Spec.GenerationID, record.Status.GenerationID, generationID)
+	}
+	if record.Status.CommitState != generation.CommitStateCommitted ||
+		record.Status.BootState != generation.BootStateTrying ||
+		record.Status.HealthState != generation.HealthStateUnknown ||
+		record.Status.CommittedAt == nil ||
+		record.Status.CommittedByOperation == "" {
+		t.Fatalf("generation status = %#v, want committed trying with deferred boot health", record.Status)
+	}
+	if record.Spec.PreviousGenerationID != "0" {
+		t.Fatalf("generation previous ID = %q, want 0", record.Spec.PreviousGenerationID)
+	}
+	if len(record.Spec.Sysexts) == 0 || len(record.Spec.Confexts) == 0 {
+		t.Fatalf("generation spec missing sysext/confext refs: sysexts=%d confexts=%d", len(record.Spec.Sysexts), len(record.Spec.Confexts))
+	}
+	if record.Spec.Boot.LoaderEntryPath != "loader/entries/katl-"+generationID+".conf" {
+		t.Fatalf("loader entry = %q, want generation %s loader entry", record.Spec.Boot.LoaderEntryPath, generationID)
+	}
+}
+
+func collectBootSelectionEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, generation.BootSelectionRecord, error) {
+	data, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/boot/selection.json", 128<<10, 30*time.Second)
+	if err != nil {
+		return "", generation.BootSelectionRecord{}, err
+	}
+	var selection generation.BootSelectionRecord
+	if err := json.Unmarshal(data, &selection); err != nil {
+		return "", generation.BootSelectionRecord{}, fmt.Errorf("decode boot selection: %w", err)
+	}
+	hostPath := filepath.Join(evidenceDir, "boot-selection-after.json")
+	if err := os.WriteFile(hostPath, data, 0o600); err != nil {
+		return "", generation.BootSelectionRecord{}, err
+	}
+	return hostPath, selection, nil
+}
+
+func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate string) {
+	t.Helper()
+	if selection.DefaultGenerationID != "0" ||
+		selection.TargetBootGenerationID != candidate ||
+		selection.TrialGenerationID != candidate ||
+		selection.PreviousKnownGoodGenerationID != "0" ||
+		selection.Generation0FallbackID != "0" ||
+		!selection.PendingHealthValidation ||
+		selection.PersistentDefaultPromotion != generation.DefaultPromotionPending {
+		t.Fatalf("post-bootstrap selection = %#v, want generation %s armed for boot health with gen0 fallback", selection, candidate)
+	}
+	if selection.PendingTransactionID == "" ||
+		selection.TargetBootEntry != "loader/entries/katl-"+candidate+".conf" ||
+		selection.TrialBootEntry != selection.TargetBootEntry {
+		t.Fatalf("post-bootstrap boot transaction = %#v", selection)
+	}
+}
+
+func containsAllStrings(values []string, wants ...string) bool {
+	for _, want := range wants {
+		found := false
+		for _, value := range values {
+			if value == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasSuccessfulInvocation(invocations []operation.InvocationRecord, argv ...string) bool {
+	for _, invocation := range invocations {
+		if invocation.ExitStatus != 0 {
+			continue
+		}
+		if len(invocation.ChildProcess) < len(argv) {
+			continue
+		}
+		matched := true
+		for i, want := range argv {
+			if invocation.ChildProcess[i] != want {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func assertKubeconfigOutput(t *testing.T, kubeconfigPath, metadataPath, server string) {
+	t.Helper()
+	var metadata kubeconfigMetadata
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("read kubeconfig metadata: %v", err)
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode kubeconfig metadata: %v", err)
+	}
+	if metadata.Path != kubeconfigPath || !metadata.Exists || metadata.SizeBytes == 0 || metadata.Mode != "0600" || metadata.StatError != "" {
+		t.Fatalf("kubeconfig metadata = %#v", metadata)
+	}
+	kubeconfig, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		t.Fatalf("read kubeconfig: %v", err)
+	}
+	if !strings.Contains(string(kubeconfig), "server: "+server) {
+		t.Fatalf("kubeconfig does not target %s", server)
 	}
 }
 

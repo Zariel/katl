@@ -64,7 +64,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 				SHA256:           digest(sysextPayload),
 				SizeBytes:        uint64(len(sysextPayload)),
 				PayloadVersion:   "v1.36.1",
-				ActivationPath:   "/run/extensions/kubernetes.raw",
+				ActivationPath:   "/run/extensions/katl-kubernetes.raw",
 				Architecture:     "x86_64",
 				RuntimeInterface: "katl-runtime-1",
 			},
@@ -92,11 +92,12 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), "RequiresMountsFor=/var/lib/containerd")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), "Requires=containerd.service etc-kubernetes.mount")
-	assertSymlink(t, filepath.Join(root, "run/extensions/kubernetes.raw"), "/var/lib/katl/generations/1/sysext/kubernetes.raw")
+	assertSymlink(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/1/sysext/katl-kubernetes.raw")
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +184,7 @@ func preparePlan(t *testing.T, root string) bootstrapplan.Plan {
 				SHA256:           digest(sysextPayload),
 				SizeBytes:        uint64(len(sysextPayload)),
 				PayloadVersion:   "v1.36.1",
-				ActivationPath:   "/run/extensions/kubernetes.raw",
+				ActivationPath:   "/run/extensions/katl-kubernetes.raw",
 				Architecture:     "x86_64",
 				RuntimeInterface: "katl-runtime-1",
 			},
@@ -232,7 +233,7 @@ func writeGenerationZero(t *testing.T, root string) (generation.GenerationSpec, 
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "fedora",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},

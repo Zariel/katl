@@ -33,6 +33,9 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	if err != nil {
 		return RunningInstalledRuntimeNode{}, err
 	}
+	if err := ensureInstalledRuntimeNodeDirs(result); err != nil {
+		return RunningInstalledRuntimeNode{}, err
+	}
 	started := time.Now().UTC()
 	fail := func(err error) (RunningInstalledRuntimeNode, error) {
 		if writeErr := writeInstalledRuntimeNodeResult(result, StatusFailed, err.Error(), started); writeErr != nil {
@@ -156,13 +159,7 @@ func writeInstalledRuntimeNodeResult(result Result, status Status, failure strin
 	}
 	result.FailureSummary = failure
 	result.addPhase("installed-runtime-node-start", status, failure, started, finished)
-	if err := os.MkdirAll(result.VMDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(result.ManifestDir, 0o755); err != nil {
+	if err := ensureInstalledRuntimeNodeDirs(result); err != nil {
 		return err
 	}
 	if err := writeJSON(result.Artifacts.Scenario, scenarioRecord{
@@ -176,6 +173,19 @@ func writeInstalledRuntimeNodeResult(result Result, status Status, failure strin
 		return err
 	}
 	return writeJSON(result.Artifacts.Result, result)
+}
+
+func ensureInstalledRuntimeNodeDirs(result Result) error {
+	if err := os.MkdirAll(result.VMDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.ManifestDir, 0o755); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (n RunningInstalledRuntimeNode) Stop() error {
