@@ -662,6 +662,104 @@ func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 	}
 }
 
+func TestVMTestRunRemovesPassedRunDirByDefault(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run-default-cleanup")
+
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_RUN_ID=run-default-cleanup",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	env = removeEnv(env, "KATL_VMTEST_KEEP")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "vmtest run dir removed: "+runDir) {
+		t.Fatalf("output missing cleanup message:\n%s", output)
+	}
+	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run dir exists after passed cleanup: %v", err)
+	}
+}
+
+func TestVMTestRunKeepNeverRemovesFailedRunDir(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run-failed-cleanup")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_EXIT=7",
+		"KATL_VMTEST_KEEP=never",
+		"KATL_VMTEST_RUN_ID=run-failed-cleanup",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 7 {
+		t.Fatalf("vmtest-run exit = %v, want 7\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "vmtest run dir removed: "+runDir) {
+		t.Fatalf("output missing cleanup message:\n%s", output)
+	}
+	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run dir exists after failed cleanup: %v", err)
+	}
+}
+
+func TestVMTestRunKeepsFailedRunDirByDefault(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run-failed-kept")
+
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_EXIT=7",
+		"KATL_VMTEST_RUN_ID=run-failed-kept",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	env = removeEnv(env, "KATL_VMTEST_KEEP")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 7 {
+		t.Fatalf("vmtest-run exit = %v, want 7\n%s", err, output)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Status != "failed" {
+		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+}
+
 func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -979,6 +1077,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.imageTool), "prebuilt-artifacts.json"),
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
+		"KATL_VMTEST_KEEP=always",
 		"PATH="+filepath.Dir(tools.imageTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return append(env, extra...)

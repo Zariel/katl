@@ -37,6 +37,7 @@ Katl produces and maintains KatlOS: an installable, upgradeable, systemd-native 
 - Changes to disk layout, boot flow, update flow, or kubeadm state handling need tests or an explicit note explaining the remaining gap.
 - `go test ./...` is the baseline unit/golden gate, not proof that enabled VM, boot, install, update, or kubeadm flows ran.
 - Changes that affect `scripts/vmtest-run`, `scripts/vmtest-exec`, VM test worlds, VM scenarios, fixture generation, boot/install/update behavior, or kubeadm smoke behavior must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If the current host cannot run it, record the exact host capability gap and the exact `scripts/vmtest-run` command that still needs to run.
+- VM test output can be large. Use delete-on-success retention for routine gates, keep `/tmp/katl-vmtest` output only while it is needed for debugging, and remove retained run directories once they are no longer useful.
 
 ## Naming
 
