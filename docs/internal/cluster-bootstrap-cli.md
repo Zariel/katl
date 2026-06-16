@@ -491,6 +491,96 @@ attempts and records diagnostics. It must not automatically rerun `kubeadm
 init`, rerun `kubeadm join`, refresh expired join material, or continue
 multi-node rollout ordering after power loss.
 
+### Day-One Failure Contract
+
+Day-one bootstrap supports inspectable failure and operator-mediated
+re-attempt. It does not support automated repair, automated rebuild, or hidden
+cleanup of kubeadm, kubelet, etcd, or Kubernetes API state.
+
+For `bootstrap-init` and `bootstrap-join-worker`, every accepted operation must
+record enough state for an operator to decide whether a new attempt is safe:
+
+```text
+operation id and parent operation id, when retrying
+operation kind: bootstrap-init or bootstrap-join-worker
+request digest and redacted bootstrap request summary
+expected current generation and candidate generation, when rendered
+phase plan, current phase, completed phases, and terminal result
+pre-exec mutation marker before each kubeadm invocation
+mutation scopes that may have been touched
+whether external mutation started or a mutating tool ran
+redacted invocation summaries and diagnostic artifact paths
+retryHint and nextAction for operator-visible status
+```
+
+Pre-mutation failure means no kubeadm, kubelet, etcd, or Kubernetes API
+mutation boundary was crossed. Typical examples are rejected input, missing
+cluster intent, unreachable node agent, profile/rendering failure, artifact
+validation failure, or candidate generation rendering failure before kubeadm is
+started. If the request is rejected before an operation is accepted, no
+`OperationRecord` is created. If an accepted operation fails before mutation, it
+uses the existing operation result vocabulary such as `timed-out` or
+`failed-needs-repair`, and `mutationScopes[]`, `preExecMutationMarkers[]`,
+`externalMutationStarted`, and `mutatingToolRan` must prove that no external
+bootstrap mutation happened. Generation 0 remains the persistent boot target. A
+re-attempt is allowed after operator action fixes the cause, such as updating
+config, cluster intent, artifacts, network reachability, bootstrap profile
+input, or agent credentials. The re-attempt is a new operation with its own
+operation id and request digest unless the exact same request digest is being
+retried.
+
+Post-mutation failure means kubeadm, kubelet, etcd, or Kubernetes API state may
+have changed. The operation must end `failed-needs-repair` or another terminal
+state with `recoveryRequired=true`; it must preserve mutation markers,
+diagnostic artifacts, and the touched mutation scopes. Host generation rollback
+or reboot may make generation 0 reachable again, but it must not claim to undo
+`/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, bootstrap tokens, static
+pods, or API objects. A re-attempt is allowed only after the operator inspects
+the preserved evidence and changes the relevant input or environment, or
+chooses an explicit repair/retry workflow once that workflow exists. Day-one
+Katl must refuse automatic replay of post-mutation and ambiguous records.
+
+Generation 0 reachability is the day-one escape hatch, not a Kubernetes repair
+mechanism:
+
+```text
+rollback: select generation 0 as the host boot target when boot selection and
+  boot health state allow it
+reboot: return to the currently selected healthy generation when no candidate
+  boot target was committed
+reinstall: wipe/reinstall the node when local Kubernetes state is too uncertain
+  for supported day-one retry
+```
+
+Operator status must expose enough evidence without requiring shell access:
+
+```text
+KatlcAgent.GetNodeStatus over TCP gRPC
+KatlcAgent.GetOperation over TCP gRPC
+KatlcAgent.WatchOperation over TCP gRPC
+katlctl cluster bootstrap status, backed by the agent API
+redacted diagnostic artifact names and paths
+```
+
+Local `katlc` debug commands, if present later, are break-glass wrappers around
+the same agent API. They are not the normal operator UX and must not create a
+second supported operation status path.
+
+Normal output and records must show the blocking check and the expected operator
+action, but must not include raw bootstrap tokens, discovery tokens,
+kubeconfigs, certificate keys, bearer tokens, or client private key material.
+
+Explicitly deferred to day two:
+
+```text
+automatic kubeadm reset or cleanup
+automatic etcd repair or member removal
+automatic control-plane rebuild
+ambiguous post-mutation recovery
+clearing recoveryRequired without a recorded repair or retry operation
+destructive wipe/reinstall as an implicit retry side effect
+```
+
 ## Failure Diagnostics
 
 On failure, collect redacted diagnostics:
