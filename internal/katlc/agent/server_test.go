@@ -358,6 +358,56 @@ func TestGetOperationHonorsDiagnosticsMode(t *testing.T) {
 	}
 }
 
+func TestGetOperationCanReturnBootstrapKubeconfigOutput(t *testing.T) {
+	server := newTestServer(t)
+	record := createAgentOperation(t, server.Store, "op-kubeconfig")
+	completedAt := server.Now()
+	record, err := server.Store.Update(record.OperationID, "complete", "terminal", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Terminal = true
+		record.Result = operation.ResultSucceeded
+		record.CompletedAt = &completedAt
+		return record, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubeconfig := `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: ca-data
+  name: kubernetes
+users:
+- name: kubernetes-admin
+  user:
+    client-certificate-data: cert-data
+    client-key-data: key-data
+`
+	if err := os.MkdirAll(filepath.Join(server.Root, "etc/kubernetes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(server.Root, "etc/kubernetes/admin.conf"), []byte(kubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	normal, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{OperationId: record.OperationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normal.AdminKubeconfig != "" {
+		t.Fatalf("normal admin kubeconfig = %q, want empty", normal.AdminKubeconfig)
+	}
+	output, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{
+		OperationId:        record.OperationID,
+		IncludeDiagnostics: "bootstrap-output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.AdminKubeconfig != kubeconfig {
+		t.Fatalf("admin kubeconfig = %q, want fixture", output.AdminKubeconfig)
+	}
+}
+
 func TestWatchOperationWaitsForJournalUpdate(t *testing.T) {
 	server := newTestServer(t)
 	record := createAgentOperation(t, server.Store, "op-watch")

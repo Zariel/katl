@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/bootstrap/kubeconfig"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
@@ -27,15 +28,14 @@ const (
 	agentExpectedGeneration0ID = "0"
 )
 
-var ErrAgentKubeconfigUnsupported = errors.New("operation-backed kubeconfig export requires katlc agent API support")
-
 type AgentBootstrapDependencies struct {
-	Connector     AgentConnector
-	Actor         string
-	Now           func() time.Time
-	WatchTimeout  time.Duration
-	PollInterval  time.Duration
-	OperationWait time.Duration
+	Connector       AgentConnector
+	Actor           string
+	Now             func() time.Time
+	WatchTimeout    time.Duration
+	PollInterval    time.Duration
+	OperationWait   time.Duration
+	BootstrapRunner BootstrapRunner
 }
 
 type AgentConnector interface {
@@ -133,8 +133,8 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	if err != nil {
 		return result, err
 	}
-	if bootstrap.enabled() {
-		return result, fmt.Errorf("operation-backed user bootstrap is not supported until katlc exposes bootstrap kubeconfig output")
+	if bootstrap.enabled() && deps.BootstrapRunner == nil {
+		return result, errors.New("bootstrap handoff runner is required")
 	}
 	if err := validateAgentPlan(plan); err != nil {
 		return result, err
@@ -162,17 +162,54 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, err
 	}
 	status := statuses[initNode.Name]
-	accepted, final, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
+	credentials, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
 	if err != nil {
 		result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed")
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
-	_ = accepted
-	_ = final
 	result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed")
-	result.NextStep = "katlc agent accepted bootstrap-init; kubeconfig export is pending agent API support"
-	result.addPhase("kubeconfig", "", "", "failed")
-	return result, ErrAgentKubeconfigUnsupported
+	stableEndpointReady := false
+	if bootstrap.enabled() {
+		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
+			Server:         bootstrapServer(initNode, plan),
+			StableEndpoint: bootstrap.StableEndpoint,
+			Credentials:    credentials,
+			PreWaits:       bootstrap.preWaits(),
+			Manifests:      bootstrap.Manifests,
+			Waits:          bootstrap.waitsWithEndpoint(),
+		})
+		if err != nil {
+			result.addPhase("user-bootstrap", "", "", "failed")
+			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
+		}
+		result.Bootstrap = bootstrapResult
+		stableEndpointReady = bootstrapResult.StableEndpointReady
+		result.addPhase("user-bootstrap", "", "", "passed")
+	}
+	kubeconfigResult, err := kubeconfig.Write(kubeconfig.Request{
+		Path:      request.KubeconfigOut,
+		Overwrite: request.OverwriteKubeconfig,
+		Endpoint: kubeconfig.EndpointSelection{
+			InitialEndpoint:      endpointForNode(initNode),
+			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
+			StableEndpoint:       bootstrap.StableEndpoint,
+			StableEndpointReady:  stableEndpointReady,
+		},
+		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
+		ContextName:              valueOrDefault(request.ContextName, "katl"),
+		UserName:                 valueOrDefault(request.UserName, "katl-admin"),
+		CertificateAuthorityData: credentials.CertificateAuthorityData,
+		ClientCertificateData:    credentials.ClientCertificateData,
+		ClientKeyData:            credentials.ClientKeyData,
+	})
+	if err != nil {
+		result.addPhase("kubeconfig", "", "", "failed")
+		return result, err
+	}
+	result.Kubeconfig = kubeconfigResult
+	result.NextStep = kubeconfigResult.NextStep()
+	result.addPhase("kubeconfig", "", "", "passed")
+	return result, nil
 }
 
 func validateAgentPlan(plan inventory.Plan) error {
@@ -243,28 +280,36 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 	return report
 }
 
-func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) (*agentapi.OperationAccepted, *agentapi.OperationStatus, error) {
+func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) (AdminCredentials, error) {
 	conn, err := deps.Connector.Connect(ctx, node)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect to katlc agent: %w", err)
+		return AdminCredentials{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
 	req := bootstrapInitRequest(node, plan, status, deps)
 	accepted, err := conn.Client.SubmitOperation(ctx, req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("submit operation: %w", err)
+		return AdminCredentials{}, fmt.Errorf("submit operation: %w", err)
 	}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
-		return accepted, nil, err
+		return AdminCredentials{}, err
 	}
 	if !final.GetTerminal() {
-		return accepted, final, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
+		return AdminCredentials{}, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
 	}
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
-		return accepted, final, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
+		return AdminCredentials{}, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
-	return accepted, final, nil
+	output, err := conn.Client.GetOperation(ctx, &agentapi.GetOperationRequest{
+		OperationId:           accepted.GetOperationId(),
+		ExpectedRequestDigest: accepted.GetRequestDigest(),
+		IncludeDiagnostics:    "bootstrap-output",
+	})
+	if err != nil {
+		return AdminCredentials{}, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
+	}
+	return parseAdminCredentials([]byte(output.GetAdminKubeconfig()))
 }
 
 func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {

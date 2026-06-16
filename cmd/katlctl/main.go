@@ -290,8 +290,9 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 
 func agentBootstrapDependencies(token string) cluster.AgentBootstrapDependencies {
 	return cluster.AgentBootstrapDependencies{
-		Connector: cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token)},
-		Actor:     "katlctl cluster bootstrap",
+		Connector:       cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token)},
+		Actor:           "katlctl cluster bootstrap",
+		BootstrapRunner: cluster.KubectlBootstrapRunner{},
 	}
 }
 

@@ -226,11 +226,19 @@ func (s *Server) GetOperation(ctx context.Context, req *agentapi.GetOperationReq
 	if strings.TrimSpace(req.ExpectedRequestDigest) != "" && record.RequestDigest != req.ExpectedRequestDigest {
 		return nil, status.Error(codes.FailedPrecondition, "operation requestDigest does not match expectedRequestDigest")
 	}
-	diagnostics, err := includeDiagnostics(req.IncludeDiagnostics)
+	options, err := responseOptions(req.IncludeDiagnostics)
 	if err != nil {
 		return nil, err
 	}
-	return operationStatus(record, diagnostics), nil
+	status := operationStatus(record, options.Diagnostics)
+	if options.BootstrapOutput {
+		kubeconfig, err := s.adminKubeconfigOutput(record)
+		if err != nil {
+			return nil, err
+		}
+		status.AdminKubeconfig = kubeconfig
+	}
+	return status, nil
 }
 
 func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agentapi.KatlcAgent_WatchOperationServer) error {
@@ -244,7 +252,7 @@ func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agen
 	if strings.TrimSpace(req.ExpectedRequestDigest) != "" && record.RequestDigest != req.ExpectedRequestDigest {
 		return status.Error(codes.FailedPrecondition, "operation requestDigest does not match expectedRequestDigest")
 	}
-	include, err := includeDiagnostics(req.IncludeDiagnostics)
+	options, err := responseOptions(req.IncludeDiagnostics)
 	if err != nil {
 		return err
 	}
@@ -270,7 +278,7 @@ func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agen
 			return status.Errorf(codes.NotFound, "read operation: %v", err)
 		}
 		for _, event := range events {
-			if err := stream.Send(operationEvent(event, include)); err != nil {
+			if err := stream.Send(operationEvent(event, options.Diagnostics)); err != nil {
 				return err
 			}
 			afterSeq = event.Sequence
@@ -533,6 +541,27 @@ func (s *Server) validateExpectedClusterIntentDigest(expected string) error {
 	return nil
 }
 
+func (s *Server) adminKubeconfigOutput(record operation.OperationRecord) (string, error) {
+	if record.OperationKind != "bootstrap-init" {
+		return "", status.Error(codes.FailedPrecondition, "admin kubeconfig output is only available for bootstrap-init operations")
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded {
+		return "", status.Error(codes.FailedPrecondition, "admin kubeconfig output requires a successful terminal bootstrap-init operation")
+	}
+	root := strings.TrimSpace(s.Root)
+	if root == "" {
+		root = "/"
+	}
+	data, err := os.ReadFile(filepath.Join(root, "etc/kubernetes/admin.conf"))
+	if err != nil {
+		return "", status.Errorf(codes.FailedPrecondition, "read admin kubeconfig output: %v", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", status.Error(codes.FailedPrecondition, "admin kubeconfig output is empty")
+	}
+	return string(data), nil
+}
+
 func operationStatus(record operation.OperationRecord, includeDiagnostics bool) *agentapi.OperationStatus {
 	diagnostics := make([]*agentapi.DiagnosticArtifact, 0, len(record.DiagnosticArtifacts))
 	if includeDiagnostics {
@@ -751,14 +780,21 @@ func diagnosticArtifacts(record operation.OperationRecord) []*agentapi.Diagnosti
 	return diagnostics
 }
 
-func includeDiagnostics(value string) (bool, error) {
+type operationResponseOptions struct {
+	Diagnostics     bool
+	BootstrapOutput bool
+}
+
+func responseOptions(value string) (operationResponseOptions, error) {
 	switch strings.TrimSpace(value) {
 	case "", "normal":
-		return false, nil
+		return operationResponseOptions{}, nil
 	case "verbose":
-		return true, nil
+		return operationResponseOptions{Diagnostics: true}, nil
+	case "bootstrap-output":
+		return operationResponseOptions{BootstrapOutput: true}, nil
 	default:
-		return false, status.Error(codes.InvalidArgument, "includeDiagnostics must be normal or verbose")
+		return operationResponseOptions{}, status.Error(codes.InvalidArgument, "includeDiagnostics must be normal, verbose, or bootstrap-output")
 	}
 }
 

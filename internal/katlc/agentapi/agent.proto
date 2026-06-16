@@ -91,6 +91,7 @@ message OperationStatus {
   string generation_commit_state = 22;
   string post_kubeadm_health_state = 23;
   bool boot_health_pending = 24;
+  string admin_kubeconfig = 25;
 }
 
 message DiagnosticArtifact {

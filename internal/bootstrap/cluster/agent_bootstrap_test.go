@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -103,12 +104,19 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 				Result:      "succeeded",
 			},
 		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
 	}
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
+	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
 		Inventory:            validSingleNodeInventory(),
 		ControlPlaneEndpoint: "api.katl.test:6443",
-		KubeconfigOut:        "operator.conf",
+		KubeconfigOut:        out,
 		OverwriteKubeconfig:  true,
 	}, AgentBootstrapDependencies{
 		Connector:    connector,
@@ -116,8 +124,8 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 		Now:          func() time.Time { return time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC) },
 		WatchTimeout: time.Second,
 	})
-	if !errors.Is(err, ErrAgentKubeconfigUnsupported) {
-		t.Fatalf("RunAgentBootstrap() error = %v, want ErrAgentKubeconfigUnsupported", err)
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
@@ -132,8 +140,61 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	if req.Bootstrap.InventoryNodeName != "cp-1" || req.Bootstrap.ControlPlaneEndpoint != "api.katl.test:6443" || req.Bootstrap.BootstrapProfileRef != "control-plane" {
 		t.Fatalf("bootstrap request = %#v", req.Bootstrap)
 	}
-	if !strings.Contains(result.NextStep, "kubeconfig export is pending") {
-		t.Fatalf("next step = %q", result.NextStep)
+	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://api.katl.test:6443" {
+		t.Fatalf("kubeconfig result = %#v", result.Kubeconfig)
+	}
+}
+
+func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) {
+	client := &fakeAgentClient{
+		status: readyAgentStatus("machine-cp-1"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-1",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-init-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
+	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           validSingleNodeInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+		Bootstrap: UserBootstrap{
+			StableEndpoint: "api.stable.test:6443",
+			Manifests: []BootstrapManifest{{
+				Path:    "cni.yaml",
+				Content: []byte(validBootstrapManifest("cni")),
+			}},
+		},
+	}, AgentBootstrapDependencies{Connector: connector, BootstrapRunner: bootstrapRunner})
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "user-bootstrap", "kubeconfig"}) {
+		t.Fatalf("phases = %#v", got)
+	}
+	if len(bootstrapRunner.requests) != 1 {
+		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
+	}
+	if bootstrapRunner.requests[0].Credentials.ClientKeyData != testKey {
+		t.Fatalf("bootstrap credentials = %#v", bootstrapRunner.requests[0].Credentials)
+	}
+	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
+		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
 	}
 }
 

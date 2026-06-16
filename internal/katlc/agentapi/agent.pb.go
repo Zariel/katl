@@ -567,6 +567,7 @@ type OperationStatus struct {
 	GenerationCommitState   string                 `protobuf:"bytes,22,opt,name=generation_commit_state,json=generationCommitState,proto3" json:"generation_commit_state,omitempty"`
 	PostKubeadmHealthState  string                 `protobuf:"bytes,23,opt,name=post_kubeadm_health_state,json=postKubeadmHealthState,proto3" json:"post_kubeadm_health_state,omitempty"`
 	BootHealthPending       bool                   `protobuf:"varint,24,opt,name=boot_health_pending,json=bootHealthPending,proto3" json:"boot_health_pending,omitempty"`
+	AdminKubeconfig         string                 `protobuf:"bytes,25,opt,name=admin_kubeconfig,json=adminKubeconfig,proto3" json:"admin_kubeconfig,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -767,6 +768,13 @@ func (x *OperationStatus) GetBootHealthPending() bool {
 		return x.BootHealthPending
 	}
 	return false
+}
+
+func (x *OperationStatus) GetAdminKubeconfig() string {
+	if x != nil {
+		return x.AdminKubeconfig
+	}
+	return ""
 }
 
 type DiagnosticArtifact struct {
@@ -1177,7 +1185,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x13GetOperationRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x126\n" +
 	"\x17expected_request_digest\x18\x02 \x01(\tR\x15expectedRequestDigest\x12/\n" +
-	"\x13include_diagnostics\x18\x03 \x01(\tR\x12includeDiagnostics\"\xa0\b\n" +
+	"\x13include_diagnostics\x18\x03 \x01(\tR\x12includeDiagnostics\"\xcb\b\n" +
 	"\x0fOperationStatus\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eoperation_kind\x18\x02 \x01(\tR\roperationKind\x12%\n" +
@@ -1206,7 +1214,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x10activation_state\x18\x15 \x01(\tR\x0factivationState\x126\n" +
 	"\x17generation_commit_state\x18\x16 \x01(\tR\x15generationCommitState\x129\n" +
 	"\x19post_kubeadm_health_state\x18\x17 \x01(\tR\x16postKubeadmHealthState\x12.\n" +
-	"\x13boot_health_pending\x18\x18 \x01(\bR\x11bootHealthPending\"\x9c\x01\n" +
+	"\x13boot_health_pending\x18\x18 \x01(\bR\x11bootHealthPending\x12)\n" +
+	"\x10admin_kubeconfig\x18\x19 \x01(\tR\x0fadminKubeconfig\"\x9c\x01\n" +
 	"\x12DiagnosticArtifact\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x12\n" +
