@@ -87,6 +87,9 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	if result.Record.GenerationID != "1" || len(result.Spec.Sysexts) != 1 || result.Status.CommitState != generation.CommitStateCandidate {
 		t.Fatalf("result = %#v status %#v", result.Record, result.Status)
 	}
+	if result.Spec.Boot.LoaderEntryPath != "loader/entries/katl-1.conf" {
+		t.Fatalf("candidate loader entry path = %q", result.Spec.Boot.LoaderEntryPath)
+	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")

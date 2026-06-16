@@ -46,6 +46,12 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 			PID:        123,
 		}
 	}
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{
+			Stdout:     []byte("readyz ok\n"),
+			ExitStatus: 0,
+		}
+	}
 	server.Dispatcher = executor
 
 	req := submitRequest("req-execute")
@@ -61,11 +67,14 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	if record.ExecutorPlan == nil || record.ExecutorPlan.Timeout != "7s" {
 		t.Fatalf("executor plan = %+v, want operation timeout", record.ExecutorPlan)
 	}
-	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != "kubeadm-init" {
-		t.Fatalf("record = %+v, want terminal success in kubeadm-init", record)
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != "record-operation-complete" {
+		t.Fatalf("record = %+v, want terminal success after generation commit", record)
 	}
-	if !contains(record.CompletedPhases, "prepare-bootstrap-runtime") || !contains(record.CompletedPhases, "bootstrap-runtime-ready") || !contains(record.CompletedPhases, "kubeadm-init") {
+	if !contains(record.CompletedPhases, "prepare-bootstrap-runtime") || !contains(record.CompletedPhases, "bootstrap-runtime-ready") || !contains(record.CompletedPhases, "kubeadm-init") || !contains(record.CompletedPhases, "post-kubeadm-health") || !contains(record.CompletedPhases, "record-operation-complete") {
 		t.Fatalf("completed phases = %v", record.CompletedPhases)
+	}
+	if record.GenerationCommitState != operation.GenerationCommitCommitted || record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !record.BootHealthPending {
+		t.Fatalf("lifecycle state = commit %q health %q pending %v", record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if len(record.PreExecMutationMarkers) != 1 || record.PreExecMutationMarkers[0].MarkerID != "kubeadm-init" {
 		t.Fatalf("markers = %+v", record.PreExecMutationMarkers)
@@ -80,10 +89,15 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	if invocation.AgentStartID != "agent-test" || invocation.ExecutorAttemptID == "" || invocation.PID != 123 || invocation.ExitStatus != 0 {
 		t.Fatalf("invocation missing agent executor metadata: %+v", invocation)
 	}
-	if !contains(record.MutationScopes, "kubeadm-state") || !record.MutatingToolRan {
+	for _, scope := range []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"} {
+		if !contains(record.MutationScopes, scope) {
+			t.Fatalf("mutation scopes = %v, missing %s", record.MutationScopes, scope)
+		}
+	}
+	if !record.MutatingToolRan {
 		t.Fatalf("mutation state = scopes %v ran %v", record.MutationScopes, record.MutatingToolRan)
 	}
-	assertBootstrapRuntimePrepared(t, server.Root, accepted.OperationId+"-candidate")
+	assertBootstrapGenerationCommitted(t, server.Root, accepted.OperationId+"-candidate", accepted.OperationId)
 	if got := readFirstArtifact(t, server.Store, record); strings.Contains(got, "abc.def") || !strings.Contains(got, "Bearer [REDACTED]") {
 		t.Fatalf("artifact was not redacted: %q", got)
 	}
@@ -109,6 +123,9 @@ func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 		started(456)
 		close(done)
 		return ToolResult{ExitStatus: 0, PID: 456}
+	}
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{ExitStatus: 0}
 	}
 	server.Dispatcher = executor
 
@@ -262,6 +279,126 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	}
 	if got := readFirstArtifact(t, server.Store, read); !strings.Contains(got, "containerd.service failed") {
 		t.Fatalf("readiness artifact = %q", got)
+	}
+}
+
+func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
+	record := createAcceptedBootstrapOperation(t, server.Store, "op-health-fail", "candidate-health-fail", &operation.ExecutorPlan{
+		Phase:          "kubeadm-init",
+		MarkerID:       "kubeadm-init",
+		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
+		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+	})
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{ExitStatus: 0}
+	}
+	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		started(321)
+		return ToolResult{ExitStatus: 0, PID: 321}
+	}
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{
+			Stderr:     []byte("readyz failed certificate-key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"),
+			ExitStatus: 1,
+			Err:        errors.New("exit status 1"),
+		}
+	}
+
+	err := executor.Execute(context.Background(), record)
+	if err == nil {
+		t.Fatal("Execute succeeded, want post-kubeadm health error")
+	}
+	read, err := server.Store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || !read.RecoveryRequired || read.Result != operation.ResultFailedNeedsRepair || read.Phase != "post-kubeadm-health" {
+		t.Fatalf("record = %+v, want terminal post-health repair state", read)
+	}
+	if !read.ExternalMutationStarted || !read.MutatingToolRan || len(read.PreExecMutationMarkers) != 1 {
+		t.Fatalf("mutation markers = started %v ran %v markers %+v", read.ExternalMutationStarted, read.MutatingToolRan, read.PreExecMutationMarkers)
+	}
+	if read.GenerationCommitState != operation.GenerationCommitCandidate || read.PostKubeadmHealthState != operation.PostKubeadmHealthFailed {
+		t.Fatalf("lifecycle state = commit %q health %q", read.GenerationCommitState, read.PostKubeadmHealthState)
+	}
+	if read.BootHealthPending {
+		t.Fatalf("bootHealthPending = true after post-health failure")
+	}
+	if strings.Contains(read.FailureReason, "0123456789abcdef") || !strings.Contains(read.FailureReason, "[REDACTED]") {
+		t.Fatalf("failure reason was not redacted: %q", read.FailureReason)
+	}
+	spec, status, err := generation.ReadGeneration(server.Root, "candidate-health-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CommitState != generation.CommitStateCandidate || status.BootState != generation.BootStatePending {
+		t.Fatalf("candidate status = %#v", status)
+	}
+	if spec.Boot.LoaderEntryPath != "loader/entries/katl-candidate-health-fail.conf" {
+		t.Fatalf("loader entry path = %q", spec.Boot.LoaderEntryPath)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "0" || selection.TargetBootGenerationID != "" || selection.TrialGenerationID != "" || selection.PendingHealthValidation {
+		t.Fatalf("boot selection = %#v, want generation 0 fallback inspectable", selection)
+	}
+	if got := readArtifact(t, server.Store, read, "post-kubeadm-health-stderr"); strings.Contains(got, "0123456789abcdef") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("health artifact was not redacted: %q", got)
+	}
+	if got := readArtifact(t, server.Store, read, "post-kubeadm-health-evidence"); strings.Contains(got, "certificate-key") || !strings.Contains(got, "staticPodManifestEvidence") {
+		t.Fatalf("evidence artifact = %q", got)
+	}
+}
+
+func TestExecutorDoesNotRunInitHealthChecksForJoin(t *testing.T) {
+	server := newTestServer(t)
+	record, err := server.Store.Create(operation.OperationRecord{
+		OperationID:           "op-join-worker",
+		OperationKind:         "bootstrap-join-worker",
+		Scope:                 "kubeadm-state",
+		Actor:                 "test",
+		RequestDigest:         strings.Repeat("1", 64),
+		Phase:                 "kubeadm-join-worker",
+		PhasePlan:             []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-join-worker"},
+		CandidateGenerationID: "join-candidate",
+		BootstrapRequest: &operation.BootstrapRequest{
+			InventoryNodeName:        "node-a",
+			SystemRole:               "worker",
+			KubernetesPayloadVersion: "v1.35.0",
+			BootstrapProfileRef:      "default",
+			CandidateGenerationID:    "join-candidate",
+			JoinMaterialRef:          "worker-token",
+		},
+		GenerationCommitState:  operation.GenerationCommitCandidate,
+		PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
+		CompletedPhases:        []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-join-worker"},
+	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Now = server.Now
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		t.Fatal("bootstrap-init health checks ran for worker join")
+		return ToolResult{}
+	}
+
+	if err := executor.finalizeSuccessfulOperation(context.Background(), record.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	read, err := server.Store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || read.Result != operation.ResultSucceeded || read.PostKubeadmHealthState != operation.PostKubeadmHealthNotRun || read.BootHealthPending {
+		t.Fatalf("record = %+v, want join success without init health or boot-health transaction", read)
 	}
 }
 
@@ -439,6 +576,22 @@ func readFirstArtifact(t *testing.T, store operation.Store, record operation.Ope
 	return string(data)
 }
 
+func readArtifact(t *testing.T, store operation.Store, record operation.OperationRecord, artifactID string) string {
+	t.Helper()
+	for _, artifact := range record.DiagnosticArtifacts {
+		if artifact.ArtifactID != artifactID {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(store.Root, record.OperationID, artifact.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	t.Fatalf("record has no artifact %s: %+v", artifactID, record.DiagnosticArtifacts)
+	return ""
+}
+
 func waitForOperation(t *testing.T, store operation.Store, operationID string, done func(operation.OperationRecord) bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -488,6 +641,7 @@ func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), "0123456789abcdef0123456789abcdef\n")
 	writeBootSelection(t, root, "0")
 	sysext := []byte("kubernetes-sysext-payload")
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(sysext))
@@ -576,6 +730,37 @@ func assertBootstrapRuntimePrepared(t *testing.T, root string, candidate string)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target")); !os.IsNotExist(err) {
 		t.Fatalf("katl-kubeadm-ready.target was enabled: %v", err)
+	}
+}
+
+func assertBootstrapGenerationCommitted(t *testing.T, root string, candidate string, operationID string) {
+	t.Helper()
+	spec, status, err := generation.ReadGeneration(root, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateTrying || status.CommittedAt == nil || status.CommittedByOperation != operationID {
+		t.Fatalf("candidate status = %#v, want committed trying by %s", status, operationID)
+	}
+	if spec.Boot.LoaderEntryPath != "loader/entries/katl-"+candidate+".conf" {
+		t.Fatalf("loader entry path = %q", spec.Boot.LoaderEntryPath)
+	}
+	assertFileContains(t, filepath.Join(root, "efi", spec.Boot.LoaderEntryPath), "katl.generation="+candidate)
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "0" ||
+		selection.TargetBootGenerationID != candidate ||
+		selection.TrialGenerationID != candidate ||
+		selection.PreviousKnownGoodGenerationID != "0" ||
+		!selection.PendingHealthValidation ||
+		selection.PersistentDefaultPromotion != generation.DefaultPromotionPending ||
+		selection.PendingTransactionID != operationID {
+		t.Fatalf("boot selection = %#v, want generation %s armed for boot health", selection, candidate)
+	}
+	if selection.TargetBootEntry != spec.Boot.LoaderEntryPath || selection.TrialBootEntry != spec.Boot.LoaderEntryPath {
+		t.Fatalf("boot entries = target %q trial %q want %q", selection.TargetBootEntry, selection.TrialBootEntry, spec.Boot.LoaderEntryPath)
 	}
 }
 

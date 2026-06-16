@@ -161,7 +161,6 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 				ActivationState:        operation.ActivationStatePending,
 				GenerationCommitState:  operation.GenerationCommitCandidate,
 				PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
-				BootHealthPending:      true,
 				Phase:                  "dry-run",
 				UpdatedAt:              formatTime(now),
 				ResourceLocks:          locks,
@@ -195,14 +194,13 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		ExpectedClusterIntentDigest: req.ExpectedClusterIntentDigest,
 		RequestDigest:               digest,
 		Phase:                       "accepted",
-		PhasePlan:                   []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", plan.Phase},
+		PhasePlan:                   []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", plan.Phase, "post-kubeadm-health", operation.HostBookkeepingCompletionPhase},
 		CandidateGenerationID:       candidateID,
 		BootstrapRequest:            &bootstrapRequest,
 		ActivationMode:              operation.ActivationModeLive,
 		ActivationState:             operation.ActivationStatePending,
 		GenerationCommitState:       operation.GenerationCommitCandidate,
 		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
-		BootHealthPending:           true,
 		ResourceLocks:               locks,
 		ExecutorPlan:                &plan,
 		NextAction:                  "queued for katlc agent executor",
@@ -635,7 +633,7 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	}
 	configPath := "/etc/katl/kubeadm/" + ref + "/config.yaml"
 	plan := toolPlan{
-		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
+		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
 	}
 	switch req.OperationKind {
 	case "bootstrap-init":

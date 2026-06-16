@@ -112,6 +112,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	next.Boot.LoaderEntryPath = "loader/entries/katl-" + next.GenerationID + ".conf"
 	spec := generation.SpecFromRecord(next)
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, now)
 	if err != nil {

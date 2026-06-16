@@ -19,13 +19,15 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/bootstrapplan"
 	"github.com/zariel/katl/internal/installer/bootstrapruntime"
+	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 )
 
 const (
-	defaultToolTimeout = 25 * time.Minute
-	maxToolTimeout     = 25 * time.Minute
-	readinessTimeout   = 2 * time.Minute
+	defaultToolTimeout       = 25 * time.Minute
+	maxToolTimeout           = 25 * time.Minute
+	readinessTimeout         = 2 * time.Minute
+	postKubeadmHealthTimeout = 2 * time.Minute
 )
 
 type ToolResult struct {
@@ -39,26 +41,28 @@ type ToolResult struct {
 type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
 type Executor struct {
-	Root         string
-	Store        operation.Store
-	AgentStartID string
-	Now          func() time.Time
-	RunTool      ToolRunner
-	RunReadiness ToolRunner
-	Async        bool
+	Root          string
+	Store         operation.Store
+	AgentStartID  string
+	Now           func() time.Time
+	RunTool       ToolRunner
+	RunReadiness  ToolRunner
+	RunPostHealth ToolRunner
+	Async         bool
 }
 
 type toolPlan = operation.ExecutorPlan
 
 func NewExecutor(root string, store operation.Store, agentStartID string) *Executor {
 	return &Executor{
-		Root:         strings.TrimSpace(root),
-		Store:        store,
-		AgentStartID: strings.TrimSpace(agentStartID),
-		Now:          func() time.Time { return time.Now().UTC() },
-		RunTool:      runChildProcess,
-		RunReadiness: runReadinessCommand,
-		Async:        true,
+		Root:          strings.TrimSpace(root),
+		Store:         store,
+		AgentStartID:  strings.TrimSpace(agentStartID),
+		Now:           func() time.Time { return time.Now().UTC() },
+		RunTool:       runChildProcess,
+		RunReadiness:  runReadinessCommand,
+		RunPostHealth: runPostKubeadmHealthCommand,
+		Async:         true,
 	}
 }
 
@@ -213,9 +217,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		record.MutatingToolInvocations = appendMissing(record.MutatingToolInvocations, inventory.Redact(strings.Join(plan.Argv, " ")))
 		record.Phase = plan.Phase
 		record.UpdatedAt = completedAt
-		record.CompletedAt = &completedAt
-		record.Terminal = true
 		if timedOut {
+			record.CompletedAt = &completedAt
+			record.Terminal = true
 			record.RecoveryRequired = true
 			record.Result = operation.ResultFailedNeedsRepair
 			record.Interruption = operation.ResultTimedOut
@@ -225,6 +229,8 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		}
 		if result.Err == nil && result.ExitStatus == 0 {
 			if startErr != nil || artifactErr != nil {
+				record.CompletedAt = &completedAt
+				record.Terminal = true
 				record.RecoveryRequired = true
 				record.Result = operation.ResultFailedNeedsRepair
 				record.NextAction = "explicit repair required after executor bookkeeping failure"
@@ -235,10 +241,11 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 			if len(record.CompletedPhases) > record.PhaseIndex {
 				record.PhaseIndex = len(record.CompletedPhases)
 			}
-			record.Result = operation.ResultSucceeded
-			record.NextAction = "operation completed by katlc agent executor"
+			record.NextAction = "run bounded post-kubeadm health checks"
 			return record, nil
 		}
+		record.CompletedAt = &completedAt
+		record.Terminal = true
 		record.RecoveryRequired = true
 		record.Result = operation.ResultFailedNeedsRepair
 		record.NextAction = "explicit repair required after child process failure"
@@ -253,6 +260,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	if result.ExitStatus != 0 {
 		return fmt.Errorf("run %s: exit status %d", plan.Argv[0], result.ExitStatus)
+	}
+	if err := e.finalizeSuccessfulOperation(ctx, record.OperationID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -376,6 +386,211 @@ func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.
 	return updated, nil
 }
 
+func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID string) error {
+	record, err := e.Store.Read(operationID)
+	if err != nil {
+		return err
+	}
+	if !requiresBootstrapInitCommit(record) {
+		now := e.clock()
+		_, err := e.Store.Update(operationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.CompletedAt = &now
+			record.Terminal = true
+			record.Result = operation.ResultSucceeded
+			record.NextAction = "operation completed by katlc agent executor"
+			record.UpdatedAt = now
+			return record, nil
+		})
+		return err
+	}
+	startedAt := e.clock()
+	if _, err := e.Store.Update(operationID, "post-kubeadm-health-start", "post-kubeadm-health", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "post-kubeadm-health"
+		record.PostKubeadmHealthState = operation.PostKubeadmHealthRunning
+		record.NextAction = "validate local kubeadm health before committing generation"
+		record.UpdatedAt = startedAt
+		return record, nil
+	}); err != nil {
+		return err
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	defer cancel()
+	result := e.postHealthRunner()(healthCtx, nil, func(int) {})
+	if errors.Is(healthCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
+		result.Err = healthCtx.Err()
+		result.ExitStatus = -1
+	}
+	completedAt := e.clock()
+	var artifactErr error
+	if len(result.Stdout) > 0 {
+		if _, err := e.Store.AddDiagnosticArtifact(operationID, "post-kubeadm-health-stdout", []byte(inventory.Redact(string(result.Stdout))), completedAt); err != nil {
+			artifactErr = errors.Join(artifactErr, err)
+		}
+	}
+	if len(result.Stderr) > 0 {
+		if _, err := e.Store.AddDiagnosticArtifact(operationID, "post-kubeadm-health-stderr", []byte(inventory.Redact(string(result.Stderr))), completedAt); err != nil {
+			artifactErr = errors.Join(artifactErr, err)
+		}
+	}
+	evidence := postKubeadmEvidence(e.Root, record, result, completedAt)
+	evidenceData, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		artifactErr = errors.Join(artifactErr, err)
+	} else if _, err := e.Store.AddDiagnosticArtifact(operationID, "post-kubeadm-health-evidence", append(evidenceData, '\n'), completedAt); err != nil {
+		artifactErr = errors.Join(artifactErr, err)
+	}
+	if result.Err != nil || result.ExitStatus != 0 {
+		cause := fmt.Errorf("post-kubeadm health checks failed: %s", toolFailure(result))
+		_, markErr := e.Store.Update(operationID, "post-kubeadm-health-failed", "post-kubeadm-health", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.Phase = "post-kubeadm-health"
+			record.PostKubeadmHealthState = operation.PostKubeadmHealthFailed
+			record.CompletedAt = &completedAt
+			record.Terminal = true
+			record.RecoveryRequired = true
+			record.Result = operation.ResultFailedNeedsRepair
+			record.BootHealthPending = false
+			record.NextAction = "operator inspection required after kubeadm mutated Kubernetes state"
+			record.FailureReason = inventory.Redact(errors.Join(cause, artifactErr).Error())
+			record.UpdatedAt = completedAt
+			return record, nil
+		})
+		return errors.Join(cause, artifactErr, markErr)
+	}
+	if artifactErr != nil {
+		_, markErr := e.Store.Update(operationID, "post-kubeadm-health-bookkeeping-failed", "post-kubeadm-health", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.Phase = "post-kubeadm-health"
+			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
+			record.CompletedAt = &completedAt
+			record.Terminal = true
+			record.RecoveryRequired = true
+			record.Result = operation.ResultFailedNeedsRepair
+			record.BootHealthPending = false
+			record.NextAction = "explicit repair required after post-kubeadm health evidence bookkeeping failure"
+			record.FailureReason = inventory.Redact(artifactErr.Error())
+			record.UpdatedAt = completedAt
+			return record, nil
+		})
+		return errors.Join(artifactErr, markErr)
+	}
+	record, err = e.Store.Read(operationID)
+	if err != nil {
+		return err
+	}
+	if err := e.commitBootstrapGeneration(record, completedAt); err != nil {
+		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.Phase = "post-kubeadm-health"
+			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
+			record.CompletedAt = &completedAt
+			record.Terminal = true
+			record.RecoveryRequired = true
+			record.Result = operation.ResultFailedNeedsRepair
+			record.BootHealthPending = false
+			record.NextAction = "explicit repair required after generation commit bookkeeping failure"
+			record.FailureReason = inventory.Redact(errors.Join(err, artifactErr).Error())
+			record.UpdatedAt = completedAt
+			return record, nil
+		})
+		return errors.Join(err, artifactErr, markErr)
+	}
+	_, err = e.Store.Update(operationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "record-operation-complete"
+		record.CompletedPhases = appendMissing(record.CompletedPhases, "post-kubeadm-health", "record-operation-complete")
+		record.PhaseIndex = len(record.CompletedPhases)
+		record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
+		record.GenerationCommitState = operation.GenerationCommitCommitted
+		record.BootHealthPending = true
+		record.CompletedAt = &completedAt
+		record.Terminal = true
+		record.Result = operation.ResultSucceeded
+		record.NextAction = "reboot into committed generation for boot health validation"
+		record.UpdatedAt = completedAt
+		return record, nil
+	})
+	return errors.Join(err, artifactErr)
+}
+
+func (e *Executor) commitBootstrapGeneration(record operation.OperationRecord, now time.Time) error {
+	candidate := strings.TrimSpace(record.CandidateGenerationID)
+	if candidate == "" {
+		return fmt.Errorf("candidate generation id is required")
+	}
+	spec, status, err := generation.ReadGeneration(e.Root, candidate)
+	if err != nil {
+		return fmt.Errorf("read candidate generation: %w", err)
+	}
+	if status.CommitState != generation.CommitStateCandidate {
+		return fmt.Errorf("candidate generation %s commitState is %s, want candidate", candidate, status.CommitState)
+	}
+	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
+	if entry == "" {
+		return fmt.Errorf("candidate generation %s loader entry path is required", candidate)
+	}
+	machineID, err := runtimeMachineID(e.Root)
+	if err != nil {
+		return err
+	}
+	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
+	entryPath, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{
+		Record:    generation.RecordFromSplit(spec, status),
+		MachineID: machineID,
+	})
+	if err != nil {
+		return fmt.Errorf("write candidate loader entry: %w", err)
+	}
+	relativeEntry, err := bootRelativePath(bootRoot, entryPath)
+	if err != nil {
+		return err
+	}
+	if relativeEntry != entry {
+		return fmt.Errorf("candidate loader entry %s does not match generation metadata %s", relativeEntry, entry)
+	}
+	committedAt := now.UTC()
+	selection, err := generation.ReadBootSelection(e.Root)
+	if err != nil {
+		return fmt.Errorf("read boot selection: %w", err)
+	}
+	previousSelection := selection
+	fallback := strings.TrimSpace(selection.Generation0FallbackID)
+	if fallback == "" {
+		fallback = selection.DefaultGenerationID
+	}
+	selection.TargetBootGenerationID = candidate
+	selection.TrialGenerationID = candidate
+	selection.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
+	selection.Generation0FallbackID = fallback
+	selection.TargetBootEntry = entry
+	selection.TrialBootEntry = entry
+	selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
+	selection.PendingTransactionID = record.OperationID
+	selection.PendingHealthValidation = true
+	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
+	selection.UpdatedAt = committedAt
+	if err := generation.WriteBootSelection(e.Root, selection); err != nil {
+		return fmt.Errorf("arm boot health validation: %w", err)
+	}
+	status.CommitState = generation.CommitStateCommitted
+	status.BootState = generation.BootStateTrying
+	status.HealthState = generation.HealthStateUnknown
+	status.UpdatedAt = committedAt
+	status.CommittedAt = &committedAt
+	status.CommittedByOperation = record.OperationID
+	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
+		At:          committedAt,
+		OperationID: record.OperationID,
+		Reason:      "kubeadm completed and post-kubeadm health checks passed",
+		CommitState: status.CommitState,
+		BootState:   status.BootState,
+		HealthState: status.HealthState,
+	})
+	if err := generation.WriteGenerationStatus(e.Root, spec, status); err != nil {
+		if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
+			return fmt.Errorf("commit candidate generation: %w; restore boot selection: %w", err, restoreErr)
+		}
+		return fmt.Errorf("commit candidate generation: %w", err)
+	}
+	return nil
+}
+
 func (e *Executor) operationStoreRoot() string {
 	if strings.TrimSpace(e.Store.Root) != "" {
 		return e.Store.Root
@@ -408,6 +623,13 @@ func (e *Executor) readinessRunner() ToolRunner {
 	return runReadinessCommand
 }
 
+func (e *Executor) postHealthRunner() ToolRunner {
+	if e.RunPostHealth != nil {
+		return e.RunPostHealth
+	}
+	return runPostKubeadmHealthCommand
+}
+
 func requiresBootstrapRuntime(record operation.OperationRecord) bool {
 	if record.BootstrapRequest == nil {
 		return false
@@ -420,6 +642,13 @@ func requiresBootstrapRuntime(record operation.OperationRecord) bool {
 	}
 }
 
+func requiresBootstrapInitCommit(record operation.OperationRecord) bool {
+	if record.BootstrapRequest == nil {
+		return false
+	}
+	return record.OperationKind == bootstrapplan.OperationKindInit
+}
+
 func runReadinessCommand(ctx context.Context, _ []string, started func(int)) ToolResult {
 	commands := [][]string{
 		{"/usr/bin/systemctl", "daemon-reload"},
@@ -427,6 +656,28 @@ func runReadinessCommand(ctx context.Context, _ []string, started func(int)) Too
 		{"/usr/bin/systemctl", "restart", "systemd-confext.service"},
 		{"/usr/bin/systemctl", "start", "katl-kubeadm-ready.target"},
 		{"/usr/bin/systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"},
+	}
+	var stdout, stderr bytes.Buffer
+	for _, argv := range commands {
+		result := runChildProcess(ctx, argv, started)
+		stdout.Write(result.Stdout)
+		stderr.Write(result.Stderr)
+		if result.Err != nil || result.ExitStatus != 0 {
+			result.Stdout = stdout.Bytes()
+			result.Stderr = stderr.Bytes()
+			return result
+		}
+	}
+	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+}
+
+func runPostKubeadmHealthCommand(ctx context.Context, _ []string, started func(int)) ToolResult {
+	commands := [][]string{
+		{"/usr/bin/test", "-s", "/etc/kubernetes/admin.conf"},
+		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/etcd.yaml"},
+		{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"},
+		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
 	}
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
@@ -612,4 +863,179 @@ func appendMissing(values []string, additions ...string) []string {
 
 func redactArgv(argv []string) []string {
 	return []string{inventory.Redact(strings.Join(argv, " "))}
+}
+
+type postHealthEvidence struct {
+	CollectedAt        time.Time       `json:"collectedAt"`
+	HealthExitStatus   int             `json:"healthExitStatus"`
+	HealthStdoutBytes  int             `json:"healthStdoutBytes,omitempty"`
+	HealthStdoutSHA256 string          `json:"healthStdoutSHA256,omitempty"`
+	HealthStderrBytes  int             `json:"healthStderrBytes,omitempty"`
+	HealthStderrSHA256 string          `json:"healthStderrSHA256,omitempty"`
+	NodeIdentity       nodeEvidence    `json:"nodeIdentityEvidence"`
+	Kubeadm            kubeadmEvidence `json:"kubeadmEvidence"`
+	JoinMaterial       joinEvidence    `json:"joinMaterialEvidence,omitempty"`
+	APIEvidence        []fileEvidence  `json:"apiEvidence,omitempty"`
+	StaticPods         []fileEvidence  `json:"staticPodManifestEvidence,omitempty"`
+	EtcdEvidence       []fileEvidence  `json:"etcdMemberEvidence,omitempty"`
+	BootstrapMaterial  []fileEvidence  `json:"bootstrapMaterialEvidence,omitempty"`
+}
+
+type nodeEvidence struct {
+	InventoryNodeName   string `json:"inventoryNodeName,omitempty"`
+	SystemRole          string `json:"systemRole,omitempty"`
+	CandidateGeneration string `json:"candidateGenerationID,omitempty"`
+	ExpectedMachineID   string `json:"expectedMachineID,omitempty"`
+}
+
+type kubeadmEvidence struct {
+	OperationKind      string `json:"operationKind"`
+	Phase              string `json:"phase"`
+	RequestDigest      string `json:"requestDigest,omitempty"`
+	KubeadmInputDigest string `json:"kubeadmInputDigest,omitempty"`
+	ArgvDigest         string `json:"argvDigest,omitempty"`
+	ExitStatus         int    `json:"exitStatus"`
+}
+
+type joinEvidence struct {
+	Present   bool   `json:"present,omitempty"`
+	RefDigest string `json:"refDigest,omitempty"`
+}
+
+type fileEvidence struct {
+	Path      string `json:"path"`
+	Exists    bool   `json:"exists"`
+	IsDir     bool   `json:"isDir,omitempty"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func postKubeadmEvidence(root string, record operation.OperationRecord, result ToolResult, collectedAt time.Time) postHealthEvidence {
+	var node nodeEvidence
+	var join joinEvidence
+	inputDigest := ""
+	if record.BootstrapRequest != nil {
+		node.InventoryNodeName = record.BootstrapRequest.InventoryNodeName
+		node.SystemRole = record.BootstrapRequest.SystemRole
+		node.CandidateGeneration = record.CandidateGenerationID
+		if strings.TrimSpace(record.BootstrapRequest.JoinMaterialRef) != "" {
+			join.Present = true
+			join.RefDigest = digestEvidenceBytes([]byte(record.BootstrapRequest.JoinMaterialRef))
+		}
+		inputDigest = record.BootstrapRequest.KubeadmInputDigest
+	}
+	node.ExpectedMachineID = record.ExpectedMachineID
+	argvDigest := ""
+	if record.ExecutorPlan != nil {
+		argvDigest = digestArgv(record.ExecutorPlan.Argv)
+	}
+	evidence := postHealthEvidence{
+		CollectedAt:      collectedAt.UTC(),
+		HealthExitStatus: result.ExitStatus,
+		NodeIdentity:     node,
+		Kubeadm: kubeadmEvidence{
+			OperationKind:      record.OperationKind,
+			Phase:              record.Phase,
+			RequestDigest:      record.RequestDigest,
+			KubeadmInputDigest: inputDigest,
+			ArgvDigest:         argvDigest,
+			ExitStatus:         result.ExitStatus,
+		},
+		JoinMaterial: join,
+		APIEvidence: []fileEvidence{
+			evidenceForPath(root, "/etc/kubernetes/admin.conf"),
+		},
+		StaticPods: []fileEvidence{
+			evidenceForPath(root, "/etc/kubernetes/manifests/kube-apiserver.yaml"),
+			evidenceForPath(root, "/etc/kubernetes/manifests/kube-controller-manager.yaml"),
+			evidenceForPath(root, "/etc/kubernetes/manifests/kube-scheduler.yaml"),
+			evidenceForPath(root, "/etc/kubernetes/manifests/etcd.yaml"),
+		},
+		EtcdEvidence: []fileEvidence{
+			evidenceForPath(root, "/var/lib/etcd/member"),
+		},
+		BootstrapMaterial: []fileEvidence{
+			evidenceForPath(root, "/etc/kubernetes/kubelet.conf"),
+			evidenceForPath(root, "/etc/kubernetes/pki/ca.crt"),
+			evidenceForPath(root, "/etc/kubernetes/admin.conf"),
+		},
+	}
+	if len(result.Stdout) > 0 {
+		evidence.HealthStdoutBytes = len(result.Stdout)
+		evidence.HealthStdoutSHA256 = digestEvidenceBytes(result.Stdout)
+	}
+	if len(result.Stderr) > 0 {
+		evidence.HealthStderrBytes = len(result.Stderr)
+		evidence.HealthStderrSHA256 = digestEvidenceBytes(result.Stderr)
+	}
+	return evidence
+}
+
+func evidenceForPath(root string, runtimePath string) fileEvidence {
+	path := filepath.ToSlash(filepath.Clean(runtimePath))
+	evidence := fileEvidence{Path: path}
+	hostPath := filepath.Join(runtimeRoot(root), strings.TrimPrefix(path, "/"))
+	info, err := os.Stat(hostPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return evidence
+	}
+	if err != nil {
+		evidence.Error = inventory.Redact(err.Error())
+		return evidence
+	}
+	evidence.Exists = true
+	evidence.IsDir = info.IsDir()
+	evidence.SizeBytes = info.Size()
+	if info.Mode().IsRegular() {
+		data, err := os.ReadFile(hostPath)
+		if err != nil {
+			evidence.Error = inventory.Redact(err.Error())
+		} else {
+			evidence.SHA256 = digestEvidenceBytes(data)
+		}
+	}
+	return evidence
+}
+
+func digestEvidenceBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func runtimeMachineID(root string) (string, error) {
+	for _, path := range []string{
+		filepath.Join(runtimeRoot(root), "var/lib/katl/identity/machine-id"),
+		filepath.Join(runtimeRoot(root), "etc/machine-id"),
+	} {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			value := strings.TrimSpace(string(data))
+			if value != "" {
+				return value, nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("machine identity is not initialized")
+}
+
+func bootRelativePath(bootRoot string, entryPath string) (string, error) {
+	rel, err := filepath.Rel(bootRoot, entryPath)
+	if err != nil {
+		return "", fmt.Errorf("make loader entry path boot-relative: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("loader entry %s is outside boot root %s", entryPath, bootRoot)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func runtimeRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return string(filepath.Separator)
+	}
+	return filepath.Clean(root)
 }

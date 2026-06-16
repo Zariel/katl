@@ -59,7 +59,7 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	if record.BootstrapRequest == nil || record.BootstrapRequest.InventoryNodeName != "node-a" || record.BootstrapRequest.SystemRole != "control-plane" {
 		t.Fatalf("bootstrap request = %+v", record.BootstrapRequest)
 	}
-	if record.CandidateGenerationID == "" || record.ActivationState != operation.ActivationStatePending || record.GenerationCommitState != operation.GenerationCommitCandidate || record.PostKubeadmHealthState != operation.PostKubeadmHealthNotRun || !record.BootHealthPending {
+	if record.CandidateGenerationID == "" || record.ActivationState != operation.ActivationStatePending || record.GenerationCommitState != operation.GenerationCommitCandidate || record.PostKubeadmHealthState != operation.PostKubeadmHealthNotRun || record.BootHealthPending {
 		t.Fatalf("lifecycle status = candidate %q activation %q commit %q health %q pending %v", record.CandidateGenerationID, record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if len(record.ResourceLocks) != 2 {
@@ -483,7 +483,7 @@ func newTestServer(t *testing.T) *Server {
 	if err := os.MkdirAll(filepath.Join(root, "var/lib/katl/identity"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "var/lib/katl/identity/machine-id"), []byte("machine-test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "var/lib/katl/identity/machine-id"), []byte("0123456789abcdef0123456789abcdef\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
@@ -510,7 +510,7 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 		ClientRequestId:   clientRequestID,
 		OperationKind:     "bootstrap-init",
 		Actor:             "test-actor",
-		ExpectedMachineId: "machine-test",
+		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
 		Bootstrap: &agentapi.BootstrapOperationRequest{
 			InventoryNodeName:        "node-a",
 			SystemRole:               "control-plane",
@@ -524,11 +524,14 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 func writeBootSelection(t *testing.T, root string, generationID string) {
 	t.Helper()
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion:          generation.APIVersion,
-		Kind:                generation.BootSelectionKind,
-		DefaultGenerationID: generationID,
-		BootedGenerationID:  generationID,
-		UpdatedAt:           time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		APIVersion:            generation.APIVersion,
+		Kind:                  generation.BootSelectionKind,
+		DefaultGenerationID:   generationID,
+		BootedGenerationID:    generationID,
+		Generation0FallbackID: generationID,
+		DefaultBootEntry:      "loader/entries/katl-" + generationID + ".conf",
+		BootedBootEntry:       "loader/entries/katl-" + generationID + ".conf",
+		UpdatedAt:             time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatal(err)
 	}
