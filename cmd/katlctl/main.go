@@ -324,10 +324,22 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 
 func agentBootstrapDependencies(token string) cluster.AgentBootstrapDependencies {
 	return cluster.AgentBootstrapDependencies{
-		Connector:       cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token)},
+		Connector:       cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode},
 		Actor:           "katlctl cluster bootstrap",
 		BootstrapRunner: cluster.KubectlBootstrapRunner{},
 	}
+}
+
+func agentTokenForNode(node inventory.PlannedNode) (string, error) {
+	ref := strings.TrimSpace(node.Access.CredentialRef)
+	if ref == "" {
+		return "", nil
+	}
+	path, ok := strings.CutPrefix(ref, "file:")
+	if !ok {
+		return "", nil
+	}
+	return readAgentToken(path)
 }
 
 func readAgentToken(path string) (string, error) {

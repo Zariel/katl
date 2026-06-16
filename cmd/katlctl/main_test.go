@@ -256,6 +256,23 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	if connector.AuthToken != "test-token" {
 		t.Fatalf("AuthToken = %q", connector.AuthToken)
 	}
+	nodeTokenPath := filepath.Join(t.TempDir(), "node-agent.token")
+	if err := os.WriteFile(nodeTokenPath, []byte("node-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := connector.AuthTokenForNode(inventory.PlannedNode{
+		Name: "worker-1",
+		Access: inventory.Access{
+			Method:        "agent",
+			CredentialRef: "file:" + nodeTokenPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("AuthTokenForNode() error = %v", err)
+	}
+	if token != "node-token" {
+		t.Fatalf("AuthTokenForNode() = %q", token)
+	}
 	if gotDeps.Actor != "katlctl cluster bootstrap" {
 		t.Fatalf("Actor = %q", gotDeps.Actor)
 	}

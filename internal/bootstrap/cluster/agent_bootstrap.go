@@ -58,9 +58,10 @@ type AgentClient interface {
 }
 
 type TCPAgentConnector struct {
-	AuthToken   string
-	DefaultPort string
-	DialTimeout time.Duration
+	AuthToken        string
+	AuthTokenForNode func(inventory.PlannedNode) (string, error)
+	DefaultPort      string
+	DialTimeout      time.Duration
 }
 
 func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNode) (AgentConnection, error) {
@@ -71,8 +72,17 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
-	if strings.TrimSpace(c.AuthToken) != "" {
-		token := strings.TrimSpace(c.AuthToken)
+	token := strings.TrimSpace(c.AuthToken)
+	if c.AuthTokenForNode != nil {
+		resolved, err := c.AuthTokenForNode(node)
+		if err != nil {
+			return AgentConnection{}, fmt.Errorf("resolve katlc agent token for %s: %w", node.Name, err)
+		}
+		if strings.TrimSpace(resolved) != "" {
+			token = strings.TrimSpace(resolved)
+		}
+	}
+	if token != "" {
 		opts = append(opts,
 			grpc.WithUnaryInterceptor(bearerUnaryInterceptor(token)),
 			grpc.WithStreamInterceptor(bearerStreamInterceptor(token)),
