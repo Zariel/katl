@@ -130,6 +130,10 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return err
 	}
 	record = ready
+	if expired := expiredJoinMaterial(record, e.clock()); expired != "" {
+		_, markErr := e.failRecordPhase(record.OperationID, "join-material-expired", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "submit a new worker join operation with unexpired join material", fmt.Errorf("%s", expired))
+		return markErr
+	}
 	markerID := strings.TrimSpace(plan.MarkerID)
 	if markerID == "" {
 		markerID = generatedMarkerID(plan.Phase, plan.Argv)
@@ -198,6 +202,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		result.ExitStatus = -1
 	}
 	completedAt := e.clock()
+	cleanupTemporaryJoinConfig(e.Root, record)
 	timedOut := errors.Is(toolCtx.Err(), context.DeadlineExceeded) || errors.Is(result.Err, context.DeadlineExceeded)
 	var artifactErr error
 	if len(result.Stdout) > 0 {
@@ -221,6 +226,13 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	resultText := exitResult(result)
 	if timedOut {
 		resultText = operation.ResultTimedOut
+	}
+	if result.Err != nil || result.ExitStatus != 0 {
+		if alreadyJoinedWorker(record, result) && e.workerPostHealthPassed(ctx, record) {
+			result.Err = nil
+			result.ExitStatus = 0
+			resultText = operation.ResultSucceeded
+		}
 	}
 	_, updateErr := e.Store.Update(record.OperationID, markerID+"-complete", "child-process-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		completeInvocation(record.Invocations, markerID, completedAt, resultText, result)
@@ -402,7 +414,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if !requiresBootstrapInitCommit(record) {
+	if !requiresBootstrapGenerationCommit(record) {
 		now := e.clock()
 		_, err := e.Store.Update(operationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.CompletedAt = &now
@@ -426,7 +438,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	}
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
-	result := e.postHealthRunner()(healthCtx, nil, func(int) {})
+	result := e.postHealthRunner()(healthCtx, postKubeadmHealthArgs(record), func(int) {})
 	if errors.Is(healthCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
 		result.Err = healthCtx.Err()
 		result.ExitStatus = -1
@@ -665,11 +677,20 @@ func requiresBootstrapRuntime(record operation.OperationRecord) bool {
 	}
 }
 
-func requiresBootstrapInitCommit(record operation.OperationRecord) bool {
+func requiresBootstrapGenerationCommit(record operation.OperationRecord) bool {
 	if record.BootstrapRequest == nil {
 		return false
 	}
-	return record.OperationKind == bootstrapplan.OperationKindInit
+	switch record.OperationKind {
+	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func postKubeadmHealthArgs(record operation.OperationRecord) []string {
+	return []string{record.OperationKind}
 }
 
 func bootstrapReadinessArgs(record operation.OperationRecord, plan toolPlan) []string {
@@ -737,13 +758,10 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
 }
 
-func runPostKubeadmHealthCommand(ctx context.Context, _ []string, started func(int)) ToolResult {
-	commands := [][]string{
-		{"/usr/bin/test", "-s", "/etc/kubernetes/admin.conf"},
-		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
-		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/etcd.yaml"},
-		{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"},
-		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
+func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started func(int)) ToolResult {
+	commands := postKubeadmHealthCommands("")
+	if len(argv) > 0 {
+		commands = postKubeadmHealthCommands(argv[0])
 	}
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
@@ -757,6 +775,78 @@ func runPostKubeadmHealthCommand(ctx context.Context, _ []string, started func(i
 		}
 	}
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+}
+
+func postKubeadmHealthCommands(kind string) [][]string {
+	if kind == bootstrapplan.OperationKindJoinWorker {
+		return [][]string{
+			{"/usr/bin/test", "-s", "/etc/kubernetes/kubelet.conf"},
+			{"/usr/bin/test", "-s", "/var/lib/kubelet/config.yaml"},
+			{"/usr/bin/test", "!", "-e", "/etc/kubernetes/admin.conf"},
+			{"/usr/bin/test", "!", "-e", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+			{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"},
+		}
+	}
+	return [][]string{
+		{"/usr/bin/test", "-s", "/etc/kubernetes/admin.conf"},
+		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/etcd.yaml"},
+		{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"},
+		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
+	}
+}
+
+func cleanupTemporaryJoinConfig(root string, record operation.OperationRecord) {
+	if record.BootstrapRequest == nil {
+		return
+	}
+	path := strings.TrimSpace(record.BootstrapRequest.TemporaryJoinConfigPath)
+	if path == "" {
+		return
+	}
+	if !strings.HasPrefix(path, "/run/katl/bootstrap-join/") || strings.Contains(path, "\x00") {
+		return
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		root = "/"
+	}
+	target := filepath.Join(filepath.Clean(root), strings.TrimPrefix(path, "/"))
+	_ = os.Remove(target)
+	_ = os.Remove(filepath.Dir(target))
+}
+
+func expiredJoinMaterial(record operation.OperationRecord, now time.Time) string {
+	if record.OperationKind != bootstrapplan.OperationKindJoinWorker || record.BootstrapRequest == nil {
+		return ""
+	}
+	expiresAt := strings.TrimSpace(record.BootstrapRequest.JoinMaterialExpiresAt)
+	if expiresAt == "" {
+		return "worker join material expiry is not recorded"
+	}
+	parsed, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return "worker join material expiry is invalid"
+	}
+	if !parsed.After(now.UTC()) {
+		return "worker join material is expired"
+	}
+	return ""
+}
+
+func alreadyJoinedWorker(record operation.OperationRecord, result ToolResult) bool {
+	if record.OperationKind != bootstrapplan.OperationKindJoinWorker {
+		return false
+	}
+	text := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr) + "\n" + toolFailure(result))
+	return strings.Contains(text, "already joined")
+}
+
+func (e *Executor) workerPostHealthPassed(ctx context.Context, record operation.OperationRecord) bool {
+	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	defer cancel()
+	result := e.postHealthRunner()(healthCtx, postKubeadmHealthArgs(record), func(int) {})
+	return healthCtx.Err() == nil && result.Err == nil && result.ExitStatus == 0
 }
 
 func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
@@ -1019,8 +1109,11 @@ type kubeadmEvidence struct {
 }
 
 type joinEvidence struct {
-	Present   bool   `json:"present,omitempty"`
-	RefDigest string `json:"refDigest,omitempty"`
+	Present        bool   `json:"present,omitempty"`
+	RefDigest      string `json:"refDigest,omitempty"`
+	MaterialDigest string `json:"materialDigest,omitempty"`
+	ExpiresAt      string `json:"expiresAt,omitempty"`
+	ConfigPath     string `json:"configPath,omitempty"`
 }
 
 type fileEvidence struct {
@@ -1044,6 +1137,12 @@ func postKubeadmEvidence(root string, record operation.OperationRecord, result T
 			join.Present = true
 			join.RefDigest = digestEvidenceBytes([]byte(record.BootstrapRequest.JoinMaterialRef))
 		}
+		if strings.TrimSpace(record.BootstrapRequest.JoinMaterialDigest) != "" {
+			join.Present = true
+			join.MaterialDigest = record.BootstrapRequest.JoinMaterialDigest
+		}
+		join.ExpiresAt = strings.TrimSpace(record.BootstrapRequest.JoinMaterialExpiresAt)
+		join.ConfigPath = strings.TrimSpace(record.BootstrapRequest.TemporaryJoinConfigPath)
 		inputDigest = record.BootstrapRequest.KubeadmInputDigest
 	}
 	node.ExpectedMachineID = record.ExpectedMachineID

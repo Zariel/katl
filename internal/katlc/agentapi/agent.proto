@@ -49,6 +49,12 @@ message BootstrapOperationRequest {
   string candidate_generation_id = 7;
   string kubeadm_input_digest = 8;
   string join_material_ref = 9;
+  WorkerJoinMaterial worker_join_material = 10;
+}
+
+message WorkerJoinMaterial {
+  repeated string join_argv = 1;
+  string expires_at = 2;
 }
 
 message OperationAccepted {

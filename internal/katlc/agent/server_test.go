@@ -120,6 +120,40 @@ func TestSubmitOperationRejectsConflictingLocks(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t *testing.T) {
+	server := newTestServer(t)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+	req := submitRequest("req-worker-material-failure")
+	req.OperationKind = "bootstrap-join-worker"
+	req.Bootstrap.SystemRole = "worker"
+	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want none for terminal materialization failure", dispatched.Load())
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || !record.RecoveryRequired || record.ExternalMutationStarted {
+		t.Fatalf("record = %+v, want terminal pre-mutation materialization failure", record)
+	}
+	if record.BootstrapRequest == nil || record.BootstrapRequest.JoinMaterialDigest == "" || record.BootstrapRequest.TemporaryJoinConfigPath == "" {
+		t.Fatalf("bootstrap metadata = %+v, want non-secret join material metadata", record.BootstrapRequest)
+	}
+	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join", accepted.OperationId, "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("temporary join config exists after failed materialization: %v", err)
+	}
+}
+
 func TestSubmitOperationSerializesConcurrentConflicts(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
@@ -210,6 +244,22 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 		{name: "bad expected cluster intent", edit: func(req *agentapi.SubmitOperationRequest) { req.ExpectedClusterIntentDigest = "not-a-digest" }},
 		{name: "bad timeout", edit: func(req *agentapi.SubmitOperationRequest) { req.OperationTimeout = "-1s" }},
 		{name: "too large timeout", edit: func(req *agentapi.SubmitOperationRequest) { req.OperationTimeout = "26m" }},
+		{name: "raw worker join material", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-worker"
+			req.Bootstrap.SystemRole = "worker"
+			req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+			req.Bootstrap.JoinMaterialRef = "kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		}},
+		{name: "missing worker join material", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-worker"
+			req.Bootstrap.SystemRole = "worker"
+		}},
+		{name: "expired worker join material", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-worker"
+			req.Bootstrap.SystemRole = "worker"
+			req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+			req.Bootstrap.WorkerJoinMaterial.ExpiresAt = "2026-06-15T11:59:59Z"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,6 +270,21 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 				t.Fatalf("SubmitOperation error = %v, want InvalidArgument", err)
 			}
 		})
+	}
+}
+
+func validWorkerJoinMaterial() *agentapi.WorkerJoinMaterial {
+	return &agentapi.WorkerJoinMaterial{
+		JoinArgv: []string{
+			"kubeadm",
+			"join",
+			"api.katl.test:6443",
+			"--token",
+			"abcdef.0123456789abcdef",
+			"--discovery-token-ca-cert-hash",
+			"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		ExpiresAt: "2026-06-15T13:00:00Z",
 	}
 }
 

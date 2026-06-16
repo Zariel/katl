@@ -129,6 +129,9 @@ type BootstrapRequest struct {
 	CandidateGenerationID    string `json:"candidateGenerationID,omitempty"`
 	KubeadmInputDigest       string `json:"kubeadmInputDigest,omitempty"`
 	JoinMaterialRef          string `json:"joinMaterialRef,omitempty"`
+	JoinMaterialDigest       string `json:"joinMaterialDigest,omitempty"`
+	JoinMaterialExpiresAt    string `json:"joinMaterialExpiresAt,omitempty"`
+	TemporaryJoinConfigPath  string `json:"temporaryJoinConfigPath,omitempty"`
 }
 
 type InvocationRecord struct {
@@ -636,6 +639,11 @@ func ValidateRecord(record OperationRecord) error {
 	if record.BootstrapRequest != nil {
 		if err := validateBootstrapRequest(*record.BootstrapRequest); err != nil {
 			return err
+		}
+		if strings.TrimSpace(record.BootstrapRequest.JoinMaterialDigest) != "" {
+			if err := validateSHA256Hex("bootstrapRequest joinMaterialDigest", record.BootstrapRequest.JoinMaterialDigest); err != nil {
+				return err
+			}
 		}
 	}
 	if err := validateOptionalEnum("activationMode", record.ActivationMode, ActivationModeLive); err != nil {

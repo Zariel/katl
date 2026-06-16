@@ -1079,6 +1079,10 @@ func parseJoinMaterial(output string) (JoinMaterial, error) {
 	return JoinMaterial{Argv: argv}, nil
 }
 
+func ParseJoinMaterial(output string) (JoinMaterial, error) {
+	return parseJoinMaterial(output)
+}
+
 func (r TransportRunner) RunWorkerJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error {
 	if node.SystemRole != inventory.RoleWorker {
 		return fmt.Errorf("worker join requires worker node, got %s", node.SystemRole)
@@ -1212,6 +1216,19 @@ func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]
 		}
 	}
 	return encodeYAMLDocuments(joinDocs)
+}
+
+func RenderWorkerJoinConfig(base []byte, material JoinMaterial) ([]byte, error) {
+	if len(material.Argv) == 0 {
+		return nil, errors.New("worker join material is required")
+	}
+	if hasFlag(material.Argv, "--control-plane") {
+		return nil, errors.New("worker join material must not include --control-plane")
+	}
+	if flagValue(material.Argv, "--certificate-key") != "" {
+		return nil, errors.New("worker join material must not include --certificate-key")
+	}
+	return renderJoinConfig(base, material, false)
 }
 
 func appendUniqueString(value any, item string) []any {

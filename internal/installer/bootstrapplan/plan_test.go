@@ -109,6 +109,9 @@ func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 			CandidateGenerationID:    "1",
 			KubeadmInputDigest:       strings.Repeat("d", 64),
 			JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-worker",
+			JoinMaterialDigest:       strings.Repeat("e", 64),
+			JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
+			TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-worker-1/config.yaml",
 		},
 	})
 	if err != nil {

@@ -383,48 +383,158 @@ func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 	}
 }
 
-func TestExecutorDoesNotRunInitHealthChecksForJoin(t *testing.T) {
+func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	server := newTestServer(t)
-	record, err := server.Store.Create(operation.OperationRecord{
-		OperationID:           "op-join-worker",
-		OperationKind:         "bootstrap-join-worker",
-		Scope:                 "kubeadm-state",
-		Actor:                 "test",
-		RequestDigest:         strings.Repeat("1", 64),
-		Phase:                 "kubeadm-join-worker",
-		PhasePlan:             []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-join-worker"},
-		CandidateGenerationID: "join-candidate",
-		BootstrapRequest: &operation.BootstrapRequest{
-			InventoryNodeName:        "node-a",
-			SystemRole:               "worker",
-			KubernetesPayloadVersion: "v1.35.0",
-			BootstrapProfileRef:      "default",
-			CandidateGenerationID:    "join-candidate",
-			JoinMaterialRef:          "worker-token",
-		},
-		GenerationCommitState:  operation.GenerationCommitCandidate,
-		PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
-		CompletedPhases:        []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-join-worker"},
-	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	ready := false
+	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		assertBootstrapRuntimePreparedForRole(t, server.Root, "bootstrap-join-worker-01-candidate", "worker")
+		ready = true
+		return ToolResult{ExitStatus: 0}
+	}
+	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		if !ready {
+			t.Fatal("kubeadm join ran before bootstrap runtime readiness")
+		}
+		wantConfig := "/run/katl/bootstrap-join/bootstrap-join-worker-01/config.yaml"
+		if strings.Join(argv, " ") != "/usr/bin/kubeadm join --config "+wantConfig {
+			t.Fatalf("argv = %v, want worker join through operation config", argv)
+		}
+		configPath := filepath.Join(server.Root, strings.TrimPrefix(wantConfig, "/"))
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatalf("temporary join config was not materialized: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("temporary join config mode = %#o, want 0600", info.Mode().Perm())
+		}
+		assertFileContains(t, configPath, "abcdef.0123456789abcdef")
+		started(456)
+		return ToolResult{
+			Stdout:     []byte("joined node using token abcdef.0123456789abcdef\n"),
+			ExitStatus: 0,
+			PID:        456,
+		}
+	}
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		if len(argv) != 1 || argv[0] != "bootstrap-join-worker" {
+			t.Fatalf("post health argv = %v, want worker join kind", argv)
+		}
+		return ToolResult{Stdout: []byte("worker kubelet healthy\n"), ExitStatus: 0}
+	}
+	server.Dispatcher = executor
+
+	req := submitRequest("req-worker-join")
+	req.OperationKind = "bootstrap-join-worker"
+	req.Bootstrap.SystemRole = "worker"
+	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
+	read, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || read.Result != operation.ResultSucceeded || read.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !read.BootHealthPending {
+		t.Fatalf("record = %+v, want worker join success with deferred boot health", read)
+	}
+	if !contains(read.CompletedPhases, "post-kubeadm-health") || read.GenerationCommitState != operation.GenerationCommitCommitted {
+		t.Fatalf("completed phases = %v commit = %q", read.CompletedPhases, read.GenerationCommitState)
+	}
+	assertBootstrapGenerationCommitted(t, server.Root, accepted.OperationId+"-candidate", accepted.OperationId)
+	if got := readArtifact(t, server.Store, read, "kubeadm-join-worker-stdout"); strings.Contains(got, "abcdef.0123456789abcdef") || !strings.Contains(got, "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("join stdout artifact was not redacted: %q", got)
+	}
+	if got := readArtifact(t, server.Store, read, "post-kubeadm-health-evidence"); strings.Contains(got, "bootstrap-init-01") || !strings.Contains(got, "joinMaterialEvidence") {
+		t.Fatalf("worker health evidence = %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join/bootstrap-join-worker-01/config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("temporary join config was not deleted after kubeadm: %v", err)
+	}
+}
+
+func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
 	executor.Now = server.Now
-	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
-		t.Fatal("bootstrap-init health checks ran for worker join")
+	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{ExitStatus: 0}
+	}
+	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		t.Fatal("kubeadm join ran with expired material")
 		return ToolResult{}
 	}
+	server.Dispatcher = executor
 
-	if err := executor.finalizeSuccessfulOperation(context.Background(), record.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	read, err := server.Store.Read(record.OperationID)
+	req := submitRequest("req-worker-join-expired-after-ready")
+	req.OperationKind = "bootstrap-join-worker"
+	req.Bootstrap.SystemRole = "worker"
+	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+	req.Bootstrap.WorkerJoinMaterial.ExpiresAt = "2026-06-15T12:00:01Z"
+	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Terminal || read.Result != operation.ResultSucceeded || read.PostKubeadmHealthState != operation.PostKubeadmHealthNotRun || read.BootHealthPending {
-		t.Fatalf("record = %+v, want join success without init health or boot-health transaction", read)
+	read, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || read.Result != operation.ResultFailedNeedsRepair || read.ExternalMutationStarted || read.MutatingToolRan {
+		t.Fatalf("record = %+v, want terminal pre-mutation expiry failure", read)
+	}
+	if read.Phase != "bootstrap-runtime-ready" || !strings.Contains(read.FailureReason, "expired") {
+		t.Fatalf("phase = %q failure = %q", read.Phase, read.FailureReason)
+	}
+}
+
+func TestSubmitOperationAcceptsAlreadyJoinedWorkerWhenHealthPasses(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{ExitStatus: 0}
+	}
+	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		started(456)
+		return ToolResult{
+			Stderr:     []byte("this node has already joined the cluster\n"),
+			ExitStatus: 1,
+			Err:        errors.New("exit status 1"),
+			PID:        456,
+		}
+	}
+	var healthChecks int
+	executor.RunPostHealth = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		healthChecks++
+		return ToolResult{Stdout: []byte("worker kubelet healthy\n"), ExitStatus: 0}
+	}
+	server.Dispatcher = executor
+
+	req := submitRequest("req-worker-already-joined")
+	req.OperationKind = "bootstrap-join-worker"
+	req.Bootstrap.SystemRole = "worker"
+	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || read.Result != operation.ResultSucceeded || read.RecoveryRequired {
+		t.Fatalf("record = %+v, want already-joined worker accepted after health", read)
+	}
+	if healthChecks < 2 {
+		t.Fatalf("post-health checks = %d, want already-joined probe plus final evidence check", healthChecks)
 	}
 }
 
@@ -634,6 +744,11 @@ func waitForOperation(t *testing.T, store operation.Store, operationID string, d
 
 func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 	t.Helper()
+	seedBootstrapRuntimeRootForRole(t, root, "control-plane")
+}
+
+func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
+	t.Helper()
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
 		GenerationID:          "0",
 		RuntimeVersion:        "0.1.0",
@@ -673,8 +788,8 @@ func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(sysext))
 	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{
 		TargetRoot:        root,
-		Manifest:          bootstrapRuntimeManifest(),
-		KubeadmConfigs:    bootstrapRuntimeKubeadmConfigs(),
+		Manifest:          bootstrapRuntimeManifest(role),
+		KubeadmConfigs:    bootstrapRuntimeKubeadmConfigs(role),
 		KubernetesVersion: "v1.35.0",
 		KubernetesSysext: &installer.ClusterIntentKubernetesSysext{
 			Path:      "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
@@ -690,13 +805,13 @@ func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 	}
 }
 
-func bootstrapRuntimeManifest() manifest.Manifest {
+func bootstrapRuntimeManifest(role string) manifest.Manifest {
 	return manifest.Manifest{
 		APIVersion: manifest.APIVersion,
 		Kind:       manifest.Kind,
 		Node: manifest.NodeConfig{
 			Identity:   manifest.NodeIdentity{Hostname: "node-a"},
-			SystemRole: "control-plane",
+			SystemRole: role,
 			Kubernetes: manifest.KubernetesConfig{
 				Kubeadm: manifest.KubeadmReference{ConfigRef: "default"},
 			},
@@ -718,21 +833,30 @@ func bootstrapRuntimeManifest() manifest.Manifest {
 	}
 }
 
-func bootstrapRuntimeKubeadmConfigs() map[string]kubeadmconfig.Plan {
+func bootstrapRuntimeKubeadmConfigs(role string) map[string]kubeadmconfig.Plan {
+	kind := "InitConfiguration"
+	if role == "worker" {
+		kind = "JoinConfiguration"
+	}
 	return map[string]kubeadmconfig.Plan{
 		"default": {
 			Name: "default",
 			Config: kubeadmconfig.File{
 				RenderPath: "/etc/katl/kubeadm/default/config.yaml",
-				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
+				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: " + kind + "\n"),
 				Mode:       0o644,
 			},
-			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"}},
+			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: kind}},
 		},
 	}
 }
 
 func assertBootstrapRuntimePrepared(t *testing.T, root string, candidate string) {
+	t.Helper()
+	assertBootstrapRuntimePreparedForRole(t, root, candidate, "control-plane")
+}
+
+func assertBootstrapRuntimePreparedForRole(t *testing.T, root string, candidate string, role string) {
 	t.Helper()
 	spec, status, err := generation.ReadGeneration(root, candidate)
 	if err != nil {
@@ -744,8 +868,12 @@ func assertBootstrapRuntimePrepared(t *testing.T, root string, candidate string)
 	if len(spec.Sysexts) != 1 || spec.Sysexts[0].PayloadVersion != "v1.35.0" {
 		t.Fatalf("candidate sysexts = %#v", spec.Sysexts)
 	}
-	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/kubeadm/default/config.yaml"), "InitConfiguration")
-	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/bootstrap-runtime.json"), `"systemRole": "control-plane"`)
+	kind := "InitConfiguration"
+	if role == "worker" {
+		kind = "JoinConfiguration"
+	}
+	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/kubeadm/default/config.yaml"), kind)
+	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/bootstrap-runtime.json"), `"systemRole": "`+role+`"`)
 	assertSymlinkTarget(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/katl-kubernetes.raw")
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {

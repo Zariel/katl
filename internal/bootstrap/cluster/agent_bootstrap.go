@@ -229,6 +229,7 @@ func validateAgentPlan(plan inventory.Plan) error {
 		case inventory.ActionControlPlaneJoin:
 			return fmt.Errorf("node %q requires %s, which is not supported until katlc exposes join material over the agent API", node.Name, node.Action)
 		case inventory.ActionWorkerJoin:
+			return fmt.Errorf("node %q requires %s, which is not supported until katlc can mint worker join material through the agent API", node.Name, node.Action)
 		default:
 			return fmt.Errorf("node %q has unsupported bootstrap action %q", node.Name, node.Action)
 		}

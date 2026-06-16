@@ -301,6 +301,12 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if kind == OperationKindJoinWorker && strings.TrimSpace(request.JoinMaterialRef) == "" {
 		return fmt.Errorf("%s requires joinMaterialRef", OperationKindJoinWorker)
 	}
+	if kind == OperationKindJoinWorker && strings.TrimSpace(request.JoinMaterialDigest) == "" {
+		return fmt.Errorf("%s requires joinMaterialDigest", OperationKindJoinWorker)
+	}
+	if kind == OperationKindJoinWorker && strings.TrimSpace(request.TemporaryJoinConfigPath) == "" {
+		return fmt.Errorf("%s requires temporaryJoinConfigPath", OperationKindJoinWorker)
+	}
 	return operation.ValidateRecord(operation.OperationRecord{
 		APIVersion:       operation.APIVersion,
 		Kind:             operation.RecordKind,
@@ -462,6 +468,9 @@ func cloneBootstrapRequest(request operation.BootstrapRequest) *operation.Bootst
 		CandidateGenerationID:    strings.TrimSpace(request.CandidateGenerationID),
 		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
 		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
+		JoinMaterialDigest:       strings.TrimSpace(request.JoinMaterialDigest),
+		JoinMaterialExpiresAt:    strings.TrimSpace(request.JoinMaterialExpiresAt),
+		TemporaryJoinConfigPath:  strings.TrimSpace(request.TemporaryJoinConfigPath),
 	}
 }
 

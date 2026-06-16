@@ -15,7 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -120,6 +122,9 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 	if dryRun != nil {
 		return dryRun, nil
 	}
+	if created.Terminal {
+		return s.acceptedFromRecord(created), nil
+	}
 	if err := s.Dispatcher.Dispatch(context.Background(), created); err != nil {
 		updated, updateErr := s.markDispatchFailed(created.OperationID, err)
 		if updateErr != nil {
@@ -178,7 +183,17 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		candidateID = id + "-candidate"
 	}
 	bootstrapRequest.CandidateGenerationID = candidateID
-	plan, err := kubeadmPlanFromSubmit(req, id)
+	temporaryJoinConfigPath := ""
+	if req.OperationKind == "bootstrap-join-worker" {
+		temporaryJoinConfigPath = temporaryWorkerJoinConfigPath(id)
+		bootstrapRequest.JoinMaterialDigest = workerJoinMaterialDigest(req.GetBootstrap().GetWorkerJoinMaterial())
+		bootstrapRequest.JoinMaterialExpiresAt = strings.TrimSpace(req.GetBootstrap().GetWorkerJoinMaterial().GetExpiresAt())
+		bootstrapRequest.TemporaryJoinConfigPath = temporaryJoinConfigPath
+		if bootstrapRequest.JoinMaterialRef == "" {
+			bootstrapRequest.JoinMaterialRef = "request:" + bootstrapRequest.JoinMaterialDigest[:12]
+		}
+	}
+	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfigPath)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
 	}
@@ -208,6 +223,30 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	created, err := s.Store.Create(record, "accepted", now)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
+	}
+	if req.OperationKind == "bootstrap-join-worker" {
+		metadata, err := s.materializeWorkerJoinConfig(req, id)
+		if err != nil {
+			updated, updateErr := s.markMaterializationFailed(id, err)
+			if updateErr != nil {
+				return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "materialize worker join config failed and status update failed: %v; %v", err, updateErr)
+			}
+			return updated, nil, nil
+		}
+		created, err = s.Store.Update(id, "worker-join-material-ready", "worker-join-material-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			if record.BootstrapRequest == nil {
+				return record, fmt.Errorf("operation bootstrapRequest is required")
+			}
+			record.BootstrapRequest.JoinMaterialDigest = metadata.digest
+			record.BootstrapRequest.JoinMaterialExpiresAt = metadata.expiresAt
+			record.BootstrapRequest.TemporaryJoinConfigPath = metadata.configPath
+			record.UpdatedAt = s.clock()
+			return record, nil
+		})
+		if err != nil {
+			cleanupTemporaryJoinConfig(s.Root, operation.OperationRecord{BootstrapRequest: &operation.BootstrapRequest{TemporaryJoinConfigPath: metadata.configPath}})
+			return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "record worker join material: %v", err)
+		}
 	}
 	return created, nil, nil
 }
@@ -316,6 +355,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
 		return status.Errorf(codes.InvalidArgument, "bootstrap request: %v", err)
 	}
+	if err := s.validateJoinMaterial(req.OperationKind, req.GetBootstrap()); err != nil {
+		return err
+	}
 	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != "" {
 		if err := cleanPublicID("expectedCurrentGenerationID", req.ExpectedCurrentGenerationId); err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
@@ -357,6 +399,39 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	return nil
 }
 
+type workerJoinMetadata struct {
+	digest     string
+	expiresAt  string
+	configPath string
+}
+
+func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.BootstrapOperationRequest) error {
+	if request == nil {
+		return nil
+	}
+	material := request.GetWorkerJoinMaterial()
+	if operationKind != "bootstrap-join-worker" {
+		if material != nil {
+			return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is only valid for bootstrap-join-worker")
+		}
+		return nil
+	}
+	if material == nil || len(material.GetJoinArgv()) == 0 {
+		return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is required for bootstrap-join-worker")
+	}
+	if _, err := workerJoinMaterial(material); err != nil {
+		return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial: %v", err)
+	}
+	expiresAt, err := parseJoinMaterialExpiry(material.GetExpiresAt())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial expiresAt: %v", err)
+	}
+	if !expiresAt.After(s.clock()) {
+		return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is expired")
+	}
+	return nil
+}
+
 func (s *Server) acceptedFromRecord(record operation.OperationRecord) *agentapi.OperationAccepted {
 	return &agentapi.OperationAccepted{
 		OperationId:   record.OperationID,
@@ -375,6 +450,21 @@ func (s *Server) markDispatchFailed(operationID string, err error) (operation.Op
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
 		record.NextAction = "agent executor dispatch failed"
+		record.FailureReason = inventory.Redact(err.Error())
+		record.Terminal = true
+		record.UpdatedAt = now
+		record.CompletedAt = &now
+		return record, nil
+	})
+}
+
+func (s *Server) markMaterializationFailed(operationID string, err error) (operation.OperationRecord, error) {
+	now := s.clock()
+	return s.Store.Update(operationID, "worker-join-material-failed", "worker-join-material-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "prepare-bootstrap-runtime"
+		record.Result = operation.ResultFailedNeedsRepair
+		record.RecoveryRequired = true
+		record.NextAction = "submit a new worker join operation with valid join material"
 		record.FailureReason = inventory.Redact(err.Error())
 		record.Terminal = true
 		record.UpdatedAt = now
@@ -649,7 +739,7 @@ func operationScope(kind string) string {
 	}
 }
 
-func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string) (toolPlan, error) {
+func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string, temporaryJoinConfigPath string) (toolPlan, error) {
 	if req == nil || req.Bootstrap == nil {
 		return toolPlan{}, fmt.Errorf("bootstrap request is required")
 	}
@@ -674,6 +764,10 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 		plan.MarkerID = "kubeadm-join-control-plane"
 		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
 	case "bootstrap-join-worker":
+		configPath = strings.TrimSpace(temporaryJoinConfigPath)
+		if configPath == "" {
+			return toolPlan{}, fmt.Errorf("temporary worker join config path is required")
+		}
 		plan.Phase = "kubeadm-join-worker"
 		plan.MarkerID = "kubeadm-join-worker"
 		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
@@ -724,8 +818,11 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 			return err
 		}
 	}
-	if operationKind != "bootstrap-init" && strings.TrimSpace(request.JoinMaterialRef) == "" {
+	if operationKind == "bootstrap-join-control-plane" && strings.TrimSpace(request.JoinMaterialRef) == "" {
 		return fmt.Errorf("joinMaterialRef is required for join operations")
+	}
+	if strings.TrimSpace(request.JoinMaterialRef) != "" && inventory.Redact(request.JoinMaterialRef) != request.JoinMaterialRef {
+		return fmt.Errorf("joinMaterialRef must be an opaque reference, not raw join material")
 	}
 	return nil
 }
@@ -745,6 +842,84 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
 		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
 	}
+}
+
+func (s *Server) materializeWorkerJoinConfig(req *agentapi.SubmitOperationRequest, operationID string) (workerJoinMetadata, error) {
+	bootstrap := req.GetBootstrap()
+	material, err := workerJoinMaterial(bootstrap.GetWorkerJoinMaterial())
+	if err != nil {
+		return workerJoinMetadata{}, err
+	}
+	ref := strings.TrimSpace(bootstrap.GetBootstrapProfileRef())
+	inputDir, err := installer.StoredKubeadmInputDir(s.Root, ref)
+	if err != nil {
+		return workerJoinMetadata{}, err
+	}
+	base, err := os.ReadFile(filepath.Join(inputDir, "config.yaml"))
+	if err != nil {
+		return workerJoinMetadata{}, fmt.Errorf("read stored worker kubeadm config: %w", err)
+	}
+	rendered, err := cluster.RenderWorkerJoinConfig(base, material)
+	if err != nil {
+		return workerJoinMetadata{}, err
+	}
+	runtimePath := temporaryWorkerJoinConfigPath(operationID)
+	target := filepath.Join(filepath.Clean(s.Root), strings.TrimPrefix(runtimePath, "/"))
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return workerJoinMetadata{}, fmt.Errorf("create temporary join config directory: %w", err)
+	}
+	if err := os.WriteFile(target, rendered, 0o600); err != nil {
+		return workerJoinMetadata{}, fmt.Errorf("write temporary join config: %w", err)
+	}
+	return workerJoinMetadata{
+		digest:     workerJoinMaterialDigest(bootstrap.GetWorkerJoinMaterial()),
+		expiresAt:  strings.TrimSpace(bootstrap.GetWorkerJoinMaterial().GetExpiresAt()),
+		configPath: runtimePath,
+	}, nil
+}
+
+func temporaryWorkerJoinConfigPath(operationID string) string {
+	return "/run/katl/bootstrap-join/" + operationID + "/config.yaml"
+}
+
+func workerJoinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, error) {
+	if material == nil {
+		return cluster.JoinMaterial{}, fmt.Errorf("is required")
+	}
+	argv := make([]string, 0, len(material.GetJoinArgv()))
+	for _, arg := range material.GetJoinArgv() {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			return cluster.JoinMaterial{}, fmt.Errorf("join argv contains an empty argument")
+		}
+		argv = append(argv, arg)
+	}
+	return cluster.ParseJoinMaterial(strings.Join(argv, " "))
+}
+
+func parseJoinMaterialExpiry(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("is required")
+	}
+	expiresAt, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("must be RFC3339")
+	}
+	return expiresAt.UTC(), nil
+}
+
+func workerJoinMaterialDigest(material *agentapi.WorkerJoinMaterial) string {
+	payload := struct {
+		JoinArgv  []string `json:"joinArgv"`
+		ExpiresAt string   `json:"expiresAt"`
+	}{
+		JoinArgv:  append([]string(nil), material.GetJoinArgv()...),
+		ExpiresAt: strings.TrimSpace(material.GetExpiresAt()),
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func operationEvent(event operation.JournalEvent, includeDiagnostics bool) *agentapi.OperationEvent {
