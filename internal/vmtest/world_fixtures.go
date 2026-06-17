@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/katlosimage"
 )
 
 const (
@@ -146,18 +147,20 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 	if err != nil {
 		return FixtureRecord{}, err
 	}
-	file, err := os.Open(record.Path)
+	data, err := os.ReadFile(record.Path)
 	if err != nil {
 		return FixtureRecord{}, err
 	}
-	defer file.Close()
-	if _, err := manifest.Decode(file); err != nil {
+	if _, err := katlosimage.VerifyInstallManifestSingleImage(data); err != nil {
 		return FixtureRecord{}, err
 	}
 	if err := factory.stageInstallManifestLocalRef(source, record.Path); err != nil {
 		return FixtureRecord{}, err
 	}
 	if err := factory.stageInstallManifestKubeadmDirs(source, record.Path); err != nil {
+		return FixtureRecord{}, err
+	}
+	if err := factory.writeInstallSingleImageProof(source, record.Path); err != nil {
 		return FixtureRecord{}, err
 	}
 	if props, err := installManifestSidecarProperties(record.Path); err != nil {
@@ -169,6 +172,63 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 		}
 	}
 	return record, nil
+}
+
+func (factory NodeFixtureFactory) writeInstallSingleImageProof(sourceManifest, stagedManifest string) error {
+	data, err := os.ReadFile(stagedManifest)
+	if err != nil {
+		return err
+	}
+	expected, err := katlosimage.VerifyInstallManifestSingleImage(data)
+	if err != nil {
+		return err
+	}
+	localRef := strings.TrimSpace(expected.LocalRef)
+	if localRef == "" {
+		return fmt.Errorf("install manifest katlosImage.localRef is required for single-image proof")
+	}
+	sourceImage := filepath.Join(filepath.Dir(sourceManifest), filepath.FromSlash(localRef))
+	if resolved, err := filepath.EvalSymlinks(sourceImage); err == nil {
+		sourceImage = resolved
+	}
+	imageRoot, ok := katlosImageProofRoot(sourceImage, expected.Role)
+	if !ok {
+		return fmt.Errorf("KatlOS image proof root with embedded index is required for %s", sourceImage)
+	}
+	payload, err := katlosimage.ResolveDirectory(context.Background(), imageRoot, expected)
+	if err != nil {
+		return fmt.Errorf("resolve install single-image proof payload: %w", err)
+	}
+	proof, err := payload.SingleImageProof(katlosimage.SingleImageProofRequest{
+		ImagePath:      filepath.Join(filepath.Dir(stagedManifest), filepath.FromSlash(localRef)),
+		ImageSHA256:    expected.SHA256,
+		ImageSizeBytes: expected.SizeBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("create install single-image proof: %w", err)
+	}
+	return katlosimage.WriteSingleImageProof(filepath.Join(filepath.Dir(stagedManifest), "single-image-proof.json"), proof)
+}
+
+func katlosImageProofRoot(imagePath, role string) (string, bool) {
+	if info, err := os.Stat(imagePath); err == nil && info.IsDir() {
+		return imagePath, true
+	}
+	dir := filepath.Dir(imagePath)
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "install"
+	}
+	candidates := []string{
+		filepath.Join(dir, "katlos-"+role+"-root"),
+		strings.TrimSuffix(imagePath, filepath.Ext(imagePath)) + "-root",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(filepath.Join(candidate, "katlos", "image.json")); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 func installManifestSidecarProperties(stagedManifest string) (map[string]string, error) {

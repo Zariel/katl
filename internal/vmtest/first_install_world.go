@@ -57,7 +57,6 @@ const (
 func DefaultFirstInstallWorldInputFromEnv(mode FirstInstallWorldMode, useInstalledESP bool) FirstInstallWorldInput {
 	return FirstInstallWorldInput{
 		Installer:       FirstInstallInstallerBootFromEnv(),
-		RuntimeArtifact: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
 		Mode:            mode,
 		UseInstalledESP: useInstalledESP,
@@ -103,24 +102,10 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
-	runtime, err := factory.RuntimeArtifact(input.RuntimeArtifact)
-	if err != nil {
-		_ = scenario.WriteSetupFailure(err)
-		return run, err
-	}
 	installManifest, err := factory.InstallManifest(input.InstallManifest)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
-	}
-	runtimeESP := ""
-	if !input.UseInstalledESP {
-		esp, err := factory.ESPArtifacts(input.RuntimeESP)
-		if err != nil {
-			_ = scenario.WriteSetupFailure(err)
-			return run, err
-		}
-		runtimeESP = esp.Path
 	}
 	nodeMetadata := ""
 	if strings.TrimSpace(input.NodeMetadata) != "" {
@@ -136,7 +121,6 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
-	installer.RuntimeArtifact = runtime.Path
 	mode := input.Mode
 	if mode == "" {
 		mode = FirstInstallWorldPreseed
@@ -152,7 +136,6 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 	run.Config = FirstInstallConfig{
 		Installer: installer,
 		Runtime: InstalledRuntimeConfig{
-			ESPArtifacts: runtimeESP,
 			NodeMetadata: nodeMetadata,
 		},
 		UseInstalledESP: input.UseInstalledESP,
@@ -839,14 +822,13 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 			input.Installer.InstallerUKI = artifact.Path
 		}
 	}
-	if input.RuntimeArtifact == "" {
-		if artifact, ok := index.artifact("runtime-root"); ok {
-			input.RuntimeArtifact = artifact.Path
-		}
+	if strings.TrimSpace(input.RuntimeArtifact) != "" {
+		return input, fmt.Errorf("first-install world consumes runtime components from katlosImage; loose runtime artifact input is not supported")
 	}
-	if !input.UseInstalledESP && strings.TrimSpace(input.RuntimeESP) == "" {
-		input.UseInstalledESP = true
+	if strings.TrimSpace(input.RuntimeESP) != "" {
+		return input, fmt.Errorf("first-install world consumes runtime UKI from katlosImage; loose runtime ESP input is not supported")
 	}
+	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
 		manifestPath, err := writeFirstInstallWorldManifestSource(scenario, repo, spec, index)
 		if err != nil {

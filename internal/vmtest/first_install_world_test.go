@@ -3,6 +3,7 @@ package vmtest
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,15 +50,11 @@ func TestPlanFirstInstallWorldRunStagesInputs(t *testing.T) {
 	repo := t.TempDir()
 	sourceDir := t.TempDir()
 	installer := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
-	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
-	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
-	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest())
+	manifest := writeFixtureLocalInstallManifest(t, sourceDir)
 	metadata := writeFixtureNodeMetadata(t, filepath.Join(sourceDir, "node.json"), Node{Name: "cp-1", Role: ControlPlane})
 
 	run, err := planFirstInstallWorldRun(world, "first install world", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerUKI: installer},
-		RuntimeArtifact: runtime,
-		RuntimeESP:      esp,
 		NodeMetadata:    metadata,
 		InstallManifest: manifest,
 		TargetDiskSize:  "20G",
@@ -68,10 +65,10 @@ func TestPlanFirstInstallWorldRunStagesInputs(t *testing.T) {
 	if run.Repo != repo || run.Runner.options().Missing != MissingFails || run.Runner.options().Keep != KeepAlways {
 		t.Fatalf("run metadata = %#v", run)
 	}
-	if run.Config.Installer.InstallerUKI == installer || run.Config.Installer.RuntimeArtifact == runtime {
+	if run.Config.Installer.InstallerUKI == installer || run.Config.Installer.RuntimeArtifact != "" {
 		t.Fatalf("installer inputs were not staged: %#v", run.Config.Installer)
 	}
-	if run.Config.Runtime.ESPArtifacts == esp || run.Config.Runtime.NodeMetadata == metadata {
+	if run.Config.Runtime.ESPArtifacts != "" || run.Config.Runtime.NodeMetadata == metadata {
 		t.Fatalf("runtime inputs were not staged: %#v", run.Config.Runtime)
 	}
 	if run.Config.ManifestPath == manifest || !run.Config.PreseedManifest {
@@ -81,7 +78,7 @@ func TestPlanFirstInstallWorldRunStagesInputs(t *testing.T) {
 		t.Fatalf("target disk = %#v", run.Config.TargetDisk)
 	}
 	scenarioManifest := readScenarioManifest(t, run.Scenario.ManifestPath)
-	for _, kind := range []string{FixtureInstallerUKI, FixtureRuntimeArtifact, FixtureESPArtifacts, FixtureNodeMetadata, FixtureInstallManifest, FixtureFirstInstallDisk} {
+	for _, kind := range []string{FixtureInstallerUKI, FixtureNodeMetadata, FixtureInstallManifest, FixtureFirstInstallDisk} {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
@@ -92,14 +89,10 @@ func TestPlanFirstInstallWorldRunGuestHandoffMode(t *testing.T) {
 	world := testWorld(t)
 	sourceDir := t.TempDir()
 	installer := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
-	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
-	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
-	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest())
+	manifest := writeFixtureLocalInstallManifest(t, sourceDir)
 
 	run, err := planFirstInstallWorldRun(world, "guest handoff world", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerUKI: installer},
-		RuntimeArtifact: runtime,
-		RuntimeESP:      esp,
 		InstallManifest: manifest,
 		Mode:            firstInstallWorldGuestHandoff,
 		TargetDiskSize:  "20G",
@@ -112,6 +105,38 @@ func TestPlanFirstInstallWorldRunGuestHandoffMode(t *testing.T) {
 	}
 }
 
+func TestPlanFirstInstallWorldRunRejectsLooseComponentManifest(t *testing.T) {
+	world := testWorld(t)
+	sourceDir := t.TempDir()
+	installer := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
+	legacy := strings.Replace(firstManifest(),
+		`"katlosImage": {
+			"url": "https://example.invalid/katlos-install.squashfs",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sizeBytes": 1073741824,
+			"version": "2026.06.04",
+			"architecture": "x86_64",
+			"runtimeInterface": "katl-runtime-1",
+			"role": "install"
+		}`,
+		`"artifacts": {
+			"runtimeRoot": {"url": "https://example.invalid/root.squashfs"},
+			"uki": {"url": "https://example.invalid/katl.efi"},
+			"sysexts": [{"url": "https://example.invalid/kubernetes.raw"}]
+		}`, 1)
+	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), legacy)
+
+	_, err := planFirstInstallWorldRun(world, "loose component manifest", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerUKI: installer},
+		InstallManifest: manifest,
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), `loose component field "artifacts"`) {
+		t.Fatalf("planFirstInstallWorldRun() error = %v, want loose artifacts rejection", err)
+	}
+}
+
 func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
@@ -119,12 +144,10 @@ func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 	kernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.vmlinuz"), "generic split installer kernel")
 	initrd := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.initrd"), "generic split installer initrd")
 	uki := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "generic local handoff installer uki")
-	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureKatlOSInstallImage(t, repo)
 
 	splitInput := firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerKernel: kernel, InstallerInitrd: initrd},
-		RuntimeArtifact: runtime,
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
 	}
@@ -157,7 +180,6 @@ func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 
 	handoffInput := firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerUKI: uki},
-		RuntimeArtifact: runtime,
 		Mode:            firstInstallWorldGuestHandoff,
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
@@ -198,7 +220,6 @@ func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 	leakyKernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer-leaky.vmlinuz"), "installer image leaked cp-leaked-1")
 	_, err = planFirstInstallWorldRun(world, "split leaky cp", repo, NodeSpec{Name: "cp-leaked-1", Role: ControlPlane}, firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerKernel: leakyKernel, InstallerInitrd: initrd},
-		RuntimeArtifact: runtime,
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
 	}, KVMOff)
@@ -209,7 +230,6 @@ func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 	leakyRoleKernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer-role-leaky.vmlinuz"), `installer image leaked "systemRole": "control-plane"`)
 	_, err = planFirstInstallWorldRun(world, "split role leaky cp", repo, NodeSpec{Name: "cp-role-1", Role: ControlPlane}, firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerKernel: leakyRoleKernel, InstallerInitrd: initrd},
-		RuntimeArtifact: runtime,
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
 	}, KVMOff)
@@ -399,7 +419,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	repo := t.TempDir()
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
-	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), `{"payloadVersion":"v1.36.2"}`)
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
@@ -413,6 +433,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
   "sizeBytes": 11,
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }`)
+	writeFixtureKatlOSInstallImageRoot(t, mkosiDir, "0.0.0-dev")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
     {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
@@ -429,8 +450,8 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if run.Config.Installer.InstallerUKI == installer || run.Config.Installer.InstallerUKI == "" {
 		t.Fatalf("installer UKI was not staged: %#v", run.Config.Installer)
 	}
-	if run.Config.Installer.RuntimeArtifact == runtime || run.Config.Installer.RuntimeArtifact == "" {
-		t.Fatalf("runtime artifact was not staged: %#v", run.Config.Installer)
+	if run.Config.Installer.RuntimeArtifact != "" {
+		t.Fatalf("first-install world staged loose runtime artifact: %#v", run.Config.Installer)
 	}
 	if !run.Config.UseInstalledESP || run.Config.Runtime.ESPArtifacts != "" {
 		t.Fatalf("installed ESP fallback was not selected: %#v", run.Config)
@@ -444,6 +465,9 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	stagedImage := filepath.Join(filepath.Dir(run.Config.ManifestPath), filepath.Base(image))
 	if data, err := os.ReadFile(stagedImage); err != nil || string(data) != "katlos-image" {
 		t.Fatalf("staged KatlOS image = %q, err = %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(run.Config.ManifestPath), "single-image-proof.json")); err != nil {
+		t.Fatalf("single-image install proof was not staged: %v", err)
 	}
 	manifestData, err := os.ReadFile(run.Config.ManifestPath)
 	if err != nil {
@@ -471,7 +495,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if !strings.Contains(string(metadataData), `"hostname": "cp-1"`) || !strings.Contains(string(metadataData), `"systemRole": "control-plane"`) {
 		t.Fatalf("generated node metadata = %s", metadataData)
 	}
-	for _, kind := range []string{FixtureInstallerUKI, FixtureRuntimeArtifact, FixtureNodeMetadata, FixtureInstallManifest, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
+	for _, kind := range []string{FixtureInstallerUKI, FixtureNodeMetadata, FixtureInstallManifest, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
@@ -492,7 +516,105 @@ func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
   "sizeBytes": 11,
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }`)
+	writeFixtureKatlOSInstallImageRoot(t, mkosiDir, "0.0.0-dev")
 	return image
+}
+
+func writeFixtureLocalInstallManifest(t *testing.T, dir string) string {
+	t.Helper()
+	image := writeFixtureFile(t, filepath.Join(dir, "katlos-install.squashfs"), "katlos-image")
+	writeFixtureKatlOSInstallImageRoot(t, dir, "2026.06.04")
+	manifest := strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "`+filepath.Base(image)+`",`, 1)
+	return writeFixtureFile(t, filepath.Join(dir, "install-manifest.json"), manifest)
+}
+
+func writeFixtureKatlOSInstallImageRoot(t *testing.T, mkosiDir, version string) {
+	t.Helper()
+	root := filepath.Join(mkosiDir, "katlos-install-root")
+	components := map[string][]byte{
+		"components/runtime/root.squashfs": []byte("runtime root"),
+		"components/boot/katl.efi":         []byte("runtime uki"),
+		"components/sysext/kubernetes.raw": []byte("kubernetes sysext"),
+	}
+	digests := make(map[string]string, len(components))
+	sizes := make(map[string]int64, len(components))
+	for rel, data := range components {
+		writeFixtureFile(t, filepath.Join(root, filepath.FromSlash(rel)), string(data))
+		digests[rel] = sha256Hex(data)
+		sizes[rel] = int64(len(data))
+	}
+	index := map[string]any{
+		"apiVersion":       "katl.dev/v1alpha1",
+		"kind":             "KatlOSImage",
+		"imageRole":        "install",
+		"format":           "squashfs",
+		"version":          version,
+		"buildID":          "test-build",
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+		"createdAt":        "2026-06-17T12:00:00Z",
+		"components": []map[string]any{
+			{
+				"name":         "runtime-root",
+				"role":         "runtime-root",
+				"path":         "components/runtime/root.squashfs",
+				"format":       "squashfs",
+				"sizeBytes":    sizes["components/runtime/root.squashfs"],
+				"sha256":       digests["components/runtime/root.squashfs"],
+				"version":      version,
+				"architecture": "x86_64",
+				"compatibility": map[string]any{
+					"runtimeInterface": "katl-runtime-1",
+				},
+				"installTarget": map[string]any{"kind": "root-slot", "filesystem": "squashfs"},
+			},
+			{
+				"name":         "runtime-uki",
+				"role":         "runtime-uki",
+				"path":         "components/boot/katl.efi",
+				"format":       "uki",
+				"sizeBytes":    sizes["components/boot/katl.efi"],
+				"sha256":       digests["components/boot/katl.efi"],
+				"version":      version,
+				"architecture": "x86_64",
+				"compatibility": map[string]any{
+					"runtimeInterface": "katl-runtime-1",
+					"runtimeRoot": map[string]any{
+						"interface":      "katl-runtime-1",
+						"artifactPath":   "components/runtime/root.squashfs",
+						"artifactSHA256": digests["components/runtime/root.squashfs"],
+					},
+					"kernelCommandLine": []string{"quiet"},
+				},
+				"installTarget": map[string]any{"kind": "esp-or-xbootldr", "filename": "katl.efi"},
+			},
+			{
+				"name":           "kubernetes",
+				"role":           "kubernetes-sysext",
+				"path":           "components/sysext/kubernetes.raw",
+				"format":         "raw",
+				"sizeBytes":      sizes["components/sysext/kubernetes.raw"],
+				"sha256":         digests["components/sysext/kubernetes.raw"],
+				"version":        "v1.36.1",
+				"payloadVersion": "v1.36.1",
+				"architecture":   "x86_64",
+				"compatibility": map[string]any{
+					"runtimeInterface": "katl-runtime-1",
+					"runtimeRoot": map[string]any{
+						"interface":      "katl-runtime-1",
+						"artifactPath":   "components/runtime/root.squashfs",
+						"artifactSHA256": digests["components/runtime/root.squashfs"],
+					},
+				},
+				"installTarget": map[string]any{"kind": "systemd-sysext", "name": "kubernetes.raw"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture KatlOS image index: %v", err)
+	}
+	writeFixtureFile(t, filepath.Join(root, "katlos", "image.json"), string(append(data, '\n')))
 }
 
 func assertSameSHA256(t *testing.T, gotPath, wantPath string) {
@@ -633,7 +755,7 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) 
 	repo := t.TempDir()
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
-	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
     {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
@@ -651,14 +773,12 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) 
   "sizeBytes": 11,
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }`)
+	writeFixtureKatlOSInstallImageRoot(t, mkosiDir, "0.0.0-dev")
 	source := writeFixtureFile(t, filepath.Join(repo, "cmd", "katlos-install", "main.go"), "source")
 	oldTime := time.Unix(1700000000, 0)
 	newTime := oldTime.Add(time.Hour)
 	if err := os.Chtimes(installer, oldTime, oldTime); err != nil {
 		t.Fatalf("Chtimes(installer) error = %v", err)
-	}
-	if err := os.Chtimes(runtime, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes(runtime) error = %v", err)
 	}
 	if err := os.Chtimes(source, newTime, newTime); err != nil {
 		t.Fatalf("Chtimes(source) error = %v", err)
@@ -692,6 +812,7 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedKatlOSInstallImage(t *testing.T)
   "sizeBytes": 11,
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }`)
+	writeFixtureKatlOSInstallImageRoot(t, mkosiDir, "0.0.0-dev")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
     {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
@@ -722,27 +843,28 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedKatlOSInstallImage(t *testing.T)
 	}
 }
 
-func TestPlanFirstInstallWorldRunWritesSetupFailureForMissingSource(t *testing.T) {
+func TestPlanFirstInstallWorldRunWritesSetupFailureForLooseRuntimeInput(t *testing.T) {
 	world := testWorld(t)
 	sourceDir := t.TempDir()
 	installer := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
+	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
 
-	run, err := planFirstInstallWorldRun(world, "missing first install input", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+	run, err := planFirstInstallWorldRun(world, "loose runtime first install input", t.TempDir(), NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerUKI: installer},
-		RuntimeArtifact: "",
+		RuntimeArtifact: runtime,
 		InstallManifest: writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest()),
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
 	}, KVMAuto)
-	if err == nil || !strings.Contains(err.Error(), "runtime-artifact source is required") {
-		t.Fatalf("planFirstInstallWorldRun() error = %v, want runtime source failure", err)
+	if err == nil || !strings.Contains(err.Error(), "loose runtime artifact input is not supported") {
+		t.Fatalf("planFirstInstallWorldRun() error = %v, want loose runtime source failure", err)
 	}
 	if run.Scenario == nil {
 		t.Fatal("planFirstInstallWorldRun() did not return scenario on setup failure")
 	}
 	var result scenarioResult
 	readJSONForTest(t, run.Scenario.ResultPath, &result)
-	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "runtime-artifact source is required") {
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "loose runtime artifact input is not supported") {
 		t.Fatalf("result = %#v", result)
 	}
 }

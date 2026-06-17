@@ -145,9 +145,9 @@ func firstInstallRuntimeFixtureInputDigest(contract FirstInstallRuntimeFixtureCo
 		}
 		identity.InstallerInitrdSHA256 = sum
 	}
-	runtimeRootSHA, err := fileSHA256(contract.RuntimeArtifact)
+	runtimeRootSHA, err := firstInstallContractRuntimeSHA(contract)
 	if err != nil {
-		return "", fmt.Errorf("hash runtime root artifact: %w", err)
+		return "", err
 	}
 	identity.RuntimeRootSHA256 = runtimeRootSHA
 	if strings.TrimSpace(contract.RuntimeESP) != "" {
@@ -175,6 +175,48 @@ func firstInstallRuntimeFixtureInputDigest(contract FirstInstallRuntimeFixtureCo
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func firstInstallContractRuntimeSHA(contract FirstInstallRuntimeFixtureContract) (string, error) {
+	if strings.TrimSpace(contract.RuntimeArtifact) != "" {
+		sum, err := fileSHA256(contract.RuntimeArtifact)
+		if err != nil {
+			return "", fmt.Errorf("hash runtime root artifact: %w", err)
+		}
+		return sum, nil
+	}
+	imagePath, err := installManifestLocalImagePath(contract.ManifestPath)
+	if err != nil {
+		return "", err
+	}
+	sum, err := fileSHA256(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("hash KatlOS install image: %w", err)
+	}
+	return sum, nil
+}
+
+func installManifestLocalImagePath(manifestPath string) (string, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", fmt.Errorf("read install manifest: %w", err)
+	}
+	var manifest struct {
+		KatlosImage struct {
+			LocalRef string `json:"localRef"`
+		} `json:"katlosImage"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return "", fmt.Errorf("decode install manifest: %w", err)
+	}
+	localRef := strings.TrimSpace(manifest.KatlosImage.LocalRef)
+	if localRef == "" {
+		return "", fmt.Errorf("install manifest katlosImage.localRef is required when no loose runtime artifact is present")
+	}
+	if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || localRef == "." || strings.HasPrefix(localRef, "../") || strings.Contains(localRef, "/../") {
+		return "", fmt.Errorf("install manifest katlosImage.localRef %q must be a clean relative path", localRef)
+	}
+	return filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef)), nil
 }
 
 func firstInstallModeForContract(contract FirstInstallRuntimeFixtureContract) FirstInstallWorldMode {

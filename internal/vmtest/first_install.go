@@ -78,6 +78,9 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	if err := writeManifest(result, manifest); err != nil {
 		return failFirst(runner, scenario, result, "install-manifest", err)
 	}
+	if err := copyFirstInstallSingleImageProof(result, config); err != nil {
+		return failFirst(runner, scenario, result, "single-image-proof", err)
+	}
 	if config.PreseedManifest {
 		preseed, err := writePreseedMedia(ctx, result, config, manifest)
 		if err != nil {
@@ -164,6 +167,17 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		return result, err
 	}
 	return result, nil
+}
+
+func copyFirstInstallSingleImageProof(result Result, config FirstInstallConfig) error {
+	if strings.TrimSpace(config.ManifestPath) == "" {
+		return nil
+	}
+	source := filepath.Join(filepath.Dir(config.ManifestPath), "single-image-proof.json")
+	if _, err := os.Stat(source); err != nil {
+		return err
+	}
+	return copyRequiredFile(source, result.Artifacts.SingleImageProof, 0o600)
 }
 
 func firstInstallFailureHooks() []SerialHook {

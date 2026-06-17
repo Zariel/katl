@@ -65,7 +65,7 @@ func TestWorldFixturesStageFirstInstallInputs(t *testing.T) {
 
 	installer := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-installer.efi"), "installer")
 	runtime := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-runtime-root.squashfs"), "runtime")
-	manifest := writeFixtureFile(t, filepath.Join(t.TempDir(), "install-manifest.json"), firstManifest())
+	manifest := writeFixtureLocalInstallManifest(t, t.TempDir())
 
 	boot, err := factory.InstallerBoot(InstallerBootConfig{InstallerUKI: installer})
 	if err != nil {
@@ -104,6 +104,7 @@ func TestWorldFixturesStageInstallManifestLocalRef(t *testing.T) {
 
 	sourceDir := t.TempDir()
 	image := writeFixtureFile(t, filepath.Join(sourceDir, "images", "katlos.squashfs"), "katlos-image")
+	writeFixtureKatlOSInstallImageRoot(t, filepath.Join(sourceDir, "images"), "2026.06.04")
 	manifest := writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "images/katlos.squashfs",`, 1))
 
 	record, err := factory.InstallManifest(manifest)

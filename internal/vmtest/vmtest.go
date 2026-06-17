@@ -116,6 +116,7 @@ type ArtifactPaths struct {
 	InstallerSerial        string `json:"installerSerial"`
 	RuntimeSerial          string `json:"runtimeSerial"`
 	InstallManifest        string `json:"installManifest,omitempty"`
+	SingleImageProof       string `json:"singleImageProof,omitempty"`
 	InstalledRuntime       string `json:"installedRuntime,omitempty"`
 	DirectRuntime          string `json:"directRuntime,omitempty"`
 	InstalledESP           string `json:"installedESP,omitempty"`
@@ -562,6 +563,7 @@ func pathsFor(runDir string) ArtifactPaths {
 		InstallerSerial:        filepath.Join(runDir, "vm", "installer-serial.log"),
 		RuntimeSerial:          filepath.Join(runDir, "vm", "runtime-serial.log"),
 		InstallManifest:        filepath.Join(runDir, "manifests", "install-manifest.json"),
+		SingleImageProof:       filepath.Join(runDir, "manifests", "single-image-proof.json"),
 		InstalledRuntime:       filepath.Join(runDir, "manifests", "installed-runtime.json"),
 		DirectRuntime:          filepath.Join(runDir, "manifests", "direct-runtime.json"),
 		InstalledESP:           filepath.Join(runDir, "installed-esp"),

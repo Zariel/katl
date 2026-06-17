@@ -317,6 +317,16 @@ The installer must never derive generation spec/status from unverified component
 metadata. The generation spec records the validated component digests and
 compatibility fields, not the original download URL as authority.
 
+VM install and upgrade proof artifacts record a `KatlOSSingleImageProof`
+report. The report names the one user-facing image path or reference, the
+embedded `katlos/image.json` identity, and each verified component
+role/path/digest. Upgrade smoke tests that use systemd-sysupdate must derive the
+local/offline source files from the verified runtime-root and runtime-UKI image
+components, verify those source digests against the image index, and record the
+transfer definitions that consume them. Tests must fail when an install manifest
+or upgrade proof relies on loose user-facing runtime-root, UKI, or sysext
+component inputs instead of component metadata embedded in the KatlOS image.
+
 ## Trust And Secrets
 
 The first implementation requires SHA-256 verification. Signing and encryption

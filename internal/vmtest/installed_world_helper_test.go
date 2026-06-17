@@ -514,10 +514,12 @@ func writePublishedInstalledRuntimeFixtureWithDigest(t *testing.T, repo, name, n
 func firstInstallFixtureInputForTest(t *testing.T) FirstInstallWorldInput {
 	t.Helper()
 	sourceDir := t.TempDir()
+	image := writeFixtureFile(t, filepath.Join(sourceDir, "katlos-install.squashfs"), "katlos-image")
+	writeFixtureKatlOSInstallImageRoot(t, sourceDir, "2026.06.04")
+	manifest := strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "`+filepath.Base(image)+`",`, 1)
 	return FirstInstallWorldInput{
 		Installer:       InstallerBootConfig{InstallerUKI: writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")},
-		RuntimeArtifact: writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime"),
-		InstallManifest: writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest()),
+		InstallManifest: writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), manifest),
 		UseInstalledESP: true,
 		TargetDiskSize:  "20G",
 	}

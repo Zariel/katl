@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/katlosimage"
+	"github.com/zariel/katl/internal/installer/manifest"
 )
 
 func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
@@ -108,7 +112,24 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	generationID := "sysupdate-2026.06.17"
 	rootBytes := []byte("katl sysupdate root prototype\n")
 	ukiBytes := []byte("katl sysupdate uki prototype\n")
-	writeSysupdateGuestFixture(t, ctx, guest, version, rootBytes, ukiBytes)
+	upgradePayload, upgradeImagePath := writeSysupdateUpgradeImagePayload(t, result.RunDir, version, rootBytes, ukiBytes)
+	sysupdateFixture := writeSysupdateGuestFixtureFromImage(t, ctx, guest, result.RunDir, version, upgradePayload)
+	proof, err := upgradePayload.SingleImageProof(katlosimage.SingleImageProofRequest{
+		ImagePath: upgradeImagePath,
+		Sysupdate: &katlosimage.SysupdateProof{
+			SourcePath:       "/var/lib/katl/test-artifacts/sysupdate/source",
+			RootTransferPath: sysupdateFixture.RootTransferPath,
+			UKITransferPath:  sysupdateFixture.UKITransferPath,
+			RootSourcePath:   sysupdateFixture.RootSourcePath,
+			UKISourcePath:    sysupdateFixture.UKISourcePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("single-image upgrade proof: %v", err)
+	}
+	if err := katlosimage.WriteSingleImageProof(result.Artifacts.SingleImageProof, proof); err != nil {
+		t.Fatalf("write single-image upgrade proof: %v", err)
+	}
 
 	sysupdate := "/usr/lib/systemd/systemd-sysupdate"
 	definitions := "/var/lib/katl/test-artifacts/sysupdate/sysupdate.d"
@@ -182,25 +203,209 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 }
 
 type sysupdateGuestFixture struct {
-	RootPath string
-	UKIPath  string
+	RootPath         string
+	UKIPath          string
+	RootSourcePath   string
+	UKISourcePath    string
+	RootTransferPath string
+	UKITransferPath  string
 }
 
-func writeSysupdateGuestFixture(t *testing.T, ctx context.Context, guest *GuestControl, version string, rootBytes, ukiBytes []byte) sysupdateGuestFixture {
+func writeSysupdateGuestFixtureFromImage(t *testing.T, ctx context.Context, guest *GuestControl, runDir, version string, payload katlosimage.Payload) sysupdateGuestFixture {
 	t.Helper()
-	source := "/var/lib/katl/test-artifacts/sysupdate/source"
-	definitions := "/var/lib/katl/test-artifacts/sysupdate/sysupdate.d"
+	rootBytes, err := os.ReadFile(payload.ComponentPath(payload.Runtime))
+	if err != nil {
+		t.Fatalf("read runtime-root image component: %v", err)
+	}
+	ukiBytes, err := os.ReadFile(payload.ComponentPath(payload.Boot))
+	if err != nil {
+		t.Fatalf("read runtime-uki image component: %v", err)
+	}
+	if got := sha256Hex(rootBytes); got != payload.Runtime.SHA256 {
+		t.Fatalf("runtime-root source digest = %s, want image component %s", got, payload.Runtime.SHA256)
+	}
+	if got := sha256Hex(ukiBytes); got != payload.Boot.SHA256 {
+		t.Fatalf("runtime-uki source digest = %s, want image component %s", got, payload.Boot.SHA256)
+	}
+	guestSource := "/var/lib/katl/test-artifacts/sysupdate/source"
+	guestDefinitions := "/var/lib/katl/test-artifacts/sysupdate/sysupdate.d"
+	hostSource := filepath.Join(runDir, "sysupdate-source")
+	hostDefinitions := filepath.Join(runDir, "sysupdate.d")
 	rootName := "katl_" + version + ".root.squashfs"
 	ukiName := "katl_" + version + ".efi"
-	rootPath := source + "/" + rootName
-	ukiPath := source + "/" + ukiName
+	rootPath := guestSource + "/" + rootName
+	ukiPath := guestSource + "/" + ukiName
+	hostRootPath := filepath.Join(hostSource, rootName)
+	hostUKIPath := filepath.Join(hostSource, ukiName)
+	if err := os.MkdirAll(hostSource, 0o755); err != nil {
+		t.Fatalf("create host sysupdate source: %v", err)
+	}
+	if err := os.MkdirAll(hostDefinitions, 0o755); err != nil {
+		t.Fatalf("create host sysupdate definitions: %v", err)
+	}
+	if err := os.WriteFile(hostRootPath, rootBytes, 0o644); err != nil {
+		t.Fatalf("write host sysupdate root source: %v", err)
+	}
+	if err := os.WriteFile(hostUKIPath, ukiBytes, 0o644); err != nil {
+		t.Fatalf("write host sysupdate UKI source: %v", err)
+	}
+	shaSums := fmt.Sprintf("%s  %s\n%s  %s\n", sha256Hex(rootBytes), rootName, sha256Hex(ukiBytes), ukiName)
+	if err := os.WriteFile(filepath.Join(hostSource, "SHA256SUMS"), []byte(shaSums), 0o644); err != nil {
+		t.Fatalf("write host sysupdate SHA256SUMS: %v", err)
+	}
+	hostRootTransfer := filepath.Join(hostDefinitions, "50-katl-root.transfer")
+	hostUKITransfer := filepath.Join(hostDefinitions, "70-katl-uki.transfer")
+	if err := os.WriteFile(hostRootTransfer, []byte(rootTransfer(guestSource)), 0o644); err != nil {
+		t.Fatalf("write host root transfer: %v", err)
+	}
+	if err := os.WriteFile(hostUKITransfer, []byte(ukiTransfer(guestSource)), 0o644); err != nil {
+		t.Fatalf("write host UKI transfer: %v", err)
+	}
 	writeGuestFile(t, ctx, guest, rootPath, rootBytes, 0o644)
 	writeGuestFile(t, ctx, guest, ukiPath, ukiBytes, 0o644)
-	shaSums := fmt.Sprintf("%s  %s\n%s  %s\n", sha256Hex(rootBytes), rootName, sha256Hex(ukiBytes), ukiName)
-	writeGuestFile(t, ctx, guest, source+"/SHA256SUMS", []byte(shaSums), 0o644)
-	writeGuestFile(t, ctx, guest, definitions+"/50-katl-root.transfer", []byte(rootTransfer(source)), 0o644)
-	writeGuestFile(t, ctx, guest, definitions+"/70-katl-uki.transfer", []byte(ukiTransfer(source)), 0o644)
-	return sysupdateGuestFixture{RootPath: rootPath, UKIPath: ukiPath}
+	writeGuestFile(t, ctx, guest, guestSource+"/SHA256SUMS", []byte(shaSums), 0o644)
+	writeGuestFile(t, ctx, guest, guestDefinitions+"/50-katl-root.transfer", []byte(rootTransfer(guestSource)), 0o644)
+	writeGuestFile(t, ctx, guest, guestDefinitions+"/70-katl-uki.transfer", []byte(ukiTransfer(guestSource)), 0o644)
+	return sysupdateGuestFixture{
+		RootPath:         rootPath,
+		UKIPath:          ukiPath,
+		RootSourcePath:   hostRootPath,
+		UKISourcePath:    hostUKIPath,
+		RootTransferPath: hostRootTransfer,
+		UKITransferPath:  hostUKITransfer,
+	}
+}
+
+func writeSysupdateUpgradeImagePayload(t *testing.T, runDir string, version string, rootBytes, ukiBytes []byte) (katlosimage.Payload, string) {
+	t.Helper()
+	imageRoot := filepath.Join(runDir, "katlos-upgrade-image")
+	components := map[string][]byte{
+		"components/runtime/root.squashfs": rootBytes,
+		"components/boot/katl.efi":         ukiBytes,
+		"components/sysext/kubernetes.raw": []byte("preserved Kubernetes sysext placeholder\n"),
+	}
+	digests := make(map[string]string, len(components))
+	sizes := make(map[string]int64, len(components))
+	for rel, data := range components {
+		path := filepath.Join(imageRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create upgrade image component dir: %v", err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatalf("write upgrade image component: %v", err)
+		}
+		digests[rel] = sha256Hex(data)
+		sizes[rel] = int64(len(data))
+	}
+	index := katlosimage.Index{
+		APIVersion:       katlosimage.APIVersion,
+		Kind:             katlosimage.Kind,
+		ImageRole:        katlosimage.RoleUpgrade,
+		Format:           katlosimage.FormatSquashFS,
+		Version:          version,
+		BuildID:          "vmtest-sysupdate-" + version,
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		CreatedAt:        "2026-06-17T12:00:00Z",
+		Components: []katlosimage.Component{
+			{
+				Name:         "runtime-root",
+				Role:         katlosimage.ComponentRuntimeRoot,
+				Path:         "components/runtime/root.squashfs",
+				Format:       "squashfs",
+				SizeBytes:    sizes["components/runtime/root.squashfs"],
+				SHA256:       digests["components/runtime/root.squashfs"],
+				Version:      version,
+				Architecture: "x86_64",
+				Compatibility: katlosimage.Compatibility{
+					RuntimeInterface: "katl-runtime-1",
+				},
+				InstallTarget: katlosimage.InstallTarget{
+					Kind:       "root-slot",
+					Filesystem: "squashfs",
+				},
+			},
+			{
+				Name:         "runtime-uki",
+				Role:         katlosimage.ComponentRuntimeUKI,
+				Path:         "components/boot/katl.efi",
+				Format:       "uki",
+				SizeBytes:    sizes["components/boot/katl.efi"],
+				SHA256:       digests["components/boot/katl.efi"],
+				Version:      version,
+				Architecture: "x86_64",
+				Compatibility: katlosimage.Compatibility{
+					RuntimeInterface: "katl-runtime-1",
+					RuntimeRoot: katlosimage.RuntimeRoot{
+						Interface:      "katl-runtime-1",
+						ArtifactPath:   "components/runtime/root.squashfs",
+						ArtifactSHA256: digests["components/runtime/root.squashfs"],
+					},
+					KernelCommandLine: []string{"quiet"},
+				},
+				InstallTarget: katlosimage.InstallTarget{
+					Kind:     "esp-or-xbootldr",
+					Filename: "katl.efi",
+				},
+			},
+			{
+				Name:           "kubernetes",
+				Role:           katlosimage.ComponentKubernetes,
+				Path:           "components/sysext/kubernetes.raw",
+				Format:         "raw",
+				SizeBytes:      sizes["components/sysext/kubernetes.raw"],
+				SHA256:         digests["components/sysext/kubernetes.raw"],
+				Version:        "v1.36.1",
+				PayloadVersion: "v1.36.1",
+				Architecture:   "x86_64",
+				Compatibility: katlosimage.Compatibility{
+					RuntimeInterface: "katl-runtime-1",
+					RuntimeRoot: katlosimage.RuntimeRoot{
+						Interface:      "katl-runtime-1",
+						ArtifactPath:   "components/runtime/root.squashfs",
+						ArtifactSHA256: digests["components/runtime/root.squashfs"],
+					},
+				},
+				InstallTarget: katlosimage.InstallTarget{Kind: "systemd-sysext", Name: "kubernetes.raw"},
+			},
+		},
+	}
+	if err := os.MkdirAll(filepath.Join(imageRoot, "katlos"), 0o755); err != nil {
+		t.Fatalf("create upgrade image index dir: %v", err)
+	}
+	indexData, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal upgrade image index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageRoot, "katlos", "image.json"), append(indexData, '\n'), 0o644); err != nil {
+		t.Fatalf("write upgrade image index: %v", err)
+	}
+	imagePath := filepath.Join(runDir, "katlos-upgrade-"+version+"-x86_64.squashfs")
+	if output, err := exec.Command("mksquashfs", imageRoot, imagePath, "-noappend", "-quiet").CombinedOutput(); err != nil {
+		t.Fatalf("build upgrade image squashfs: %v\n%s", err, output)
+	}
+	imageInfo, err := os.Stat(imagePath)
+	if err != nil {
+		t.Fatalf("stat upgrade image squashfs: %v", err)
+	}
+	imageSHA, err := fileSHA256(imagePath)
+	if err != nil {
+		t.Fatalf("hash upgrade image squashfs: %v", err)
+	}
+	expected := manifest.KatlosImage{
+		LocalRef:         filepath.Base(imagePath),
+		SHA256:           imageSHA,
+		SizeBytes:        uint64(imageInfo.Size()),
+		Version:          version,
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             katlosimage.RoleUpgrade,
+	}
+	payload, err := katlosimage.ResolveDirectory(context.Background(), imageRoot, expected)
+	if err != nil {
+		t.Fatalf("resolve upgrade image payload: %v", err)
+	}
+	return payload, imagePath
 }
 
 func rootTransfer(source string) string {
