@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"gopkg.in/yaml.v3"
 )
 
 func firstInstallWorldRunFor(t *testing.T, name string, spec NodeSpec, useInstalledESP bool) (firstInstallWorldRun, bool) {
@@ -279,7 +280,7 @@ controlPlane:
 		"192.0.2.10/24",
 		"192.0.2.1",
 		"192.0.2.53",
-		"192.0.2.60:6443",
+		"apiServerEndpoint: 192.0.2.60:6443",
 		"/dev/disk/by-id/virtio-static-root",
 		"abcdef.0123456789abcdef",
 		"sha256:111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000",
@@ -287,6 +288,56 @@ controlPlane:
 	} {
 		if !stringSliceContains(values, want) {
 			t.Fatalf("external config literals missing %q from %#v", want, values)
+		}
+	}
+	if stringSliceContains(values, "192.0.2.60:6443") {
+		t.Fatalf("external config literals included raw kubeadm endpoint in %#v", values)
+	}
+}
+
+func TestScanExternalConfigAvoidsShortHostnameSubstrings(t *testing.T) {
+	values := map[string]bool{}
+	addHostnameLiterals(values, "cp-1")
+	addYAMLKeyContextLiterals(values, "name", &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: "cp-1",
+	})
+
+	literals := make([]string, 0, len(values))
+	for value := range values {
+		literals = append(literals, value)
+	}
+	if value, ok := scanBytesForExternalConfig([]byte("encoding cp-1250 and protocol tcp-1 are generic system strings"), literals); ok {
+		t.Fatalf("short hostname matched unrelated generic string %q in %#v", value, literals)
+	}
+	for _, data := range []string{
+		`{"hostname":"cp-1"}`,
+		`{"hostname": "cp-1"}`,
+		"name: cp-1",
+		`name: "cp-1"`,
+	} {
+		if _, ok := scanBytesForExternalConfig([]byte(data), literals); !ok {
+			t.Fatalf("short hostname context %q was not detected by %#v", data, literals)
+		}
+	}
+}
+
+func TestKubeadmSubnetLiteralsIgnorePackagedDefaults(t *testing.T) {
+	values := map[string]bool{}
+	addYAMLKeyContextLiterals(values, "serviceSubnet", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "10.96.0.0/12"})
+	addYAMLKeyContextLiterals(values, "podSubnet", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "10.244.0.0/16"})
+	addYAMLKeyContextLiterals(values, "serviceSubnet", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "172.30.0.0/16"})
+	addYAMLKeyContextLiterals(values, "podSubnet", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "192.168.0.0/16"})
+
+	for _, refused := range []string{"serviceSubnet: 10.96.0.0/12", "podSubnet: 10.244.0.0/16"} {
+		if values[refused] {
+			t.Fatalf("generic kubeadm default %q was added to external config literals: %#v", refused, values)
+		}
+	}
+	for _, want := range []string{"serviceSubnet: 172.30.0.0/16", "podSubnet: 192.168.0.0/16"} {
+		if !values[want] {
+			t.Fatalf("non-default kubeadm subnet %q missing from external config literals: %#v", want, values)
 		}
 	}
 }

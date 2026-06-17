@@ -360,7 +360,7 @@ func scanPECOFFSectionsForExternalConfig(path string, values []string) error {
 			continue
 		}
 		out := filepath.Join(tmp, strings.TrimPrefix(section, "."))
-		if err := exec.Command("objcopy", "--dump-section", section+"="+out, path, os.DevNull).Run(); err != nil {
+		if err := exec.Command("objcopy", "--dump-section", section+"="+out, path).Run(); err != nil {
 			return fmt.Errorf("dump generic installer artifact %s section %s: %w", path, section, err)
 		}
 		if err := scanGenericInstallerArtifact(out, values); err != nil {
@@ -600,7 +600,7 @@ func addKubeadmConfigLiterals(values map[string]bool, manifestDir string) error 
 			}
 			key = strings.TrimSpace(key)
 			switch key {
-			case "name", "clusterName", "podSubnet", "serviceSubnet", "controlPlaneEndpoint", "apiServerEndpoint", "token", "certificateKey":
+			case "token", "certificateKey":
 				addExternalConfigLiteral(values, value)
 			}
 			if strings.Contains(strings.ToLower(key), "token") ||
@@ -650,9 +650,8 @@ func addKubeadmYAMLLiteral(values map[string]bool, node *yaml.Node, collect bool
 			if node.Content[i] != nil {
 				key = node.Content[i].Value
 			}
-			keyCollect := kubeadmLiteralKey(key)
 			addYAMLKeyContextLiterals(values, key, node.Content[i+1])
-			addKubeadmYAMLLiteral(values, node.Content[i+1], collect || keyCollect)
+			addKubeadmYAMLLiteral(values, node.Content[i+1], collect || kubeadmSensitiveLiteralKey(key))
 		}
 	default:
 		for _, child := range node.Content {
@@ -670,6 +669,9 @@ func addYAMLKeyContextLiterals(values map[string]bool, key string, node *yaml.No
 	if key == "" || value == "" {
 		return
 	}
+	if genericKubeadmDefaultLiteral(key, value) {
+		return
+	}
 	addExternalConfigLiteral(values, key+": "+value)
 	addExternalConfigLiteral(values, key+`: "`+value+`"`)
 }
@@ -685,6 +687,35 @@ func kubeadmLiteralKey(key string) bool {
 		strings.Contains(key, "hash") ||
 		strings.Contains(key, "sha256") ||
 		strings.Contains(key, "key")
+}
+
+func kubeadmSensitiveLiteralKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "bootstraptoken" {
+		return false
+	}
+	switch key {
+	case "token", "certificatekey", "cacerthashes", "cacertificateshashes":
+		return true
+	}
+	return strings.Contains(key, "token") ||
+		strings.Contains(key, "secret") ||
+		strings.Contains(key, "hash") ||
+		strings.Contains(key, "sha256") ||
+		strings.Contains(key, "key")
+}
+
+func genericKubeadmDefaultLiteral(key, value string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	switch key {
+	case "podsubnet":
+		return value == "10.244.0.0/16"
+	case "servicesubnet":
+		return value == "10.96.0.0/12"
+	default:
+		return false
+	}
 }
 
 func addNodeMetadataLiterals(values map[string]bool, path string) error {
@@ -751,7 +782,7 @@ func addExternalConfigContentLiterals(values map[string]bool, content string) {
 
 func addExternalConfigLiteral(values map[string]bool, value string) {
 	value = strings.TrimSpace(value)
-	if len(value) < 3 {
+	if len(value) < 8 {
 		return
 	}
 	switch value {
