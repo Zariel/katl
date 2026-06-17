@@ -126,6 +126,57 @@ func Resolve(request ResolveRequest) (Plan, error) {
 	}, nil
 }
 
+func PlanFromRenderedFiles(name string, files []File) (Plan, error) {
+	if err := validateName("name", name); err != nil {
+		return Plan{}, err
+	}
+	renderBase := "/etc/katl/kubeadm/" + name
+	configPath := renderBase + "/config.yaml"
+	patchesRenderDir := renderBase + "/patches"
+	var config File
+	var patches []File
+	for _, file := range files {
+		renderPath := filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(strings.TrimSpace(file.RenderPath), "/")))
+		if renderPath == configPath {
+			config = file
+			config.RenderPath = renderPath
+			if config.Mode == 0 {
+				config.Mode = 0o644
+			}
+			continue
+		}
+		if strings.HasPrefix(renderPath, patchesRenderDir+"/") {
+			patch := file
+			patch.RenderPath = renderPath
+			if patch.Mode == 0 {
+				patch.Mode = 0o644
+			}
+			if err := validatePatchYAML(patch.Content); err != nil {
+				return Plan{}, fmt.Errorf("patch %q: %w", strings.TrimPrefix(renderPath, patchesRenderDir+"/"), err)
+			}
+			patches = append(patches, patch)
+			continue
+		}
+		return Plan{}, fmt.Errorf("rendered kubeadm file path %q must be %s or under %s", renderPath, configPath, patchesRenderDir)
+	}
+	if config.RenderPath == "" {
+		return Plan{}, fmt.Errorf("rendered kubeadm input %q missing config.yaml", name)
+	}
+	documents, err := validateKubeadmYAML(config.Content, patchesRenderDir)
+	if err != nil {
+		return Plan{}, err
+	}
+	sort.Slice(patches, func(i, j int) bool {
+		return patches[i].RenderPath < patches[j].RenderPath
+	})
+	return Plan{
+		Name:      name,
+		Config:    config,
+		Patches:   patches,
+		Documents: documents,
+	}, nil
+}
+
 func (p Plan) NativeEtcFiles() []confext.NativeEtcFile {
 	files := make([]confext.NativeEtcFile, 0, 1+len(p.Patches))
 	files = append(files, confext.NativeEtcFile{

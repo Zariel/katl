@@ -67,6 +67,55 @@ func TestResolveAcceptsInitConfigAndPatches(t *testing.T) {
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "katl", "kubeadm", "control-plane", "patches", "kube-apiserver0+merge.yaml"), "spec:\n  containers: []\n")
 }
 
+func TestPlanFromRenderedFilesReconstructsStoredInput(t *testing.T) {
+	plan, err := PlanFromRenderedFiles("control-plane", []File{
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml",
+			Content:    []byte("spec:\n  containers: []\n"),
+			Mode:       0o640,
+		},
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+			Content:    []byte(initConfig()),
+			Mode:       0o600,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanFromRenderedFiles() error = %v", err)
+	}
+	if plan.Name != "control-plane" || plan.Config.RenderPath != "/etc/katl/kubeadm/control-plane/config.yaml" {
+		t.Fatalf("plan config = %+v", plan.Config)
+	}
+	if len(plan.Patches) != 1 || plan.Patches[0].RenderPath != "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml" {
+		t.Fatalf("patches = %+v", plan.Patches)
+	}
+	if gotDocs := docKinds(plan.Documents); !reflect.DeepEqual(gotDocs, []string{
+		"kubeadm.k8s.io/v1beta4/InitConfiguration",
+		"kubeadm.k8s.io/v1beta4/ClusterConfiguration",
+		"kubelet.config.k8s.io/v1beta1/KubeletConfiguration",
+	}) {
+		t.Fatalf("documents = %#v", gotDocs)
+	}
+}
+
+func TestPlanFromRenderedFilesRejectsUnsafePatch(t *testing.T) {
+	_, err := PlanFromRenderedFiles("control-plane", []File{
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+			Content:    []byte(initConfig()),
+			Mode:       0o600,
+		},
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml",
+			Content:    []byte("apiVersion: v1\nkind: Pod\nspec:\n  volumes:\n    - name: host\n      hostPath:\n        path: /etc/kubernetes\n"),
+			Mode:       0o640,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "host path /etc/kubernetes is denied") {
+		t.Fatalf("PlanFromRenderedFiles() error = %v, want unsafe patch rejection", err)
+	}
+}
+
 func TestResolveAcceptsJoinConfig(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "kubeadm", "worker.yaml"), joinConfig())

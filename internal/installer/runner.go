@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -748,6 +749,9 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	install.LoaderRecord = &result.Record
+	if err := writeInstalledManifest(install.TargetRoot, install.Manifest); err != nil {
+		return err
+	}
 	if err := writeInitialBootSelection(install.TargetRoot, result.Record); err != nil {
 		return err
 	}
@@ -765,6 +769,21 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, WriteInstallRecord)
+}
+
+func writeInstalledManifest(targetRoot string, installManifest manifest.Manifest) error {
+	target := filepath.Join(filepath.Clean(targetRoot), "var/lib/katl/install/manifest.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create install manifest parent: %w", err)
+	}
+	data, err := json.MarshalIndent(installManifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode install manifest: %w", err)
+	}
+	if err := os.WriteFile(target, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write install manifest: %w", err)
+	}
+	return nil
 }
 
 func writeInitialBootSelection(targetRoot string, record generation.Record) error {

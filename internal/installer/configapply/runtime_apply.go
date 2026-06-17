@@ -26,23 +26,25 @@ const (
 )
 
 type TrustedBundleRequest struct {
-	Root                     string
-	SourceID                 string
-	DesiredVersion           string
-	NodeName                 string
-	ApplyMode                string
-	GenerationID             string
-	CurrentManifest          manifest.Manifest
-	CurrentRecord            generation.Record
-	ClusterDefaults          NodeOverlay
-	SystemRoleOverrides      map[string]NodeOverlay
-	NodeOverrides            map[string]NodeOverlay
-	KubeadmConfigs           map[string]kubeadmconfig.Plan
-	KubernetesVersion        string
-	KubernetesActivationPath string
-	Executor                 *Executor
-	Chown                    func(path string, uid int, gid int) error
-	Now                      func() time.Time
+	Root                            string
+	SourceID                        string
+	DesiredVersion                  string
+	NodeName                        string
+	ApplyMode                       string
+	GenerationID                    string
+	CurrentManifest                 manifest.Manifest
+	CurrentRecord                   generation.Record
+	ClusterDefaults                 NodeOverlay
+	SystemRoleOverrides             map[string]NodeOverlay
+	NodeOverrides                   map[string]NodeOverlay
+	KubeadmConfigs                  map[string]kubeadmconfig.Plan
+	KubernetesVersion               string
+	KubernetesActivationPath        string
+	RuntimeKubernetesVersion        string
+	RuntimeKubernetesActivationPath string
+	Executor                        *Executor
+	Chown                           func(path string, uid int, gid int) error
+	Now                             func() time.Time
 }
 
 type NodeOverlay struct {
@@ -140,8 +142,8 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
 		KubeadmConfigs:           request.KubeadmConfigs,
-		KubernetesVersion:        firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.CurrentRecord)),
-		KubernetesActivationPath: firstNonEmpty(request.KubernetesActivationPath, selectedKubernetesActivationPath(request.CurrentRecord)),
+		KubernetesVersion:        runtimeKubernetesPayloadVersion(request),
+		KubernetesActivationPath: runtimeKubernetesActivationPath(request),
 	})
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -315,8 +317,8 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
 		KubeadmConfigs:           request.KubeadmConfigs,
-		KubernetesVersion:        firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.CurrentRecord)),
-		KubernetesActivationPath: firstNonEmpty(request.KubernetesActivationPath, selectedKubernetesActivationPath(request.CurrentRecord)),
+		KubernetesVersion:        runtimeKubernetesPayloadVersion(request),
+		KubernetesActivationPath: runtimeKubernetesActivationPath(request),
 	})
 	if err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
@@ -754,6 +756,8 @@ func requestDigest(request TrustedBundleRequest) string {
 		KubeadmConfigs       map[string]kubeadmconfig.Plan
 		KubernetesVersion    string
 		KubernetesActivation string
+		RuntimeVersion       string
+		RuntimeActivation    string
 	}
 	data, _ := json.Marshal(digestInput{
 		SourceID:             request.SourceID,
@@ -768,6 +772,8 @@ func requestDigest(request TrustedBundleRequest) string {
 		KubeadmConfigs:       request.KubeadmConfigs,
 		KubernetesVersion:    request.KubernetesVersion,
 		KubernetesActivation: request.KubernetesActivationPath,
+		RuntimeVersion:       request.RuntimeKubernetesVersion,
+		RuntimeActivation:    request.RuntimeKubernetesActivationPath,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -796,6 +802,14 @@ func selectedKubernetesActivationPath(record generation.Record) string {
 		}
 	}
 	return ""
+}
+
+func runtimeKubernetesPayloadVersion(request TrustedBundleRequest) string {
+	return firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.CurrentRecord), request.RuntimeKubernetesVersion)
+}
+
+func runtimeKubernetesActivationPath(request TrustedBundleRequest) string {
+	return firstNonEmpty(request.KubernetesActivationPath, selectedKubernetesActivationPath(request.CurrentRecord), request.RuntimeKubernetesActivationPath)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +13,10 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/configapply"
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -342,7 +345,12 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	if decoded.ApplyMode == generation.ApplyModeLive {
 		plan, err := configapply.PlanTrustedBundle(decoded)
 		if err != nil {
-			_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed planning", err)
+			cause := err
+			if diagnostics := strings.TrimSpace(strings.Join(configApplyDiagnostics(plan.Plan.Decision), "\n")); diagnostics != "" {
+				_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "config-apply-plan-diagnostics", []byte(inventory.Redact(diagnostics)+"\n"), e.clock())
+				cause = errorsJoin(err, fmt.Errorf("%s", diagnostics), artifactErr)
+			}
+			_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed planning", cause)
 			return errorsJoin(err, markErr)
 		}
 		if err := e.markLiveConfigApplyStarted(record.OperationID, plan, startedAt); err != nil {
@@ -522,15 +530,113 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 	if strings.TrimSpace(nodeName) == "" {
 		nodeName = currentManifest.Node.Identity.Hostname
 	}
+	kubeadmConfigs, err := installedKubeadmConfigs(root, currentManifest)
+	if err != nil {
+		return configapply.TrustedBundleRequest{}, err
+	}
+	kubernetesVersion := currentKubernetesPayloadVersion(current)
+	kubernetesActivationPath := currentKubernetesActivationPath(current)
+	if currentManifest.Node.Kubernetes.Kubeadm.ConfigRef != "" && (kubernetesVersion == "" || kubernetesActivationPath == "") {
+		intent, _, err := installer.ReadClusterIntent(root)
+		if err != nil {
+			return configapply.TrustedBundleRequest{}, fmt.Errorf("read current cluster intent: %w", err)
+		}
+		if kubernetesVersion == "" {
+			kubernetesVersion = strings.TrimSpace(intent.Kubernetes.PayloadVersion)
+		}
+		if kubernetesActivationPath == "" {
+			kubernetesActivationPath = clusterIntentKubernetesActivationPath(intent)
+		}
+	}
 	return configapply.TrustedBundleRequest{
-		Root:            root,
-		NodeName:        strings.TrimSpace(nodeName),
-		GenerationID:    strings.TrimSpace(generationID),
-		CurrentManifest: currentManifest,
-		CurrentRecord:   current,
-		Chown:           func(string, int, int) error { return nil },
-		Now:             now,
+		Root:                            root,
+		NodeName:                        strings.TrimSpace(nodeName),
+		GenerationID:                    strings.TrimSpace(generationID),
+		CurrentManifest:                 currentManifest,
+		CurrentRecord:                   current,
+		KubeadmConfigs:                  kubeadmConfigs,
+		RuntimeKubernetesVersion:        kubernetesVersion,
+		RuntimeKubernetesActivationPath: kubernetesActivationPath,
+		Chown:                           func(string, int, int) error { return nil },
+		Now:                             now,
 	}, nil
+}
+
+func clusterIntentKubernetesActivationPath(intent installer.ClusterIntent) string {
+	path := strings.TrimSpace(intent.Kubernetes.SysextPath)
+	if path == "" {
+		return ""
+	}
+	return "/run/extensions/" + filepath.Base(path)
+}
+
+func currentKubernetesPayloadVersion(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return strings.TrimSpace(sysext.PayloadVersion)
+		}
+	}
+	return ""
+}
+
+func currentKubernetesActivationPath(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return strings.TrimSpace(sysext.ActivationPath)
+		}
+	}
+	return ""
+}
+
+func installedKubeadmConfigs(root string, currentManifest manifest.Manifest) (map[string]kubeadmconfig.Plan, error) {
+	ref := strings.TrimSpace(currentManifest.Node.Kubernetes.Kubeadm.ConfigRef)
+	if ref == "" {
+		return nil, nil
+	}
+	dir, err := installer.StoredKubeadmInputDir(root, ref)
+	if err != nil {
+		return nil, err
+	}
+	var files []kubeadmconfig.File
+	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("stored kubeadm input %s is not a regular file", path)
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return fmt.Errorf("stored kubeadm input %s escapes input directory", path)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files = append(files, kubeadmconfig.File{
+			RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", ref, rel)),
+			Content:    content,
+			Mode:       info.Mode().Perm(),
+		})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read installed kubeadm config %q: %w", ref, err)
+	}
+	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, files)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]kubeadmconfig.Plan{ref: plan}, nil
 }
 
 func (s *Server) validateCandidateGenerationAvailable(generationID string) error {

@@ -13,6 +13,7 @@ import (
 type installedRuntimeWorldRun struct {
 	Scenario *WorldScenario
 	Runner   Runner
+	Node     Node
 	Fixture  InstalledRuntimeFixture
 	Config   InstalledRuntimeConfig
 }
@@ -94,6 +95,7 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 		Missing:   MissingFails,
 	}
 	run.Runner = NewRunner(options)
+	run.Node = node.Node
 	run.Fixture = node.Fixture
 	run.Config = node.Config
 	return run, nil

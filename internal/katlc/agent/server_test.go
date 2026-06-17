@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/configapply"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
@@ -254,6 +255,56 @@ func TestKubernetesSysextUpdateCleanGenerationZeroUsesBootstrapPath(t *testing.T
 	}
 }
 
+func TestKubernetesSysextUpdateBootstrappedGenerationZeroUsesClusterIntent(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
+	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	accepted, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-gen0-intent", "v1.36.0", strings.Repeat("e", 64)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := accepted.InitialStatus
+	if status.Phase != kubeadmUpgradeRefusedPhase || !status.Terminal || status.Result != kubeadmUpgradeRefusedPhase {
+		t.Fatalf("initial status = %+v, want terminal refused operation", status)
+	}
+	if !strings.Contains(status.FailureReason, "v1.35.0") || !strings.Contains(status.FailureReason, "target kubeadm access mode") {
+		t.Fatalf("failure reason = %q, want installed intent current version and missing gates", status.FailureReason)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want none for refused Kubernetes sysext update", dispatched.Load())
+	}
+}
+
+func TestKubernetesSysextUpdateGenerationZeroIntentMatchStillRefuses(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
+	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		t.Fatalf("dispatcher called for refused Kubernetes sysext update")
+		return nil
+	})
+
+	accepted, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-gen0-intent-match", "v1.35.0", strings.Repeat("d", 64)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := accepted.InitialStatus
+	if status.Phase != kubeadmUpgradeRefusedPhase || status.Result != kubeadmUpgradeRefusedPhase {
+		t.Fatalf("initial status = %+v, want refused instead of no-op", status)
+	}
+	if !strings.Contains(status.FailureReason, "target kubeadm access mode") {
+		t.Fatalf("failure reason = %q, want missing upgrade gate", status.FailureReason)
+	}
+}
+
 func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -401,6 +452,56 @@ func TestValidateConfigRejectsPlanPolicyWithoutRecord(t *testing.T) {
 	}
 }
 
+func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	server.Dispatcher = executor
+
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-live-rejected",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-live-rejected",
+		ConfigYaml:            configApplyYAML(generation.ApplyModeLive),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || record.ExternalMutationStarted {
+		t.Fatalf("record = %+v, want terminal failed before external mutation", record)
+	}
+	if !strings.Contains(record.FailureReason, "live preflight is required") {
+		t.Fatalf("failure reason = %q, want live preflight diagnostic", record.FailureReason)
+	}
+	if len(record.DiagnosticArtifacts) != 1 || record.DiagnosticArtifacts[0].ArtifactID != "config-apply-plan-diagnostics" {
+		t.Fatalf("diagnostic artifacts = %+v", record.DiagnosticArtifacts)
+	}
+	attachment, err := os.ReadFile(filepath.Join(server.Store.Root, accepted.OperationId, record.DiagnosticArtifacts[0].Path))
+	if err != nil {
+		t.Fatalf("read diagnostic attachment: %v", err)
+	}
+	if !strings.Contains(string(attachment), "live preflight is required") {
+		t.Fatalf("diagnostic attachment = %q, want live preflight diagnostic", attachment)
+	}
+	status, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{
+		OperationId:        accepted.OperationId,
+		IncludeDiagnostics: "verbose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Diagnostics) != 1 || status.Diagnostics[0].ArtifactId != "config-apply-plan-diagnostics" {
+		t.Fatalf("operation status diagnostics = %+v", status.Diagnostics)
+	}
+}
+
 func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -441,6 +542,50 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	}
 	if activator.activated == "" || runner.calls == 0 {
 		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)
+	}
+}
+
+func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeConfigApplyManifestWithKubeadmRef(t, server.Root, "control-plane")
+	writeStoredKubeadmConfig(t, server.Root, "control-plane")
+	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
+	runner := &fakeConfigApplyRunner{}
+	activator := &fakeConfigApplyActivator{}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = runner
+	executor.ConfigApplyActivator = activator
+	server.Dispatcher = executor
+
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-live-generation-kubeadm",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-live-kubeadm",
+		ConfigYaml:            configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.ConfigApplyPhase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("record = %+v, want successful live config apply", record)
+	}
+	if runner.calls == 0 || activator.activated == "" {
+		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)
+	}
+	nodeMetadata, err := os.ReadFile(filepath.Join(server.Root, "var/lib/katl/generations/generation-live-kubeadm/confext/etc/katl/node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(nodeMetadata), `"payloadVersion": "v1.35.0"`) || !strings.Contains(string(nodeMetadata), `"activationPath": "/run/extensions/katl-kubernetes.raw"`) {
+		t.Fatalf("node metadata = %s, want installed Kubernetes selection", nodeMetadata)
 	}
 }
 
@@ -1418,6 +1563,64 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 	if err := os.WriteFile(manifestPath, []byte(configApplyInstallManifestJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeConfigApplyManifestWithKubeadmRef(t *testing.T, root string, ref string) {
+	t.Helper()
+	manifestPath := filepath.Join(root, "var/lib/katl/install/manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := strings.Replace(configApplyInstallManifestJSON, `"systemRole": "control-plane"`, `"systemRole": "control-plane",
+    "kubernetes": {"kubeadm": {"configRef": "`+ref+`"}}`, 1)
+	if err := os.WriteFile(manifestPath, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeStoredKubeadmConfig(t *testing.T, root string, ref string) {
+	t.Helper()
+	dir, err := installer.StoredKubeadmInputDir(root, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeInstalledClusterIntent(t *testing.T, root string, kubernetesVersion string, sysextPath string) {
+	t.Helper()
+	intent := `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "ClusterIntent",
+  "generationID": "generation-0",
+  "systemRole": "control-plane",
+  "identity": {"hostname": "node-a"},
+  "inventory": {"nodeName": "node-a"},
+  "kubernetes": {
+    "payloadVersion": "` + kubernetesVersion + `",
+    "sysextPath": "` + sysextPath + `",
+    "sysextSHA256": "` + strings.Repeat("d", 64) + `"
+  },
+  "katlosImage": {
+    "localRef": "images/katlos.raw",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 1024,
+    "version": "0.1.0",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1",
+    "role": "install"
+  },
+  "source": {},
+  "installedAt": "2026-06-15T11:00:00Z"
+}
+`
+	writeClusterIntent(t, root, []byte(intent))
 }
 
 func currentKubernetesExtensionRef(t *testing.T, root string) generation.ExtensionRef {

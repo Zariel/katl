@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -58,6 +60,7 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 	if err != nil {
 		return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "read current Kubernetes sysext: %v", err)
 	}
+	currentFromIntent := false
 	if !currentOK {
 		state, err := s.kubernetesNodeState()
 		if err != nil {
@@ -66,7 +69,15 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 		if !state.bootstrapped {
 			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, "Kubernetes sysext selection before kubeadm bootstrap must use the bootstrap operation path")
 		}
-		return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "current generation %q has no selected Kubernetes sysext", currentID)
+		intentRef, ok, err := s.currentKubernetesSysextFromIntent()
+		if err != nil {
+			return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "read installed Kubernetes sysext intent: %v", err)
+		}
+		if !ok {
+			return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "current generation %q has no selected Kubernetes sysext", currentID)
+		}
+		current = intentRef
+		currentFromIntent = true
 	}
 	record := operation.OperationRecord{
 		OperationID:                 id,
@@ -87,7 +98,7 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
 		ResourceLocks:               locks,
 	}
-	if sameKubernetesSysext(current, update) {
+	if !currentFromIntent && sameKubernetesSysext(current, update) {
 		completedAt := now.UTC()
 		record.Phase = kubeadmUpgradeNoopPhase
 		record.PhasePlan = []string{"accepted", kubeadmUpgradeNoopPhase}
@@ -185,6 +196,29 @@ func (s *Server) currentKubernetesSysext() (string, generation.ExtensionRef, boo
 		}
 	}
 	return currentID, generation.ExtensionRef{}, false, nil
+}
+
+func (s *Server) currentKubernetesSysextFromIntent() (generation.ExtensionRef, bool, error) {
+	intent, _, err := installer.ReadClusterIntent(s.Root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return generation.ExtensionRef{}, false, nil
+		}
+		return generation.ExtensionRef{}, false, err
+	}
+	version := strings.TrimSpace(intent.Kubernetes.PayloadVersion)
+	path := strings.TrimSpace(intent.Kubernetes.SysextPath)
+	sha := strings.TrimSpace(intent.Kubernetes.SysextSHA256)
+	if version == "" || path == "" || sha == "" {
+		return generation.ExtensionRef{}, false, nil
+	}
+	return generation.ExtensionRef{
+		Name:           "kubernetes",
+		Path:           path,
+		ActivationPath: "/run/extensions/" + filepath.Base(path),
+		SHA256:         sha,
+		PayloadVersion: version,
+	}, true, nil
 }
 
 func sameKubernetesSysext(current generation.ExtensionRef, update operation.KubernetesSysextUpdate) bool {

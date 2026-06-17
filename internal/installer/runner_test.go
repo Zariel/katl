@@ -583,6 +583,21 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextPath": "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextSHA256": "`+payload.Kubernetes.SHA256+`"`)
+	installedManifestFile, err := os.Open(filepath.Join(targetRoot, "var/lib/katl/install/manifest.json"))
+	if err != nil {
+		t.Fatalf("open installed manifest: %v", err)
+	}
+	installedManifest, err := manifest.Decode(installedManifestFile)
+	closeErr := installedManifestFile.Close()
+	if err != nil {
+		t.Fatalf("decode installed manifest: %v", err)
+	}
+	if closeErr != nil {
+		t.Fatalf("close installed manifest: %v", closeErr)
+	}
+	if installedManifest.Node.Identity.Hostname != "lab-node-01" || installedManifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
+		t.Fatalf("installed manifest = %#v", installedManifest.Node)
+	}
 	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
 		if !strings.Contains(commandNames(commands.Calls), name) {
 			t.Fatalf("command calls missing %s: %#v", name, commands.Calls)
