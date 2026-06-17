@@ -137,16 +137,19 @@ func TestAgentWriteFile(t *testing.T) {
 	}
 }
 
-func TestAgentWriteFileDefaultAllowlistIsUploadOnly(t *testing.T) {
-	server := NewAgentServer("test")
+func TestAgentWriteFileDefaultAllowlistSupportsKatlMetadata(t *testing.T) {
 	for _, path := range []string{
-		"/var/lib/katl/config-requests/operator/1.json",
+		"/var/lib/katl/boot/selection.json",
 		"/var/lib/katl/generations/2026.06.06-001/metadata.json",
+		"/var/lib/katl/test-artifacts/sysupdate/source/SHA256SUMS",
 	} {
-		_, err := server.writeFile(&vmtestpb.WriteFileRequest{Path: path, Content: []byte("x")})
-		if err == nil || !strings.Contains(err.Error(), "allowlisted") {
-			t.Fatalf("writeFile(%s) error = %v, want allowlist rejection", path, err)
+		if !pathAllowed(path, defaultAgentWritePaths()) {
+			t.Fatalf("%s is not write-allowlisted", path)
 		}
+	}
+	blocked := "/var/lib/katl/config-requests/operator/1.json"
+	if pathAllowed(blocked, defaultAgentWritePaths()) {
+		t.Fatalf("%s is write-allowlisted", blocked)
 	}
 }
 
@@ -204,7 +207,7 @@ func TestAgentCommandAllowlist(t *testing.T) {
 }
 
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
-	for _, command := range []string{"chmod", "crictl", "install", "katlc"} {
+	for _, command := range []string{"blkid", "chmod", "crictl", "dd", "install", "katlc", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate"} {
 		if !commandAllowed(command, defaultAgentCommands()) {
 			t.Fatalf("%s is not allowlisted", command)
 		}

@@ -441,8 +441,10 @@ func limitOrDefault(value, fallback uint32) uint32 {
 func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
 		"crictl":            true,
+		"blkid":             true,
 		"chmod":             true,
 		"configapply-smoke": true,
+		"dd":                true,
 		"find":              true,
 		"findmnt":           true,
 		"getent":            true,
@@ -452,10 +454,15 @@ func defaultAgentCommands() map[string]bool {
 		"katlc":             true,
 		"kubeadm":           true,
 		"kubectl":           true,
+		"mount":             true,
 		"networkctl":        true,
+		"partx":             true,
 		"readlink":          true,
 		"resolvectl":        true,
+		"sfdisk":            true,
+		"sha256sum":         true,
 		"systemctl":         true,
+		"systemd-sysupdate": true,
 		"test":              true,
 		"true":              true,
 		"uname":             true,
@@ -482,6 +489,8 @@ func defaultAgentFilePaths() []string {
 
 func defaultAgentWritePaths() []string {
 	return []string{
+		"/var/lib/katl/boot/",
+		"/var/lib/katl/generations/",
 		"/var/lib/katl/test-artifacts/",
 	}
 }

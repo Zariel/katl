@@ -25,15 +25,18 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 	}
 	world := RequireWorld(t)
 	repo := repoRoot(t)
+	options := DefaultOptions()
+	input := DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if err := EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
-		Input: DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
-		KVM:   DefaultOptions().KVM,
-	}); err != nil {
+	inputDigest, err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   options.KVM,
+	}, ProduceFirstInstallRuntimeFixture)
+	if err != nil {
 		failInstalledRuntimeWorldFixtureSetup(t, world, name, err)
 	}
-	run, err := planInstalledRuntimeWorldRun(world, name, repo, spec, DefaultOptions().KVM)
+	run, err := planInstalledRuntimeWorldRun(world, name, repo, spec, options.KVM, inputDigest)
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
@@ -74,15 +77,15 @@ func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func
 	return err
 }
 
-func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec, kvm KVMPolicy) (installedRuntimeWorldRun, error) {
+func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec, kvm KVMPolicy, inputDigest ...string) (installedRuntimeWorldRun, error) {
 	scenario, err := world.PlanScenario(name)
 	if err != nil {
 		return installedRuntimeWorldRun{}, err
 	}
 	run := installedRuntimeWorldRun{Scenario: scenario}
-	node, err := AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
+	node, err := addPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
 		WorldFixtureCacheDir(world),
-	}, spec)
+	}, spec, first(inputDigest...))
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err

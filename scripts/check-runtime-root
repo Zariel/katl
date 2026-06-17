@@ -84,6 +84,7 @@ for path in \
     /usr/bin/getent \
     /usr/bin/systemctl \
     /usr/bin/dbus-broker-launch \
+    /usr/bin/importctl \
     /usr/bin/networkctl \
     /usr/bin/bootctl \
     /usr/bin/resolvectl \
@@ -101,6 +102,9 @@ for path in \
     /usr/lib/systemd/system/dbus-broker.service \
     /usr/lib/systemd/system/dbus.socket \
     /usr/lib/systemd/system/systemd-timesyncd.service \
+    /usr/lib/systemd/system/systemd-importd.service \
+    /usr/lib/systemd/systemd-import \
+    /usr/lib/systemd/systemd-sysupdate \
     /usr/lib/systemd/system/sshd.service \
     /usr/lib/systemd/system/containerd.service \
     /usr/lib/systemd/system/var.mount \
@@ -167,6 +171,7 @@ misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-runt
 file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
 file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
 file_has /usr/lib/sysctl.d/50-katl-kubernetes.conf "net.ipv4.ip_forward=1"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /efi 0755 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/etcd 0755 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts/katlos-image 0750 root root -"
@@ -177,7 +182,7 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/config-requests 07
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
-file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
+file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
 
 for path in \
     /usr/bin/mkosi \

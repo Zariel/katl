@@ -59,6 +59,24 @@ func TestPlanInstalledRuntimeWorldRunPublishesFixture(t *testing.T) {
 	}
 }
 
+func TestPlanInstalledRuntimeWorldRunUsesInputDigest(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	selected := writePublishedInstalledRuntimeFixtureWithDigest(t, world.CacheDir, "selected", "cp-1", ControlPlane, "match", time.Unix(10, 0))
+	stale := writePublishedInstalledRuntimeFixtureWithDigest(t, world.CacheDir, "stale-newer", "cp-1", ControlPlane, "stale", time.Unix(20, 0))
+
+	run, err := planInstalledRuntimeWorldRun(world, "installed runtime", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, KVMOff, "match")
+	if err != nil {
+		t.Fatalf("planInstalledRuntimeWorldRun() error = %v", err)
+	}
+	if !pathUnder(run.Fixture.Record.Provenance.SourcePath, filepath.Dir(selected)) {
+		t.Fatalf("fixture source = %q, want under selected fixture %q", run.Fixture.Record.Provenance.SourcePath, selected)
+	}
+	if pathUnder(run.Fixture.Record.Provenance.SourcePath, filepath.Dir(stale)) {
+		t.Fatalf("fixture source = %q, selected stale fixture %q", run.Fixture.Record.Provenance.SourcePath, stale)
+	}
+}
+
 func TestFindPublishedFirstInstallRuntimeFixtureSelectsNewestMatch(t *testing.T) {
 	repo := t.TempDir()
 	old := writePublishedInstalledRuntimeFixture(t, DefaultVMTestCacheDir(repo), "old", "cp-1", ControlPlane, time.Unix(10, 0))
@@ -141,7 +159,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testi
 		KVM:   KVMOff,
 		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
 			produced = append(produced, contract.Node.Name)
-			manifest := writePublishedInstalledRuntimeFixture(t, world.CacheDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+			manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, FirstInstallRuntimeFixtureScenarioName(contract.Node), time.Unix(10, 0))
 			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
 		},
 	})
@@ -213,12 +231,27 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesWritesSetupFailureForEachFail
 
 func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *testing.T) {
 	world := testWorld(t)
-	writePublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
+		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, "world-cp", time.Unix(10, 0))
+			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() initial error = %v", err)
+	}
 
-	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, t.TempDir(), []NodeSpec{
+	err = EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{
 		{Name: "cp-1", Role: ControlPlane},
 		{Name: "cp-1", Role: ControlPlane},
 	}, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
 		Produce: func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
 			t.Fatal("producer was called for an existing fixture")
 			return ProducedInstalledRuntimeFixture{}, nil
@@ -226,6 +259,66 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *test
 	})
 	if err != nil {
 		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+}
+
+func TestEnsurePublishedFirstInstallRuntimeFixturesRegeneratesChangedInput(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	produced := 0
+	produce := func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+		produced++
+		manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, fmt.Sprintf("world-cp-%d", produced), time.Unix(int64(10+produced), 0))
+		return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+	}
+
+	if err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input:   input,
+		KVM:     KVMOff,
+		Produce: produce,
+	}); err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() initial error = %v", err)
+	}
+	changed := input
+	changed.TargetDiskSize = "21G"
+	if err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input:   changed,
+		KVM:     KVMOff,
+		Produce: produce,
+	}); err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() changed-input error = %v", err)
+	}
+	if produced != 2 {
+		t.Fatalf("produced = %d, want 2", produced)
+	}
+}
+
+func TestFirstInstallRuntimeFixtureInputDigestIncludesMode(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	preseed, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, input, KVMOff)
+	if err != nil {
+		t.Fatalf("FirstInstallRuntimeFixtureContractForWorld() preseed error = %v", err)
+	}
+	input.Mode = FirstInstallWorldGuestHandoff
+	handoff, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, input, KVMOff)
+	if err != nil {
+		t.Fatalf("FirstInstallRuntimeFixtureContractForWorld() handoff error = %v", err)
+	}
+	preseedDigest, err := firstInstallRuntimeFixtureInputDigest(preseed)
+	if err != nil {
+		t.Fatalf("firstInstallRuntimeFixtureInputDigest() preseed error = %v", err)
+	}
+	handoffDigest, err := firstInstallRuntimeFixtureInputDigest(handoff)
+	if err != nil {
+		t.Fatalf("firstInstallRuntimeFixtureInputDigest() handoff error = %v", err)
+	}
+	if preseed.Mode != FirstInstallWorldPreseed || handoff.Mode != FirstInstallWorldGuestHandoff || preseedDigest == handoffDigest {
+		t.Fatalf("mode/digest mismatch: preseed=%q %s handoff=%q %s", preseed.Mode, preseedDigest, handoff.Mode, handoffDigest)
 	}
 }
 
@@ -243,7 +336,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesCacheAcrossWorlds(t *te
 			Input: input,
 			KVM:   KVMOff,
 			Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
-				manifest := writePublishedInstalledRuntimeFixture(t, contract.WorldScenario.World.CacheDir, name, contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+				manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, name, time.Unix(10, 0))
 				return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
 			},
 		})
@@ -288,11 +381,13 @@ func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	metadata := writeFixtureNodeMetadata(t, filepath.Join(sourceDir, "node.json"), Node{Name: "cp-1", Role: ControlPlane})
 
 	fixture, err := publishFirstInstallRuntimeWorldFixture(FirstInstallRuntimeFixtureContract{
-		WorldScenario: scenario,
-		WorldNode:     node,
-		ManifestPath:  filepath.Join(sourceDir, "install-manifest.json"),
-		NodeMetadata:  metadata,
-		Node:          NodeSpec{Name: "cp-1", Role: ControlPlane},
+		WorldScenario:   scenario,
+		WorldNode:       node,
+		InstallerBoot:   InstallerBootConfig{InstallerUKI: writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")},
+		RuntimeArtifact: writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime"),
+		ManifestPath:    writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest()),
+		NodeMetadata:    metadata,
+		Node:            NodeSpec{Name: "cp-1", Role: ControlPlane},
 	}, disk, esp)
 	if err != nil {
 		t.Fatalf("publishFirstInstallRuntimeWorldFixture() error = %v", err)
@@ -374,6 +469,46 @@ func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName st
 		t.Fatalf("Chtimes(%s) error = %v", publishedManifest, err)
 	}
 	return fixtureManifest
+}
+
+func writePublishedInstalledRuntimeFixtureForContract(t *testing.T, contract FirstInstallRuntimeFixtureContract, name string, modTime time.Time) string {
+	t.Helper()
+	inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
+	if err != nil {
+		t.Fatalf("firstInstallRuntimeFixtureInputDigest() error = %v", err)
+	}
+	manifest := writePublishedInstalledRuntimeFixture(t, contract.WorldScenario.World.CacheDir, name, contract.Node.Name, contract.Node.Role, modTime)
+	publishedPath := filepath.Join(filepath.Dir(manifest), "published-first-install-runtime-fixture.json")
+	published, err := ReadPublishedFirstInstallRuntimeFixture(publishedPath)
+	if err != nil {
+		t.Fatalf("ReadPublishedFirstInstallRuntimeFixture(%s) error = %v", publishedPath, err)
+	}
+	published.InputDigest = inputDigest
+	if err := writeJSON(publishedPath, published); err != nil {
+		t.Fatalf("write published fixture %s: %v", publishedPath, err)
+	}
+	if err := os.Chtimes(publishedPath, modTime, modTime); err != nil {
+		t.Fatalf("Chtimes(%s) error = %v", publishedPath, err)
+	}
+	return manifest
+}
+
+func writePublishedInstalledRuntimeFixtureWithDigest(t *testing.T, repo, name, nodeName string, role NodeRole, inputDigest string, modTime time.Time) string {
+	t.Helper()
+	manifest := writePublishedInstalledRuntimeFixture(t, repo, name, nodeName, role, modTime)
+	publishedPath := filepath.Join(filepath.Dir(manifest), "published-first-install-runtime-fixture.json")
+	published, err := ReadPublishedFirstInstallRuntimeFixture(publishedPath)
+	if err != nil {
+		t.Fatalf("ReadPublishedFirstInstallRuntimeFixture(%s) error = %v", publishedPath, err)
+	}
+	published.InputDigest = inputDigest
+	if err := writeJSON(publishedPath, published); err != nil {
+		t.Fatalf("write published fixture %s: %v", publishedPath, err)
+	}
+	if err := os.Chtimes(publishedPath, modTime, modTime); err != nil {
+		t.Fatalf("Chtimes(%s) error = %v", publishedPath, err)
+	}
+	return manifest
 }
 
 func firstInstallFixtureInputForTest(t *testing.T) FirstInstallWorldInput {

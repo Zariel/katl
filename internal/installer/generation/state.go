@@ -421,6 +421,7 @@ func legacyOperationUnitPaths() []string {
 
 func stateDirs() []StateDir {
 	return []StateDir{
+		{Path: "/efi", Mode: 0o755},
 		{Path: "/var/lib/katl", Mode: 0o755},
 		{Path: "/var/lib/katl/boot", Mode: 0o755},
 		{Path: "/var/lib/katl/generations", Mode: 0o755},

@@ -22,6 +22,7 @@ type PublishedFirstInstallRuntimeFixture struct {
 	SystemRole      string `json:"systemRole"`
 	FixtureManifest string `json:"fixtureManifest"`
 	DiskFormat      string `json:"diskFormat"`
+	InputDigest     string `json:"inputDigest,omitempty"`
 }
 
 type publishedFixtureCandidate struct {
@@ -34,11 +35,15 @@ func AddPublishedInstalledRuntimeNode(scenario *WorldScenario, repo string, spec
 }
 
 func AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario *WorldScenario, buildRoots []string, spec NodeSpec) (InstalledRuntimeWorldNode, error) {
+	return addPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, spec, "")
+}
+
+func addPublishedInstalledRuntimeNodeFromBuildRoots(scenario *WorldScenario, buildRoots []string, spec NodeSpec, inputDigest string) (InstalledRuntimeWorldNode, error) {
 	node, err := scenario.AddNode(spec)
 	if err != nil {
 		return InstalledRuntimeWorldNode{}, err
 	}
-	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, spec)
+	published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, spec, inputDigest)
 	if err != nil {
 		return InstalledRuntimeWorldNode{Node: node}, err
 	}
@@ -80,6 +85,10 @@ func WorldFixtureCacheDir(world World) string {
 }
 
 func FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, spec NodeSpec) (PublishedFirstInstallRuntimeFixture, error) {
+	return findPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, spec, "")
+}
+
+func findPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, spec NodeSpec, inputDigest string) (PublishedFirstInstallRuntimeFixture, error) {
 	for _, root := range buildRoots {
 		if strings.TrimSpace(root) == "" {
 			continue
@@ -108,7 +117,7 @@ func FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, sp
 		if err != nil {
 			return PublishedFirstInstallRuntimeFixture{}, err
 		}
-		best, ok, err := selectPublishedFirstInstallRuntimeFixture(candidates, spec)
+		best, ok, err := selectPublishedFirstInstallRuntimeFixture(candidates, spec, inputDigest)
 		if err != nil {
 			return PublishedFirstInstallRuntimeFixture{}, err
 		}
@@ -119,7 +128,7 @@ func FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, sp
 	return PublishedFirstInstallRuntimeFixture{}, errors.New("published installed runtime fixture is missing: run the first-install fixture contract")
 }
 
-func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCandidate, spec NodeSpec) (PublishedFirstInstallRuntimeFixture, bool, error) {
+func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCandidate, spec NodeSpec, inputDigest string) (PublishedFirstInstallRuntimeFixture, bool, error) {
 	var best PublishedFirstInstallRuntimeFixture
 	var bestTime time.Time
 	for _, candidate := range candidates {
@@ -131,6 +140,9 @@ func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCand
 			continue
 		}
 		if spec.Role != "" && NodeRole(published.SystemRole) != spec.Role {
+			continue
+		}
+		if inputDigest != "" && published.InputDigest != inputDigest {
 			continue
 		}
 		if best.FixtureManifest == "" || candidate.ModTime.After(bestTime) {
@@ -145,6 +157,10 @@ func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCand
 }
 
 func WritePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string, format DiskFormat) (string, error) {
+	return writePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest, format, "")
+}
+
+func writePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string, format DiskFormat, inputDigest string) (string, error) {
 	source, err := readInstalledRuntimeFixture(fixtureManifest)
 	if err != nil {
 		return "", err
@@ -178,6 +194,7 @@ func WritePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string
 		SystemRole:      systemRole,
 		FixtureManifest: relFrom(filepath.Dir(path), fixtureManifest),
 		DiskFormat:      string(format),
+		InputDigest:     inputDigest,
 	}
 	if err := writeJSON(path, published); err != nil {
 		return "", err

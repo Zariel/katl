@@ -24,6 +24,7 @@ type FirstInstallWorldRun struct {
 	Runner   Runner
 	Config   FirstInstallConfig
 	Repo     string
+	Mode     FirstInstallWorldMode
 }
 
 type FirstInstallWorldInput struct {
@@ -140,6 +141,7 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 	if mode == "" {
 		mode = FirstInstallWorldPreseed
 	}
+	run.Mode = mode
 	run.Runner = NewRunner(Options{
 		Enabled:   true,
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),

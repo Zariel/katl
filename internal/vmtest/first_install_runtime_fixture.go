@@ -2,6 +2,8 @@ package vmtest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ type FirstInstallRuntimeFixtureContract struct {
 	TargetDisk      DiskFixture
 	UseInstalledESP bool
 	Node            NodeSpec
+	Mode            FirstInstallWorldMode
 }
 
 type ProducedInstalledRuntimeFixture struct {
@@ -39,6 +42,21 @@ type FirstInstallRuntimeFixtureOptions struct {
 	Produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)
 }
 
+type firstInstallRuntimeFixtureInputIdentity struct {
+	InstallerUKISHA256    string   `json:"installerUKISHA256,omitempty"`
+	InstallerKernelSHA256 string   `json:"installerKernelSHA256,omitempty"`
+	InstallerInitrdSHA256 string   `json:"installerInitrdSHA256,omitempty"`
+	InstallerCommandLine  []string `json:"installerCommandLine,omitempty"`
+	RuntimeRootSHA256     string   `json:"runtimeRootSHA256"`
+	RuntimeESPTreeSHA256  string   `json:"runtimeESPTreeSHA256,omitempty"`
+	InstallManifestSHA256 string   `json:"installManifestSHA256"`
+	NodeMetadataSHA256    string   `json:"nodeMetadataSHA256,omitempty"`
+	Mode                  string   `json:"mode,omitempty"`
+	TargetDiskFormat      string   `json:"targetDiskFormat,omitempty"`
+	TargetDiskSize        string   `json:"targetDiskSize,omitempty"`
+	UseInstalledESP       bool     `json:"useInstalledESP"`
+}
+
 func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World, repo string, specs []NodeSpec, options FirstInstallRuntimeFixtureOptions) error {
 	produce := options.Produce
 	if produce == nil {
@@ -46,7 +64,7 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 	}
 	var errs []error
 	for _, spec := range specs {
-		if err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, options, produce); err != nil {
+		if _, err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, options, produce); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", first(strings.TrimSpace(spec.Name), FirstInstallRuntimeFixtureScenarioName(spec)), err))
 		}
 	}
@@ -60,35 +78,110 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 	}
 }
 
-func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
+func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) (string, error) {
 	cacheDir := WorldFixtureCacheDir(world)
-	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec); err == nil {
-		return nil
+	contract, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
+	if err != nil {
+		return "", err
+	}
+	inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
+	if err != nil {
+		return "", err
+	}
+	if _, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
+		return inputDigest, nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
-		return err
+		return "", err
 	}
 	unlock, err := lockLeaseFile(filepath.Join(cacheDir, "locks", FirstInstallRuntimeFixtureScenarioName(spec)))
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
-	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec); err == nil {
-		return nil
+	if _, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
+		return inputDigest, nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
-		return err
-	}
-	contract, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
-	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := produce(ctx, contract); err != nil {
 		if contract.WorldScenario != nil {
 			_ = contract.WorldScenario.WriteSetupFailure(err)
 		}
-		return err
+		return "", err
 	}
-	_, err = FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec)
-	return err
+	_, err = findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest)
+	if err != nil {
+		return "", err
+	}
+	return inputDigest, nil
+}
+
+func firstInstallRuntimeFixtureInputDigest(contract FirstInstallRuntimeFixtureContract) (string, error) {
+	identity := firstInstallRuntimeFixtureInputIdentity{
+		InstallerCommandLine: append([]string(nil), contract.InstallerBoot.CommandLine...),
+		Mode:                 string(firstInstallModeForContract(contract)),
+		TargetDiskFormat:     string(contract.TargetDisk.Format),
+		TargetDiskSize:       strings.TrimSpace(contract.TargetDisk.Size),
+		UseInstalledESP:      contract.UseInstalledESP,
+	}
+	if strings.TrimSpace(contract.InstallerBoot.InstallerUKI) != "" {
+		sum, err := fileSHA256(contract.InstallerBoot.InstallerUKI)
+		if err != nil {
+			return "", fmt.Errorf("hash installer UKI: %w", err)
+		}
+		identity.InstallerUKISHA256 = sum
+	}
+	if strings.TrimSpace(contract.InstallerBoot.InstallerKernel) != "" {
+		sum, err := fileSHA256(contract.InstallerBoot.InstallerKernel)
+		if err != nil {
+			return "", fmt.Errorf("hash installer kernel: %w", err)
+		}
+		identity.InstallerKernelSHA256 = sum
+	}
+	if strings.TrimSpace(contract.InstallerBoot.InstallerInitrd) != "" {
+		sum, err := fileSHA256(contract.InstallerBoot.InstallerInitrd)
+		if err != nil {
+			return "", fmt.Errorf("hash installer initrd: %w", err)
+		}
+		identity.InstallerInitrdSHA256 = sum
+	}
+	runtimeRootSHA, err := fileSHA256(contract.RuntimeArtifact)
+	if err != nil {
+		return "", fmt.Errorf("hash runtime root artifact: %w", err)
+	}
+	identity.RuntimeRootSHA256 = runtimeRootSHA
+	if strings.TrimSpace(contract.RuntimeESP) != "" {
+		sum, err := espTreeSHA256(contract.RuntimeESP)
+		if err != nil {
+			return "", fmt.Errorf("hash runtime ESP artifacts: %w", err)
+		}
+		identity.RuntimeESPTreeSHA256 = sum
+	}
+	manifestSHA, err := fileSHA256(contract.ManifestPath)
+	if err != nil {
+		return "", fmt.Errorf("hash install manifest: %w", err)
+	}
+	identity.InstallManifestSHA256 = manifestSHA
+	if strings.TrimSpace(contract.NodeMetadata) != "" {
+		sum, err := fileSHA256(contract.NodeMetadata)
+		if err != nil {
+			return "", fmt.Errorf("hash node metadata: %w", err)
+		}
+		identity.NodeMetadataSHA256 = sum
+	}
+	data, err := json.Marshal(identity)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func firstInstallModeForContract(contract FirstInstallRuntimeFixtureContract) FirstInstallWorldMode {
+	if contract.Mode != "" {
+		return contract.Mode
+	}
+	return FirstInstallWorldPreseed
 }
 
 func FirstInstallRuntimeFixtureContractForWorld(world World, repo string, spec NodeSpec, input FirstInstallWorldInput, kvm KVMPolicy) (FirstInstallRuntimeFixtureContract, error) {
@@ -109,6 +202,7 @@ func FirstInstallRuntimeFixtureContractForWorld(world World, repo string, spec N
 		TargetDisk:      run.Config.TargetDisk,
 		UseInstalledESP: run.Config.UseInstalledESP,
 		Node:            spec,
+		Mode:            run.Mode,
 	}, nil
 }
 
@@ -153,7 +247,7 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 		},
 	}
 	installerVM, runtimeVM := firstInstallFixtureVMConfigs(vm)
-	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: FirstInstallRuntimeFixtureScenarioName(contract.Node)}, FirstInstallConfig{
+	config := FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    contract.InstallerBoot.InstallerUKI,
 			InstallerKernel: contract.InstallerBoot.InstallerKernel,
@@ -169,9 +263,17 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 		},
 		UseInstalledESP: contract.UseInstalledESP,
 		ManifestPath:    contract.ManifestPath,
-		PreseedManifest: true,
 		TargetDisk:      contract.TargetDisk,
-	})
+	}
+	switch firstInstallModeForContract(contract) {
+	case FirstInstallWorldPreseed:
+		config.PreseedManifest = true
+	case FirstInstallWorldGuestHandoff:
+		config.GuestHandoff = true
+	default:
+		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("unsupported first-install fixture mode: %s", contract.Mode)
+	}
+	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: FirstInstallRuntimeFixtureScenarioName(contract.Node)}, config)
 	if err != nil {
 		return ProducedInstalledRuntimeFixture{}, err
 	}
@@ -226,11 +328,15 @@ func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureC
 	if err := factory.replaceRecord(FixtureInstalledRuntime, fixture.Record); err != nil {
 		return ProducedInstalledRuntimeFixture{}, err
 	}
+	inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
+	if err != nil {
+		return ProducedInstalledRuntimeFixture{}, err
+	}
 	cached, err := packageInstalledRuntimeFixture(contract, filepath.Join(WorldFixtureCacheDir(contract.WorldScenario.World), "fixtures", FirstInstallRuntimeFixtureScenarioName(contract.Node)), installedDisk, fixtureESP)
 	if err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("cache first-install runtime fixture: %w", err)
 	}
-	if _, err := WritePublishedFirstInstallRuntimeFixture(WorldFixtureCacheDir(contract.WorldScenario.World), FirstInstallRuntimeFixtureScenarioName(contract.Node), cached.ManifestPath, DiskQCOW2); err != nil {
+	if _, err := writePublishedFirstInstallRuntimeFixture(WorldFixtureCacheDir(contract.WorldScenario.World), FirstInstallRuntimeFixtureScenarioName(contract.Node), cached.ManifestPath, DiskQCOW2, inputDigest); err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("publish first-install runtime fixture: %w", err)
 	}
 	return ProducedInstalledRuntimeFixture{
