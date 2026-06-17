@@ -75,6 +75,159 @@ Optional local `katlc` commands may exist for break-glass diagnostics, but they
 must be wrappers around the same state model or agent API. They must not create
 a second supported operation submission path.
 
+Because Katl is still greenfield, this boundary should be implemented directly
+instead of preserving compatibility with older local-only scaffolding commands
+or package names. When existing code sits on the wrong side of the boundary,
+move it behind the intended owner rather than adding shims.
+
+## Command Surface
+
+The supported operator workflow is:
+
+```text
+katlctl on workstation
+  -> katlc TCP gRPC API on the target node
+    -> katlc agent validation, operation records, executor, and status APIs
+```
+
+`katlc` local commands are node-local service and diagnostic commands only:
+
+```text
+katlc version
+katlc agent serve
+katlc agent init-token
+katlc debug validate-config, when needed
+katlc debug show-operation, when needed
+katlc debug rebuild-projection, when needed
+```
+
+Local debug commands must either call the same package entrypoints used by the
+agent API or make read-only projections easier to inspect. They must not accept
+normal apply, bootstrap, upgrade, rollback, or kubeadm submission input through
+a separate local CLI contract.
+
+Target `katlctl` commands own workstation orchestration:
+
+```text
+katlctl config apply
+katlctl config apply status
+katlctl bootstrap init
+katlctl bootstrap join-control-plane
+katlctl bootstrap join-worker
+katlctl kubeconfig get
+```
+
+These commands load operator config, select target nodes, call the node-local
+agent APIs, poll or watch operation IDs, and write client-side output. They do
+not create node-local state directly. Existing greenfield scaffolding may still
+use older command names such as `katlctl cluster bootstrap`; move that surface
+toward the target shape instead of preserving both names.
+
+`katlos-install` owns disk and first-boot bootstrap authority:
+
+```text
+disk discovery and planning
+partitioning and root slot writes
+install manifest ingestion
+initial runtime state handoff
+first generation materialization
+installer-only smoke and recovery paths
+```
+
+The installer may reuse shared planning and rendering libraries, but it must not
+become a runtime operation API. After the installed system boots, normal
+lifecycle mutations go through `katlctl` to `katlc`.
+
+## Go Package Layout
+
+The target package layout is:
+
+| Path | Owner | Responsibility |
+| --- | --- | --- |
+| `cmd/katlc` | node binary | Small CLI parser for `version`, `agent serve`, token setup, and explicit `debug` commands. It must delegate product logic to `internal/katlc/...`. |
+| `internal/katlc/agentapi` | API contract | Protobuf service, request, response, and event types for the TCP gRPC management API. Generated code remains package-local to Katl. |
+| `internal/katlc/agent` | agent runtime | gRPC handlers, auth, startup audit, operation acceptance, lock checks, dispatch, watch delivery, and redacted API projections. |
+| `internal/katlc/config` | shared validation | User-supplied Katl YAML/config decoding, normalization, deterministic diagnostics, and validation result types accepted by generation planning. |
+| `internal/katlc/generation` | shared generation planning | Compile validated config plus selected runtime inputs into generation specs, sysext/confext intent, apply matrices, and status seed data. |
+| `internal/katlc/runtime` | shared runtime helpers | Runtime status records, generation load/read helpers, boot selection reads, activation request helpers, and redaction helpers used by the agent and workstation status views. |
+| `internal/katlc/executor` | agent internals | Bounded child-process execution contracts, timeout handling, operation journal event emission, and diagnostic capture for agent-owned operations. |
+| `cmd/katlctl` | workstation binary | Thin operator client that loads workstation config, connects to one or more agents, submits requests, watches operation status, and writes explicit client-side artifacts. |
+| `cmd/katlos-install` | installer binary | Disk/bootstrap authority that creates the installed system and the first generation handoff without exposing a runtime operation endpoint. |
+
+The split may be introduced incrementally, but new runtime lifecycle logic should
+land under `internal/katlc/...` unless it is strictly installer-only.
+
+### Existing Package Ownership
+
+Move these existing packages or responsibilities behind the `katlc` agent
+boundary as they become runtime lifecycle code:
+
+```text
+internal/installer/configapply
+  -> internal/katlc/generation or internal/katlc/runtime
+     for runtime config apply planning, apply matrices, mode validation, and
+     generation-local apply status records.
+
+internal/installer/generation
+  -> internal/katlc/runtime
+     for generation metadata records, config apply status, boot selection,
+     activation helpers, status reads, and redaction used after installation.
+
+internal/installer/operation
+  -> internal/katlc/agent or internal/katlc/runtime
+     for operation records, journals, projections, status APIs, and locks used
+     by accepted runtime operations.
+
+internal/installer/kubeadmconfig and internal/installer/kubeadmplan
+  -> internal/katlc/config and internal/katlc/generation
+     for validated kubeadm references and runtime generation planning inputs.
+```
+
+Keep these existing packages installer-owned unless a later design explicitly
+makes a shared package:
+
+```text
+internal/installer/disk
+internal/installer/discovery
+internal/installer/katlosimage
+internal/installer/handoff
+internal/installer/bootstrapruntime
+internal/installer/install_record.go
+internal/installer/input.go
+internal/installer/runner.go
+```
+
+Installer initial generation bootstrapping should call the same validation and
+generation planning packages used by `katlc`, then write installer handoff state
+and install records through installer-owned code. Disk layout, root-slot
+mutation, install image selection, and installer recovery remain out of the
+agent package.
+
+## Runtime Status And Activation Helpers
+
+Runtime status records are part of the node management contract, not installer
+state. Generation metadata, config apply status, operation projections, and boot
+selection reads should be available through shared `internal/katlc/runtime`
+helpers so both the agent API and `katlctl` status formatting read the same
+schema.
+
+Activation helpers belong behind the agent boundary when they decide or request
+runtime lifecycle changes:
+
+```text
+stage generation
+apply generation live
+apply generation next-boot
+select rollback generation
+record activation evidence
+redact activation diagnostics
+```
+
+Low-level systemd or filesystem actions may remain small helper functions, but
+the policy deciding whether an activation is accepted, refused, live-only,
+next-boot-only, or rollback-triggering must live in the shared katlc generation
+and runtime packages.
+
 ## Command And Query Split
 
 Katl should use a command/query split internally because it matches the
