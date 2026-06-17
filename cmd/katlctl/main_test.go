@@ -18,6 +18,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/readiness"
 	"github.com/zariel/katl/internal/installer/generation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/zariel/katl/internal/katlctl/workstation"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 	"google.golang.org/grpc"
@@ -98,6 +99,54 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestConfigTopologyCommandPrintsResolvedContext(t *testing.T) {
+	configPath := writeKatlctlConfig(t, `currentContext: prod
+contexts:
+- name: prod
+  cluster: katl-prod
+- name: stage
+  cluster: katl-stage
+clusters:
+- name: katl-prod
+  controlPlaneEndpoint: api.prod.test:6443
+  nodes:
+  - name: cp-1
+    managementEndpoint: cp-1.prod.test:9443
+    systemRole: control-plane
+    credentialRef: file:/secure/katl/cp-1.token
+- name: katl-stage
+  nodes:
+  - name: stage-cp
+    managementEndpoint: stage-cp.test:9443
+    systemRole: control-plane
+    credentialRef: file:/secure/katl/stage-cp.token
+`)
+	t.Setenv("KATLCTL_CONFIG", configPath)
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "topology",
+		"--context", "stage",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var resolved workstation.ResolvedTopology
+	if err := json.Unmarshal(stdout.Bytes(), &resolved); err != nil {
+		t.Fatalf("decode topology: %v\n%s", err, stdout.String())
+	}
+	if resolved.Source != workstation.SourceConfigContext || resolved.ContextName != "stage" || resolved.ClusterName != "katl-stage" {
+		t.Fatalf("topology = %#v", resolved)
+	}
+	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Name != "stage-cp" || resolved.Nodes[0].ManagementEndpoint != "stage-cp.test:9443" {
+		t.Fatalf("nodes = %#v", resolved.Nodes)
+	}
+	if resolved.Nodes[0].CredentialRef != "file:/secure/katl/stage-cp.token" {
+		t.Fatalf("credential ref = %q", resolved.Nodes[0].CredentialRef)
 	}
 }
 
@@ -966,6 +1015,15 @@ nodes:
   kubernetesVersion: v1.36.1
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeKatlctlConfig(t *testing.T, data string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "katlctl.yaml")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

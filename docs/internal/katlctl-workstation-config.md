@@ -37,25 +37,53 @@ XDG_CONFIG_HOME
 
 `katlctl config path` prints the resolved path.
 
-## Initial Scope
+## Schema
 
-The file starts as a minimal client-side profile store. It may grow to include:
+The file is a minimal client-side profile store:
 
-```text
-currentContext
-contexts[]
-clusters[].nodes[].managementEndpoint
-clusters[].nodes[].systemRole
-clusters[].nodes[].credentialRef
-clusters[].controlPlaneEndpoint
+```yaml
+currentContext: prod
+contexts:
+- name: prod
+  cluster: katl-prod
+clusters:
+- name: katl-prod
+  controlPlaneEndpoint: api.prod.example:6443
+  nodes:
+  - name: cp-1
+    managementEndpoint: cp-1.prod.example:9443
+    systemRole: control-plane
+    credentialRef: file:/secure/katl/cp-1.token
+  - name: worker-1
+    managementEndpoint: worker-1.prod.example:9443
+    systemRole: worker
+    credentialRef: file:/secure/katl/worker-1.token
 ```
+
+`currentContext` names a context in `contexts`. Each context names a cluster in
+`clusters`. Each cluster records node-local `katlc` management endpoints,
+KatlOS system roles, credential references, and optionally the stable
+control-plane endpoint used by operator workflows.
 
 The config must not contain inline bearer tokens, private keys, kubeconfigs, or
 cluster PKI. Store references to credentials, not credential material.
 
-Day-one commands may still accept explicit inventory or plan files. As day-two
-operations such as Kubernetes upgrades are added, `katlctl` can use this config
-to remember node management endpoints and roles between invocations.
+`katlctl config topology` prints the resolved context topology as JSON.
+The topology output includes `credentialRef` values because they are operator
+references needed by orchestration, not credential material.
+
+## Precedence
+
+Explicit operator input is authoritative. A compiled plan, when accepted by a
+command, wins over explicit inventory. Explicit inventory wins over workstation
+config. Workstation `currentContext` is used only when a command asks for a
+profile and no explicit inventory or plan input supplies the same topology.
+
+Invocation flags that are already explicit command overrides, such as
+`--control-plane-endpoint`, `--init-node`, or `--node-address`, remain command
+overrides after the topology source is selected. `katlctl` must not silently
+borrow missing endpoints, roles, or credentials from workstation config when an
+explicit inventory or plan is present.
 
 ## Boundary
 

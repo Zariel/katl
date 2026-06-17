@@ -17,6 +17,7 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/zariel/katl/internal/katlctl/workstation"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 	"google.golang.org/grpc"
@@ -58,6 +59,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
 		return runConfigPath(args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "config" && args[1] == "topology" {
+		return runConfigTopology(args[2:], stdout, stderr)
+	}
 	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "validate" {
 		return runConfigApplyValidate(ctx, args[3:], stdout, stderr)
 	}
@@ -88,17 +92,36 @@ func runConfigPath(args []string, stdout, stderr io.Writer) error {
 }
 
 func workstationConfigPath() (string, error) {
-	if path := strings.TrimSpace(os.Getenv("KATLCTL_CONFIG")); path != "" {
-		return filepath.Clean(path), nil
+	return workstation.ConfigPath()
+}
+
+func runConfigTopology(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl config topology", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	contextName := flags.String("context", "", "katlctl config context name")
+	output := flags.String("output", "json", "output format: json")
+	if err := flags.Parse(args); err != nil {
+		return err
 	}
-	if dir := strings.TrimSpace(os.Getenv("KATLCTL_CONFIG_DIR")); dir != "" {
-		return filepath.Join(filepath.Clean(dir), "katlctl.yaml"), nil
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	dir, err := os.UserConfigDir()
+	if *output != "json" {
+		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	resolved, err := workstation.ResolveTopology(workstation.ResolveRequest{
+		ContextName: *contextName,
+	})
 	if err != nil {
-		return "", fmt.Errorf("locate katlctl config directory: %w", err)
+		return err
 	}
-	return filepath.Join(dir, "katl", "katlctl.yaml"), nil
+	data, err := json.MarshalIndent(resolved, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal topology: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
 }
 
 func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer) error {
