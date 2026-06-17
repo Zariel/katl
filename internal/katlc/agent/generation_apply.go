@@ -20,6 +20,7 @@ import (
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	katlconfig "github.com/zariel/katl/internal/katlc/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -110,6 +111,11 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	if err != nil {
 		return rejected(err, nil), nil
 	}
+	configDiagnostics := validateConfigApplyDocument(req.ConfigYaml, base.KubeadmConfigs)
+	if !configDiagnostics.Accepted() {
+		diagnostics := configDiagnostics.Strings()
+		return rejected(configValidationError(diagnostics), diagnostics), nil
+	}
 	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(req.ConfigYaml), base)
 	if err != nil {
 		return rejected(err, nil), nil
@@ -130,6 +136,24 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		CandidateGenerationId: candidateID,
 		ChangedDomains:        append([]string(nil), plan.Plan.Decision.ChangedDomains...),
 	}, nil
+}
+
+func kubeadmConfigNames(configs map[string]kubeadmconfig.Plan) map[string]struct{} {
+	if len(configs) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(configs))
+	for name := range configs {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+func configValidationError(diagnostics []string) error {
+	if len(diagnostics) == 0 {
+		return fmt.Errorf("config validation rejected")
+	}
+	return fmt.Errorf("config validation rejected: %s", diagnostics[0])
 }
 
 func (s *Server) ApplyGeneration(ctx context.Context, req *agentapi.GenerationApplyRequest) (*agentapi.OperationAccepted, error) {
@@ -290,6 +314,16 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 	if err := s.validateCandidateGenerationAvailable(configReq.CandidateGenerationID); err != nil {
 		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
+	base, err := s.configApplyBase(configReq.NodeName, configReq.CandidateGenerationID)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "config apply base state: %v", err)
+	}
+	if diagnostics := validateConfigApplyDocument(configReq.ConfigYAML, base.KubeadmConfigs); !diagnostics.Accepted() {
+		return operation.OperationRecord{}, nil, status.Error(codes.InvalidArgument, configValidationError(diagnostics.Strings()).Error())
+	}
+	if _, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(configReq.ConfigYAML), base); err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "config validation rejected: %v", err)
+	}
 	record := operation.OperationRecord{
 		OperationID:                 id,
 		OperationKind:               req.OperationKind,
@@ -315,6 +349,13 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
 	}
 	return created, nil, nil
+}
+
+func validateConfigApplyDocument(configYAML string, configs map[string]kubeadmconfig.Plan) katlconfig.Result {
+	return katlconfig.ValidateNodeConfigurationChange(configYAML, katlconfig.Options{
+		CheckKubeadmRefs:   true,
+		KubeadmConfigNames: kubeadmConfigNames(configs),
+	})
 }
 
 func (e *Executor) executeConfigApply(ctx context.Context, record operation.OperationRecord) error {

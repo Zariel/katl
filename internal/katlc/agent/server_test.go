@@ -373,13 +373,203 @@ func TestValidateConfigRejectsInvalidDocumentWithoutRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Accepted || !strings.Contains(result.FailureReason, "kind must be NodeConfigurationChange") {
+	if result.Accepted || !strings.Contains(result.FailureReason, "kind: must be NodeConfigurationChange") || !contains(result.Diagnostics, "invalid-envelope: kind: must be NodeConfigurationChange") {
 		t.Fatalf("validation result = %+v, want rejected wrong kind", result)
 	}
 	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	} else if len(entries) != 0 {
 		t.Fatalf("operation store entries = %d, want no record for validation", len(entries))
+	}
+}
+
+func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	req := &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-plan-diagnostics",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		ApplyMode:             generation.ApplyModeLive,
+		CandidateGenerationId: "generation-live-plan",
+		ConfigYaml: strings.Join([]string{
+			"apiVersion: katl.dev/v1alpha1",
+			"kind: NodeConfigurationChange",
+			"metadata:",
+			"  sourceID: operator",
+			"  desiredVersion: \"4\"",
+			"apply:",
+			"  mode: live",
+			"spec:",
+			"  clusterDefaults:",
+			"    identity:",
+			"      hostname: cp-2",
+			"    networkd:",
+			"      files:",
+			"        - name: 20-uplink.network",
+			"          content: |",
+			"            [Match]",
+			"            Name=ens3",
+			"            [Network]",
+			"            DHCP=yes",
+			"",
+		}, "\n"),
+	}
+
+	first, err := server.ValidateConfig(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := server.ValidateConfig(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDiagnostics := []string{
+		"node-identity: staged-required: domain is staged-only for normal runtime configuration apply",
+		"bootstrap-node-metadata: staged-required: live preflight is required before this domain can apply online",
+		"networkd: staged-required: live preflight is required before this domain can apply online",
+	}
+	if first.Accepted || second.Accepted {
+		t.Fatalf("accepted = %v/%v, want rejected", first.Accepted, second.Accepted)
+	}
+	if first.RequestDigest == "" || first.RequestDigest != second.RequestDigest {
+		t.Fatalf("request digests = %q/%q, want stable non-empty", first.RequestDigest, second.RequestDigest)
+	}
+	if !reflect.DeepEqual(first.Diagnostics, wantDiagnostics) || !reflect.DeepEqual(second.Diagnostics, wantDiagnostics) {
+		t.Fatalf("diagnostics = %#v/%#v, want %#v", first.Diagnostics, second.Diagnostics, wantDiagnostics)
+	}
+	if first.FailureReason != second.FailureReason || !strings.Contains(first.FailureReason, "config apply live request rejected for 3 domain(s)") {
+		t.Fatalf("failure reasons = %q/%q, want stable plan rejection", first.FailureReason, second.FailureReason)
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for validation", len(entries))
+	}
+}
+
+func TestValidateConfigRejectsMissingKubeadmConfigRefWithoutRecord(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-missing-kubeadm-ref",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		ApplyMode:             generation.ApplyModeNextBoot,
+		CandidateGenerationId: "generation-kubeadm-ref",
+		ConfigYaml: strings.Join([]string{
+			"apiVersion: katl.dev/v1alpha1",
+			"kind: NodeConfigurationChange",
+			"metadata:",
+			"  sourceID: operator",
+			"  desiredVersion: \"5\"",
+			"apply:",
+			"  mode: next-boot",
+			"spec:",
+			"  clusterDefaults:",
+			"    kubernetes:",
+			"      kubeadm:",
+			"        configRef: missing",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `invalid-kubeadm-ref: spec.clusterDefaults.kubernetes.kubeadm.configRef: KubeadmConfig "missing" was not resolved`
+	if result.Accepted || !contains(result.Diagnostics, want) || !strings.Contains(result.FailureReason, want) {
+		t.Fatalf("validation result = %+v, want missing kubeadm ref diagnostic", result)
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for validation", len(entries))
+	}
+}
+
+func TestStageGenerationRejectsInvalidConfigBeforeRecord(t *testing.T) {
+	tests := []struct {
+		name       string
+		configYAML string
+		want       string
+	}{
+		{
+			name: "invalid ssh key",
+			configYAML: strings.Join([]string{
+				"apiVersion: katl.dev/v1alpha1",
+				"kind: NodeConfigurationChange",
+				"metadata:",
+				"  sourceID: operator",
+				"  desiredVersion: \"6\"",
+				"apply:",
+				"  mode: next-boot",
+				"spec:",
+				"  clusterDefaults:",
+				"    identity:",
+				"      authorizedKeys:",
+				"        - ssh-ed25519 not-a-real-public-key",
+				"",
+			}, "\n"),
+			want: "invalid-ssh-key",
+		},
+		{
+			name: "unknown apply child field",
+			configYAML: strings.Join([]string{
+				"apiVersion: katl.dev/v1alpha1",
+				"kind: NodeConfigurationChange",
+				"metadata:",
+				"  sourceID: operator",
+				"  desiredVersion: \"7\"",
+				"apply:",
+				"  mode: next-boot",
+				"  unexpected: true",
+				"spec:",
+				"  clusterDefaults:",
+				"    networkd:",
+				"      files:",
+				"        - name: 20-uplink.network",
+				"          content: ok",
+				"",
+			}, "\n"),
+			want: "field unexpected not found",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			var dispatched atomic.Int32
+			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+				dispatched.Add(1)
+				return nil
+			})
+
+			_, err := server.StageGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+				ApiVersion:            APIVersion,
+				Kind:                  "GenerationApplyRequest",
+				ClientRequestId:       "req-invalid-config-apply-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Actor:                 "test-actor",
+				ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+				CandidateGenerationId: "generation-invalid-config-" + strings.ReplaceAll(tt.name, " ", "-"),
+				ConfigYaml:            tt.configYAML,
+			})
+			if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("StageGeneration error = %v, want InvalidArgument containing %q", err, tt.want)
+			}
+			if dispatched.Load() != 0 {
+				t.Fatalf("dispatcher calls = %d, want none", dispatched.Load())
+			}
+			if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			} else if len(entries) != 0 {
+				t.Fatalf("operation store entries = %d, want no record for invalid config", len(entries))
+			}
+		})
 	}
 }
 
@@ -1760,7 +1950,7 @@ const configApplyInstallManifestJSON = `{
     "identity": {
       "hostname": "node-a",
       "ssh": {
-        "authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestBaseKey katl"]
+        "authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"]
       }
     },
     "systemRole": "control-plane"

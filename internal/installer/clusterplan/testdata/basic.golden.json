@@ -23,7 +23,7 @@
             "hostname": "cp-1-host",
             "ssh": {
               "authorizedKeys": [
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
               ]
             }
           },
@@ -143,7 +143,7 @@
             "hostname": "worker-1",
             "ssh": {
               "authorizedKeys": [
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
               ]
             }
           },

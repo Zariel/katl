@@ -321,7 +321,7 @@
     },
     "sshAuthorizedKey": {
       "type": "string",
-      "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) [A-Za-z0-9+/=]+( .*)?$"
+      "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]+( .*)?$"
     }
   }
 }

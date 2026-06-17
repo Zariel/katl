@@ -33,7 +33,7 @@ spec:
     control-plane:
       identity:
         authorizedKeys:
-          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestRoleKey katl
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl
   nodeOverrides:
     cp-1:
       identity:

@@ -24,6 +24,33 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsInvalidIdentityScalars(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "invalid hostname",
+			body: strings.Replace(validManifest(), `"hostname": "lab-node-01"`, `"hostname": "Bad_Host"`, 1),
+			want: "node.identity.hostname",
+		},
+		{
+			name: "invalid ssh key",
+			body: strings.Replace(validManifest(), `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example`, `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 katl@example`, 1),
+			want: "node.identity.ssh.authorizedKeys[0]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.body))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeAcceptsExtraDisks(t *testing.T) {
 	manifest, err := Decode(strings.NewReader(manifestWithInstall(`,
 			"extraDisks": [
@@ -544,7 +571,7 @@ func manifestWithTop(extra string) string {
 				"hostname": "lab-node-01",
 				"ssh": {
 					"authorizedKeys": [
-						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 					]
 				}
 			},
@@ -591,7 +618,7 @@ func manifestWithImageObject(imageObject string) string {
 				"hostname": "lab-node-01",
 				"ssh": {
 					"authorizedKeys": [
-						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 					]
 				}
 			},

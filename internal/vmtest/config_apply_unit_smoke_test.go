@@ -117,7 +117,7 @@ const configApplyCurrentManifest = `{
       "hostname": "cp-1",
       "ssh": {
         "authorizedKeys": [
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestBaseKey katl"
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"
         ]
       }
     },

@@ -311,7 +311,7 @@ func validateClusterImage(image manifest.KatlosImage) error {
 			Identity: manifest.NodeIdentity{
 				Hostname: "image-validation",
 				SSH: manifest.SSHIdentity{AuthorizedKeys: []string{
-					"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example",
+					"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example",
 				}},
 			},
 			SystemRole: string(inventory.RoleControlPlane),

@@ -115,7 +115,7 @@ func TestValidateManifestEnvelope(t *testing.T) {
 		"node": {
 			"identity": {
 				"hostname": "lab-node-01",
-				"ssh": {"authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"]}
+				"ssh": {"authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"]}
 			},
 			"systemRole": "control-plane"
 		},
@@ -181,7 +181,7 @@ func validManifestJSON() []byte {
 				"hostname": "lab-node-01",
 				"ssh": {
 					"authorizedKeys": [
-						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+						"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 					]
 				}
 			},

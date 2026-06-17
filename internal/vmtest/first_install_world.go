@@ -336,7 +336,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		"identity": map[string]any{
 			"hostname": spec.Name,
 			"ssh": map[string]any{
-				"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"},
+				"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
 			},
 		},
 		"networkd": map[string]any{

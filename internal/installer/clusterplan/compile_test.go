@@ -14,7 +14,7 @@ import (
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 )
 
-const sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
+const sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 
 func TestCompileClusterPlan(t *testing.T) {
 	plan, err := Compile(CompileRequest{

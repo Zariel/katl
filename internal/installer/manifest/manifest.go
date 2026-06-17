@@ -2,6 +2,8 @@ package manifest
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -168,11 +170,19 @@ func Validate(manifest Manifest) error {
 	if strings.TrimSpace(manifest.Node.Identity.Hostname) == "" {
 		return fmt.Errorf("node.identity.hostname is required")
 	}
+	if !ValidHostname(manifest.Node.Identity.Hostname) {
+		return fmt.Errorf("node.identity.hostname %q is invalid", manifest.Node.Identity.Hostname)
+	}
 	if err := validateSystemRole(manifest.Node.SystemRole); err != nil {
 		return err
 	}
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
 		return fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")
+	}
+	for i, key := range manifest.Node.Identity.SSH.AuthorizedKeys {
+		if !ValidAuthorizedKey(key) {
+			return fmt.Errorf("node.identity.ssh.authorizedKeys[%d] must be an SSH public key", i)
+		}
 	}
 	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
 		return err
@@ -326,6 +336,57 @@ func validDNSLabel(value string) bool {
 		return false
 	}
 	return labelDNSPattern.MatchString(value)
+}
+
+func ValidHostname(value string) bool {
+	return validDNSLabel(strings.TrimSpace(value))
+}
+
+func ValidAuthorizedKey(key string) bool {
+	fields := strings.Fields(key)
+	if len(fields) < 2 {
+		return false
+	}
+	keyType := fields[0]
+	blob, err := base64.StdEncoding.DecodeString(fields[1])
+	if err != nil {
+		return false
+	}
+	return validAuthorizedKeyBlob(keyType, blob)
+}
+
+func validAuthorizedKeyBlob(keyType string, blob []byte) bool {
+	embedded, rest, ok := sshWireString(blob)
+	if !ok || embedded != keyType {
+		return false
+	}
+	switch keyType {
+	case "ssh-ed25519":
+		key, rest, ok := sshWireString(rest)
+		return ok && len(key) == 32 && len(rest) == 0
+	default:
+		return false
+	}
+}
+
+func sshWireString(blob []byte) (string, []byte, bool) {
+	data, rest, ok := sshWireBytes(blob)
+	if !ok {
+		return "", nil, false
+	}
+	return string(data), rest, true
+}
+
+func sshWireBytes(blob []byte) ([]byte, []byte, bool) {
+	if len(blob) < 4 {
+		return nil, nil, false
+	}
+	size := binary.BigEndian.Uint32(blob[:4])
+	if size > uint32(len(blob)-4) {
+		return nil, nil, false
+	}
+	end := 4 + int(size)
+	return blob[4:end], blob[end:], true
 }
 
 func validLabelName(value string) bool {

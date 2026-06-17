@@ -77,7 +77,7 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 		},
 		SystemRoleOverrides: map[string]NodeOverlay{
 			"control-plane": {
-				Identity: &IdentityOverlay{AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestRoleKey katl"}},
+				Identity: &IdentityOverlay{AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"}},
 			},
 		},
 		NodeOverrides: map[string]NodeOverlay{
@@ -593,7 +593,7 @@ func baseManifest() manifest.Manifest {
 			Identity: manifest.NodeIdentity{
 				Hostname: "cp-1",
 				SSH: manifest.SSHIdentity{
-					AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestBaseKey katl"},
+					AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"},
 				},
 			},
 			SystemRole: "control-plane",
