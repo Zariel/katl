@@ -250,6 +250,7 @@ build_default_artifacts() {
     fi
 
     local -a targets=()
+    local run_fast_prep=0
     case "$artifact_set" in
         default | install)
             if ! has_explicit_installer_artifact; then
@@ -258,12 +259,12 @@ build_default_artifacts() {
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
             elif ! has_explicit_runtime_artifact; then
-                targets+=("build-runtime")
+                run_fast_prep=1
             fi
             ;;
         runtime)
             if ! has_explicit_runtime_artifact; then
-                targets+=("build-runtime")
+                run_fast_prep=1
             fi
             ;;
         none)
@@ -273,7 +274,7 @@ build_default_artifacts() {
             return 1
             ;;
     esac
-    if [[ "${#targets[@]}" -eq 0 ]]; then
+    if [[ "${#targets[@]}" -eq 0 && "$run_fast_prep" != 1 ]]; then
         return 0
     fi
 
@@ -285,6 +286,13 @@ build_default_artifacts() {
             return 1
         fi
     done
+    if [[ "$run_fast_prep" == 1 ]]; then
+        printf 'vmtest preparing current repo runtime artifacts: scripts/build-vmtest-artifacts --runtime-only\n' >&2
+        if ! "$repo_root/scripts/build-vmtest-artifacts" --runtime-only; then
+            setup_failures+=("prepare default vmtest artifacts with scripts/build-vmtest-artifacts failed")
+            return 1
+        fi
+    fi
 }
 
 probe_vm_capabilities() {
