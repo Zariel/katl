@@ -389,6 +389,22 @@ type VMRunner struct {
 	probe          probe
 }
 
+type VMHandle struct {
+	Result  Result
+	Config  VMConfig
+	Plan    VMPlan
+	Started time.Time
+
+	ctx           context.Context
+	cancel        context.CancelCauseFunc
+	timeoutCancel context.CancelFunc
+	done          <-chan struct{}
+	waitMu        sync.Mutex
+	waitErr       error
+	runner        VMRunner
+	preservation  *DomainPreservation
+}
+
 func PlanVM(result Result, config VMConfig) (VMPlan, error) {
 	return planVM(result, config, systemProbe())
 }
@@ -398,29 +414,62 @@ func RunVM(ctx context.Context, result Result, config VMConfig) Result {
 }
 
 func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Result {
+	return r.RunWithVM(ctx, result, config, func(vm *VMHandle) error {
+		if vm.Config.Expect != "" {
+			return vm.WaitForExpectedSerial()
+		}
+		if err := vm.Wait(); err != nil {
+			return errors.New(libvirtDomainExitSummary(vm.ctx, err, vm.Plan.SerialLog))
+		}
+		return nil
+	})
+}
+
+func (r VMRunner) RunWithVM(ctx context.Context, result Result, config VMConfig, run func(*VMHandle) error) Result {
+	handle, setupResult, ok := r.startVM(ctx, result, config)
+	if !ok {
+		return setupResult
+	}
+	if run == nil {
+		handle.StopFailure()
+		_ = handle.Wait()
+		return handle.Fail("vmtest VM handler is required")
+	}
+	if err := run(handle); err != nil {
+		handle.StopFailure()
+		_ = handle.Wait()
+		return handle.Fail(err.Error())
+	}
+	handle.StopSuccess()
+	_ = handle.Wait()
+	return handle.Pass()
+}
+
+func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (*VMHandle, Result, bool) {
 	started := time.Now().UTC()
 	plan, err := planVM(result, config, r.probe)
 	if err != nil {
-		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
+		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
 	result.DomainName = plan.DomainName
 	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
-		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
+		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
+	var timeoutCancel context.CancelFunc
 	if config.Timeout > 0 {
-		var timeoutCancel context.CancelFunc
 		ctx, timeoutCancel = context.WithTimeout(ctx, config.Timeout)
-		defer timeoutCancel()
 	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(errVMRunFailed)
+	runCtx, cancel := context.WithCancelCause(ctx)
 	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
+		cancel(errVMRunFailed)
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
+		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
-	defer file.Close()
 	executor := r.Executor
 	defaultExecutor := executor == nil
 	var preservation *DomainPreservation
@@ -431,24 +480,136 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		config.SerialIdleTimeout = defaultSerialIdleTimeout
 	}
 	if defaultExecutor {
-		go tailLiveSerial(ctx, plan.SerialLog, os.Stderr, 100*time.Millisecond)
+		go tailLiveSerial(runCtx, plan.SerialLog, os.Stderr, 100*time.Millisecond)
 	}
-	serial := io.Writer(file)
-	done := make(chan error, 1)
+	done := make(chan struct{})
+	handle := &VMHandle{
+		Result:        result,
+		Config:        config,
+		Plan:          plan,
+		Started:       started,
+		ctx:           runCtx,
+		cancel:        cancel,
+		timeoutCancel: timeoutCancel,
+		done:          done,
+		runner:        r,
+		preservation:  preservation,
+	}
 	go func() {
-		done <- executor.Run(ctx, first(plan.VirshPath, plan.CommandPath), plan.Args, serial)
+		defer file.Close()
+		err := executor.Run(runCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, io.Writer(file))
+		handle.waitMu.Lock()
+		handle.waitErr = err
+		handle.waitMu.Unlock()
+		close(done)
 	}()
-	if config.Expect != "" {
-		return r.withDebugTarget(r.waitSerial(ctx, cancel, done, result, config, plan, started), plan, preservation)
+	return handle, result, true
+}
+
+func (h *VMHandle) Wait() error {
+	if h.done == nil {
+		return nil
 	}
-	if err := <-done; err != nil {
-		summary := fmt.Sprintf("libvirt domain exited: %v", err)
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			summary = libvirtTimeoutSummary(plan.SerialLog)
+	<-h.done
+	h.waitMu.Lock()
+	defer h.waitMu.Unlock()
+	return h.waitErr
+}
+
+func (h *VMHandle) StopSuccess() {
+	h.stop(errVMRunComplete)
+}
+
+func (h *VMHandle) StopFailure() {
+	h.stop(errVMRunFailed)
+}
+
+func (h *VMHandle) stop(cause error) {
+	if h.cancel != nil {
+		h.cancel(cause)
+	}
+	if h.timeoutCancel != nil {
+		h.timeoutCancel()
+	}
+}
+
+func (h *VMHandle) WaitForSerialSignal(expect string, interval time.Duration) (bool, error) {
+	return waitForSerialSignal(h.ctx, h.done, h.Wait, h.Plan.SerialLog, expect, interval)
+}
+
+func (h *VMHandle) CheckAgent() error {
+	return h.runner.checkAgent(h.ctx, h.Result, h.Config)
+}
+
+func (h *VMHandle) Fail(failure string) Result {
+	result := finishVM(h.Result, phaseName(h.Config), StatusFailed, failure, h.Started, time.Now().UTC())
+	return h.DebugResult(result)
+}
+
+func (h *VMHandle) Pass() Result {
+	return finishVM(h.Result, phaseName(h.Config), StatusPassed, "", h.Started, time.Now().UTC())
+}
+
+func (h *VMHandle) DebugFailedResult() Result {
+	result := h.Result
+	result.Status = StatusFailed
+	return h.DebugResult(result)
+}
+
+func (h *VMHandle) DebugResult(result Result) Result {
+	return h.runner.withDebugTarget(result, h.Plan, h.preservation)
+}
+
+func (h *VMHandle) WaitForExpectedSerial() error {
+	interval := h.Config.PollInterval
+	if interval == 0 {
+		interval = 250 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	hooksRun := make([]bool, len(h.Config.SerialHooks))
+	lastSerialLen := -1
+	lastSerialProgress := time.Now().UTC()
+	for {
+		serialText := readSerial(h.Plan.SerialLog)
+		if len(serialText) != lastSerialLen {
+			lastSerialLen = len(serialText)
+			lastSerialProgress = time.Now().UTC()
 		}
-		return r.withDebugTarget(finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC()), plan, preservation)
+		if err := h.runner.runSerialHooks(h.ctx, h.Result, h.Config, h.Plan, serialText, hooksRun); err != nil {
+			return err
+		}
+		if strings.Contains(serialText, h.Config.Expect) {
+			if err := h.CheckAgent(); err != nil {
+				return err
+			}
+			return nil
+		}
+		select {
+		case <-h.done:
+			err := h.Wait()
+			serialText := readSerial(h.Plan.SerialLog)
+			if hookErr := h.runner.runSerialHooks(h.ctx, h.Result, h.Config, h.Plan, serialText, hooksRun); hookErr != nil {
+				return hookErr
+			}
+			if strings.Contains(serialText, h.Config.Expect) {
+				if checkErr := h.CheckAgent(); checkErr != nil {
+					return checkErr
+				}
+				return nil
+			}
+			if err == nil {
+				err = errors.New("libvirt domain exited before serial signal appeared")
+			}
+			return fmt.Errorf("libvirt domain exited before serial signal %q appeared: %v", h.Config.Expect, err)
+		case <-h.ctx.Done():
+			return errors.New(libvirtTimeoutSummary(h.Plan.SerialLog))
+		case <-ticker.C:
+			if h.Config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= h.Config.SerialIdleTimeout {
+				return errors.New(libvirtSerialIdleSummary(h.Plan.SerialLog, h.Config.SerialIdleTimeout))
+			}
+		}
 	}
-	return r.withDebugTarget(finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC()), plan, preservation)
 }
 
 func defaultVMExecutor(result Result, plan VMPlan) (VMExecutor, *DomainPreservation) {
@@ -506,65 +667,12 @@ func copySerialFromOffset(path string, out io.Writer, offset *int64) error {
 	return err
 }
 
-func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelCauseFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
-	interval := config.PollInterval
-	if interval == 0 {
-		interval = 250 * time.Millisecond
+func libvirtDomainExitSummary(ctx context.Context, err error, serialLog string) string {
+	summary := fmt.Sprintf("libvirt domain exited: %v", err)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		summary = libvirtTimeoutSummary(serialLog)
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	hooksRun := make([]bool, len(config.SerialHooks))
-	lastSerialLen := -1
-	lastSerialProgress := time.Now().UTC()
-	for {
-		serialText := readSerial(plan.SerialLog)
-		if len(serialText) != lastSerialLen {
-			lastSerialLen = len(serialText)
-			lastSerialProgress = time.Now().UTC()
-		}
-		if err := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); err != nil {
-			cancel(errVMRunFailed)
-			<-done
-			return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
-		}
-		if strings.Contains(serialText, config.Expect) {
-			if err := r.checkAgent(ctx, result, config); err != nil {
-				cancel(errVMRunFailed)
-				<-done
-				return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
-			}
-			cancel(errVMRunComplete)
-			<-done
-			return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
-		}
-		select {
-		case err := <-done:
-			serialText := readSerial(plan.SerialLog)
-			if hookErr := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); hookErr != nil {
-				return finishVM(result, phaseName(config), StatusFailed, hookErr.Error(), started, time.Now().UTC())
-			}
-			if strings.Contains(serialText, config.Expect) {
-				if checkErr := r.checkAgent(ctx, result, config); checkErr != nil {
-					return finishVM(result, phaseName(config), StatusFailed, checkErr.Error(), started, time.Now().UTC())
-				}
-				return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
-			}
-			if err == nil {
-				err = errors.New("libvirt domain exited before serial signal appeared")
-			}
-			return finishVM(result, phaseName(config), StatusFailed, fmt.Sprintf("libvirt domain exited before serial signal %q appeared: %v", config.Expect, err), started, time.Now().UTC())
-		case <-ctx.Done():
-			cancel(errVMRunFailed)
-			<-done
-			return finishVM(result, phaseName(config), StatusFailed, libvirtTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
-		case <-ticker.C:
-			if config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= config.SerialIdleTimeout {
-				cancel(errVMRunFailed)
-				<-done
-				return finishVM(result, phaseName(config), StatusFailed, libvirtSerialIdleSummary(plan.SerialLog, config.SerialIdleTimeout), started, time.Now().UTC())
-			}
-		}
-	}
+	return summary
 }
 
 func libvirtTimeoutSummary(serialLog string) string {
@@ -606,11 +714,6 @@ func (r VMRunner) withDebugTarget(result Result, plan VMPlan, preservation *Doma
 		target.Reason = "debug-on-failure requested after VM failure"
 	}
 	result.Debug.Targets = append(result.Debug.Targets, target)
-	return result
-}
-
-func debugFailedResult(result Result) Result {
-	result.Status = StatusFailed
 	return result
 }
 

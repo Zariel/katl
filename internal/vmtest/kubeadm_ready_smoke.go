@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -49,68 +48,27 @@ func RunInstalledKubeadmReadySmoke(ctx context.Context, result Result, config Ku
 	}
 	vm.VSock.Enabled = true
 
-	started := time.Now().UTC()
-	plan, err := planVM(result, vm, runner.probe)
-	if err != nil {
-		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	result.VSock = plan.VSock
-	if err := prepareVM(plan, vm); err != nil {
-		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	if vm.Timeout > 0 {
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, vm.Timeout)
-		defer timeoutCancel()
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(errVMRunFailed)
-
-	serial, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	defer serial.Close()
-
-	executor := runner.Executor
-	var preservation *DomainPreservation
-	if executor == nil {
-		executor, preservation = defaultVMExecutor(result, plan)
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- executor.Run(ctx, first(plan.VirshPath, plan.CommandPath), plan.Args, serial)
-	}()
-	domainDone, err := waitForSerialSignal(ctx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
-	if err != nil {
-		if !domainDone {
-			cancel(errVMRunFailed)
-			<-done
+	return runner.RunWithVM(ctx, result, vm, func(handle *VMHandle) error {
+		domainDone, err := handle.WaitForSerialSignal(vm.Expect, vm.PollInterval)
+		if err != nil {
+			return err
 		}
-		return runner.withDebugTarget(finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	if domainDone {
-		return runner.withDebugTarget(finishVM(result, "kubeadm-ready-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm-ready smoke", started, time.Now().UTC()), plan, preservation)
-	}
+		if domainDone {
+			return errors.New("libvirt domain exited after serial signal before kubeadm-ready smoke")
+		}
+		session, err := connectKubeadmReadySmokeAgent(handle.ctx, config, config.Smoke, handle.Result.VSock, handle.Result.Artifacts.VSockTranscript)
+		if err != nil {
+			return err
+		}
+		defer session.Close()
 
-	session, err := connectKubeadmReadySmokeAgent(ctx, config, config.Smoke, result.VSock, result.Artifacts.VSockTranscript)
-	if err != nil {
-		cancel(errVMRunFailed)
-		<-done
-		return runner.withDebugTarget(finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	defer session.Close()
-
-	guest := NewGuestControl(result, session)
-	if err := RunKubeadmReadySmoke(ctx, guest, config.Smoke); err != nil {
-		collectKubeadmReadySmokeDiagnostics(ctx, result, config, session)
-		cancel(errVMRunFailed)
-		<-done
-		return runner.withDebugTarget(finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	cancel(errVMRunComplete)
-	<-done
-	return finishVM(result, "kubeadm-ready-smoke", StatusPassed, "", started, time.Now().UTC())
+		guest := NewGuestControl(handle.Result, session)
+		if err := RunKubeadmReadySmoke(handle.ctx, guest, config.Smoke); err != nil {
+			collectKubeadmReadySmokeDiagnostics(handle.ctx, handle.Result, config, session)
+			return err
+		}
+		return nil
+	})
 }
 
 func RunKubeadmReadySmoke(ctx context.Context, guest *GuestControl, plan KubeadmReadySmokePlan) error {

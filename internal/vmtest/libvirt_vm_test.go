@@ -776,6 +776,41 @@ func TestVMRun(t *testing.T) {
 	}
 }
 
+func TestVMRunWithVMReportsClosureError(t *testing.T) {
+	result, config := vmFixture(t)
+	result.Debug = debugMetadata(true)
+	runner := VMRunner{
+		Executor: vmExec{write: "serial ready", waitForCancel: true},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+
+	called := false
+	result = runner.RunWithVM(context.Background(), result, config, func(vm *VMHandle) error {
+		called = true
+		if vm.Result.DomainName != "katl-run-1" {
+			t.Fatalf("DomainName = %q", vm.Result.DomainName)
+		}
+		return errors.New("guest assertion failed")
+	})
+
+	if !called {
+		t.Fatal("RunWithVM handler was not called")
+	}
+	if result.Status != StatusFailed || result.FailureSummary != "guest assertion failed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Debug == nil || len(result.Debug.Targets) != 1 {
+		t.Fatalf("debug metadata = %#v", result.Debug)
+	}
+	if result.Debug.Targets[0].DomainName != "katl-run-1" || result.Debug.Targets[0].CleanupCommand == "" {
+		t.Fatalf("debug target = %#v", result.Debug.Targets[0])
+	}
+}
+
 func TestVMExpect(t *testing.T) {
 	result, config := vmFixture(t)
 	config.Expect = "runtime ready"

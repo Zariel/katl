@@ -20,8 +20,7 @@ type RunningInstalledRuntimeNode struct {
 	Result Result
 	VSock  VSockPlan
 
-	cancel context.CancelFunc
-	done   <-chan error
+	handle *VMHandle
 }
 
 func StartInstalledRuntimeNode(ctx context.Context, parent Result, config InstalledRuntimeNodeConfig, runner VMRunner) (RunningInstalledRuntimeNode, error) {
@@ -60,96 +59,48 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 
-	plan, err := planVM(result, vm, runner.probe)
+	handle, setupResult, ok := runner.startVM(ctx, result, vm)
+	if !ok {
+		result = setupResult
+		return fail(errors.New(setupResult.FailureSummary))
+	}
+	result = handle.Result
+	failWithDebug := func(err error) (RunningInstalledRuntimeNode, error) {
+		handle.StopFailure()
+		_ = handle.Wait()
+		result = handle.DebugFailedResult()
+		return fail(err)
+	}
+	domainDone, err := handle.WaitForSerialSignal(vm.Expect, vm.PollInterval)
 	if err != nil {
-		return fail(err)
-	}
-	result.DomainName = plan.DomainName
-	result.MACAddress = plan.MACAddress
-	result.VSock = plan.VSock
-	if err := prepareVM(plan, vm); err != nil {
-		return fail(err)
-	}
-
-	runCtx := ctx
-	var timeoutCancel context.CancelFunc
-	if vm.Timeout > 0 {
-		runCtx, timeoutCancel = context.WithTimeout(ctx, vm.Timeout)
-	}
-	runCtx, cancel := context.WithCancelCause(runCtx)
-	stop := func() {
-		cancel(errVMRunComplete)
-		if timeoutCancel != nil {
-			timeoutCancel()
-		}
-	}
-	failStop := func() {
-		cancel(errVMRunFailed)
-		if timeoutCancel != nil {
-			timeoutCancel()
-		}
-	}
-	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		failStop()
-		return fail(err)
-	}
-	executor := runner.Executor
-	var preservation *DomainPreservation
-	if executor == nil {
-		executor, preservation = defaultVMExecutor(result, plan)
-	}
-	done := make(chan error, 1)
-	go func() {
-		defer file.Close()
-		done <- executor.Run(runCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, file)
-	}()
-	domainDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
-	if err != nil {
-		failStop()
-		if !domainDone {
-			<-done
-		}
-		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
-		return fail(err)
+		return failWithDebug(err)
 	}
 	if domainDone {
-		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
-		return fail(fmt.Errorf("libvirt domain exited after serial signal before installed runtime node %q could be used", name))
+		return failWithDebug(fmt.Errorf("libvirt domain exited after serial signal before installed runtime node %q could be used", name))
 	}
-	if err := runner.checkAgent(runCtx, result, vm); err != nil {
-		failStop()
-		<-done
-		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
-		return fail(err)
+	if err := handle.CheckAgent(); err != nil {
+		return failWithDebug(err)
 	}
-	if plan.MACAddress != "" {
-		lease, err := WaitLibvirtLease(runCtx, plan.VirshPath, plan.LibvirtURI, plan.LibvirtNetwork, plan.MACAddress, 30*time.Second)
+	if handle.Plan.MACAddress != "" {
+		lease, err := WaitLibvirtLease(handle.ctx, handle.Plan.VirshPath, handle.Plan.LibvirtURI, handle.Plan.LibvirtNetwork, handle.Plan.MACAddress, 30*time.Second)
 		if err != nil {
-			failStop()
-			<-done
-			result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
-			return fail(err)
+			return failWithDebug(err)
 		}
 		result.IPAddress = lease.IPAddress
 		if err := writeJSON(result.Artifacts.LibvirtLease, lease); err != nil {
-			failStop()
-			<-done
-			result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
-			return fail(fmt.Errorf("write libvirt lease artifact: %w", err))
+			return failWithDebug(fmt.Errorf("write libvirt lease artifact: %w", err))
 		}
 	}
 	if err := writeInstalledRuntimeNodeResult(result, StatusPassed, "", started); err != nil {
-		stop()
-		<-done
+		handle.StopSuccess()
+		_ = handle.Wait()
 		return RunningInstalledRuntimeNode{}, err
 	}
 	return RunningInstalledRuntimeNode{
 		Name:   name,
 		Result: result,
-		VSock:  plan.VSock,
-		cancel: stop,
-		done:   done,
+		VSock:  handle.Plan.VSock,
+		handle: handle,
 	}, nil
 }
 
@@ -201,11 +152,11 @@ func ensureInstalledRuntimeNodeDirs(result Result) error {
 }
 
 func (n RunningInstalledRuntimeNode) Stop() error {
-	if n.cancel == nil || n.done == nil {
+	if n.handle == nil {
 		return nil
 	}
-	n.cancel()
-	return <-n.done
+	n.handle.StopSuccess()
+	return n.handle.Wait()
 }
 
 func nodeResult(parent Result, name string) Result {

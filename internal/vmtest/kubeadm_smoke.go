@@ -60,68 +60,27 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 	}
 	vm.VSock.Enabled = true
 
-	started := time.Now().UTC()
-	plan, err := planVM(result, vm, runner.probe)
-	if err != nil {
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	result.VSock = plan.VSock
-	if err := prepareVM(plan, vm); err != nil {
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	if vm.Timeout > 0 {
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, vm.Timeout)
-		defer timeoutCancel()
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(errVMRunFailed)
-
-	serial, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
-	}
-	defer serial.Close()
-
-	executor := runner.Executor
-	var preservation *DomainPreservation
-	if executor == nil {
-		executor, preservation = defaultVMExecutor(result, plan)
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- executor.Run(ctx, first(plan.VirshPath, plan.CommandPath), plan.Args, serial)
-	}()
-	domainDone, err := waitForSerialSignal(ctx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
-	if err != nil {
-		if !domainDone {
-			cancel(errVMRunFailed)
-			<-done
+	return runner.RunWithVM(ctx, result, vm, func(handle *VMHandle) error {
+		domainDone, err := handle.WaitForSerialSignal(vm.Expect, vm.PollInterval)
+		if err != nil {
+			return err
 		}
-		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	if domainDone {
-		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm API smoke", started, time.Now().UTC()), plan, preservation)
-	}
+		if domainDone {
+			return errors.New("libvirt domain exited after serial signal before kubeadm API smoke")
+		}
+		session, err := connectKubeadmSmokeAgent(handle.ctx, config, config.Smoke, handle.Result.VSock, handle.Result.Artifacts.VSockTranscript)
+		if err != nil {
+			return err
+		}
+		defer session.Close()
 
-	session, err := connectKubeadmSmokeAgent(ctx, config, config.Smoke, result.VSock, result.Artifacts.VSockTranscript)
-	if err != nil {
-		cancel(errVMRunFailed)
-		<-done
-		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	defer session.Close()
-
-	guest := NewGuestControl(result, session)
-	if err := RunKubeadmAPISmoke(ctx, guest, config.Smoke); err != nil {
-		collectKubeadmSmokeDiagnostics(ctx, result, config, session)
-		cancel(errVMRunFailed)
-		<-done
-		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
-	}
-	cancel(errVMRunComplete)
-	<-done
-	return finishVM(result, "kubeadm-api-smoke", StatusPassed, "", started, time.Now().UTC())
+		guest := NewGuestControl(handle.Result, session)
+		if err := RunKubeadmAPISmoke(handle.ctx, guest, config.Smoke); err != nil {
+			collectKubeadmSmokeDiagnostics(handle.ctx, handle.Result, config, session)
+			return err
+		}
+		return nil
+	})
 }
 
 func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAPISmokePlan) error {
@@ -426,7 +385,7 @@ func connectKubeadmSmokeAgent(ctx context.Context, config KubeadmAPISmokeConfig,
 	}
 }
 
-func waitForSerialSignal(ctx context.Context, done <-chan error, serialLog string, expect string, interval time.Duration) (bool, error) {
+func waitForSerialSignal(ctx context.Context, done <-chan struct{}, wait func() error, serialLog string, expect string, interval time.Duration) (bool, error) {
 	if interval == 0 {
 		interval = 250 * time.Millisecond
 	}
@@ -442,7 +401,8 @@ func waitForSerialSignal(ctx context.Context, done <-chan error, serialLog strin
 			return false, nil
 		}
 		select {
-		case err := <-done:
+		case <-done:
+			err := wait()
 			if serialHas(serialLog, expect) {
 				return true, nil
 			}
