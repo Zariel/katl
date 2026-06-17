@@ -747,6 +747,61 @@ func TestStoreRejectsIncompleteOperationRecord(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsKubernetesSysextUpdateBodyMismatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*OperationRecord)
+		wantErr string
+	}{
+		{
+			name: "wrong operation kind",
+			mutate: func(record *OperationRecord) {
+				record.KubernetesSysextUpdate = &KubernetesSysextUpdate{
+					TargetPayloadVersion: "v1.36.0",
+					TargetSysextPath:     "/var/lib/katl/artifacts/kubernetes.raw",
+					TargetSysextSHA256:   strings.Repeat("e", 64),
+				}
+			},
+			wantErr: "cannot include kubernetesSysextUpdate",
+		},
+		{
+			name: "missing body",
+			mutate: func(record *OperationRecord) {
+				record.OperationKind = "kubeadm-upgrade"
+			},
+			wantErr: "requires kubernetesSysextUpdate",
+		},
+		{
+			name: "multiple bodies",
+			mutate: func(record *OperationRecord) {
+				record.OperationKind = "kubeadm-upgrade"
+				record.ConfigApplyRequest = &ConfigApplyRequest{
+					ApplyMode:             "next-boot",
+					CandidateGenerationID: "generation-1",
+					ConfigYAML:            "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n",
+				}
+				record.KubernetesSysextUpdate = &KubernetesSysextUpdate{
+					TargetPayloadVersion: "v1.36.0",
+					TargetSysextPath:     "/var/lib/katl/artifacts/kubernetes.raw",
+					TargetSysextSHA256:   strings.Repeat("e", 64),
+				}
+			},
+			wantErr: "multiple request bodies",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := testStore(t)
+			record := baseRecord("op-" + strings.ReplaceAll(tt.name, " ", "-"))
+			tt.mutate(&record)
+			_, err := store.Create(record, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Create() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func testStore(t *testing.T) Store {
 	t.Helper()
 	store, err := NewStore(filepath.Join(t.TempDir(), "var/lib/katl/operations"))

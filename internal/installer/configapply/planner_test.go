@@ -144,6 +144,65 @@ func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
 	}
 }
 
+func TestPlanChangeAllowsUnchangedKubernetesSysext(t *testing.T) {
+	current := currentRecord()
+	result, err := PlanChange(current, NodeConfigurationChange{
+		APIVersion:       generation.APIVersion,
+		Kind:             NodeConfigurationChangeKind,
+		GenerationID:     "2026.06.05-002",
+		SourceDigest:     strings.Repeat("d", 64),
+		Apply:            Apply{Mode: generation.ApplyModeNextBoot},
+		Changes:          []Change{{Domain: DomainModulesLoad}},
+		Sysexts:          append([]generation.ExtensionRef{}, current.Sysexts...),
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("PlanChange() error = %v, diagnostics = %#v", err, result.Decision.Diagnostics)
+	}
+	if result.GenerationRecord.ConfigApply == nil || result.Status.Kind == "" {
+		t.Fatalf("unchanged sysext plan did not produce candidate record/status: %#v %#v", result.GenerationRecord, result.Status)
+	}
+	if result.GenerationRecord.Sysexts[0].SHA256 != current.Sysexts[0].SHA256 || result.GenerationRecord.Sysexts[0].PayloadVersion != current.Sysexts[0].PayloadVersion {
+		t.Fatalf("generation sysext = %#v, want current %#v", result.GenerationRecord.Sysexts[0], current.Sysexts[0])
+	}
+}
+
+func TestPlanChangeRejectsKubernetesSysextChangeBeforeCandidateRecord(t *testing.T) {
+	current := currentRecord()
+	nextSysexts := append([]generation.ExtensionRef{}, current.Sysexts...)
+	nextSysexts[0].SHA256 = strings.Repeat("e", 64)
+	nextSysexts[0].PayloadVersion = "v1.37.0"
+
+	result, err := PlanChange(current, NodeConfigurationChange{
+		APIVersion:       generation.APIVersion,
+		Kind:             NodeConfigurationChangeKind,
+		GenerationID:     "2026.06.05-002",
+		SourceDigest:     strings.Repeat("d", 64),
+		Apply:            Apply{Mode: generation.ApplyModeNextBoot},
+		Changes:          []Change{{Domain: DomainModulesLoad}},
+		Sysexts:          nextSysexts,
+		GeneratedConfext: candidateConfext("2026.06.05-002"),
+		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatalf("PlanChange() error = nil, result = %#v", result)
+	}
+	if result.GenerationRecord.Kind != "" || result.Status.Kind != "" {
+		t.Fatalf("rejected sysext change built candidate metadata or status: %#v %#v", result.GenerationRecord, result.Status)
+	}
+	if len(result.Decision.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %#v, want one selected-kubernetes-sysext diagnostic", result.Decision.Diagnostics)
+	}
+	diagnostic := result.Decision.Diagnostics[0]
+	if diagnostic.Domain != DomainSelectedKubernetesSysext || diagnostic.Decision != DecisionRejected {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+	if !strings.Contains(diagnostic.Message, "target kubeadm access") || !strings.Contains(diagnostic.Message, "kubelet activation gate") {
+		t.Fatalf("diagnostic message = %q, want missing upgrade gates", diagnostic.Message)
+	}
+}
+
 func TestPlanChangeRejectsBadEnvelope(t *testing.T) {
 	tests := []struct {
 		name    string

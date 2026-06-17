@@ -174,6 +174,7 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
   "kind": "GenerationRecord",
   "generationID": "2026.06.05-002",
   "runtimeVersion": "0.1.0",
+  "previousGenerationID": "2026.06.05-001",
   "root": {
     "slot": "root-a",
     "partitionUUID": "11111111-2222-3333-4444-555555555555",

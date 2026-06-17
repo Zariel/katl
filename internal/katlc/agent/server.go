@@ -44,6 +44,7 @@ var bootstrapOperationKinds = []string{
 	"bootstrap-join-worker",
 	"generation-apply",
 	"generation-stage",
+	"kubeadm-upgrade",
 }
 
 type Dispatcher interface {
@@ -231,6 +232,13 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	}
 	now := s.clock()
 	if req.DryRun {
+		if req.GetKubernetesSysextUpdate() != nil {
+			accepted, err := s.dryRunKubernetesSysextUpdateOperation(req, digest, locks, now)
+			if err != nil {
+				return operation.OperationRecord{}, nil, err
+			}
+			return operation.OperationRecord{}, accepted, nil
+		}
 		candidateID := requestCandidateGenerationID(req)
 		return operation.OperationRecord{}, &agentapi.OperationAccepted{
 			OperationKind: req.OperationKind,
@@ -257,6 +265,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	}
 	if req.GetConfigApply() != nil {
 		return s.acceptConfigApplyOperation(req, digest, id, locks, now)
+	}
+	if req.GetKubernetesSysextUpdate() != nil {
+		return s.acceptKubernetesSysextUpdateOperation(req, digest, id, locks, now)
 	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
@@ -443,12 +454,19 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.GetConfigApply() != nil {
 		bodyCount++
 	}
+	if req.GetKubernetesSysextUpdate() != nil {
+		bodyCount++
+	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
 	}
 	if req.GetConfigApply() != nil {
 		if err := validateConfigApplyRequest(req.OperationKind, req.GetConfigApply()); err != nil {
 			return status.Errorf(codes.InvalidArgument, "config apply request: %v", err)
+		}
+	} else if req.GetKubernetesSysextUpdate() != nil {
+		if err := validateKubernetesSysextUpdateRequest(req.OperationKind, req.GetKubernetesSysextUpdate()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "kubernetes sysext update request: %v", err)
 		}
 	} else {
 		if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
@@ -836,6 +854,8 @@ func resourceLocks(kind string) []string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-worker":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
+	case "kubeadm-upgrade":
+		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case "generation-apply", "generation-stage":
 		return []string{"generation-state.lock", "config-apply.lock"}
 	default:
@@ -846,6 +866,8 @@ func resourceLocks(kind string) []string {
 func operationScope(kind string) string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-worker":
+		return "kubeadm-state"
+	case "kubeadm-upgrade":
 		return "kubeadm-state"
 	case "generation-apply", "generation-stage":
 		return "host-generation"

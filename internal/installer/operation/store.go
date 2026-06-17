@@ -83,6 +83,7 @@ type OperationRecord struct {
 	ChangedDomains              []string                `json:"changedDomains,omitempty"`
 	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
 	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
+	KubernetesSysextUpdate      *KubernetesSysextUpdate `json:"kubernetesSysextUpdate,omitempty"`
 	ActivationMode              string                  `json:"activationMode,omitempty"`
 	ActivationState             string                  `json:"activationState,omitempty"`
 	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
@@ -143,6 +144,14 @@ type ConfigApplyRequest struct {
 	NodeName              string `json:"nodeName,omitempty"`
 	CandidateGenerationID string `json:"candidateGenerationID,omitempty"`
 	ConfigYAML            string `json:"configYAML"`
+}
+
+type KubernetesSysextUpdate struct {
+	TargetPayloadVersion string `json:"targetPayloadVersion"`
+	TargetSysextPath     string `json:"targetSysextPath"`
+	TargetSysextSHA256   string `json:"targetSysextSHA256"`
+	TargetSysextSize     uint64 `json:"targetSysextSizeBytes,omitempty"`
+	TargetActivationPath string `json:"targetActivationPath,omitempty"`
 }
 
 type InvocationRecord struct {
@@ -662,6 +671,14 @@ func ValidateRecord(record OperationRecord) error {
 			return err
 		}
 	}
+	if record.KubernetesSysextUpdate != nil {
+		if err := validateKubernetesSysextUpdate(*record.KubernetesSysextUpdate); err != nil {
+			return err
+		}
+	}
+	if err := validateRequestBodyConsistency(record); err != nil {
+		return err
+	}
 	if err := validateOptionalEnum("activationMode", record.ActivationMode, ActivationModeLive, ActivationModeNextBoot); err != nil {
 		return err
 	}
@@ -697,6 +714,29 @@ func ValidateRecord(record OperationRecord) error {
 		if err := validateSHA256Hex("diagnostic artifact", artifact.SHA256); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateRequestBodyConsistency(record OperationRecord) error {
+	bodyCount := 0
+	if record.BootstrapRequest != nil {
+		bodyCount++
+	}
+	if record.ConfigApplyRequest != nil {
+		bodyCount++
+	}
+	if record.KubernetesSysextUpdate != nil {
+		bodyCount++
+	}
+	if bodyCount > 1 {
+		return fmt.Errorf("operation record has multiple request bodies")
+	}
+	if record.KubernetesSysextUpdate != nil && record.OperationKind != "kubeadm-upgrade" {
+		return fmt.Errorf("operation kind %q cannot include kubernetesSysextUpdate", record.OperationKind)
+	}
+	if record.OperationKind == "kubeadm-upgrade" && record.KubernetesSysextUpdate == nil {
+		return fmt.Errorf("kubeadm-upgrade operation requires kubernetesSysextUpdate")
 	}
 	return nil
 }
@@ -752,6 +792,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	}
 	if !reflect.DeepEqual(next.ConfigApplyRequest, previous.ConfigApplyRequest) {
 		return fmt.Errorf("operation configApplyRequest is immutable")
+	}
+	if !reflect.DeepEqual(next.KubernetesSysextUpdate, previous.KubernetesSysextUpdate) {
+		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
 	}
 	return nil
 }
@@ -809,6 +852,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.ConfigApplyRequest != nil {
 		request := *record.ConfigApplyRequest
 		record.ConfigApplyRequest = &request
+	}
+	if record.KubernetesSysextUpdate != nil {
+		request := *record.KubernetesSysextUpdate
+		record.KubernetesSysextUpdate = &request
 	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
@@ -1305,6 +1352,19 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 	}
 	if strings.TrimSpace(request.ConfigYAML) == "" {
 		return fmt.Errorf("configApplyRequest configYAML is required")
+	}
+	return nil
+}
+
+func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
+	if strings.TrimSpace(request.TargetPayloadVersion) == "" {
+		return fmt.Errorf("kubernetesSysextUpdate targetPayloadVersion is required")
+	}
+	if strings.TrimSpace(request.TargetSysextPath) == "" {
+		return fmt.Errorf("kubernetesSysextUpdate targetSysextPath is required")
+	}
+	if err := validateSHA256Hex("kubernetesSysextUpdate targetSysext", strings.TrimSpace(request.TargetSysextSHA256)); err != nil {
+		return err
 	}
 	return nil
 }

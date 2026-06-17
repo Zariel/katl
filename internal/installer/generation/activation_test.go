@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyActivationExposesOnlySelectedGeneration(t *testing.T) {
@@ -45,7 +46,59 @@ func TestApplyActivationRejectsDigestMismatch(t *testing.T) {
 		t.Fatalf("ApplyActivation() error = %v, want digest mismatch", err)
 	}
 	assertMissing(t, filepath.Join(root, "run/extensions/kubernetes.raw"))
-	assertMissing(t, filepath.Join(root, "run/extensions/stale.raw"))
+	assertExists(t, filepath.Join(root, "run/extensions/stale.raw"))
+}
+
+func TestApplyActivationRejectsConfigApplyKubernetesSysextChangeBeforeReset(t *testing.T) {
+	root := t.TempDir()
+	previous := activationRecord(t, root, "2026.06.05-001", "current sysext\n")
+	writeActivationGeneration(t, root, previous)
+	record := activationRecord(t, root, "2026.06.05-002", "target sysext\n")
+	record.ConfigApply = &ConfigApplyRecord{
+		SourceDigest:       strings.Repeat("d", 64),
+		ChangedDomains:     []string{"selected-kubernetes-sysext"},
+		RequestedApplyMode: "next-boot",
+		AcceptedApplyMode:  "next-boot",
+		PreviousGeneration: previous.GenerationID,
+	}
+	mustWrite(t, filepath.Join(root, "run/extensions/stale.raw"), "stale\n", 0o644)
+	mustWrite(t, filepath.Join(root, "run/confexts/stale/etc/hostname"), "stale\n", 0o644)
+
+	_, err := ApplyActivation(root, record)
+	if err == nil || !strings.Contains(err.Error(), "target kubeadm access mode") || !strings.Contains(err.Error(), "kubelet activation gate") {
+		t.Fatalf("ApplyActivation() error = %v, want Kubernetes sysext gate refusal", err)
+	}
+	assertExists(t, filepath.Join(root, "run/extensions/stale.raw"))
+	assertExists(t, filepath.Join(root, "run/confexts/stale/etc/hostname"))
+	assertMissing(t, filepath.Join(root, "run/extensions/kubernetes.raw"))
+}
+
+func TestApplyActivationRejectsRawKubernetesSysextChangeFromSplitLineage(t *testing.T) {
+	root := t.TempDir()
+	previous := activationRecord(t, root, "2026.06.05-001", "current sysext\n")
+	writeActivationGeneration(t, root, previous)
+	record := activationRecord(t, root, "2026.06.05-002", "target sysext\n")
+	record.PreviousGenerationID = previous.GenerationID
+	writeActivationGeneration(t, root, record)
+	metadataPath, err := MetadataPath(root, record.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	splitRecord, err := ReadRecord(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if splitRecord.ConfigApply != nil || splitRecord.PreviousGenerationID != previous.GenerationID {
+		t.Fatalf("split record lineage = configApply:%#v previous:%q", splitRecord.ConfigApply, splitRecord.PreviousGenerationID)
+	}
+	mustWrite(t, filepath.Join(root, "run/extensions/stale.raw"), "stale\n", 0o644)
+
+	_, err = ApplyActivation(root, splitRecord)
+	if err == nil || !strings.Contains(err.Error(), "target kubeadm access mode") || !strings.Contains(err.Error(), "kubelet activation gate") {
+		t.Fatalf("ApplyActivation() error = %v, want raw Kubernetes sysext gate refusal", err)
+	}
+	assertExists(t, filepath.Join(root, "run/extensions/stale.raw"))
+	assertMissing(t, filepath.Join(root, "run/extensions/kubernetes.raw"))
 }
 
 func TestPlanActivationRejectsPathsOutsideSelectedGeneration(t *testing.T) {
@@ -100,13 +153,19 @@ func activationRecord(t *testing.T, root string, id string, sysextContent string
 	}
 	sysextSum := sha256.Sum256([]byte(sysextContent))
 	return Record{
-		APIVersion:   APIVersion,
-		Kind:         Kind,
-		GenerationID: id,
+		APIVersion:     APIVersion,
+		Kind:           Kind,
+		GenerationID:   id,
+		RuntimeVersion: "0.1.0",
 		Root: RootSelection{
-			RuntimeInterface: "katl-runtime-1",
-			Architecture:     "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
 		},
+		Boot: BootSelection{UKIPath: "/efi/EFI/Linux/katl-" + id + ".efi"},
 		Sysexts: []ExtensionRef{
 			{
 				Name:            "kubernetes",
@@ -134,6 +193,26 @@ func activationRecord(t *testing.T, root string, id string, sysextContent string
 				},
 			},
 		},
+		CreatedAt: time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC),
+	}
+}
+
+func writeActivationGeneration(t *testing.T, root string, record Record) {
+	t.Helper()
+	spec := SpecFromRecord(record)
+	digest, err := CanonicalSpecDigest(spec)
+	if err != nil {
+		t.Fatalf("CanonicalSpecDigest() error = %v", err)
+	}
+	if err := WriteGeneration(root, spec, StatusFromRecord(record, digest)); err != nil {
+		t.Fatalf("WriteGeneration() error = %v", err)
+	}
+}
+
+func assertExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("Lstat(%s) error = %v, want existing", path, err)
 	}
 }
 

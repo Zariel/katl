@@ -48,6 +48,14 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 	if strings.TrimSpace(request.SourceDigest) == "" {
 		return Result{}, fmt.Errorf("configuration source digest is required")
 	}
+	if diagnostic, changed := selectedKubernetesSysextChange(current.Sysexts, request.Sysexts); changed {
+		decision := Decision{
+			RequestedMode:  request.Apply.Mode,
+			ChangedDomains: changedDomainsWith(request.Changes, DomainSelectedKubernetesSysext),
+			Diagnostics:    []Diagnostic{diagnostic},
+		}
+		return Result{Decision: decision}, fmt.Errorf("normal runtime configuration cannot change the selected Kubernetes sysext before target kubeadm access and kubelet activation gate are implemented")
+	}
 
 	decision, err := Plan(request.Apply.Mode, request.Changes)
 	if err != nil {
@@ -92,6 +100,55 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 		GenerationRecord: record,
 		Status:           status,
 	}, nil
+}
+
+func selectedKubernetesSysextChange(current []generation.ExtensionRef, candidate []generation.ExtensionRef) (Diagnostic, bool) {
+	if len(candidate) == 0 {
+		return Diagnostic{}, false
+	}
+	currentRef, currentOK := kubernetesSysext(current)
+	candidateRef, candidateOK := kubernetesSysext(candidate)
+	if !currentOK && !candidateOK {
+		return Diagnostic{}, false
+	}
+	if currentOK && candidateOK && strings.EqualFold(currentRef.SHA256, candidateRef.SHA256) && currentRef.PayloadVersion == candidateRef.PayloadVersion {
+		return Diagnostic{}, false
+	}
+	return Diagnostic{
+		Domain:         DomainSelectedKubernetesSysext,
+		Classification: ClassificationRejectedLive,
+		Decision:       DecisionRejected,
+		Message:        "selected Kubernetes sysext changes require target kubeadm access mode and kubelet activation gate",
+	}, true
+}
+
+func kubernetesSysext(refs []generation.ExtensionRef) (generation.ExtensionRef, bool) {
+	for _, ref := range refs {
+		if ref.Name == "kubernetes" {
+			return ref, true
+		}
+	}
+	return generation.ExtensionRef{}, false
+}
+
+func changedDomainsWith(changes []Change, domain string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(changes)+1)
+	for _, change := range changes {
+		name := strings.TrimSpace(change.Domain)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if _, ok := seen[domain]; !ok {
+		out = append(out, domain)
+	}
+	return out
 }
 
 func domainActions(acceptedMode string, domains []string) []generation.ConfigApplyDomainAction {

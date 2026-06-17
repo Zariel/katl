@@ -69,6 +69,191 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 }
 
+func TestKubernetesSysextUpdateRefusesBootstrappedNode(t *testing.T) {
+	tests := []struct {
+		name          string
+		operationKind string
+		wantEvidence  string
+	}{
+		{
+			name:          "control plane",
+			operationKind: "bootstrap-init",
+			wantEvidence:  "etc-kubernetes",
+		},
+		{
+			name:          "worker",
+			operationKind: "bootstrap-join-worker",
+			wantEvidence:  "kubelet-state",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", tt.operationKind, tt.wantEvidence)
+			var dispatched atomic.Int32
+			server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+				dispatched.Add(1)
+				return nil
+			})
+
+			accepted, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-upgrade-"+tt.name, "v1.36.0", strings.Repeat("e", 64)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := accepted.InitialStatus
+			if status.Phase != kubeadmUpgradeRefusedPhase || !status.Terminal || status.Result != kubeadmUpgradeRefusedPhase {
+				t.Fatalf("initial status = %+v, want terminal refused plan-only operation", status)
+			}
+			if status.CandidateGenerationId != "" || status.ExternalMutationStarted || status.RecoveryRequired {
+				t.Fatalf("status mutated or selected candidate: %+v", status)
+			}
+			if !strings.Contains(status.FailureReason, "target kubeadm access mode") || !strings.Contains(status.FailureReason, "kubelet activation gate") {
+				t.Fatalf("failure reason = %q, want missing upgrade gates", status.FailureReason)
+			}
+			if !strings.Contains(status.NextAction, "target kubeadm access mode") || !strings.Contains(status.NextAction, "kubelet activation gate") {
+				t.Fatalf("next action = %q, want missing upgrade gates", status.NextAction)
+			}
+			if dispatched.Load() != 0 {
+				t.Fatalf("dispatcher calls = %d, want none for refused Kubernetes sysext update", dispatched.Load())
+			}
+			record, err := server.Store.Read(accepted.OperationId)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.TargetPayloadVersion != "v1.36.0" {
+				t.Fatalf("record Kubernetes sysext update = %+v", record.KubernetesSysextUpdate)
+			}
+			if record.CandidateGenerationID != "" || record.ExternalMutationStarted || record.MutatingToolRan || len(record.MutationScopes) != 0 {
+				t.Fatalf("record mutated or selected candidate: %+v", record)
+			}
+		})
+	}
+}
+
+func TestKubernetesSysextUpdateNoopsForCurrentSysext(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	current := currentKubernetesExtensionRef(t, server.Root)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	accepted, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-current", current.PayloadVersion, current.SHA256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := accepted.InitialStatus
+	if status.Phase != kubeadmUpgradeNoopPhase || !status.Terminal || status.Result != operation.ResultSucceeded {
+		t.Fatalf("initial status = %+v, want terminal no-op success", status)
+	}
+	if status.CandidateGenerationId != "" || status.ExternalMutationStarted {
+		t.Fatalf("status selected candidate or mutation: %+v", status)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want none for current Kubernetes sysext", dispatched.Load())
+	}
+}
+
+func TestKubernetesSysextUpdateRejectsRawActivationPath(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		t.Fatalf("dispatcher called for invalid raw activation path")
+		return nil
+	})
+	req := kubernetesSysextUpdateRequest("req-kube-raw", "v1.36.0", strings.Repeat("e", 64))
+	req.KubernetesSysextUpdate.TargetActivationPath = "/run/extensions/kubernetes.raw"
+
+	_, err := server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "kubelet activation gate") {
+		t.Fatalf("SubmitOperation() error = %v, want raw activation InvalidArgument", err)
+	}
+	ids, err := server.Store.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("operation ids = %v, want no record for invalid raw activation path", ids)
+	}
+}
+
+func TestKubernetesSysextUpdateDryRunUsesRefusalPlan(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		t.Fatalf("dispatcher called for dry-run Kubernetes sysext update")
+		return nil
+	})
+	req := kubernetesSysextUpdateRequest("req-kube-dry-run", "v1.36.0", strings.Repeat("e", 64))
+	req.DryRun = true
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := accepted.InitialStatus
+	if status.Phase != kubeadmUpgradeRefusedPhase || !status.Terminal || status.Result != kubeadmUpgradeRefusedPhase {
+		t.Fatalf("dry-run status = %+v, want terminal refusal plan", status)
+	}
+	if status.CandidateGenerationId != "" || status.ExternalMutationStarted || status.RecoveryRequired {
+		t.Fatalf("dry-run status selected candidate or mutation: %+v", status)
+	}
+	if !strings.Contains(status.FailureReason, "target kubeadm access mode") || !strings.Contains(status.FailureReason, "kubelet activation gate") {
+		t.Fatalf("failure reason = %q, want missing upgrade gates", status.FailureReason)
+	}
+	ids, err := server.Store.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "bootstrap-evidence" {
+		t.Fatalf("operation ids = %v, want only existing evidence record", ids)
+	}
+}
+
+func TestKubernetesSysextUpdateRejectsInvalidDigest(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		t.Fatalf("dispatcher called for invalid Kubernetes sysext digest")
+		return nil
+	})
+	req := kubernetesSysextUpdateRequest("req-kube-bad-digest", "v1.36.0", "BAD")
+
+	_, err := server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "targetSysextSHA256") {
+		t.Fatalf("SubmitOperation() error = %v, want digest InvalidArgument", err)
+	}
+}
+
+func TestKubernetesSysextUpdateCleanGenerationZeroUsesBootstrapPath(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	_, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-clean-gen0", "v1.35.0", strings.Repeat("e", 64)))
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "bootstrap operation path") {
+		t.Fatalf("SubmitOperation() error = %v, want bootstrap-path FailedPrecondition", err)
+	}
+	accepted, err := server.SubmitOperation(context.Background(), submitRequest("req-bootstrap-clean-gen0"))
+	if err != nil {
+		t.Fatalf("bootstrap SubmitOperation() error = %v", err)
+	}
+	if accepted.InitialStatus.Phase != "accepted" || accepted.InitialStatus.Terminal {
+		t.Fatalf("bootstrap status = %+v, want accepted active operation", accepted.InitialStatus)
+	}
+	if dispatched.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want one bootstrap dispatch", dispatched.Load())
+	}
+}
+
 func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -1110,6 +1295,22 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 	}
 }
 
+func kubernetesSysextUpdateRequest(clientRequestID string, payloadVersion string, sha256Hex string) *agentapi.SubmitOperationRequest {
+	return &agentapi.SubmitOperationRequest{
+		ApiVersion:        APIVersion,
+		Kind:              RequestKind,
+		ClientRequestId:   clientRequestID,
+		OperationKind:     OperationKindKubeadmUpgrade,
+		Actor:             "test-actor",
+		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
+			TargetPayloadVersion: payloadVersion,
+			TargetSysextPath:     "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
+			TargetSysextSha256:   sha256Hex,
+		},
+	}
+}
+
 func writeBootSelection(t *testing.T, root string, generationID string) {
 	t.Helper()
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
@@ -1124,6 +1325,40 @@ func writeBootSelection(t *testing.T, root string, generationID string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeCleanGenerationZeroState(t *testing.T, root string) {
+	t.Helper()
+	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
+		GenerationID:          "generation-0",
+		RuntimeVersion:        "0.1.0",
+		RuntimeInterface:      "katl-runtime-1",
+		RuntimeArchitecture:   "x86_64",
+		RootSlot:              "root-a",
+		RootPartitionUUID:     "11111111-1111-1111-1111-111111111111",
+		RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		UKIPath:               "/efi/EFI/Linux/katl-generation-0.efi",
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/generation-0/confext",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("b", 64),
+			Compatibility:  generation.ConfextCompatibility{ID: "katl", VersionID: "0.1.0", ConfextLevel: 1},
+		},
+		CreatedAt: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := generation.SpecFromRecord(record)
+	digest, err := generation.CanonicalSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
+		t.Fatal(err)
+	}
+	writeBootSelection(t, root, "generation-0")
 }
 
 func writeConfigApplyBaseState(t *testing.T, root string) {
@@ -1181,6 +1416,52 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(manifestPath, []byte(configApplyInstallManifestJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func currentKubernetesExtensionRef(t *testing.T, root string) generation.ExtensionRef {
+	t.Helper()
+	spec, _, err := generation.ReadGeneration(root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range spec.Sysexts {
+		if ref.Name == "kubernetes" {
+			return ref
+		}
+	}
+	t.Fatal("current generation has no Kubernetes sysext")
+	return generation.ExtensionRef{}
+}
+
+func writeKubeadmMutationEvidence(t *testing.T, server *Server, operationID string, kind string, scope string) {
+	t.Helper()
+	completedAt := server.Now()
+	_, err := server.Store.Create(operation.OperationRecord{
+		OperationID:             operationID,
+		OperationKind:           kind,
+		Scope:                   "kubeadm-state",
+		RequestDigest:           strings.Repeat("1", 64),
+		Phase:                   "complete",
+		PhasePlan:               []string{"accepted", "kubeadm-mutation-started", "complete"},
+		CompletedPhases:         []string{"accepted", "kubeadm-mutation-started", "complete"},
+		PhaseIndex:              3,
+		PreviousGenerationID:    "generation-0",
+		ExternalMutationStarted: true,
+		MutationScopes:          []string{scope},
+		ActivationMode:          operation.ActivationModeNextBoot,
+		ActivationState:         operation.ActivationStateActiveLive,
+		GenerationCommitState:   operation.GenerationCommitCommitted,
+		PostKubeadmHealthState:  operation.PostKubeadmHealthPassed,
+		ResourceLocks:           []string{"generation-state.lock", "kubeadm-state.lock"},
+		Terminal:                true,
+		Result:                  operation.ResultSucceeded,
+		CompletedAt:             &completedAt,
+		CreatedAt:               server.Now(),
+		UpdatedAt:               server.Now(),
+	}, "accepted", server.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
 }

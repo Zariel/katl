@@ -503,7 +503,11 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	if fake.stageRequest != nil || fake.applyRequest != nil {
 		t.Fatalf("mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
 	}
-	if !strings.Contains(stdout.String(), `"accepted": true`) || !strings.Contains(stdout.String(), `"networkd"`) {
+	var output map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode stdout = %v: %s", err, stdout.String())
+	}
+	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }

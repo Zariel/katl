@@ -130,11 +130,11 @@ func PlanActivation(record Record) (ActivationPlan, error) {
 }
 
 func ApplyActivation(root string, record Record) (ActivationPlan, error) {
-	if err := resetActivationDirs(root); err != nil {
-		return ActivationPlan{}, err
-	}
 	plan, err := PlanActivation(record)
 	if err != nil {
+		return ActivationPlan{}, err
+	}
+	if err := rejectKubernetesSysextChange(root, record); err != nil {
 		return ActivationPlan{}, err
 	}
 	for _, ref := range record.Sysexts {
@@ -159,6 +159,9 @@ func ApplyActivation(root string, record Record) (ActivationPlan, error) {
 			return ActivationPlan{}, fmt.Errorf("verify confext %q: SHA-256 mismatch", ref.Name)
 		}
 	}
+	if err := resetActivationDirs(root); err != nil {
+		return ActivationPlan{}, err
+	}
 	for _, link := range append(append([]ActivationLink{}, plan.Sysexts...), plan.Confexts...) {
 		target, err := rootedPath(root, link.ActivationPath)
 		if err != nil {
@@ -172,6 +175,72 @@ func ApplyActivation(root string, record Record) (ActivationPlan, error) {
 		}
 	}
 	return plan, nil
+}
+
+func rejectKubernetesSysextChange(root string, record Record) error {
+	nextRef, nextOK := selectedKubernetesSysext(record.Sysexts)
+	if !nextOK {
+		return nil
+	}
+	previousID, err := previousGenerationForActivation(root, record)
+	if err != nil {
+		return err
+	}
+	if previousID == "" {
+		return nil
+	}
+	previous, err := readRecordFromRoot(root, previousID)
+	if err != nil {
+		return fmt.Errorf("read previous generation for Kubernetes sysext policy: %w", err)
+	}
+	previousRef, previousOK := selectedKubernetesSysext(previous.Sysexts)
+	if previousOK && nextOK && strings.EqualFold(previousRef.SHA256, nextRef.SHA256) && previousRef.PayloadVersion == nextRef.PayloadVersion {
+		return nil
+	}
+	if !previousOK {
+		return nil
+	}
+	return fmt.Errorf("normal runtime configuration cannot activate Kubernetes sysext change from %s/%s to %s/%s before target kubeadm access mode and kubelet activation gate are implemented", previousRef.PayloadVersion, previousRef.SHA256, nextRef.PayloadVersion, nextRef.SHA256)
+}
+
+func previousGenerationForActivation(root string, record Record) (string, error) {
+	if record.ConfigApply != nil && strings.TrimSpace(record.ConfigApply.PreviousGeneration) != "" {
+		return strings.TrimSpace(record.ConfigApply.PreviousGeneration), nil
+	}
+	if strings.TrimSpace(record.PreviousGenerationID) != "" {
+		return strings.TrimSpace(record.PreviousGenerationID), nil
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read boot selection for Kubernetes sysext policy: %w", err)
+	}
+	for _, candidate := range []string{selection.BootedGenerationID, selection.DefaultGenerationID, selection.TargetBootGenerationID} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && candidate != record.GenerationID {
+			return candidate, nil
+		}
+	}
+	return "", nil
+}
+
+func readRecordFromRoot(root string, generationID string) (Record, error) {
+	metadataPath, err := MetadataPath(root, generationID)
+	if err != nil {
+		return Record{}, err
+	}
+	return ReadRecord(metadataPath)
+}
+
+func selectedKubernetesSysext(refs []ExtensionRef) (ExtensionRef, bool) {
+	for _, ref := range refs {
+		if ref.Name == "kubernetes" {
+			return ref, true
+		}
+	}
+	return ExtensionRef{}, false
 }
 
 func resetActivationDirs(root string) error {

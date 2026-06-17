@@ -44,6 +44,7 @@ message SubmitOperationRequest {
   string operation_timeout = 11;
   BootstrapOperationRequest bootstrap = 12;
   ConfigApplyOperationRequest config_apply = 13;
+  KubernetesSysextUpdateOperationRequest kubernetes_sysext_update = 14;
 }
 
 message BootstrapOperationRequest {
@@ -110,6 +111,14 @@ message ConfigApplyOperationRequest {
   string apply_mode = 2;
   string node_name = 3;
   string config_yaml = 4;
+}
+
+message KubernetesSysextUpdateOperationRequest {
+  string target_payload_version = 1;
+  string target_sysext_path = 2;
+  string target_sysext_sha256 = 3;
+  uint64 target_sysext_size_bytes = 4;
+  string target_activation_path = 5;
 }
 
 message CreateWorkerJoinMaterialRequest {

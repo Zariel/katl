@@ -20,19 +20,20 @@ const (
 )
 
 type Record struct {
-	APIVersion        string             `json:"apiVersion"`
-	Kind              string             `json:"kind"`
-	GenerationID      string             `json:"generationID"`
-	RuntimeVersion    string             `json:"runtimeVersion"`
-	Root              RootSelection      `json:"root"`
-	Boot              BootSelection      `json:"boot"`
-	Sysexts           []ExtensionRef     `json:"sysexts"`
-	Confexts          []GeneratedConfext `json:"confexts"`
-	KernelCommandLine []string           `json:"kernelCommandLine"`
-	ConfigApply       *ConfigApplyRecord `json:"configApply,omitempty"`
-	CreatedAt         time.Time          `json:"createdAt"`
-	BootState         string             `json:"bootState"`
-	HealthState       string             `json:"healthState"`
+	APIVersion           string             `json:"apiVersion"`
+	Kind                 string             `json:"kind"`
+	GenerationID         string             `json:"generationID"`
+	RuntimeVersion       string             `json:"runtimeVersion"`
+	PreviousGenerationID string             `json:"previousGenerationID,omitempty"`
+	Root                 RootSelection      `json:"root"`
+	Boot                 BootSelection      `json:"boot"`
+	Sysexts              []ExtensionRef     `json:"sysexts"`
+	Confexts             []GeneratedConfext `json:"confexts"`
+	KernelCommandLine    []string           `json:"kernelCommandLine"`
+	ConfigApply          *ConfigApplyRecord `json:"configApply,omitempty"`
+	CreatedAt            time.Time          `json:"createdAt"`
+	BootState            string             `json:"bootState"`
+	HealthState          string             `json:"healthState"`
 }
 
 type RootSelection struct {
@@ -228,15 +229,16 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	}
 
 	record := Record{
-		APIVersion:        APIVersion,
-		Kind:              Kind,
-		GenerationID:      strings.TrimSpace(request.GenerationID),
-		RuntimeVersion:    request.Previous.RuntimeVersion,
-		Root:              request.Previous.Root,
-		Boot:              request.Previous.Boot,
-		Sysexts:           sysexts,
-		Confexts:          []GeneratedConfext{confext},
-		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
+		APIVersion:           APIVersion,
+		Kind:                 Kind,
+		GenerationID:         strings.TrimSpace(request.GenerationID),
+		RuntimeVersion:       request.Previous.RuntimeVersion,
+		PreviousGenerationID: strings.TrimSpace(request.Previous.GenerationID),
+		Root:                 request.Previous.Root,
+		Boot:                 request.Previous.Boot,
+		Sysexts:              sysexts,
+		Confexts:             []GeneratedConfext{confext},
+		KernelCommandLine:    append([]string(nil), request.Previous.KernelCommandLine...),
 		ConfigApply: &ConfigApplyRecord{
 			SourceDigest:       strings.ToLower(request.SourceDigest),
 			ChangedDomains:     domains,

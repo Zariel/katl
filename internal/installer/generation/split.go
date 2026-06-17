@@ -73,6 +73,9 @@ func SpecFromRecord(record Record) GenerationSpec {
 	if record.ConfigApply != nil {
 		previous = strings.TrimSpace(record.ConfigApply.PreviousGeneration)
 	}
+	if previous == "" {
+		previous = strings.TrimSpace(record.PreviousGenerationID)
+	}
 	return GenerationSpec{
 		APIVersion:           APIVersion,
 		Kind:                 SpecKind,
@@ -119,18 +122,19 @@ func StatusFromRecord(record Record, specDigest string) GenerationStatus {
 
 func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 	return Record{
-		APIVersion:        APIVersion,
-		Kind:              Kind,
-		GenerationID:      spec.GenerationID,
-		RuntimeVersion:    spec.RuntimeVersion,
-		Root:              spec.Root,
-		Boot:              spec.Boot,
-		Sysexts:           append([]ExtensionRef(nil), spec.Sysexts...),
-		Confexts:          append([]GeneratedConfext(nil), spec.Confexts...),
-		KernelCommandLine: append([]string(nil), spec.KernelCommandLine...),
-		CreatedAt:         spec.CreatedAt,
-		BootState:         status.BootState,
-		HealthState:       status.HealthState,
+		APIVersion:           APIVersion,
+		Kind:                 Kind,
+		GenerationID:         spec.GenerationID,
+		RuntimeVersion:       spec.RuntimeVersion,
+		PreviousGenerationID: spec.PreviousGenerationID,
+		Root:                 spec.Root,
+		Boot:                 spec.Boot,
+		Sysexts:              append([]ExtensionRef(nil), spec.Sysexts...),
+		Confexts:             append([]GeneratedConfext(nil), spec.Confexts...),
+		KernelCommandLine:    append([]string(nil), spec.KernelCommandLine...),
+		CreatedAt:            spec.CreatedAt,
+		BootState:            status.BootState,
+		HealthState:          status.HealthState,
 	}
 }
 
