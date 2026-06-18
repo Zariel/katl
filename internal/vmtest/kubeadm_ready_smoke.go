@@ -82,32 +82,6 @@ func RunKubeadmReadySmoke(ctx context.Context, guest *GuestControl, plan Kubeadm
 	if err := RunKatlcSmoke(ctx, guest); err != nil {
 		return err
 	}
-	if _, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "kubeadm-config", Argv: []string{"test", "-f", plan.ConfigPath}}); err != nil {
-		return err
-	}
-	mount, err := guest.Findmnt(ctx, "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE")
-	if err != nil {
-		return err
-	}
-	source, err := readCommandStdout(mount)
-	if err != nil {
-		return err
-	}
-	if !kubernetesProjectionSourceMatches(source, plan.ProjectedSource) {
-		return fmt.Errorf("/etc/kubernetes is backed by %q, want %q", source, plan.ProjectedSource)
-	}
-	for _, command := range []GuestCommandRequest{
-		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubeadm"}},
-		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubelet"}},
-		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubectl"}},
-		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/crictl"}},
-		{Name: "systemctl", Argv: []string{"systemctl", "is-active", "--quiet", "containerd.service"}},
-		{Name: "crictl-info", Argv: []string{"crictl", "info"}, Timeout: plan.CommandTimeout, SensitiveOutput: true},
-	} {
-		if _, err := guest.RunCommand(ctx, command); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

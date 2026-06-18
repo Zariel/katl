@@ -82,7 +82,13 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	cacheDir := WorldFixtureCacheDir(world)
 	contract, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
 	if err != nil {
-		return "", err
+		if resetErr := resetFirstInstallRuntimeFixtureScenario(world, spec); resetErr != nil {
+			return "", errors.Join(err, resetErr)
+		}
+		contract, err = FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
+		if err != nil {
+			return "", err
+		}
 	}
 	inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
 	if err != nil {
@@ -114,6 +120,14 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 		return "", err
 	}
 	return inputDigest, nil
+}
+
+func resetFirstInstallRuntimeFixtureScenario(world World, spec NodeSpec) error {
+	scenarioDir := strings.TrimSpace(world.ScenarioDir)
+	if scenarioDir == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(scenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec))))
 }
 
 func firstInstallRuntimeFixtureInputDigest(contract FirstInstallRuntimeFixtureContract) (string, error) {

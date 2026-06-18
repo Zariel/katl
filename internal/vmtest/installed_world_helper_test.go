@@ -295,6 +295,39 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesRegeneratesChangedInput(t *te
 	}
 }
 
+func TestEnsurePublishedFirstInstallRuntimeFixturesRestagesChangedScenarioInput(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+
+	if _, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, input, KVMOff); err != nil {
+		t.Fatalf("initial FirstInstallRuntimeFixtureContractForWorld() error = %v", err)
+	}
+	if err := os.WriteFile(input.Installer.InstallerUKI, []byte("changed installer"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", input.Installer.InstallerUKI, err)
+	}
+
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
+		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			data, err := os.ReadFile(contract.InstallerBoot.InstallerUKI)
+			if err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			if string(data) != "changed installer" {
+				return ProducedInstalledRuntimeFixture{}, fmt.Errorf("staged installer = %q, want changed installer", data)
+			}
+			manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, "world-cp", time.Unix(10, 0))
+			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+}
+
 func TestFirstInstallRuntimeFixtureInputDigestIncludesMode(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()

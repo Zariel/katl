@@ -49,6 +49,7 @@ func TestStrictWorldForcesMissingFailures(t *testing.T) {
 }
 
 func TestOptIn(t *testing.T) {
+	t.Setenv("KATL_VMTEST_WORLD_STRICT", "0")
 	tests := []struct {
 		name    string
 		options Options

@@ -206,7 +206,7 @@ func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
 			args = append(args, "./internal/vmtest")
 			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), args...)
 			cmd.Dir = repo
-			env := appendHostEnv(os.Environ(), host,
+			env := appendHostEnv(removeEnv(os.Environ(), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
 				"KATL_VMTEST_GO="+fakeGo,
 				"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 				"KATL_FAKE_CHILD="+fakeChild,

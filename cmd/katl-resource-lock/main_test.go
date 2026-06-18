@@ -240,6 +240,9 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	if packageChecksum(katlosSet.Packages, "katlos-component-runtime-root") != strings.Repeat("d", 64) {
 		t.Fatalf("KatlOS package set = %#v", katlosSet)
 	}
+	if packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root") != "runtime-root-component.x86_64" {
+		t.Fatalf("KatlOS component NEVRA = %q", packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root"))
+	}
 	kubernetesSet := packageSet(manifest.PackageSets, "kubernetes-sysext")
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.1-150500.1.1.x86_64" {
 		t.Fatalf("Kubernetes package set = %#v", kubernetesSet)

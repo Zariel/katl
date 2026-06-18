@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 build_dir="$repo_root/_build/mkosi"
 version="${KATL_VERSION:-0.0.0-dev}"
-build_id="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+build_id="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
 image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"
 runtime_interface="${KATL_RUNTIME_INTERFACE:-katl-runtime-1}"

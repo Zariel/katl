@@ -565,7 +565,7 @@ func katlosPackages(index katlosIndex) ([]resourcetest.Package, error) {
 			return nil, fmt.Errorf("component role/name and sha256 are required")
 		}
 		architecture := firstNonEmpty(component.Architecture, index.Architecture)
-		nevra := role + "-" + firstNonEmpty(component.Version, component.PayloadVersion, index.Version, index.BuildID)
+		nevra := role + "-component"
 		if architecture != "" {
 			nevra += "." + architecture
 		}

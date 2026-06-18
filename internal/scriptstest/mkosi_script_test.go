@@ -16,6 +16,7 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
 	}
+	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
 	mkosiArgs := filepath.Join(tmp, "mkosi-args.txt")
 	mkosiEnv := filepath.Join(tmp, "mkosi-env.txt")
 	goArgs := filepath.Join(tmp, "go-args.txt")
@@ -33,9 +34,11 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
   printf 'GOMODCACHE=%s\n' "${GOMODCACHE:-}"
 } > "$KATL_FAKE_GO_ENV"
 `)
+	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
 	for _, tool := range []string{"dnf5", "ukify", "xargs"} {
 		writeFakeExecutable(t, bin, tool, "exit 0\n")
 	}
+	seedInstallerRPMCache(t, repo)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")
 	cmd.Dir = repo
@@ -61,7 +64,8 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	if !strings.Contains(args[1], bin) {
 		t.Fatalf("extra search path %q does not include fake tool dir %q", args[1], bin)
 	}
-	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", "KATL_INSTALLER_PACKAGE_SET=_build/mkosi/katl-installer.packages.tsv"} {
+	installerPackageSet := "KATL_INSTALLER_PACKAGE_SET=" + filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")
+	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", installerPackageSet} {
 		if !containsString(args, want) {
 			t.Fatalf("mkosi args missing %q: %#v", want, args)
 		}
@@ -82,6 +86,9 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	)
 	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write"}) {
 		t.Fatalf("go args = %#v", got)
+	}
+	if got := strings.TrimSpace(string(mustReadFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")))); got != "systemd\t0:259.6-1.fc44.x86_64" {
+		t.Fatalf("installer package set = %q", got)
 	}
 }
 
@@ -106,12 +113,15 @@ func TestMkosiPodmanSkipsRecursiveBuildChown(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
 	}
+	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
 	podmanArgs := filepath.Join(tmp, "podman-args.txt")
 	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
   exit 0
 fi
 printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 `)
+	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
+	seedInstallerRPMCache(t, repo)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer", "--debug")
 	cmd.Dir = repo
@@ -134,6 +144,9 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	if !containsString(args, "KATL_CHOWN_BUILD=0") {
 		t.Fatalf("podman args missing KATL_CHOWN_BUILD=0: %#v", args)
 	}
+	if !containsString(args, "KATL_INSTALLER_PACKAGE_SET=/work/_build/mkosi/katl-installer.packages.tsv") {
+		t.Fatalf("podman args missing container installer package path: %#v", args)
+	}
 }
 
 func TestMkosiCacheInputsExcludeResourcePackageLock(t *testing.T) {
@@ -144,11 +157,11 @@ func TestMkosiCacheInputsExcludeResourcePackageLock(t *testing.T) {
 	}
 }
 
-func TestMkosiCacheInputsIncludeBuildCommit(t *testing.T) {
+func TestMkosiDefaultBuildIdentityIsStable(t *testing.T) {
 	repo := repoRoot(t)
 	data := mustReadFile(t, filepath.Join(repo, "scripts", "mkosi"))
-	if !strings.Contains(string(data), "KATL_BUILD_COMMIT=%s") || !strings.Contains(string(data), "$build_commit") {
-		t.Fatalf("scripts/mkosi cache inputs do not include embedded build commit")
+	if !strings.Contains(string(data), `build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"`) {
+		t.Fatalf("scripts/mkosi default build identity is not stable")
 	}
 }
 
@@ -160,6 +173,34 @@ func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 		t.Fatalf("WriteFile(%s) error = %v", path, err)
 	}
 	return path
+}
+
+func seedInstallerRPMCache(t *testing.T, repo string) {
+	t.Helper()
+	path := filepath.Join(repo, "_build", "mkosi", "cache", "fedora~44~x86-64~main.cache", "usr", "lib", "sysimage", "rpm")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", path, err)
+	}
+}
+
+func preserveFile(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	exists := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	t.Cleanup(func() {
+		if exists {
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatalf("restore %s: %v", path, err)
+			}
+			return
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove %s: %v", path, err)
+		}
+	})
 }
 
 func readLinesForScripts(t *testing.T, path string) []string {

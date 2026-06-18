@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
-build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 build_dir="$repo_root/_build/mkosi"
 stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="$repo_root/_build/go-mod"
@@ -23,6 +23,7 @@ installer_package_set=""
 cache_target=""
 kubernetes_repo_file=""
 kubernetes_repo_backup=""
+mkosi_installer_package_set=""
 container_mkosi_storage_args=(
     --output-directory /mkosi-build
     --workspace-directory /mkosi-build/workspace
@@ -277,6 +278,22 @@ prepare_cached_target() {
     fi
 }
 
+write_installer_package_set() {
+    local output="$repo_root/_build/mkosi/katl-installer.packages.tsv"
+    local cache_root="$repo_root/_build/mkosi/cache/fedora~44~x86-64~main.cache"
+    if [[ ! -d "$cache_root/usr/lib/sysimage/rpm" ]]; then
+        echo "error: installer RPM database not found: $cache_root/usr/lib/sysimage/rpm" >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$output")"
+    rpm \
+        --root "$cache_root" \
+        --dbpath /usr/lib/sysimage/rpm \
+        -qa \
+        --queryformat "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" \
+        | sort >"$output"
+}
+
 if [[ -z "$runtime" ]]; then
     if command -v podman >/dev/null 2>&1; then
         runtime=podman
@@ -410,7 +427,6 @@ run_flags=(
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
-    --env "KATL_INSTALLER_PACKAGE_SET=$installer_package_set"
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
     --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
     --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
@@ -421,10 +437,6 @@ run_flags=(
     --env "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION"
 )
 chown_build=1
-
-if [[ -n "$installer_package_set" ]]; then
-    mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$installer_package_set")
-fi
 
 direct_tool_search_path() {
     local tool
@@ -449,6 +461,10 @@ direct_tool_search_path() {
 }
 
 if [[ "$runtime" == direct ]]; then
+    if [[ -n "$installer_package_set" ]]; then
+        mkosi_installer_package_set="$repo_root/$installer_package_set"
+        mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
+    fi
     if [[ "$emit_runtime_artifact" == 1 || "$emit_kubernetes_sysext" == 1 ]]; then
         echo "error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only" >&2
         exit 1
@@ -477,6 +493,9 @@ if [[ "$runtime" == direct ]]; then
     status=${PIPESTATUS[0]}
     set -e
     if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
+        write_installer_package_set || status=1
+    fi
+    if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
         GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" go run ./cmd/katl-mkosi-artifacts write >/dev/null || status=1
     fi
     if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
@@ -488,11 +507,21 @@ fi
 prepare_build_dirs
 run_flags+=(--volume "$build_dir:/mkosi-build")
 
+if [[ -n "$installer_package_set" ]]; then
+    mkosi_installer_package_set="/work/$installer_package_set"
+    mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
+fi
+
 if [[ "$runtime" == podman ]]; then
     run_flags+=(--userns=keep-id --user root)
     chown_build=0
 fi
 run_flags+=(--env "KATL_CHOWN_BUILD=$chown_build")
+if [[ -n "$mkosi_installer_package_set" ]]; then
+    run_flags+=(--env "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
+else
+    run_flags+=(--env "KATL_INSTALLER_PACKAGE_SET=")
+fi
 
 if [[ -t 0 && -t 1 ]]; then
     run_flags+=(--interactive --tty)
@@ -635,6 +664,9 @@ set +e
 ' bash "${container_mkosi_storage_args[@]}" "${mkosi_env[@]}" "$@"
 status=$?
 set -e
+if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
+    write_installer_package_set || status=1
+fi
 if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
     store_target_cache "$cache_target"
 fi

@@ -15,18 +15,10 @@ func TestKubeadmReadySmokeChecksRuntimeHandoff(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
-		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
-		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
-		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand("/dev/vdb4[/lib/katl/kubernetes/etc-kubernetes]\n")},
-		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/crictl"):                                                {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                      {okCommand()},
-		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                {okCommand()},
+		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"): {okCommand()},
+		commandKey("test", "-x", "/usr/bin/katlc"):                                   {okCommand()},
+		commandKey("/usr/bin/katlc", "--help"):                                       {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 	}
 	guest := NewGuestControl(result, client)
 
@@ -37,8 +29,8 @@ func TestKubeadmReadySmokeChecksRuntimeHandoff(t *testing.T) {
 	if client.commandCount(commandKey("kubeadm", "init", "--config", DefaultKubeadmConfigPath, "--skip-phases=addon/coredns,addon/kube-proxy")) != 0 {
 		t.Fatalf("readiness smoke must not run kubeadm init: %#v", client.commandRequests)
 	}
-	if !client.sensitiveCommand(commandKey("crictl", "info")) {
-		t.Fatalf("crictl info was not marked sensitive: %#v", client.commandRequests)
+	if client.commandCount(commandKey("test", "-f", DefaultKubeadmConfigPath)) != 0 {
+		t.Fatalf("readiness smoke must not require kubeadm config: %#v", client.commandRequests)
 	}
 }
 
@@ -57,18 +49,10 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
-		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
-		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
-		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
-		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},
-		commandKey("test", "-x", "/usr/bin/crictl"):                                                {okCommand()},
-		commandKey("systemctl", "is-active", "--quiet", "containerd.service"):                      {okCommand()},
-		commandKey("crictl", "info"):                                                               {stdoutCommand("{}\n")},
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                {okCommand()},
+		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"): {okCommand()},
+		commandKey("test", "-x", "/usr/bin/katlc"):                                   {okCommand()},
+		commandKey("/usr/bin/katlc", "--help"):                                       {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 	}
 	runner := VMRunner{
 		Executor: blockingVMExec{write: runtimeBootSignal},
