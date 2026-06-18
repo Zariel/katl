@@ -23,7 +23,6 @@
       "additionalProperties": false,
       "required": [
         "identity",
-        "kubernetes",
         "systemRole"
       ],
       "properties": {
@@ -68,6 +67,9 @@
         },
         "kubernetes": {
           "$ref": "#/$defs/kubernetesConfig"
+        },
+        "bootstrap": {
+          "$ref": "#/$defs/bootstrapIntent"
         }
       }
     },
@@ -246,37 +248,143 @@
         }
       }
     },
-    "bootstrapReference": {
+    "bootstrapIntent": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "profileRef": {
+        "clusterName": {
           "$ref": "#/$defs/dnsLabel"
+        },
+        "inventoryNodeName": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "nodeAddress": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "controlPlaneEndpoint": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "bootstrapProfileRef": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "profileResolvedID": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "kubernetesCatalogRef": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "access": {
+          "$ref": "#/$defs/bootstrapAccess"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/labelValue"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/labelKey"
+          }
+        },
+        "taints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nodeTaint"
+          }
+        }
+      }
+    },
+    "bootstrapAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "dependentRequired": {
+        "method": [
+          "credentialRef"
+        ],
+        "user": [
+          "method",
+          "credentialRef"
+        ],
+        "credentialRef": [
+          "method"
+        ]
+      },
+      "properties": {
+        "method": {
+          "enum": [
+            "ssh",
+            "vsock",
+            "agent"
+          ]
+        },
+        "user": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "credentialRef": {
+          "$ref": "#/$defs/credentialRef"
+        }
+      }
+    },
+    "nodeTaint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "effect"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/labelKey"
+        },
+        "value": {
+          "$ref": "#/$defs/labelValue"
+        },
+        "effect": {
+          "enum": [
+            "NoSchedule",
+            "PreferNoSchedule",
+            "NoExecute"
+          ]
         }
       }
     },
     "kubernetesConfig": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "version"
-      ],
       "properties": {
-        "version": {
-          "$ref": "#/$defs/kubernetesVersion"
-        },
-        "bootstrap": {
-          "$ref": "#/$defs/bootstrapReference"
+        "kubeadm": {
+          "$ref": "#/$defs/kubeadmReference"
         }
       }
     },
-    "kubernetesVersion": {
-      "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    "kubeadmReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configRef": {
+          "$ref": "#/$defs/dnsLabel"
+        }
+      }
     },
     "nonEmptyString": {
       "type": "string",
       "minLength": 1
+    },
+    "credentialRef": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "\\n|\\r"
+          },
+          {
+            "pattern": "-----BEGIN "
+          },
+          {
+            "pattern": "^[a-z0-9]{6}\\.[a-z0-9]{16}$"
+          }
+        ]
+      }
     },
     "relativePath": {
       "type": "string",
@@ -322,6 +430,15 @@
     "sshAuthorizedKey": {
       "type": "string",
       "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]+( .*)?$"
+    },
+    "labelKey": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^([A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
+    },
+    "labelValue": {
+      "type": "string",
+      "pattern": "^$|^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
     }
   }
 }

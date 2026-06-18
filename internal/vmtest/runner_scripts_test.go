@@ -564,6 +564,35 @@ func TestVMTestExecRequiresManifest(t *testing.T) {
 	}
 }
 
+func TestVMTestRunHelpDoesNotCreateRunDir(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	runDir := filepath.Join(tmp, "run")
+	fakeGo := filepath.Join(tmp, "go")
+	writeExecutable(t, fakeGo, "#!/usr/bin/env bash\nexit 99\n")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--help")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run --help failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "usage: scripts/vmtest-run") {
+		t.Fatalf("help output missing usage:\n%s", output)
+	}
+	if !strings.Contains(string(output), "--no-rebuild") {
+		t.Fatalf("help output missing runner options:\n%s", output)
+	}
+	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run dir exists after --help: %v", err)
+	}
+}
+
 func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 	tests := []struct {
 		name       string

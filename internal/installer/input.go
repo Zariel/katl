@@ -41,6 +41,7 @@ type BootInputFile struct {
 type BootInput struct {
 	ManifestPath    string
 	ManifestURL     string
+	ManifestSHA256  string
 	NodeName        string
 	InstallMode     string
 	HoldForDebug    bool
@@ -52,7 +53,7 @@ type BootInput struct {
 }
 
 func (i BootInput) CanMutateDisks() bool {
-	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || i.ManifestURL != "")
+	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || (i.ManifestURL != "" && i.ManifestSHA256 != ""))
 }
 
 func DiscoverBootInput(request BootInputRequest) (BootInput, error) {
@@ -159,6 +160,7 @@ func (r *inputResolver) applyKernelCmdline(cmdline string) error {
 func (r *inputResolver) applyValues(source InputSource, rank int, values bootInputValues) {
 	r.setStringWithRank("manifestPath", source, rank, values.ManifestPath)
 	r.setStringWithRank("manifestURL", source, rank, values.ManifestURL)
+	r.setStringWithRank("manifestSHA256", source, rank, values.ManifestSHA256)
 	r.setStringWithRank("nodeName", source, rank, values.NodeName)
 	r.setStringWithRank("installMode", source, rank, values.InstallMode)
 	r.setStringWithRank("artifactBaseURL", source, rank, values.ArtifactBaseURL)
@@ -181,6 +183,8 @@ func (r *inputResolver) setStringWithRank(field string, source InputSource, rank
 		r.input.ManifestPath = value
 	case "manifestURL":
 		r.input.ManifestURL = value
+	case "manifestSHA256":
+		r.input.ManifestSHA256 = value
 	case "nodeName":
 		r.input.NodeName = value
 	case "installMode":
@@ -218,6 +222,7 @@ func (r *inputResolver) recordSelection(field string, source InputSource, rank i
 type bootInputValues struct {
 	ManifestPath    string `json:"manifestPath"`
 	ManifestURL     string `json:"manifestURL"`
+	ManifestSHA256  string `json:"manifestSHA256"`
 	NodeName        string `json:"nodeName"`
 	InstallMode     string `json:"installMode"`
 	ArtifactBaseURL string `json:"artifactBaseURL"`
@@ -246,6 +251,10 @@ func parseKernelCmdline(cmdline string) (bootInputValues, error) {
 		case "katl.manifest.url":
 			if hasValue {
 				values.ManifestURL = value
+			}
+		case "katl.manifest.sha256":
+			if hasValue {
+				values.ManifestSHA256 = value
 			}
 		case "katl.node":
 			if hasValue {

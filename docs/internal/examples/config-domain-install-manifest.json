@@ -12,10 +12,16 @@
     },
     "systemRole": "control-plane",
     "kubernetes": {
-      "version": "1.36.1",
-      "bootstrap": {
-        "profileRef": "control-plane"
+      "kubeadm": {
+        "configRef": "control-plane"
       }
+    },
+    "bootstrap": {
+      "clusterName": "katl-lab",
+      "inventoryNodeName": "control-plane-01",
+      "controlPlaneEndpoint": "api.katl.test:6443",
+      "bootstrapProfileRef": "control-plane",
+      "kubernetesCatalogRef": "v1.36.1"
     },
     "networkd": {
       "files": [

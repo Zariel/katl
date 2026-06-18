@@ -254,6 +254,7 @@ Katl responsible for provisioning. A boot configuration may pass:
 
 ```text
 katl.manifest.url=<install manifest URL>
+katl.manifest.sha256=<install manifest SHA-256>
 katl.install.mode=auto
 console=...
 ```
@@ -338,7 +339,7 @@ The v1alpha1 manifest contains these top-level sections:
 ```text
 node
   hostname and `katl` runtime SSH authorized keys
-  exact Kubernetes payload version and optional bootstrap profile reference
+  optional kubeadm config reference and bootstrap intent
 
 install
   destructive install guard, target root disk selector, and optional extra data
@@ -349,10 +350,10 @@ katlosImage
   architecture, and role metadata
 ```
 
-`node.kubernetes.version` is an exact Kubernetes payload version such as
-`1.36.1`. It is not a version range, resolver expression, catalog reference, or
-compatibility policy. The first implementation resolves it only against bundled
-Kubernetes sysext components inside the verified KatlOS image.
+Kubernetes payload versions are selected from the verified KatlOS image metadata
+and recorded with generated bootstrap state. Manifest bootstrap intent may carry
+a catalog reference and kubeadm config reference, but it is not a loose package
+resolver or compatibility policy.
 
 The current manifest deliberately does not expose a separate manifest name,
 metadata labels, user-chosen generation IDs, node matching selectors, SSH
@@ -408,11 +409,11 @@ katlosImage
   fail before mutation where possible and before boot metadata is installed;
   signing and external trust-root policy are deferred
 
-Kubernetes payload version
-  node.kubernetes.version must be an exact version such as 1.36.1; the verified
-  KatlOS image must contain exactly one bundled Kubernetes sysext component for
-  that payload version, such as katl-kube-1.36.1.sysext; missing, duplicate, or
-  incompatible matches fail validation
+Kubernetes payload metadata
+  the verified KatlOS image must contain exactly one bundled Kubernetes sysext
+  component for the selected payload version, such as
+  katl-kube-1.36.1.sysext; missing, duplicate, or incompatible matches fail
+  validation before bootstrap-ready generation activation
 
 SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
@@ -757,7 +758,7 @@ cluster bootstrap. The first Kubernetes-capable generation flow is:
 ```text
 katlctl cluster bootstrap asks katlc to validate stored install intent
 katlc selects the bundled Kubernetes sysext whose payload version exactly matches
-  node.kubernetes.version, such as katl-kube-1.36.1.sysext
+  the selected bootstrap catalog entry, such as katl-kube-1.36.1.sysext
 katlc renders known configuration domains into generation 1 confext
 katlc writes the bootstrap/join OperationRecord
 katlc writes candidate generation spec/status and activates it for local
@@ -950,13 +951,13 @@ same artifact shape for users to download, but CI publishing is not part of the
 current local loop.
 
 For first install, the KatlOS image bundles exact-version Kubernetes sysext
-artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest requests
-the exact Kubernetes payload version with `node.kubernetes.version: "1.36.1"`.
-`katlctl cluster bootstrap` asks `katlc` to select the matching bundled sysext
-for generation 1 and record its path, digest, payload version, activation path,
-and compatibility metadata in generation spec. A day-one install does not use
-a version range, remote Kubernetes catalog, or compatibility matrix resolver.
-Those are day-2 update planning concerns.
+artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest records
+bootstrap intent with `node.bootstrap.kubernetesCatalogRef` and optional
+`node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap` asks `katlc` to
+select the matching bundled sysext for generation 1 and record its path, digest,
+payload version, activation path, and compatibility metadata in generation spec.
+A day-one install does not use a version range, remote Kubernetes catalog, or
+compatibility matrix resolver. Those are day-2 update planning concerns.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes

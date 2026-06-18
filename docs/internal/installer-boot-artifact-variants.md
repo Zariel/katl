@@ -120,8 +120,8 @@ are delivery mechanisms, not separate install policy models.
 Preferred network input:
 
 ```text
-katl.input.url=<InstallManifest URL>
-katl.input.sha256=<sha256>
+katl.manifest.url=<InstallManifest URL>
+katl.manifest.sha256=<sha256>
 katl.install.mode=auto
 ```
 
@@ -129,37 +129,22 @@ The referenced install manifest contains node-specific configuration and one
 `katlosImage` reference. This keeps target disk policy, node identity, network
 configuration, systemRole, bootstrap profile references, and KatlOS payload
 selection in one typed document. Capability overlays are deferred to day-2
-design.
-
-Split reference input is allowed only as a convenience when a provisioning
-system stores node config and payload refs separately:
-
-```text
-katl.node-config.url=<node config URL>
-katl.node-config.sha256=<sha256>
-katl.katlos-image.url=<KatlOS install image URL>
-katl.katlos-image.sha256=<sha256>
-katl.install.mode=auto
-```
-
-`katlos-install` must normalize split references into the same validated install
-request shape used by the canonical install manifest path before it mutates any
-disk. Split references must not create a second durable policy API.
+design. Split references for separate node configuration and payload URLs are
+not part of the current installer input contract.
 
 ## Kernel Arguments
 
 Safe kernel arguments:
 
 ```text
-katl.input.url
-katl.input.sha256
-katl.node-config.url
-katl.node-config.sha256
-katl.katlos-image.url
-katl.katlos-image.sha256
-katl.install.mode=auto|wait|debug
-katl.debug.ssh=0|1
-katl.debug.shell=0|1
+katl.manifest.url
+katl.manifest.sha256
+katl.manifest
+katl.node
+katl.artifact-base-url
+katl.install.mode=auto|manual
+katl.wait-for-config=0|1
+katl.hold-for-debug=0|1
 console=...
 ip=...
 ```

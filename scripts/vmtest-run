@@ -60,6 +60,31 @@ debug_on_failure_effective=""
 go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
+help_requested=0
+
+usage() {
+    cat <<'EOF'
+usage: scripts/vmtest-run [vmtest-run options] [go test args]
+
+Options:
+  -h, --help                    Show this help and exit.
+  --no-rebuild, --no-auto-rebuild
+                                Do not build missing default artifacts.
+  --rebuild, --auto-rebuild     Build missing default artifacts.
+  --rebuild=<bool>, --auto-rebuild=<bool>
+                                Set artifact rebuild behavior.
+  --artifact-set=<set>          Select default artifact set: default, install,
+                                runtime, or none.
+  --runtime-artifacts           Alias for --artifact-set=runtime.
+  --debug-on-failure            Preserve failed VM domains for debugging.
+  --no-debug-on-failure         Do not preserve failed VM domains.
+  --debug-on-failure=<value>    Set debug preservation policy.
+  --                            Pass all remaining args to go test.
+
+Go test args are forwarded to:
+  go test -exec scripts/vmtest-exec [default timeout] <args>
+EOF
+}
 
 need() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -173,6 +198,9 @@ parse_runner_args() {
             -args)
                 go_test_input_args+=("$@")
                 return 0
+                ;;
+            -h | --help)
+                help_requested=1
                 ;;
             --no-rebuild | --no-auto-rebuild)
                 auto_rebuild=0
@@ -802,14 +830,19 @@ print_preserved_debug_targets() {
     rm -f "$tmp"
 }
 
+parse_runner_args "$@"
+if [[ "$help_requested" == 1 ]]; then
+    usage
+    exit 0
+fi
+set -- "${go_test_input_args[@]}"
+
 need jq
 mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 if [[ "$run_dir_preexisting" == 0 ]]; then
     printf '%s\n' "$run_id" >"$run_owner_marker"
 fi
 : >"$go_test_log"
-parse_runner_args "$@"
-set -- "${go_test_input_args[@]}"
 validate_debug_on_failure_policy
 jq -n '{}' >"$lease_file"
 write_host_capabilities

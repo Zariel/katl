@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,6 +145,94 @@ func TestBootInputMode(t *testing.T) {
 				t.Fatalf("bootInputMode() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFetchManifestURL(t *testing.T) {
+	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	digest := sha256.Sum256(manifest)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cp-1.json" {
+			t.Fatalf("request path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(manifest)
+	}))
+	t.Cleanup(server.Close)
+
+	runDir := t.TempDir()
+	path, err := fetchManifestURL(context.Background(), server.URL+"/cp-1.json", hex.EncodeToString(digest[:]), runDir)
+	if err != nil {
+		t.Fatalf("fetchManifestURL() error = %v", err)
+	}
+	if path != filepath.Join(runDir, "install-manifest.json") {
+		t.Fatalf("manifest path = %q", path)
+	}
+	assertFile(t, path, `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("manifest mode = %o, want 0600", got)
+	}
+}
+
+func TestFetchManifestURLDoesNotFollowRedirects(t *testing.T) {
+	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	digest := sha256.Sum256(manifest)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/cp-1.json")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := fetchManifestURL(context.Background(), server.URL+"/redirect?token=secret", hex.EncodeToString(digest[:]), t.TempDir())
+	if err == nil {
+		t.Fatal("fetchManifestURL() error = nil, want redirect rejection")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("fetchManifestURL() leaked query token: %v", err)
+	}
+}
+
+func TestBootFetchesManifestURL(t *testing.T) {
+	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	digest := sha256.Sum256(manifest)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(manifest)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(runDir, "install-input.json"), `{"manifestURL":"`+server.URL+`/cp-1.json?token=secret","manifestSHA256":"`+hex.EncodeToString(digest[:])+`","installMode":"auto"}`)
+	writeTestFile(t, filepath.Join(runDir, "install-manifest.json"), `{"apiVersion":"stale"}`)
+
+	var stdout bytes.Buffer
+	err := runBoot(context.Background(), runDir, filepath.Join(root, "etc"), "127.0.0.1:0", &stdout)
+	if err == nil {
+		t.Fatal("runBoot() error = nil, want manifest validation failure")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("runBoot() returned old URL handoff error: %v", err)
+	}
+	assertFile(t, filepath.Join(runDir, "install-manifest.json"), `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
+	if !strings.Contains(stdout.String(), "downloaded manifest") {
+		t.Fatalf("stdout = %q, want downloaded manifest log", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "secret") {
+		t.Fatalf("stdout leaked manifest URL query token: %q", stdout.String())
+	}
+}
+
+func TestFetchManifestURLDoesNotLeakMalformedURL(t *testing.T) {
+	_, err := fetchManifestURL(context.Background(), "http://example.invalid/%zz?token=secret", strings.Repeat("a", 64), t.TempDir())
+	if err == nil {
+		t.Fatal("fetchManifestURL() error = nil, want malformed URL rejection")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("fetchManifestURL() leaked query token: %v", err)
 	}
 }
 

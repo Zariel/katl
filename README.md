@@ -12,3 +12,6 @@ kubeadm artifacts.
 Katl is early-stage software. Interfaces, workflows, generated artifacts, and
 runtime behavior are expected to change. Do not use Katl for production
 clusters.
+
+For the current install boundary and PXE/USB handoff examples, see
+[`docs/installing.md`](docs/installing.md).

@@ -7,9 +7,9 @@ import (
 
 func TestDiscoverBootInputPrecedence(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
-		KernelCmdline: "katl.manifest.url=https://kernel.example/manifest.json katl.node=kernel-node katl.install.mode=auto katl.artifact-base-url=https://kernel.example/artifacts/",
+		KernelCmdline: "katl.manifest.url=https://kernel.example/manifest.json katl.manifest.sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa katl.node=kernel-node katl.install.mode=auto katl.artifact-base-url=https://kernel.example/artifacts/",
 		Files: []BootInputFile{
-			inputFile(InputSourceLocalFile, `{"manifestURL":"https://local.example/manifest.json","nodeName":"local-node","installMode":"manual"}`),
+			inputFile(InputSourceLocalFile, `{"manifestURL":"https://local.example/manifest.json","manifestSHA256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","nodeName":"local-node","installMode":"manual"}`),
 			inputFile(InputSourceEmbeddedMedia, `{"manifestURL":"https://embedded.example/manifest.json","nodeName":"embedded-node"}`),
 			inputFile(InputSourceEtcKatl, `{"manifestURL":"https://etc.example/manifest.json","nodeName":"etc-node"}`),
 			inputFile(InputSourceRunKatl, `{"manifestURL":"https://run.example/manifest.json","nodeName":"run-node"}`),
@@ -28,6 +28,9 @@ func TestDiscoverBootInputPrecedence(t *testing.T) {
 	if input.ManifestURL != "https://kernel.example/manifest.json" {
 		t.Fatalf("manifest URL = %q", input.ManifestURL)
 	}
+	if input.ManifestSHA256 != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("manifest sha256 = %q", input.ManifestSHA256)
+	}
 	if input.NodeName != "kernel-node" {
 		t.Fatalf("node name = %q", input.NodeName)
 	}
@@ -43,8 +46,26 @@ func TestDiscoverBootInputPrecedence(t *testing.T) {
 	if input.SelectedSources["manifestURL"] != InputSourceKernelCmdline {
 		t.Fatalf("manifest URL source = %q", input.SelectedSources["manifestURL"])
 	}
+	if input.SelectedSources["manifestSHA256"] != InputSourceKernelCmdline {
+		t.Fatalf("manifest sha256 source = %q", input.SelectedSources["manifestSHA256"])
+	}
 	if !logsContain(input.Logs, "selected manifestURL from kernel-cmdline") {
 		t.Fatalf("logs do not report selected kernel source: %#v", input.Logs)
+	}
+}
+
+func TestDiscoverBootInputURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
+	input, err := DiscoverBootInput(BootInputRequest{
+		KernelCmdline: "katl.manifest.url=https://kernel.example/manifest.json katl.install.mode=auto",
+	})
+	if err != nil {
+		t.Fatalf("DiscoverBootInput() error = %v", err)
+	}
+	if input.Action != InstallActionRun {
+		t.Fatalf("action = %q, want run", input.Action)
+	}
+	if input.CanMutateDisks() {
+		t.Fatalf("manifest URL without digest must not allow disk mutation")
 	}
 }
 

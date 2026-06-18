@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,7 +163,8 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 		fmt.Fprintf(stdout, "katlos-install input: %s\n", log)
 	}
 	inputMode := bootInputMode(input)
-	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s inputMode=%s\n", input.Action, input.InstallMode, input.ManifestPath, input.ManifestURL, inputMode)
+	manifestURL := redactURL(input.ManifestURL)
+	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s inputMode=%s\n", input.Action, input.InstallMode, input.ManifestPath, manifestURL, inputMode)
 
 	switch input.Action {
 	case installer.InstallActionHoldForDebug:
@@ -170,13 +174,110 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 	case installer.InstallActionWaitForConfig:
 		return handoffRunner(ctx, runDir, handoffAddr, stdout)
 	case installer.InstallActionRun:
-		if input.ManifestURL != "" && input.ManifestPath == "" {
-			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)
+		if input.ManifestURL != "" {
+			manifestPath, err := fetchManifestURL(ctx, input.ManifestURL, input.ManifestSHA256, runDir)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "katlos-install downloaded manifest url=%s path=%s\n", manifestURL, manifestPath)
+			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), inputMode, manifestURL, stdout)
 		}
 		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), inputMode, input.ManifestPath, stdout)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
 	}
+}
+
+func fetchManifestURL(ctx context.Context, manifestURL, wantSHA256, runDir string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(manifestURL))
+	if err != nil {
+		return "", errors.New("parse manifest URL: invalid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("manifest URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("manifest URL missing host")
+	}
+	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
+	if len(wantSHA256) != 64 {
+		return "", errors.New("manifest URL requires manifestSHA256")
+	}
+	if _, err := hex.DecodeString(wantSHA256); err != nil {
+		return "", fmt.Errorf("manifestSHA256 is not valid hex: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("create manifest request for %s: invalid URL", redactURL(manifestURL))
+	}
+	client := http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch manifest URL %s: request failed", redactURL(manifestURL))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch manifest URL: unexpected HTTP status %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+	if err != nil {
+		return "", fmt.Errorf("read manifest URL response: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return "", errors.New("manifest URL response exceeds 1 MiB")
+	}
+	gotSHA256 := sha256.Sum256(body)
+	if got := hex.EncodeToString(gotSHA256[:]); got != wantSHA256 {
+		return "", fmt.Errorf("manifest URL digest mismatch: got %s want %s", got, wantSHA256)
+	}
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return "", fmt.Errorf("create run dir: %w", err)
+	}
+	path := filepath.Join(runDir, "install-manifest.json")
+	tmp, err := os.CreateTemp(runDir, ".install-manifest-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create manifest temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write manifest temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("chmod manifest temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close manifest temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("install fetched manifest: %w", err)
+	}
+	return path, nil
+}
+
+func redactURL(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	hadQuery := parsed.RawQuery != ""
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	if hadQuery {
+		return parsed.String() + "?<redacted>"
+	}
+	return parsed.String()
 }
 
 func bootInputMode(input installer.BootInput) string {
