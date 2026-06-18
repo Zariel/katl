@@ -22,8 +22,8 @@ the activation payload that `katlc` stages locally, but the raw sysext file is a
 layer inside the bundle rather than the primary object users are expected to
 reference.
 
-Each published bundle contains, either as OCI descriptors/layers or as an
-equivalent static layout while the format is being finalized:
+Each published bundle contains, either as OCI descriptors/layers or as the
+equivalent static layout defined below:
 
 ```text
 Katl custom bundle manifest
@@ -121,9 +121,10 @@ Resolver behavior is host-shape specific but produces the same bundle manifest:
 
 ```text
 GHCR or registry source
-  Resolve the exact tag from ref through the OCI distribution API, verify that
-  the resolved manifest digest matches the pinned digest when present, then
-  fetch descriptors and layers by digest.
+  Resolve the exact tag from ref through the OCI distribution API, fetch the
+  Katl bundle manifest from the OCI config descriptor, verify that the bundle
+  manifest digest matches the pinned digest when present, then fetch payload
+  and metadata layers by digest.
 
 GitHub Releases or static OCI layout source
   Resolve ref through an index or catalog document in the source directory,
@@ -142,30 +143,53 @@ roots are deferred until a separate credential materialization and redaction
 design exists. Diagnostics must redact credentials embedded in URLs even though
 credentialed URLs are not accepted for v0.1.
 
-The custom bundle manifest must expose enough fields for node-side selection
-before OCI media types are finalized:
+## Bundle Format
+
+The Katl custom bundle manifest is the stable payload identity. Its digest is
+the `@sha256:` pin used in `kubernetesBundleRef`, regardless of whether the
+bundle is hosted through GHCR or a static HTTPS layout. OCI distribution
+manifests, tags, catalogs, and indexes help locate that custom manifest, but
+they are not the identity recorded as the bundle manifest digest.
+
+The custom manifest media type is:
 
 ```text
-apiVersion
+application/vnd.katl.kubernetes.payload.bundle.v1+json
+```
+
+The manifest is canonical JSON for digest purposes: UTF-8, no insignificant
+transport wrapper, object keys emitted in deterministic order by Katl tooling,
+lowercase `sha256:<hex>` digests, integer byte sizes, RFC 3339 timestamps, and
+no mutable fields such as download URL freshness, latest aliases, or mirror
+preference. The digest is over those exact manifest bytes.
+
+The manifest schema is:
+
+```text
+apiVersion: payload.katl.dev/v1alpha1
 kind: KubernetesPayloadBundle
-name
+name: katl-kubernetes
 artifactKind: katl.kubernetes-payload.v1
 artifactVersion
 payloadVersion
 kubernetesMinor
 architecture
 bundleManifestDigest
+ociManifestDigest, when hosted in an OCI registry
 payloads[]
   role: systemd-sysext
   mediaType
   digest
   sizeBytes
   fileName
+  annotations
 metadata[]
   role: sysext-metadata | package-provenance | catalog-fragment | signature
   mediaType
   digest
   sizeBytes
+  fileName
+  annotations
 sourceRepository
 packageVersions
 packageLockDigest or buildInputDigest
@@ -177,11 +201,156 @@ createdAt
 signatures[] or explicit unsigned-fixture marker
 ```
 
+Required descriptor roles and media types for v0.1 are:
+
+```text
+systemd-sysext payload
+  role: systemd-sysext
+  mediaType: application/vnd.katl.sysext.raw.v1
+  fileName: katl-kubernetes-<payloadVersion>-<architecture>.sysext.raw
+
+sysext metadata
+  role: sysext-metadata
+  mediaType: application/vnd.katl.kubernetes.sysext.metadata.v1+json
+  fileName: metadata.json
+
+package provenance
+  role: package-provenance
+  mediaType: application/vnd.katl.package-provenance.v1+json
+  fileName: package-provenance.json
+
+catalog fragment
+  role: catalog-fragment
+  mediaType: application/vnd.katl.kubernetes.catalog.entry.v1+json
+  fileName: catalog-entry.json
+```
+
+Optional descriptor roles are:
+
+```text
+checksum
+  mediaType: text/plain
+
+signature
+  mediaType: application/vnd.dev.sigstore.bundle.v0.3+json or the selected
+  signing-envelope media type
+
+generic-confext
+  mediaType: application/vnd.katl.confext.raw.v1
+  allowed only when the producer-boundary rules prove the content is universal
+```
+
+In GHCR, the published object is an OCI image manifest:
+
+```text
+artifactType: application/vnd.katl.kubernetes.payload.bundle.v1
+config.mediaType: application/vnd.katl.kubernetes.payload.bundle.v1+json
+config.digest: sha256:<bundle-manifest-digest>
+layers[]: payload and metadata descriptors from the custom manifest
+annotations:
+  dev.katl.payload.version: v1.36.0
+  dev.katl.kubernetes.minor: v1.36
+  dev.katl.architecture: x86_64
+  dev.katl.bundle.manifest.digest: sha256:<bundle-manifest-digest>
+  dev.katl.sysext.payload.digest: sha256:<sysext-payload-digest>
+```
+
+Tags are convenience aliases only:
+
+```text
+v1.36.0
+v1.36.0-x86_64
+v1.36.0-katl.1-x86_64
+```
+
+Tags must never be recorded in generation metadata without resolving to the
+bundle manifest digest and sysext payload digest. A release tag must not be
+moved after publication. If a payload must be rebuilt for the same Kubernetes
+patch, publish a new `artifactVersion` and tag such as
+`v1.36.0-katl.2-x86_64`; the `payloadVersion` remains `v1.36.0`.
+
+The GitHub Releases or local fixture static layout uses the same custom
+manifest bytes and digest:
+
+```text
+index.json
+catalog/
+  v1.36.json
+bundles/
+  v1.36.0/
+    x86_64/
+      bundle.json
+      catalog-entry.json
+      package-provenance.json
+      metadata.json
+blobs/
+  sha256/
+    <bundle-manifest-digest>
+    <sysext-payload-digest>
+    <metadata-digest>
+    <package-provenance-digest>
+checksums.txt
+signatures/
+  <bundle-manifest-digest>.sigstore.json
+```
+
+`bundles/<payloadVersion>/<architecture>/bundle.json` and
+`blobs/sha256/<bundle-manifest-digest>` contain identical bytes. The duplicate
+named path is for human inspection; the blob path is for digest-addressed
+fetching and mirroring. Static layout fixtures used by tests must have the same
+shape; a loose `katl-kubernetes.raw` file is not a valid source.
+
+The source root `index.json` is a discovery document:
+
+```text
+apiVersion: payload.katl.dev/v1alpha1
+kind: KubernetesPayloadIndex
+entries[]
+  payloadVersion
+  artifactVersion
+  kubernetesMinor
+  architecture
+  bundleManifestDigest
+  bundleManifestPath
+  sysextPayloadDigest
+  supportedRuntimeInterfaces[]
+  catalogEntryPath
+  deprecated
+```
+
+`catalog/<kubernetesMinor>.json` is the minor-specific catalog view used for
+listing and mirroring. Each entry repeats the bundle manifest digest and sysext
+payload digest. Catalog documents may be signed, but catalog signatures prove
+only the listing; `katlc` still verifies the selected bundle manifest and every
+descriptor digest before staging.
+
+Mirrors preserve bytes, not trust shortcuts. A mirror may rewrite source URLs
+and catalog paths, but it must keep the custom bundle manifest bytes,
+descriptor digests, sizes, payload blobs, payload versions, artifact versions,
+and runtime compatibility metadata unchanged. If a mirror recompresses,
+repackages, or regenerates any descriptor, it has created a new bundle and must
+publish a new bundle manifest digest.
+
+User-facing refs are therefore stable across hosting shapes:
+
+```text
+source=https://ghcr.io/v2/katl/kubernetes-payloads
+ref=v1.36.0@sha256:<bundle-manifest-digest>
+
+source=https://github.com/katl/releases/download/kubernetes-v1.36.0/oci
+ref=v1.36.0@sha256:<bundle-manifest-digest>
+
+source=https://mirror.example.invalid/katl/kubernetes
+ref=v1.36.0@sha256:<same-bundle-manifest-digest>
+```
+
 The sysext payload digest, not the catalog digest, remains the activation digest
 stored in generation metadata. The bundle manifest digest is the distribution
-pin used to prove the same manifest was fetched again. The catalog is useful for
-listing and mirroring; it is not sufficient by itself to stage or activate a
-payload.
+pin used to prove the same custom manifest was fetched again. The OCI manifest
+digest, static index digest, and catalog digest may be recorded for diagnostics
+and mirror audit, but they are not the generation activation digest. The catalog
+is useful for listing and mirroring; it is not sufficient by itself to stage or
+activate a payload.
 
 Acquisition is separate from activation:
 
@@ -393,7 +562,7 @@ payload descriptors
   digest and size discipline
 
 OCI or static layout
-  GHCR OCI manifest/config/layers using the Katl media types once finalized, or
+  GHCR OCI manifest/config/layers using the Katl media types defined above, or
   a GitHub Releases/static layout that contains an index, the same custom
   manifest bytes, descriptor files, payload blobs, checksums, and optional
   signatures
@@ -410,10 +579,9 @@ catalog fragment
   deprecation/retention metadata when applicable
 ```
 
-The exact OCI media type strings and final schema IDs are fixed by the
-Kubernetes payload bundle OCI format decision. This producer boundary requires
-that both the in-repository producer and any future split producer emit those
-same finalized bytes and digest relationships.
+Both the in-repository producer and any future split producer must emit these
+same manifest bytes, media types, static layout paths, and digest
+relationships.
 
 Raw sysext files may remain build outputs or payload layers, but they are not
 the producer's stable publication API. A consumer must be able to mirror or move
@@ -550,7 +718,6 @@ policy decision before they become a stable distribution channel.
 The following remain separate backlog items:
 
 ```text
-custom OCI manifest media types and bundle schema
 production artifact and catalog signing key distribution
 release channel and deprecation policy
 separate producer repository split
