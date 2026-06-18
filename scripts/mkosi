@@ -23,6 +23,25 @@ installer_package_set=""
 cache_target=""
 kubernetes_repo_file=""
 kubernetes_repo_backup=""
+container_mkosi_storage_args=(
+    --output-directory /mkosi-build
+    --workspace-directory /mkosi-build/workspace
+    --cache-directory /mkosi-build/cache
+    --package-cache-directory /mkosi-build/package-cache
+    --build-directory /mkosi-build/builddir
+)
+
+prepare_build_dirs() {
+    mkdir -p \
+        "$build_dir/cache" \
+        "$build_dir/package-cache" \
+        "$build_dir/builddir" \
+        "$build_dir/workspace" \
+        "$build_dir/workspace/installer" \
+        "$build_dir/workspace/runtime" \
+        "$go_mod_cache" \
+        "$go_build_cache"
+}
 
 write_kubernetes_repo_file() {
     local path="$1"
@@ -435,7 +454,15 @@ if [[ "$runtime" == direct ]]; then
     fi
     log="$(mktemp)"
     trap 'restore_kubernetes_repo_file; rm -f "$log"' EXIT
-    mkdir -p "$go_mod_cache" "$go_build_cache"
+    prepare_build_dirs
+    direct_workspace="${KATL_MKOSI_WORKSPACE_DIR:-${TMPDIR:-/tmp}/katl-mkosi-workspace}"
+    mkdir -p "$direct_workspace"
+    direct_mkosi_storage_args=(
+        --workspace-directory "$direct_workspace"
+        --cache-directory "$build_dir/cache"
+        --package-cache-directory "$build_dir/package-cache"
+        --build-directory "$build_dir/builddir"
+    )
     export GOCACHE="${GOCACHE:-$go_build_cache}"
     export GOMODCACHE="${GOMODCACHE:-$go_mod_cache}"
     export MKOSI_DNF="${MKOSI_DNF:-dnf5}"
@@ -445,7 +472,7 @@ if [[ "$runtime" == direct ]]; then
     fi
     extra_search_path="$(direct_tool_search_path)"
     set +e
-    mkosi --extra-search-path "$extra_search_path" "${mkosi_env[@]}" "$@" 2>&1 | tee "$log"
+    mkosi --extra-search-path "$extra_search_path" "${direct_mkosi_storage_args[@]}" "${mkosi_env[@]}" "$@" 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
     set -e
     if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
@@ -456,6 +483,9 @@ if [[ "$runtime" == direct ]]; then
     fi
     exit "$status"
 fi
+
+prepare_build_dirs
+run_flags+=(--volume "$build_dir:/mkosi-build")
 
 if [[ "$runtime" == podman ]]; then
     run_flags+=(--userns=keep-id --user root)
@@ -473,7 +503,19 @@ set +e
     set -uo pipefail
     log=$(mktemp)
     trap "rm -f \"$log\"" EXIT
-    mkdir -p /work/_build/go-mod /work/_build/go-cache
+    mkdir -p \
+        /work/_build/go-mod \
+        /work/_build/go-cache \
+        /work/_build/mkosi/cache \
+        /work/_build/mkosi/package-cache \
+        /work/_build/mkosi/builddir \
+        /work/_build/mkosi/workspace \
+        /work/_build/mkosi/workspace/installer \
+        /work/_build/mkosi/workspace/runtime \
+        /mkosi-build/cache \
+        /mkosi-build/package-cache \
+        /mkosi-build/builddir \
+        /mkosi-build/workspace
     export GOCACHE=/work/_build/go-cache
     export GOMODCACHE=/work/_build/go-mod
     go mod download
@@ -579,7 +621,7 @@ set +e
     if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d _build ]]; then
         chown -R "$HOST_UID:$HOST_GID" _build || true
     elif [[ -d _build/mkosi ]]; then
-        find _build/mkosi/cache _build/mkosi/builddir -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+        find _build/mkosi/cache _build/mkosi/package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
         chown -h "$HOST_UID:$HOST_GID" \
             _build/mkosi/artifacts.json \
             _build/mkosi/katl-* \
@@ -589,7 +631,7 @@ set +e
             2>/dev/null || true
     fi
     exit "$status"
-' bash "${mkosi_env[@]}" "$@"
+' bash "${container_mkosi_storage_args[@]}" "${mkosi_env[@]}" "$@"
 status=$?
 set -e
 if [[ "$status" -eq 0 && -n "$cache_target" ]]; then

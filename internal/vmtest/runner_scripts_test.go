@@ -243,7 +243,7 @@ exec "$@"
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
-	env := appendHostEnv(nil, host,
+	env := appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -307,10 +307,6 @@ func TestVMTestRunBuildsRuntimeOnlyArtifacts(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
 `)
-	writeExecutable(t, filepath.Join(repo, "scripts", "build-vmtest-artifacts"), `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$KATL_FAKE_VMTEST_ARTIFACT_ARGS"
-`)
 	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
 set -euo pipefail
 export KATL_VMTEST_RUN=1
@@ -324,16 +320,13 @@ exec "$@"
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
-	vmtestArtifactArgsPath := filepath.Join(tmp, "vmtest-artifact-args.txt")
-	env := appendHostEnv(nil, host,
+	env := appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
 		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
 		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
-		"KATL_FAKE_VMTEST_ARTIFACT_ARGS="+vmtestArtifactArgsPath,
-		"KATL_VMTEST_AUTO_REBUILD=1",
 		"KATL_VMTEST_RUN_ID=run-runtime-only",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
@@ -345,15 +338,9 @@ exec "$@"
 		"KATL_INSTALLER_INITRD",
 		"KATL_RUNTIME_ARTIFACT",
 		"KATL_INSTALL_MANIFEST",
-		"KATL_VMTEST_AUTO_REBUILD",
 	} {
 		env = removeEnv(env, name)
 	}
-	env = append(env,
-		"KATL_MKOSI_ARTIFACT_INDEX=",
-		"KATL_RUNTIME_ARTIFACT=",
-		"KATL_VMTEST_AUTO_REBUILD=1",
-	)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=runtime", "./internal/vmtest", "-run", "NeedsRuntimeOnly")
 	cmd.Dir = repo
@@ -363,12 +350,9 @@ exec "$@"
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
 
-	if _, err := os.Stat(mkosiArgsPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("mkosi ran for runtime-only fast prep, stat err = %v", err)
-	}
-	vmtestArtifactArgs := readLines(t, vmtestArtifactArgsPath)
-	if !reflect.DeepEqual(vmtestArtifactArgs, []string{"--runtime-only"}) {
-		t.Fatalf("vmtest artifact args = %#v", vmtestArtifactArgs)
+	mkosiArgs := readLines(t, mkosiArgsPath)
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-runtime"}) {
+		t.Fatalf("mkosi args = %#v", mkosiArgs)
 	}
 	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
 	if err != nil {

@@ -70,6 +70,16 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	if env["MKOSI_DNF"] != "dnf5" || env["TMPDIR"] != tmp || env["GOMODCACHE"] != filepath.Join(repo, "_build", "go-mod") {
 		t.Fatalf("mkosi env = %#v", env)
 	}
+	assertDirsExist(t, repo,
+		"_build/go-cache",
+		"_build/go-mod",
+		"_build/mkosi/builddir",
+		"_build/mkosi/cache",
+		"_build/mkosi/package-cache",
+		"_build/mkosi/workspace",
+		"_build/mkosi/workspace/installer",
+		"_build/mkosi/workspace/runtime",
+	)
 	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write"}) {
 		t.Fatalf("go args = %#v", got)
 	}
@@ -166,4 +176,18 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertDirsExist(t *testing.T, root string, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		full := filepath.Join(root, path)
+		info, err := os.Stat(full)
+		if err != nil {
+			t.Fatalf("Stat(%s) error = %v", full, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s is not a directory", full)
+		}
+	}
 }
