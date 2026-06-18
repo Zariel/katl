@@ -65,7 +65,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
 	}
-	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || !world.AutoRebuild || world.ArtifactSet != "default" {
+	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || world.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || world.ResourceDigest != strings.Repeat("a", 64) || world.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || world.PackageLockDigest != strings.Repeat("a", 64) || world.AutoRebuild || world.ArtifactSet != "default" {
 		t.Fatalf("world log/rebuild fields = %#v", world)
 	}
 	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
@@ -118,6 +118,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if childEnv["KATL_VMTEST_DEBUG_ON_FAILURE"] != "1" || !world.DebugOnFailure || !world.DebugShell {
 		t.Fatalf("child debug env/world = %#v %#v", childEnv, world)
 	}
+	if childEnv["KATL_VMTEST_RESOURCE_MANIFEST"] != filepath.Join(runDir, "resource-test-manifest.json") {
+		t.Fatalf("child resource manifest env = %q", childEnv["KATL_VMTEST_RESOURCE_MANIFEST"])
+	}
 
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.Kind != "VMTestRun" || runIndex.Status != "passed" {
@@ -129,8 +132,11 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if runIndex.CacheDir != filepath.Join(repo, "_build", "vmtest") {
 		t.Fatalf("run index cache dir = %q", runIndex.CacheDir)
 	}
-	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || !runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
+	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || runIndex.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || runIndex.ResourceDigest != strings.Repeat("a", 64) || runIndex.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || runIndex.PackageLockDigest != strings.Repeat("a", 64) || runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
 		t.Fatalf("run index log/rebuild fields = %#v", runIndex)
+	}
+	if _, err := os.Stat(runIndex.ResourceManifest); err != nil {
+		t.Fatalf("resource manifest missing: %v", err)
 	}
 	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-count=99", "-timeout", "2m"}) {
 		t.Fatalf("run index go test args = %#v", runIndex.GoTestArgs)
@@ -219,6 +225,93 @@ func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
 	}
 }
 
+func TestVMTestRunRejectsStaleInstallerArtifactBypass(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run-stale-installer")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_ALLOW_STALE_INSTALLER_ARTIFACTS=1",
+		"KATL_VMTEST_RUN_ID=run-stale-installer",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 2 {
+		t.Fatalf("vmtest-run exit = %v, want 2\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for stale installer setup failure, stat err = %v", err)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Status != "setup-failed" {
+		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+	if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], "KATL_ALLOW_STALE_INSTALLER_ARTIFACTS") {
+		t.Fatalf("run index setup failures = %#v", runIndex.SetupFailures)
+	}
+}
+
+func TestVMTestRunRejectsExplicitInstallerArtifacts(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+	}{
+		{name: "artifact index", env: "KATL_MKOSI_ARTIFACT_INDEX=/tmp/stale-artifacts.json"},
+		{name: "installer UKI", env: "KATL_INSTALLER_UKI=/tmp/stale-installer.efi"},
+		{name: "install manifest", env: "KATL_INSTALL_MANIFEST=/tmp/stale-install.yaml"},
+		{name: "runtime artifact", env: "KATL_RUNTIME_ARTIFACT=/tmp/stale-runtime.squashfs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := scriptTestRepoRoot(t)
+			tmp := t.TempDir()
+			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+			host := writeFakeHostTools(t, tmp, true)
+			runDir := filepath.Join(tmp, "run-explicit-"+strings.ReplaceAll(tt.name, " ", "-"))
+			goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+			cmd.Dir = repo
+			cmd.Env = appendHostEnv(os.Environ(), host,
+				"KATL_VMTEST_GO="+fakeGo,
+				"KATL_FAKE_GO_ARGS="+goArgsPath,
+				"KATL_FAKE_CHILD="+fakeChild,
+				"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+				"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+				"KATL_VMTEST_RUN_ID=run-explicit-"+strings.ReplaceAll(tt.name, " ", "-"),
+				"KATL_VMTEST_RUN_DIR="+runDir,
+				"TMPDIR="+tmp,
+				tt.env,
+			)
+			output, err := cmd.CombinedOutput()
+			if exitCode(err) != 2 {
+				t.Fatalf("vmtest-run exit = %v, want 2\n%s", err, output)
+			}
+			if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("go test ran for explicit artifact setup failure, stat err = %v", err)
+			}
+			runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+			if runIndex.Status != "setup-failed" {
+				t.Fatalf("run index status = %q", runIndex.Status)
+			}
+			if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], "explicit installer artifact inputs") {
+				t.Fatalf("run index setup failures = %#v", runIndex.SetupFailures)
+			}
+		})
+	}
+}
+
 func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 	realRepo := scriptTestRepoRoot(t)
 	repo := t.TempDir()
@@ -261,6 +354,7 @@ exec "$@"
 		"KATL_INSTALLER_INITRD",
 		"KATL_RUNTIME_ARTIFACT",
 		"KATL_INSTALL_MANIFEST",
+		"KATL_VMTEST_AUTO_REBUILD",
 	} {
 		env = removeEnv(env, name)
 	}
@@ -338,6 +432,7 @@ exec "$@"
 		"KATL_INSTALLER_INITRD",
 		"KATL_RUNTIME_ARTIFACT",
 		"KATL_INSTALL_MANIFEST",
+		"KATL_VMTEST_AUTO_REBUILD",
 	} {
 		env = removeEnv(env, name)
 	}
@@ -409,6 +504,7 @@ exec "$@"
 		"KATL_INSTALLER_INITRD",
 		"KATL_RUNTIME_ARTIFACT",
 		"KATL_INSTALL_MANIFEST",
+		"KATL_VMTEST_AUTO_REBUILD",
 	} {
 		env = removeEnv(env, name)
 	}
@@ -1285,6 +1381,7 @@ printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
     printf 'KATL_VMTEST_RUN=%s\n' "${KATL_VMTEST_RUN:-}"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
     printf 'KATL_VMTEST_DEBUG_ON_FAILURE=%s\n' "${KATL_VMTEST_DEBUG_ON_FAILURE:-}"
+    printf 'KATL_VMTEST_RESOURCE_MANIFEST=%s\n' "${KATL_VMTEST_RESOURCE_MANIFEST:-}"
 } > "$KATL_FAKE_CHILD_ENV"
 [[ -f "${KATL_VMTEST_WORLD_MANIFEST:-}" ]] || exit 41
 if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
@@ -1379,25 +1476,27 @@ exit "${KATL_FAKE_CHILD_EXIT:-0}"
 }
 
 type fakeHostTools struct {
-	imageTool string
-	virsh     string
-	ovmfCode  string
-	ovmfVars  string
-	kvm       string
-	vsock     string
-	kubectl   string
+	imageTool    string
+	virsh        string
+	ovmfCode     string
+	ovmfVars     string
+	kvm          string
+	vsock        string
+	kubectl      string
+	resourceLock string
 }
 
 func writeFakeHostTools(t *testing.T, dir string, _ bool) fakeHostTools {
 	t.Helper()
 	tools := fakeHostTools{
-		imageTool: filepath.Join(dir, "qemu-img"),
-		virsh:     filepath.Join(dir, "virsh"),
-		ovmfCode:  filepath.Join(dir, "OVMF_CODE.fd"),
-		ovmfVars:  filepath.Join(dir, "OVMF_VARS.fd"),
-		kvm:       filepath.Join(dir, "kvm"),
-		vsock:     filepath.Join(dir, "vhost-vsock"),
-		kubectl:   filepath.Join(dir, "kubectl"),
+		imageTool:    filepath.Join(dir, "qemu-img"),
+		virsh:        filepath.Join(dir, "virsh"),
+		ovmfCode:     filepath.Join(dir, "OVMF_CODE.fd"),
+		ovmfVars:     filepath.Join(dir, "OVMF_VARS.fd"),
+		kvm:          filepath.Join(dir, "kvm"),
+		vsock:        filepath.Join(dir, "vhost-vsock"),
+		kubectl:      filepath.Join(dir, "kubectl"),
+		resourceLock: filepath.Join(dir, "katl-resource-lock"),
 	}
 	writeExecutable(t, tools.imageTool, "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, tools.virsh, `#!/usr/bin/env bash
@@ -1443,6 +1542,67 @@ esac
 	writeExecutable(t, filepath.Join(dir, "awk"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "realpath"), "#!/usr/bin/env bash\nprintf '%s\\n' \"${@: -1}\"\n")
 	writeExecutable(t, tools.kubectl, "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, tools.resourceLock, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" != "prepare-mkosi" ]]; then
+    echo "unexpected katl-resource-lock command: $*" >&2
+    exit 43
+fi
+manifest=""
+lock=""
+mode=""
+run_id="resource-test"
+git_revision="unknown"
+while (($# > 0)); do
+    case "$1" in
+        -manifest)
+            manifest="$2"
+            shift 2
+            ;;
+        -lock)
+            lock="$2"
+            shift 2
+            ;;
+        -mode)
+            mode="$2"
+            shift 2
+            ;;
+        -run-id)
+            run_id="$2"
+            shift 2
+            ;;
+        -git-revision)
+            git_revision="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+if [[ -z "$manifest" || "$mode" != "strict" ]]; then
+    echo "invalid fake katl-resource-lock invocation" >&2
+    exit 44
+fi
+mkdir -p "$(dirname "$manifest")"
+jq -n \
+    --arg runID "$run_id" \
+    --arg gitRevision "$git_revision" \
+    --arg lock "$lock" \
+    '{
+      apiVersion: "katl.dev/v1alpha1",
+      kind: "ResourceTestManifest",
+      runID: $runID,
+      created: "2026-06-18T00:00:00Z",
+      git: {revision: $gitRevision},
+      tools: [{name: "mkosi", version: "fake"}],
+      mkosiProfiles: [{name: "installer-image", path: "mkosi.profiles/installer-image", configSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", packageSetRef: "installer-image"}],
+      packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", lockSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
+      artifacts: [{name: "installer-uki", kind: "uki", path: "/tmp/katl-installer.efi", sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}],
+      fixtures: [{name: "package-lock", kind: "resource-package-lock", path: $lock}]
+    }' > "$manifest"
+printf 'manifest: %s\nmode: strict\nartifacts: 1\npackageSets: 1\nlockSHA256: %s\n' "$manifest" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`)
 	if err := os.WriteFile(tools.ovmfCode, []byte("code"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.ovmfCode, err)
 	}
@@ -1470,7 +1630,8 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_KVM_DEVICE="+tools.kvm,
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
-		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.imageTool), "prebuilt-artifacts.json"),
+		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
+		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
 		"KATL_VMTEST_KEEP=always",
 		"PATH="+filepath.Dir(tools.imageTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -1553,6 +1714,10 @@ type vmtestRunIndex struct {
 	WorldManifest       string   `json:"worldManifest"`
 	HostCapabilities    string   `json:"hostCapabilities"`
 	GoTestLog           string   `json:"goTestLog"`
+	ResourceManifest    string   `json:"resourceManifest"`
+	ResourceDigest      string   `json:"resourceManifestSHA256"`
+	PackageLock         string   `json:"packageLock"`
+	PackageLockDigest   string   `json:"packageLockSHA256"`
 	AutoRebuild         bool     `json:"autoRebuild"`
 	ArtifactSet         string   `json:"artifactSet"`
 	DebugOnFailure      bool     `json:"debugOnFailure"`

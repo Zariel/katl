@@ -136,6 +136,14 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	}
 }
 
+func TestMkosiCacheInputsExcludeResourcePackageLock(t *testing.T) {
+	repo := repoRoot(t)
+	data := mustReadFile(t, filepath.Join(repo, "scripts", "mkosi"))
+	if strings.Contains(string(data), "resource-package-lock.json") {
+		t.Fatalf("scripts/mkosi cache inputs include generated resource package lock")
+	}
+}
+
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

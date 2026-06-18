@@ -87,7 +87,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi | mkosi.profiles/resource-package-lock.json)
+        Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi)
             return 0
             ;;
         cmd/katl-mkosi-artifacts/*)

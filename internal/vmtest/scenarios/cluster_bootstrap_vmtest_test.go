@@ -795,6 +795,10 @@ type multiNodeWorldProvenancePaths struct {
 	VMTestRun                string
 	WorldManifest            string
 	HostCapabilities         string
+	ResourceManifest         string
+	ResourceManifestSHA256   string
+	PackageLock              string
+	PackageLockSHA256        string
 	MkosiArtifactIndex       string
 	NetworkLeaseFile         string
 	FixtureProducerScenarios map[string]string
@@ -803,11 +807,15 @@ type multiNodeWorldProvenancePaths struct {
 
 func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) multiNodeWorldProvenancePaths {
 	provenance := multiNodeWorldProvenancePaths{
-		VMTestRun:          firstString(world.RunIndex, filepath.Join(world.RunDir, "run.json")),
-		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
-		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
-		MkosiArtifactIndex: os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"),
-		NetworkLeaseFile:   world.Network.LeaseFile,
+		VMTestRun:              firstString(world.RunIndex, filepath.Join(world.RunDir, "run.json")),
+		WorldManifest:          firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
+		HostCapabilities:       filepath.Join(world.RunDir, "host-capabilities.json"),
+		ResourceManifest:       world.ResourceManifest,
+		ResourceManifestSHA256: world.ResourceDigest,
+		PackageLock:            world.PackageLock,
+		PackageLockSHA256:      world.PackageLockDigest,
+		MkosiArtifactIndex:     os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"),
+		NetworkLeaseFile:       world.Network.LeaseFile,
 	}
 	if len(specs) == 0 {
 		return provenance
@@ -1005,6 +1013,10 @@ type operationBackedArtifactManifest struct {
 	VMTestRun                string                        `json:"vmtestRun,omitempty"`
 	WorldManifest            string                        `json:"worldManifest,omitempty"`
 	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
+	ResourceManifest         string                        `json:"resourceManifest,omitempty"`
+	ResourceManifestSHA256   string                        `json:"resourceManifestSHA256,omitempty"`
+	PackageLock              string                        `json:"packageLock,omitempty"`
+	PackageLockSHA256        string                        `json:"packageLockSHA256,omitempty"`
 	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
 	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
 	WorkerRunDir             string                        `json:"workerRunDir,omitempty"`
@@ -1064,6 +1076,10 @@ func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inp
 		VMTestRun:                inputs.WorldProvenance.VMTestRun,
 		WorldManifest:            inputs.WorldProvenance.WorldManifest,
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
+		ResourceManifest:         inputs.WorldProvenance.ResourceManifest,
+		ResourceManifestSHA256:   inputs.WorldProvenance.ResourceManifestSHA256,
+		PackageLock:              inputs.WorldProvenance.PackageLock,
+		PackageLockSHA256:        inputs.WorldProvenance.PackageLockSHA256,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
 		ControlPlaneRunDir:       nodeRunDir(nodes, "cp-1"),
 		WorkerRunDir:             nodeRunDir(nodes, "worker-1"),
@@ -1107,6 +1123,10 @@ type twoNodeArtifactManifest struct {
 	VMTestRun                string                        `json:"vmtestRun,omitempty"`
 	WorldManifest            string                        `json:"worldManifest,omitempty"`
 	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
+	ResourceManifest         string                        `json:"resourceManifest,omitempty"`
+	ResourceManifestSHA256   string                        `json:"resourceManifestSHA256,omitempty"`
+	PackageLock              string                        `json:"packageLock,omitempty"`
+	PackageLockSHA256        string                        `json:"packageLockSHA256,omitempty"`
 	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
 	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
 	WorkerRunDir             string                        `json:"workerRunDir"`
@@ -1146,6 +1166,10 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 		VMTestRun:                inputs.WorldProvenance.VMTestRun,
 		WorldManifest:            inputs.WorldProvenance.WorldManifest,
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
+		ResourceManifest:         inputs.WorldProvenance.ResourceManifest,
+		ResourceManifestSHA256:   inputs.WorldProvenance.ResourceManifestSHA256,
+		PackageLock:              inputs.WorldProvenance.PackageLock,
+		PackageLockSHA256:        inputs.WorldProvenance.PackageLockSHA256,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
 		ControlPlaneRunDir:       nodeByName["cp-1"].Result.RunDir,
 		WorkerRunDir:             nodeByName["worker-1"].Result.RunDir,
@@ -3127,6 +3151,10 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	writeKatlctlPublishedInstalledRuntimeFixture(t, vmtest.DefaultVMTestCacheDir(repo), "repo-worker", "worker-1", vmtest.Worker)
 	writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-cp", "cp-1", vmtest.ControlPlane)
 	writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-worker", "worker-1", vmtest.Worker)
+	world.ResourceManifest = filepath.Join(world.RunDir, "resource-test-manifest.json")
+	world.ResourceDigest = strings.Repeat("a", 64)
+	world.PackageLock = filepath.Join(world.RunDir, "resource-package-lock.json")
+	world.PackageLockDigest = strings.Repeat("b", 64)
 
 	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
 	if err != nil {
@@ -3139,6 +3167,9 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	}
 	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "custom-run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
+	}
+	if run.Inputs.WorldProvenance.ResourceManifest != world.ResourceManifest || run.Inputs.WorldProvenance.ResourceManifestSHA256 != world.ResourceDigest || run.Inputs.WorldProvenance.PackageLock != world.PackageLock || run.Inputs.WorldProvenance.PackageLockSHA256 != world.PackageLockDigest {
+		t.Fatalf("world resource provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-1"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-1-control-plane", "result.json") {
 		t.Fatalf("fixture producer results = %#v", run.Inputs.WorldProvenance.FixtureProducerResults)

@@ -18,22 +18,26 @@ const (
 )
 
 type World struct {
-	APIVersion   string                 `json:"apiVersion"`
-	Kind         string                 `json:"kind"`
-	RunID        string                 `json:"runID"`
-	RunDir       string                 `json:"runDir"`
-	CacheDir     string                 `json:"cacheDir"`
-	ArtifactDir  string                 `json:"artifactDir"`
-	ScenarioDir  string                 `json:"scenarioDir"`
-	RunIndex     string                 `json:"runIndex,omitempty"`
-	GoTestLog    string                 `json:"goTestLog,omitempty"`
-	AutoRebuild  bool                   `json:"autoRebuild,omitempty"`
-	ArtifactSet  string                 `json:"artifactSet,omitempty"`
-	DebugOnFailure bool                 `json:"debugOnFailure,omitempty"`
-	DebugShell     bool                 `json:"debugShell,omitempty"`
-	Libvirt      WorldLibvirt           `json:"libvirt"`
-	Network      WorldNetwork           `json:"network"`
-	Capabilities map[string]WorldStatus `json:"capabilities"`
+	APIVersion        string                 `json:"apiVersion"`
+	Kind              string                 `json:"kind"`
+	RunID             string                 `json:"runID"`
+	RunDir            string                 `json:"runDir"`
+	CacheDir          string                 `json:"cacheDir"`
+	ArtifactDir       string                 `json:"artifactDir"`
+	ScenarioDir       string                 `json:"scenarioDir"`
+	RunIndex          string                 `json:"runIndex,omitempty"`
+	GoTestLog         string                 `json:"goTestLog,omitempty"`
+	ResourceManifest  string                 `json:"resourceManifest,omitempty"`
+	ResourceDigest    string                 `json:"resourceManifestSHA256,omitempty"`
+	PackageLock       string                 `json:"packageLock,omitempty"`
+	PackageLockDigest string                 `json:"packageLockSHA256,omitempty"`
+	AutoRebuild       bool                   `json:"autoRebuild,omitempty"`
+	ArtifactSet       string                 `json:"artifactSet,omitempty"`
+	DebugOnFailure    bool                   `json:"debugOnFailure,omitempty"`
+	DebugShell        bool                   `json:"debugShell,omitempty"`
+	Libvirt           WorldLibvirt           `json:"libvirt"`
+	Network           WorldNetwork           `json:"network"`
+	Capabilities      map[string]WorldStatus `json:"capabilities"`
 }
 
 type WorldLibvirt struct {
@@ -148,6 +152,18 @@ func ValidateWorld(world World) error {
 	if strings.TrimSpace(world.GoTestLog) != "" && !filepath.IsAbs(world.GoTestLog) {
 		return fmt.Errorf("goTestLog must be an absolute path: %s", world.GoTestLog)
 	}
+	if strings.TrimSpace(world.ResourceManifest) != "" && !filepath.IsAbs(world.ResourceManifest) {
+		return fmt.Errorf("resourceManifest must be an absolute path: %s", world.ResourceManifest)
+	}
+	if strings.TrimSpace(world.ResourceDigest) != "" && !validWorldSHA256(world.ResourceDigest) {
+		return fmt.Errorf("resourceManifestSHA256 must be lowercase SHA-256")
+	}
+	if strings.TrimSpace(world.PackageLock) != "" && !filepath.IsAbs(world.PackageLock) {
+		return fmt.Errorf("packageLock must be an absolute path: %s", world.PackageLock)
+	}
+	if strings.TrimSpace(world.PackageLockDigest) != "" && !validWorldSHA256(world.PackageLockDigest) {
+		return fmt.Errorf("packageLockSHA256 must be lowercase SHA-256")
+	}
 	if err := validateWorldLibvirt(world.Libvirt); err != nil {
 		return err
 	}
@@ -166,6 +182,18 @@ func ValidateWorld(world World) error {
 		}
 	}
 	return nil
+}
+
+func validWorldSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateWorldLibvirt(libvirt WorldLibvirt) error {

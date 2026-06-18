@@ -6,6 +6,8 @@ go_bin="${KATL_VMTEST_GO:-go}"
 image_tool="${KATL_VMTEST_IMAGE_TOOL:-qemu-img}"
 virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
 kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
+resource_lock_bin="${KATL_VMTEST_RESOURCE_LOCK:-}"
+resource_go_bin="${KATL_VMTEST_RESOURCE_GO:-go}"
 go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -23,6 +25,10 @@ world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
 run_index="$run_dir/run.json"
 go_test_log="$run_dir/go-test.log"
+resource_manifest="$run_dir/resource-test-manifest.json"
+package_lock="$repo_root/mkosi.profiles/resource-package-lock.json"
+resource_manifest_sha256=""
+package_lock_sha256=""
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
@@ -266,6 +272,34 @@ has_explicit_install_manifest() {
     [[ -n "${KATL_INSTALL_MANIFEST:-}" ]]
 }
 
+uses_installer_artifacts() {
+    case "$artifact_set" in
+        default | install)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+validate_stale_artifact_policy() {
+    case "${KATL_ALLOW_STALE_INSTALLER_ARTIFACTS:-0}" in
+        1 | true | yes | on)
+            setup_failures+=("KATL_ALLOW_STALE_INSTALLER_ARTIFACTS is not supported by scripts/vmtest-run; strict installer artifact validation is required")
+            ;;
+    esac
+}
+
+validate_current_artifact_inputs() {
+    if ! uses_installer_artifacts; then
+        return 0
+    fi
+    if has_explicit_artifact_index || has_explicit_installer_artifact || has_explicit_runtime_artifact || has_explicit_install_manifest; then
+        setup_failures+=("explicit installer artifact inputs are not supported by scripts/vmtest-run; use current repo artifacts validated by katl-resource-lock")
+    fi
+}
+
 build_default_artifacts() {
     case "$auto_rebuild" in
         0 | false | no | off)
@@ -313,6 +347,46 @@ build_default_artifacts() {
             return 1
         fi
     done
+}
+
+run_resource_lock() {
+    if [[ -n "$resource_lock_bin" ]]; then
+        "$resource_lock_bin" "$@"
+        return
+    fi
+    (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-resource-lock "$@")
+}
+
+git_revision() {
+    git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown
+}
+
+file_sha256() {
+    local path="$1"
+    local digest _
+    read -r digest _ < <(sha256sum "$path")
+    printf '%s\n' "$digest"
+}
+
+prepare_resource_manifest() {
+    if ! uses_installer_artifacts; then
+        return 0
+    fi
+
+    local revision
+    revision="$(git_revision)"
+    printf 'vmtest validating current repo artifacts: katl-resource-lock prepare-mkosi --mode strict\n' >&2
+    if ! run_resource_lock prepare-mkosi \
+        -manifest "$resource_manifest" \
+        -lock "$package_lock" \
+        -mode strict \
+        -run-id "$run_id" \
+        -git-revision "$revision"; then
+        setup_failures+=("strict vmtest resource manifest validation failed")
+        return 1
+    fi
+    resource_manifest_sha256="$(file_sha256 "$resource_manifest")"
+    package_lock_sha256="$(file_sha256 "$package_lock")"
 }
 
 probe_vm_capabilities() {
@@ -585,6 +659,10 @@ write_world() {
         --arg scenarioDir "$scenario_dir" \
         --arg runIndex "$run_index" \
         --arg goTestLog "$go_test_log" \
+        --arg resourceManifest "$resource_manifest" \
+        --arg resourceManifestSHA256 "$resource_manifest_sha256" \
+        --arg packageLock "$package_lock" \
+        --arg packageLockSHA256 "$package_lock_sha256" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
         --arg debugOnFailure "$debug_on_failure_effective" \
@@ -619,6 +697,10 @@ write_world() {
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
           goTestLog: $goTestLog,
+          resourceManifest: $resourceManifest,
+          resourceManifestSHA256: $resourceManifestSHA256,
+          packageLock: $packageLock,
+          packageLockSHA256: $packageLockSHA256,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
           debugOnFailure: ($debugOnFailure == "1"),
@@ -673,6 +755,10 @@ write_run_index() {
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
         --arg goTestLog "$go_test_log" \
+        --arg resourceManifest "$resource_manifest" \
+        --arg resourceManifestSHA256 "$resource_manifest_sha256" \
+        --arg packageLock "$package_lock" \
+        --arg packageLockSHA256 "$package_lock_sha256" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
         --arg debugOnFailure "$debug_on_failure_effective" \
@@ -692,6 +778,10 @@ write_run_index() {
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
           goTestLog: $goTestLog,
+          resourceManifest: $resourceManifest,
+          resourceManifestSHA256: $resourceManifestSHA256,
+          packageLock: $packageLock,
+          packageLockSHA256: $packageLockSHA256,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
           debugOnFailure: ($debugOnFailure == "1"),
@@ -848,6 +938,8 @@ jq -n '{}' >"$lease_file"
 write_host_capabilities
 write_run_index "setup" "$@"
 validate_keep_policy
+validate_stale_artifact_policy
+validate_current_artifact_inputs
 validate_network
 if [[ "${#setup_failures[@]}" -gt 0 ]]; then
     write_run_index "setup-failed" "$@"
@@ -859,6 +951,14 @@ if [[ "${#setup_failures[@]}" -gt 0 ]]; then
 fi
 write_run_index "building-artifacts" "$@"
 if ! build_default_artifacts; then
+    write_run_index "setup-failed" "$@"
+    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
+    if ! cleanup_run_dir "setup-failed"; then
+        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
+    fi
+    exit 2
+fi
+if ! prepare_resource_manifest; then
     write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     if ! cleanup_run_dir "setup-failed"; then
@@ -882,6 +982,7 @@ export KATL_VMTEST_LIBVIRT_STORAGE_POOL="$libvirt_storage_pool"
 export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
 export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
+export KATL_VMTEST_RESOURCE_MANIFEST="$resource_manifest"
 
 final_status="go-test"
 write_run_index "$final_status" "$@"
@@ -889,6 +990,9 @@ printf 'vmtest run id: %s\n' "$run_id" >&2
 printf 'vmtest run dir: %s\n' "$run_dir" >&2
 printf 'vmtest world: %s\n' "$world_manifest" >&2
 printf 'vmtest host capabilities: %s\n' "$host_capabilities_json" >&2
+if [[ -f "$resource_manifest" ]]; then
+    printf 'vmtest resource manifest: %s\n' "$resource_manifest" >&2
+fi
 printf 'vmtest scenarios: %s\n' "$scenario_dir" >&2
 printf 'vmtest go test log: %s\n' "$go_test_log" >&2
 printf 'vmtest debug helper: scripts/vmtest-debug %q\n' "$run_dir" >&2

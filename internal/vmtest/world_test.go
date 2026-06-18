@@ -315,6 +315,10 @@ func TestDecodeWorldCapabilityStatuses(t *testing.T) {
 func TestDecodeWorldRunIndex(t *testing.T) {
 	world := validWorld()
 	world.RunIndex = filepath.Join(world.RunDir, "run.json")
+	world.ResourceManifest = filepath.Join(world.RunDir, "resource-test-manifest.json")
+	world.ResourceDigest = strings.Repeat("a", 64)
+	world.PackageLock = "/repo/mkosi.profiles/resource-package-lock.json"
+	world.PackageLockDigest = strings.Repeat("b", 64)
 	decodedErr := decodeWorldValue(world)
 	if decodedErr != nil {
 		t.Fatalf("DecodeWorld() error = %v", decodedErr)
@@ -324,6 +328,34 @@ func TestDecodeWorldRunIndex(t *testing.T) {
 	err := decodeWorldValue(world)
 	if err == nil || !strings.Contains(err.Error(), "runIndex must be an absolute path") {
 		t.Fatalf("DecodeWorld() error = %v, want runIndex path rejection", err)
+	}
+
+	world = validWorld()
+	world.ResourceManifest = "relative/resource-test-manifest.json"
+	err = decodeWorldValue(world)
+	if err == nil || !strings.Contains(err.Error(), "resourceManifest must be an absolute path") {
+		t.Fatalf("DecodeWorld() error = %v, want resourceManifest path rejection", err)
+	}
+
+	world = validWorld()
+	world.ResourceDigest = strings.Repeat("A", 64)
+	err = decodeWorldValue(world)
+	if err == nil || !strings.Contains(err.Error(), "resourceManifestSHA256 must be lowercase SHA-256") {
+		t.Fatalf("DecodeWorld() error = %v, want resourceManifestSHA256 rejection", err)
+	}
+
+	world = validWorld()
+	world.PackageLock = "mkosi.profiles/resource-package-lock.json"
+	err = decodeWorldValue(world)
+	if err == nil || !strings.Contains(err.Error(), "packageLock must be an absolute path") {
+		t.Fatalf("DecodeWorld() error = %v, want packageLock path rejection", err)
+	}
+
+	world = validWorld()
+	world.PackageLockDigest = "bad"
+	err = decodeWorldValue(world)
+	if err == nil || !strings.Contains(err.Error(), "packageLockSHA256 must be lowercase SHA-256") {
+		t.Fatalf("DecodeWorld() error = %v, want packageLockSHA256 rejection", err)
 	}
 }
 
