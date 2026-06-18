@@ -190,7 +190,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime.efi"), "runtime-uki")
 	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
-	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.1-150500.1.1")
+	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
 	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
 
@@ -244,7 +244,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		t.Fatalf("KatlOS component NEVRA = %q", packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root"))
 	}
 	kubernetesSet := packageSet(manifest.PackageSets, "kubernetes-sysext")
-	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.1-150500.1.1.x86_64" {
+	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.0-150500.1.1.x86_64" {
 		t.Fatalf("Kubernetes package set = %#v", kubernetesSet)
 	}
 
@@ -286,7 +286,7 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 		t.Fatalf("mkdir runtime root: %v", err)
 	}
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
-	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.1-150500.1.1")
+	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
 	lockPath := filepath.Join(dir, "resource-package-lock.json")
 	args := []string{
@@ -303,7 +303,7 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("prepare refresh error = %v", err)
 	}
-	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.2-150500.1.1")
+	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.1-150500.1.1")
 	err := run([]string{
 		"prepare-mkosi",
 		"--manifest", manifestPath,

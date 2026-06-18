@@ -90,7 +90,7 @@ func TestRuntimeStatusRefusesDirtyGenerationZeroCases(t *testing.T) {
 				writeGenerationZero(t, root, []generation.ExtensionRef{{
 					Name:            "katl-kubernetes",
 					ArtifactVersion: "2026.06.04",
-					PayloadVersion:  "v1.36.2",
+					PayloadVersion:  "v1.36.0",
 					Architecture:    "x86_64",
 					SHA256:          strings.Repeat("d", 64),
 					ActivationPath:  "/run/extensions/katl-kubernetes.raw",
