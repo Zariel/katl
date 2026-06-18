@@ -855,7 +855,7 @@ func TestStageGenerationRejectsExistingCandidateBeforeRecord(t *testing.T) {
 	}
 }
 
-func TestNodeStatusDoesNotAdvertiseControlPlaneJoin(t *testing.T) {
+func TestNodeStatusAdvertisesControlPlaneJoin(t *testing.T) {
 	server := newTestServer(t)
 	server.SupportedOperationKinds = []string{"bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker"}
 
@@ -863,17 +863,16 @@ func TestNodeStatusDoesNotAdvertiseControlPlaneJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contains(status.SupportedOperationKinds, "bootstrap-join-control-plane") {
-		t.Fatalf("supported operation kinds = %#v, must not advertise control-plane join", status.SupportedOperationKinds)
-	}
-	if !contains(status.SupportedOperationKinds, "bootstrap-init") || !contains(status.SupportedOperationKinds, "bootstrap-join-worker") {
-		t.Fatalf("supported operation kinds = %#v, want init and worker join", status.SupportedOperationKinds)
+	for _, want := range []string{"bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker"} {
+		if !contains(status.SupportedOperationKinds, want) {
+			t.Fatalf("supported operation kinds = %#v, missing %s", status.SupportedOperationKinds, want)
+		}
 	}
 }
 
-func TestSubmitOperationRejectsControlPlaneJoinBeforeRecord(t *testing.T) {
+func TestSubmitOperationAcceptsControlPlaneJoin(t *testing.T) {
 	server := newTestServer(t)
-	server.SupportedOperationKinds = []string{"bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker"}
+	writeStoredKubeadmConfig(t, server.Root, "default")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -882,20 +881,30 @@ func TestSubmitOperationRejectsControlPlaneJoinBeforeRecord(t *testing.T) {
 	req := submitRequest("req-control-plane-join")
 	req.OperationKind = "bootstrap-join-control-plane"
 	req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
 
-	_, err := server.SubmitOperation(context.Background(), req)
-	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("SubmitOperation error = %v, want unsupported InvalidArgument", err)
-	}
-	if dispatched.Load() != 0 {
-		t.Fatalf("dispatcher calls = %d, want none", dispatched.Load())
-	}
-	entries, err := os.ReadDir(server.Store.Root)
-	if err != nil && !os.IsNotExist(err) {
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("operation store entries = %d, want no record for unsupported control-plane join", len(entries))
+	if dispatched.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", dispatched.Load())
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.OperationKind != "bootstrap-join-control-plane" || record.Scope != "kubeadm-state" {
+		t.Fatalf("record = %+v", record)
+	}
+	if record.ExecutorPlan == nil || record.ExecutorPlan.Phase != "kubeadm-join-control-plane" {
+		t.Fatalf("executor plan = %+v", record.ExecutorPlan)
+	}
+	if record.BootstrapRequest == nil || record.BootstrapRequest.JoinMaterialDigest == "" || record.BootstrapRequest.TemporaryJoinConfigPath == "" {
+		t.Fatalf("bootstrap metadata = %+v", record.BootstrapRequest)
+	}
+	if _, err := os.Stat(filepath.Join(server.Root, "run/katl/bootstrap-join", accepted.OperationId, "config.yaml")); err != nil {
+		t.Fatalf("temporary join config: %v", err)
 	}
 }
 
@@ -1128,6 +1137,34 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 			req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
 			req.Bootstrap.WorkerJoinMaterial.ExpiresAt = "2026-06-15T11:59:59Z"
 		}},
+		{name: "bare control-plane certificate key", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-control-plane"
+			req.Bootstrap.SystemRole = "control-plane"
+			req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+			req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+			req.Bootstrap.WorkerJoinMaterial.JoinArgv = append(validWorkerJoinMaterial().JoinArgv, "--control-plane", "--certificate-key")
+		}},
+		{name: "empty control-plane certificate key", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-control-plane"
+			req.Bootstrap.SystemRole = "control-plane"
+			req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+			req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+			req.Bootstrap.WorkerJoinMaterial.JoinArgv = append(validWorkerJoinMaterial().JoinArgv, "--control-plane", "--certificate-key=")
+		}},
+		{name: "flag control-plane certificate key", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-control-plane"
+			req.Bootstrap.SystemRole = "control-plane"
+			req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+			req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+			req.Bootstrap.WorkerJoinMaterial.JoinArgv = append(validWorkerJoinMaterial().JoinArgv, "--control-plane", "--certificate-key", "--skip-certificate-key-print")
+		}},
+		{name: "malformed control-plane certificate key", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.OperationKind = "bootstrap-join-control-plane"
+			req.Bootstrap.SystemRole = "control-plane"
+			req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+			req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+			req.Bootstrap.WorkerJoinMaterial.JoinArgv = append(validWorkerJoinMaterial().JoinArgv, "--control-plane", "--certificate-key", strings.Repeat("x", 64))
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1138,6 +1175,34 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 				t.Fatalf("SubmitOperation error = %v, want InvalidArgument", err)
 			}
 		})
+	}
+}
+
+func TestSubmitOperationRecordsControlPlaneJoinMaterializationNextAction(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		t.Fatal("dispatcher called after materialization failure")
+		return nil
+	})
+	req := submitRequest("req-control-plane-materialization-fails")
+	req.OperationKind = "bootstrap-join-control-plane"
+	req.Bootstrap.SystemRole = "control-plane"
+	req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SubmitOperation error = %v", err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Result != operation.ResultFailedNeedsRepair || !record.RecoveryRequired || !record.Terminal {
+		t.Fatalf("record = %+v, want terminal repair-required failure", record)
+	}
+	if !strings.Contains(record.NextAction, "control-plane join operation") {
+		t.Fatalf("NextAction = %q, want control-plane join guidance", record.NextAction)
 	}
 }
 
@@ -1154,6 +1219,12 @@ func validWorkerJoinMaterial() *agentapi.WorkerJoinMaterial {
 		},
 		ExpiresAt: "2026-06-15T13:00:00Z",
 	}
+}
+
+func validControlPlaneJoinMaterial() *agentapi.WorkerJoinMaterial {
+	material := validWorkerJoinMaterial()
+	material.JoinArgv = append(material.JoinArgv, "--control-plane", "--certificate-key", strings.Repeat("a", 64))
+	return material
 }
 
 func TestCreateWorkerJoinMaterialRunsKubeadmTokenCreate(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/bootstrapplan"
 	"github.com/zariel/katl/internal/installer/confext"
@@ -224,9 +225,17 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	}
 	var files []confext.NativeEtcFile
 	for _, input := range inputs {
+		content := input.Content
+		if plan.Operation.OperationKind == bootstrapplan.OperationKindInit && input.RenderPath == plan.RuntimeInputs.KubeadmInput.Path {
+			rendered, err := cluster.RenderInitConfig(input.Content, plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint)
+			if err != nil {
+				return nil, err
+			}
+			content = rendered
+		}
 		files = append(files, confext.NativeEtcFile{
 			Path:    input.RenderPath,
-			Content: string(input.Content),
+			Content: string(content),
 			Mode:    input.Mode,
 		})
 	}

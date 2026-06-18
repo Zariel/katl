@@ -34,7 +34,14 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(inputDir, "config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
+	writeFile(t, filepath.Join(inputDir, "config.yaml"), strings.Join([]string{
+		"apiVersion: kubeadm.k8s.io/v1beta4",
+		"kind: InitConfiguration",
+		"---",
+		"apiVersion: kubeadm.k8s.io/v1beta4",
+		"kind: ClusterConfiguration",
+		"",
+	}, "\n"))
 	kubeadmInput := bootstrapplan.KubeadmInput{
 		ConfigRef: "control-plane",
 		Intent:    "control-plane",
@@ -91,6 +98,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 		t.Fatalf("candidate loader entry path = %q", result.Spec.Boot.LoaderEntryPath)
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "controlPlaneEndpoint: api.katl.test:6443")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")

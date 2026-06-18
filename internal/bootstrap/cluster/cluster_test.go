@@ -864,7 +864,6 @@ func TestTransportRunnerWaitsForControlPlaneJoinReady(t *testing.T) {
 	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
 		transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
 	}
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
 		ExitStatus: 0,
 		Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,
@@ -895,7 +894,6 @@ func TestTransportRunnerWaitControlPlaneJoinReadyRequiresEtcdMember(t *testing.T
 	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
 		transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
 	}
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
 		ExitStatus: 0,
 		Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,

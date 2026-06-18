@@ -11,7 +11,6 @@ import (
 
 func TestEtcdCheckerReportsHealthyCluster(t *testing.T) {
 	transport := newFakeTransport()
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: "etcd-container\n"}
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
 		ExitStatus: 0,
@@ -47,7 +46,6 @@ func TestEtcdCheckerReportsHealthyCluster(t *testing.T) {
 func TestEtcdCheckerReportsUnhealthyMemberWithRedaction(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	transport := newFakeTransport()
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: "etcd-container\n"}
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
 		ExitStatus: 0,
@@ -86,8 +84,11 @@ func TestEtcdCheckerReportsUnhealthyMemberWithRedaction(t *testing.T) {
 
 func TestEtcdCheckerReportsMissingCredentials(t *testing.T) {
 	transport := newFakeTransport()
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
-	transport.commands[commandKey("test", "-r", defaultEtcdClientKey)] = readiness.CommandResult{ExitStatus: 1, Stderr: "missing key Bearer secret-token"}
+	transport.commands[commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: "etcd-container\n"}
+	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+		ExitStatus: 1,
+		Stderr:     "missing key Bearer secret-token",
+	}
 
 	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane())
 	if err != nil {
@@ -97,20 +98,16 @@ func TestEtcdCheckerReportsMissingCredentials(t *testing.T) {
 		t.Fatal("Healthy = true, want missing credentials")
 	}
 	got := diagnosticsText(report.Diagnostics)
-	if !strings.Contains(got, "etcd-credentials") || !strings.Contains(got, defaultEtcdClientKey) {
-		t.Fatalf("diagnostics = %q, want missing credential", got)
+	if !strings.Contains(got, "etcd-health") || !strings.Contains(got, "etcdctl") {
+		t.Fatalf("diagnostics = %q, want etcd health credential failure", got)
 	}
 	if strings.Contains(got, "secret-token") || !strings.Contains(got, "Bearer [REDACTED]") {
 		t.Fatalf("credential diagnostic was not redacted: %q", got)
-	}
-	if transport.commandCount(commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")) != 0 {
-		t.Fatal("etcd container lookup ran despite missing credentials")
 	}
 }
 
 func TestEtcdCheckerReportsEmptyHealthOutput(t *testing.T) {
 	transport := newFakeTransport()
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: "etcd-container\n"}
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{ExitStatus: 0, Stdout: `[]`}
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "status", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
@@ -153,7 +150,6 @@ func TestEtcdCheckerRejectsWorkerNode(t *testing.T) {
 
 func TestEtcdCheckerCreatesSnapshotAndReadsStatus(t *testing.T) {
 	transport := newFakeTransport()
-	addEtcdCredentialChecks(transport, readiness.CommandResult{ExitStatus: 0})
 	transport.commands[commandKey("crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: "etcd-container\n"}
 	transport.commands[commandKey("install", "-d", "-m", "0700", etcdSnapshotDirectory)] = readiness.CommandResult{ExitStatus: 0}
 	snapshotPath := etcdSnapshotDirectory + "/greenfield.db"
@@ -187,12 +183,6 @@ func TestEtcdCheckerRejectsSnapshotOutsideRestrictedDirectory(t *testing.T) {
 	}
 	if len(transport.commandCalls) != 0 {
 		t.Fatalf("commands ran for refused snapshot path: %#v", transport.commandCalls)
-	}
-}
-
-func addEtcdCredentialChecks(transport *fakeTransport, result readiness.CommandResult) {
-	for _, path := range []string{defaultEtcdCACert, defaultEtcdClientCert, defaultEtcdClientKey} {
-		transport.commands[commandKey("test", "-r", path)] = result
 	}
 }
 

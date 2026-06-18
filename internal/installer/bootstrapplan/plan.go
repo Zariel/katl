@@ -89,10 +89,7 @@ func Create(request Request) (Plan, error) {
 	if kind == "" {
 		return Plan{}, fmt.Errorf("bootstrap operation kind is required")
 	}
-	if kind == OperationKindJoinControlPlane {
-		return Plan{}, fmt.Errorf("%s is not supported in day-one bootstrap planning", OperationKindJoinControlPlane)
-	}
-	if kind != OperationKindInit && kind != OperationKindJoinWorker {
+	if kind != OperationKindInit && kind != OperationKindJoinWorker && kind != OperationKindJoinControlPlane {
 		return Plan{}, fmt.Errorf("unsupported bootstrap operation kind %q", kind)
 	}
 	if err := installstatus.ValidateCleanGenerationZero(root, defaultGenerationID); err != nil {
@@ -172,10 +169,7 @@ func FromOperation(root string, record operation.OperationRecord) (Plan, error) 
 	if err := installstatus.ValidateCleanGenerationZeroForOperation(root, defaultGenerationID, record.OperationID); err != nil {
 		return Plan{}, err
 	}
-	if record.OperationKind == OperationKindJoinControlPlane {
-		return Plan{}, fmt.Errorf("%s is not supported in day-one bootstrap planning", OperationKindJoinControlPlane)
-	}
-	if record.OperationKind != OperationKindInit && record.OperationKind != OperationKindJoinWorker {
+	if record.OperationKind != OperationKindInit && record.OperationKind != OperationKindJoinWorker && record.OperationKind != OperationKindJoinControlPlane {
 		return Plan{}, fmt.Errorf("unsupported bootstrap operation kind %q", record.OperationKind)
 	}
 	intent, intentDigest, err := installer.ReadClusterIntent(root)
@@ -285,6 +279,9 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if kind == OperationKindJoinWorker && request.SystemRole != "worker" {
 		return fmt.Errorf("%s requires worker systemRole", OperationKindJoinWorker)
 	}
+	if kind == OperationKindJoinControlPlane && request.SystemRole != "control-plane" {
+		return fmt.Errorf("%s requires control-plane systemRole", OperationKindJoinControlPlane)
+	}
 	if request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
 		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion %q does not match stored intent %q", request.KubernetesPayloadVersion, intent.Kubernetes.PayloadVersion)
 	}
@@ -298,14 +295,14 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if candidate == "" || candidate == defaultGenerationID {
 		return fmt.Errorf("bootstrapRequest candidateGenerationID must name a non-zero candidate generation")
 	}
-	if kind == OperationKindJoinWorker && strings.TrimSpace(request.JoinMaterialRef) == "" {
-		return fmt.Errorf("%s requires joinMaterialRef", OperationKindJoinWorker)
+	if isJoinOperation(kind) && strings.TrimSpace(request.JoinMaterialRef) == "" {
+		return fmt.Errorf("%s requires joinMaterialRef", kind)
 	}
-	if kind == OperationKindJoinWorker && strings.TrimSpace(request.JoinMaterialDigest) == "" {
-		return fmt.Errorf("%s requires joinMaterialDigest", OperationKindJoinWorker)
+	if isJoinOperation(kind) && strings.TrimSpace(request.JoinMaterialDigest) == "" {
+		return fmt.Errorf("%s requires joinMaterialDigest", kind)
 	}
-	if kind == OperationKindJoinWorker && strings.TrimSpace(request.TemporaryJoinConfigPath) == "" {
-		return fmt.Errorf("%s requires temporaryJoinConfigPath", OperationKindJoinWorker)
+	if isJoinOperation(kind) && strings.TrimSpace(request.TemporaryJoinConfigPath) == "" {
+		return fmt.Errorf("%s requires temporaryJoinConfigPath", kind)
 	}
 	return operation.ValidateRecord(operation.OperationRecord{
 		APIVersion:       operation.APIVersion,
@@ -446,6 +443,8 @@ func phasePlan(kind string) []string {
 	phase := "kubeadm-init"
 	if kind == OperationKindJoinWorker {
 		phase = "kubeadm-join-worker"
+	} else if kind == OperationKindJoinControlPlane {
+		phase = "kubeadm-join-control-plane"
 	}
 	return []string{
 		"accepted",
@@ -455,6 +454,10 @@ func phasePlan(kind string) []string {
 		"post-kubeadm-health",
 		operation.HostBookkeepingCompletionPhase,
 	}
+}
+
+func isJoinOperation(kind string) bool {
+	return kind == OperationKindJoinWorker || kind == OperationKindJoinControlPlane
 }
 
 func cloneBootstrapRequest(request operation.BootstrapRequest) *operation.BootstrapRequest {

@@ -127,10 +127,9 @@ func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 	assertNoKubeadmMutation(t, root)
 }
 
-func TestCreateRefusesUnsupportedControlPlaneJoinWithoutMutation(t *testing.T) {
+func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
-	before := bootSelectionBytes(t, root)
-	_, err := Create(Request{
+	plan, err := Create(Request{
 		Root:        root,
 		OperationID: "bootstrap-join-cp-2",
 		Kind:        OperationKindJoinControlPlane,
@@ -142,13 +141,31 @@ func TestCreateRefusesUnsupportedControlPlaneJoinWithoutMutation(t *testing.T) {
 			CandidateGenerationID:    "1",
 			KubeadmInputDigest:       strings.Repeat("d", 64),
 			JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-control-plane",
+			JoinMaterialDigest:       strings.Repeat("e", 64),
+			JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
+			TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-cp-2/config.yaml",
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("Create(control-plane join) error = %v, want unsupported refusal", err)
+	if err != nil {
+		t.Fatalf("Create(control-plane join) error = %v", err)
 	}
-	assertUnchanged(t, before, bootSelectionBytes(t, root), "boot selection")
-	assertNoOperation(t, root, "bootstrap-join-cp-2")
+	if plan.Operation.OperationKind != OperationKindJoinControlPlane || plan.Operation.BootstrapRequest.JoinMaterialRef == "" {
+		t.Fatalf("operation = %#v", plan.Operation)
+	}
+	gotPhasePlan := phasePlan(OperationKindJoinControlPlane)
+	foundJoinPhase := false
+	for _, phase := range gotPhasePlan {
+		if phase == "kubeadm-join-control-plane" {
+			foundJoinPhase = true
+		}
+	}
+	if !foundJoinPhase {
+		t.Fatalf("phase plan = %#v", gotPhasePlan)
+	}
+	if plan.RuntimeInputs.KubeadmInput.Intent != "control-plane" || plan.RuntimeInputs.KubeadmInput.Path != "/etc/katl/kubeadm/control-plane/config.yaml" {
+		t.Fatalf("kubeadm input = %#v", plan.RuntimeInputs.KubeadmInput)
+	}
+	assertBootSelectionStillGeneration0(t, root)
 	assertNoKubeadmMutation(t, root)
 }
 

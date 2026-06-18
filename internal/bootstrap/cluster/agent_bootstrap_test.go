@@ -43,7 +43,7 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 	}
 }
 
-func TestRunAgentBootstrapRejectsControlPlaneJoinBeforeContactingNodes(t *testing.T) {
+func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	inv := validSingleNodeInventory()
 	inv.ControlPlaneEndpoint = "api.katl.test:6443"
 	inv.Nodes = append(inv.Nodes, inventory.Node{
@@ -54,16 +54,78 @@ func TestRunAgentBootstrapRejectsControlPlaneJoinBeforeContactingNodes(t *testin
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 		KubernetesVersion: "v1.36.1",
 	})
-	connector := newFakeAgentConnector(nil)
-	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: inv, InitNode: "cp-1"}, AgentBootstrapDependencies{Connector: connector})
-	if err == nil || !strings.Contains(err.Error(), "kubeadm-control-plane-join") {
-		t.Fatalf("RunAgentBootstrap() error = %v, want control-plane join classification", err)
+	cpClient := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-init",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+		createMaterial: &agentapi.CreateWorkerJoinMaterialResponse{
+			MaterialRef: "operation:bootstrap-init-1/control-plane:cp-2",
+			WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
+				JoinArgv: []string{
+					"kubeadm",
+					"join",
+					"api.katl.test:6443",
+					"--token",
+					"abcdef.0123456789abcdef",
+					"--discovery-token-ca-cert-hash",
+					"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+					"--control-plane",
+					"--certificate-key",
+					strings.Repeat("a", 64),
+				},
+				ExpiresAt: "2026-06-16T13:00:00Z",
+			},
+		},
 	}
-	if len(connector.connected) != 0 {
-		t.Fatalf("connected nodes = %#v, want none", connector.connected)
+	cp2Client := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-2", "bootstrap-join-control-plane"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-join-control-plane-1",
+			RequestDigest: "digest-cp-join",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-join-control-plane-1", Terminal: true, Result: "succeeded"},
+		},
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan"}) {
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
+		"cp-1": cpClient,
+		"cp-2": cp2Client,
+	})
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           inv,
+		InitNode:            "cp-1",
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+	}, AgentBootstrapDependencies{Connector: connector, Actor: "test-actor"})
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "control-plane-join", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
+	}
+	if len(cpClient.createMaterialRequests) != 1 {
+		t.Fatalf("CreateWorkerJoinMaterial requests = %d, want 1", len(cpClient.createMaterialRequests))
+	}
+	if got := cpClient.createMaterialRequests[0].RequestRef; got != "operation:bootstrap-init-1/control-plane:cp-2" {
+		t.Fatalf("join material request ref = %q", got)
+	}
+	if len(cp2Client.submitRequests) != 1 {
+		t.Fatalf("control-plane SubmitOperation requests = %d, want 1", len(cp2Client.submitRequests))
+	}
+	cp2Req := cp2Client.submitRequests[0]
+	if cp2Req.OperationKind != "bootstrap-join-control-plane" || cp2Req.ExpectedMachineId != "machine-cp-2" {
+		t.Fatalf("control-plane submit request = %#v", cp2Req)
+	}
+	if cp2Req.Bootstrap.JoinMaterialRef != "operation:bootstrap-init-1/control-plane:cp-2" {
+		t.Fatalf("join material ref = %q", cp2Req.Bootstrap.JoinMaterialRef)
 	}
 }
 

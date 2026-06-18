@@ -41,6 +41,7 @@ const (
 
 var bootstrapOperationKinds = []string{
 	"bootstrap-init",
+	"bootstrap-join-control-plane",
 	"bootstrap-join-worker",
 	"generation-apply",
 	"generation-stage",
@@ -186,20 +187,53 @@ func (s *Server) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.Cre
 		return nil, status.Errorf(codes.FailedPrecondition, "operation locks conflict with active operation %s", strings.Join(active, ","))
 	}
 	startedAt := s.clock()
-	argv := []string{"/usr/bin/kubeadm", "token", "create", "--print-join-command", "--ttl", ttl.String(), "--kubeconfig", "/etc/kubernetes/admin.conf"}
+	controlPlane := joinMaterialRequestRole(req.RequestRef) == "control-plane"
 	runCtx, cancel := context.WithTimeout(ctx, workerJoinMaterialCommandTimeout)
 	defer cancel()
-	result := s.RunJoinMaterial(runCtx, argv, func(int) {})
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
-		result.Err = runCtx.Err()
-		result.ExitStatus = -1
-	}
-	if result.Err != nil || result.ExitStatus != 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "create worker join material: %s", inventory.Redact(toolFailure(result)))
-	}
-	material, err := cluster.ParseJoinMaterial(string(result.Stdout))
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "parse worker join material: %v", err)
+	var material cluster.JoinMaterial
+	if controlPlane {
+		keyResult := s.RunJoinMaterial(runCtx, []string{"/usr/bin/kubeadm", "init", "phase", "upload-certs", "--upload-certs", "--kubeconfig", "/etc/kubernetes/admin.conf"}, func(int) {})
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && keyResult.Err == nil {
+			keyResult.Err = runCtx.Err()
+			keyResult.ExitStatus = -1
+		}
+		if keyResult.Err != nil || keyResult.ExitStatus != 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "create control-plane certificate key: %s", inventory.Redact(toolFailure(keyResult)))
+		}
+		certificateKey := cluster.CertificateKey(string(keyResult.Stdout) + "\n" + string(keyResult.Stderr))
+		if certificateKey == "" {
+			return nil, status.Error(codes.FailedPrecondition, "create control-plane certificate key: kubeadm did not print a certificate key")
+		}
+		result := s.RunJoinMaterial(runCtx, []string{"/usr/bin/kubeadm", "token", "create", "--print-join-command", "--ttl", ttl.String(), "--certificate-key", certificateKey, "--kubeconfig", "/etc/kubernetes/admin.conf"}, func(int) {})
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
+			result.Err = runCtx.Err()
+			result.ExitStatus = -1
+		}
+		if result.Err != nil || result.ExitStatus != 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "create control-plane join material: %s", inventory.Redact(toolFailure(result)))
+		}
+		parsed, err := cluster.ControlPlaneJoinMaterial(string(result.Stdout), certificateKey)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "parse control-plane join material: %v", err)
+		}
+		material = parsed
+	} else {
+		result := s.RunJoinMaterial(runCtx, []string{"/usr/bin/kubeadm", "token", "create", "--print-join-command", "--ttl", ttl.String(), "--kubeconfig", "/etc/kubernetes/admin.conf"}, func(int) {})
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
+			result.Err = runCtx.Err()
+			result.ExitStatus = -1
+		}
+		if result.Err != nil || result.ExitStatus != 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "create worker join material: %s", inventory.Redact(toolFailure(result)))
+		}
+		parsed, err := cluster.ParseJoinMaterial(string(result.Stdout))
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "parse worker join material: %v", err)
+		}
+		if err := validateWorkerJoinMaterial(parsed); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "parse worker join material: %v", err)
+		}
+		material = parsed
 	}
 	expiresAt := startedAt.Add(ttl).UTC()
 	response := &agentapi.CreateWorkerJoinMaterialResponse{
@@ -275,17 +309,17 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		candidateID = id + "-candidate"
 	}
 	bootstrapRequest.CandidateGenerationID = candidateID
-	temporaryJoinConfigPath := ""
-	if req.OperationKind == "bootstrap-join-worker" {
-		temporaryJoinConfigPath = temporaryWorkerJoinConfigPath(id)
+	temporaryJoinConfig := ""
+	if isJoinOperation(req.OperationKind) {
+		temporaryJoinConfig = temporaryJoinConfigPath(id)
 		bootstrapRequest.JoinMaterialDigest = workerJoinMaterialDigest(req.GetBootstrap().GetWorkerJoinMaterial())
 		bootstrapRequest.JoinMaterialExpiresAt = strings.TrimSpace(req.GetBootstrap().GetWorkerJoinMaterial().GetExpiresAt())
-		bootstrapRequest.TemporaryJoinConfigPath = temporaryJoinConfigPath
+		bootstrapRequest.TemporaryJoinConfigPath = temporaryJoinConfig
 		if bootstrapRequest.JoinMaterialRef == "" {
 			bootstrapRequest.JoinMaterialRef = "request:" + bootstrapRequest.JoinMaterialDigest[:12]
 		}
 	}
-	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfigPath)
+	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfig)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
 	}
@@ -316,16 +350,16 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
 	}
-	if req.OperationKind == "bootstrap-join-worker" {
-		metadata, err := s.materializeWorkerJoinConfig(req, id)
+	if isJoinOperation(req.OperationKind) {
+		metadata, err := s.materializeJoinConfig(req, id)
 		if err != nil {
 			updated, updateErr := s.markMaterializationFailed(id, err)
 			if updateErr != nil {
-				return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "materialize worker join config failed and status update failed: %v; %v", err, updateErr)
+				return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "materialize join config failed and status update failed: %v; %v", err, updateErr)
 			}
 			return updated, nil, nil
 		}
-		created, err = s.Store.Update(id, "worker-join-material-ready", "worker-join-material-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		created, err = s.Store.Update(id, "join-material-ready", "join-material-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			if record.BootstrapRequest == nil {
 				return record, fmt.Errorf("operation bootstrapRequest is required")
 			}
@@ -337,7 +371,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		})
 		if err != nil {
 			cleanupTemporaryJoinConfig(s.Root, operation.OperationRecord{BootstrapRequest: &operation.BootstrapRequest{TemporaryJoinConfigPath: metadata.configPath}})
-			return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "record worker join material: %v", err)
+			return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "record join material: %v", err)
 		}
 	}
 	return created, nil, nil
@@ -438,9 +472,6 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if strings.TrimSpace(req.ClientRequestId) == "" {
 		return status.Error(codes.InvalidArgument, "clientRequestID is required")
 	}
-	if req.OperationKind == "bootstrap-join-control-plane" {
-		return status.Error(codes.InvalidArgument, "operationKind \"bootstrap-join-control-plane\" is unsupported until control-plane join design is implemented")
-	}
 	if !contains(s.supportedOperationKinds(), req.OperationKind) {
 		return status.Errorf(codes.InvalidArgument, "operationKind %q is unsupported", req.OperationKind)
 	}
@@ -528,16 +559,24 @@ func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.Bo
 		return nil
 	}
 	material := request.GetWorkerJoinMaterial()
-	if operationKind != "bootstrap-join-worker" {
+	if !isJoinOperation(operationKind) {
 		if material != nil {
-			return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is only valid for bootstrap-join-worker")
+			return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is only valid for bootstrap join operations")
 		}
 		return nil
 	}
 	if material == nil || len(material.GetJoinArgv()) == 0 {
-		return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is required for bootstrap-join-worker")
+		return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is required for %s", operationKind)
 	}
-	if _, err := workerJoinMaterial(material); err != nil {
+	parsed, err := joinMaterial(material)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial: %v", err)
+	}
+	if operationKind == "bootstrap-join-control-plane" {
+		if err := validateControlPlaneJoinMaterial(parsed); err != nil {
+			return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial: %v", err)
+		}
+	} else if err := validateWorkerJoinMaterial(parsed); err != nil {
 		return status.Errorf(codes.InvalidArgument, "bootstrap request: workerJoinMaterial: %v", err)
 	}
 	expiresAt, err := parseJoinMaterialExpiry(material.GetExpiresAt())
@@ -578,11 +617,16 @@ func (s *Server) markDispatchFailed(operationID string, err error) (operation.Op
 
 func (s *Server) markMaterializationFailed(operationID string, err error) (operation.OperationRecord, error) {
 	now := s.clock()
-	return s.Store.Update(operationID, "worker-join-material-failed", "worker-join-material-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+	return s.Store.Update(operationID, "join-material-failed", "join-material-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "prepare-bootstrap-runtime"
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
-		record.NextAction = "submit a new worker join operation with valid join material"
+		switch record.OperationKind {
+		case "bootstrap-join-control-plane":
+			record.NextAction = "submit a new control-plane join operation with valid join material"
+		default:
+			record.NextAction = "submit a new worker join operation with valid join material"
+		}
 		record.FailureReason = inventory.Redact(err.Error())
 		record.Terminal = true
 		record.UpdatedAt = now
@@ -697,14 +741,7 @@ func (s *Server) supportedOperationKinds() []string {
 	if len(s.SupportedOperationKinds) > 0 {
 		kinds = s.SupportedOperationKinds
 	}
-	out := make([]string, 0, len(kinds))
-	for _, kind := range kinds {
-		if kind == "bootstrap-join-control-plane" {
-			continue
-		}
-		out = append(out, kind)
-	}
-	return out
+	return append([]string(nil), kinds...)
 }
 
 func (s *Server) clock() time.Time {
@@ -852,7 +889,7 @@ func RequestDigest(req *agentapi.SubmitOperationRequest) (string, error) {
 
 func resourceLocks(kind string) []string {
 	switch kind {
-	case "bootstrap-init", "bootstrap-join-worker":
+	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case "kubeadm-upgrade":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
@@ -865,7 +902,7 @@ func resourceLocks(kind string) []string {
 
 func operationScope(kind string) string {
 	switch kind {
-	case "bootstrap-init", "bootstrap-join-worker":
+	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
 		return "kubeadm-state"
 	case "kubeadm-upgrade":
 		return "kubeadm-state"
@@ -899,10 +936,18 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	case "bootstrap-join-worker":
 		configPath = strings.TrimSpace(temporaryJoinConfigPath)
 		if configPath == "" {
-			return toolPlan{}, fmt.Errorf("temporary worker join config path is required")
+			return toolPlan{}, fmt.Errorf("temporary join config path is required")
 		}
 		plan.Phase = "kubeadm-join-worker"
 		plan.MarkerID = "kubeadm-join-worker"
+		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
+	case "bootstrap-join-control-plane":
+		configPath = strings.TrimSpace(temporaryJoinConfigPath)
+		if configPath == "" {
+			return toolPlan{}, fmt.Errorf("temporary join config path is required")
+		}
+		plan.Phase = "kubeadm-join-control-plane"
+		plan.MarkerID = "kubeadm-join-control-plane"
 		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
 	default:
 		return toolPlan{}, fmt.Errorf("operationKind %q has no executor plan", req.OperationKind)
@@ -974,9 +1019,9 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 	}
 }
 
-func (s *Server) materializeWorkerJoinConfig(req *agentapi.SubmitOperationRequest, operationID string) (workerJoinMetadata, error) {
+func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, operationID string) (workerJoinMetadata, error) {
 	bootstrap := req.GetBootstrap()
-	material, err := workerJoinMaterial(bootstrap.GetWorkerJoinMaterial())
+	material, err := joinMaterial(bootstrap.GetWorkerJoinMaterial())
 	if err != nil {
 		return workerJoinMetadata{}, err
 	}
@@ -987,13 +1032,21 @@ func (s *Server) materializeWorkerJoinConfig(req *agentapi.SubmitOperationReques
 	}
 	base, err := os.ReadFile(filepath.Join(inputDir, "config.yaml"))
 	if err != nil {
-		return workerJoinMetadata{}, fmt.Errorf("read stored worker kubeadm config: %w", err)
+		return workerJoinMetadata{}, fmt.Errorf("read stored kubeadm config: %w", err)
 	}
-	rendered, err := cluster.RenderWorkerJoinConfig(base, material)
+	var rendered []byte
+	switch req.OperationKind {
+	case "bootstrap-join-control-plane":
+		rendered, err = cluster.RenderControlPlaneJoinConfig(base, material)
+	case "bootstrap-join-worker":
+		rendered, err = cluster.RenderWorkerJoinConfig(base, material)
+	default:
+		return workerJoinMetadata{}, fmt.Errorf("operationKind %q is not a join operation", req.OperationKind)
+	}
 	if err != nil {
 		return workerJoinMetadata{}, err
 	}
-	runtimePath := temporaryWorkerJoinConfigPath(operationID)
+	runtimePath := temporaryJoinConfigPath(operationID)
 	target := filepath.Join(filepath.Clean(s.Root), strings.TrimPrefix(runtimePath, "/"))
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return workerJoinMetadata{}, fmt.Errorf("create temporary join config directory: %w", err)
@@ -1008,11 +1061,11 @@ func (s *Server) materializeWorkerJoinConfig(req *agentapi.SubmitOperationReques
 	}, nil
 }
 
-func temporaryWorkerJoinConfigPath(operationID string) string {
+func temporaryJoinConfigPath(operationID string) string {
 	return "/run/katl/bootstrap-join/" + operationID + "/config.yaml"
 }
 
-func workerJoinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, error) {
+func joinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, error) {
 	if material == nil {
 		return cluster.JoinMaterial{}, fmt.Errorf("is required")
 	}
@@ -1025,6 +1078,81 @@ func workerJoinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMate
 		argv = append(argv, arg)
 	}
 	return cluster.ParseJoinMaterial(strings.Join(argv, " "))
+}
+
+func validateWorkerJoinMaterial(material cluster.JoinMaterial) error {
+	if len(material.Argv) == 0 {
+		return fmt.Errorf("is required")
+	}
+	for _, arg := range material.Argv {
+		if arg == "--control-plane" {
+			return fmt.Errorf("must not include --control-plane")
+		}
+	}
+	for i := 0; i < len(material.Argv); i++ {
+		arg := material.Argv[i]
+		if arg == "--certificate-key" || strings.HasPrefix(arg, "--certificate-key=") {
+			return fmt.Errorf("must not include --certificate-key")
+		}
+	}
+	return nil
+}
+
+func validateControlPlaneJoinMaterial(material cluster.JoinMaterial) error {
+	if len(material.Argv) == 0 {
+		return fmt.Errorf("is required")
+	}
+	hasControlPlane := false
+	certificateKey := ""
+	for i := 0; i < len(material.Argv); i++ {
+		arg := material.Argv[i]
+		if arg == "--control-plane" {
+			hasControlPlane = true
+		}
+		if arg == "--certificate-key" {
+			if i+1 < len(material.Argv) {
+				certificateKey = strings.TrimSpace(material.Argv[i+1])
+			}
+		}
+		if value, ok := strings.CutPrefix(arg, "--certificate-key="); ok {
+			certificateKey = strings.TrimSpace(value)
+		}
+	}
+	if !hasControlPlane {
+		return fmt.Errorf("must include --control-plane")
+	}
+	if certificateKey == "" {
+		return fmt.Errorf("must include --certificate-key value")
+	}
+	if !validCertificateKey(certificateKey) {
+		return fmt.Errorf("must include a 64-character hex --certificate-key value")
+	}
+	return nil
+}
+
+func validCertificateKey(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func isJoinOperation(kind string) bool {
+	return kind == "bootstrap-join-worker" || kind == "bootstrap-join-control-plane"
+}
+
+func joinMaterialRequestRole(ref string) string {
+	for _, part := range strings.Split(strings.TrimSpace(ref), "/") {
+		if strings.HasPrefix(part, "control-plane:") {
+			return "control-plane"
+		}
+	}
+	return "worker"
 }
 
 func parseJoinMaterialExpiry(value string) (time.Time, error) {

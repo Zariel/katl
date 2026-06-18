@@ -835,18 +835,25 @@ func bootstrapRuntimeManifest(role string) manifest.Manifest {
 
 func bootstrapRuntimeKubeadmConfigs(role string) map[string]kubeadmconfig.Plan {
 	kind := "InitConfiguration"
+	content := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+	documents := []kubeadmconfig.Document{
+		{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"},
+		{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "ClusterConfiguration"},
+	}
 	if role == "worker" {
 		kind = "JoinConfiguration"
+		content = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n"
+		documents = []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: kind}}
 	}
 	return map[string]kubeadmconfig.Plan{
 		"default": {
 			Name: "default",
 			Config: kubeadmconfig.File{
 				RenderPath: "/etc/katl/kubeadm/default/config.yaml",
-				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: " + kind + "\n"),
+				Content:    []byte(content),
 				Mode:       0o644,
 			},
-			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: kind}},
+			Documents: documents,
 		},
 	}
 }

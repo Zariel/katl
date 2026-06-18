@@ -99,12 +99,6 @@ func (c EtcdChecker) Check(ctx context.Context, node inventory.PlannedNode) (Etc
 	if c.Transport == nil {
 		return report, errors.New("etcd command transport is required")
 	}
-	if err := c.checkCredentials(ctx, node, &report.Diagnostics); err != nil {
-		return report, err
-	}
-	if len(report.Diagnostics) > 0 {
-		return report, nil
-	}
 	containerID, err := c.etcdContainerID(ctx, node)
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, inventory.Diagnostic{Field: "etcd-container", Message: inventory.Redact(err.Error())})
@@ -185,12 +179,6 @@ func (c EtcdChecker) CreateSnapshot(ctx context.Context, node inventory.PlannedN
 		return report, nil
 	}
 	report.Path = path
-	if err := c.checkCredentials(ctx, node, &report.Diagnostics); err != nil {
-		return report, err
-	}
-	if len(report.Diagnostics) > 0 {
-		return report, nil
-	}
 	containerID, err := c.etcdContainerID(ctx, node)
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, inventory.Diagnostic{Field: "etcd-container", Message: inventory.Redact(err.Error())})
@@ -223,18 +211,6 @@ func (c EtcdChecker) CreateSnapshot(ctx context.Context, node inventory.PlannedN
 	report.TotalKeys = snapshot.TotalKeys
 	report.TotalSize = snapshot.TotalSize
 	return report, nil
-}
-
-func (c EtcdChecker) checkCredentials(ctx context.Context, node inventory.PlannedNode, diagnostics *[]inventory.Diagnostic) error {
-	for _, path := range []string{c.caCertPath(), c.clientCertPath(), c.clientKeyPath()} {
-		if _, err := c.run(ctx, node, []string{"test", "-r", path}, false); err != nil {
-			*diagnostics = append(*diagnostics, inventory.Diagnostic{
-				Field:   "etcd-credentials",
-				Message: fmt.Sprintf("required etcd credential %s is not readable: %s", path, inventory.Redact(err.Error())),
-			})
-		}
-	}
-	return nil
 }
 
 func (c EtcdChecker) etcdContainerID(ctx context.Context, node inventory.PlannedNode) (string, error) {

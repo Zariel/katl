@@ -1007,13 +1007,7 @@ func (r TransportRunner) CreateControlPlaneJoin(ctx context.Context, initNode in
 	if err != nil {
 		return JoinMaterial{}, err
 	}
-	material, err := parseJoinMaterial(result.Stdout)
-	if err != nil {
-		return JoinMaterial{}, err
-	}
-	material.Argv = ensureFlag(material.Argv, "--control-plane")
-	material.Argv = ensureFlagValue(material.Argv, "--certificate-key", certificateKey)
-	return material, nil
+	return ControlPlaneJoinMaterial(result.Stdout, certificateKey)
 }
 
 func (r TransportRunner) RunControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error {
@@ -1154,7 +1148,7 @@ func (r TransportRunner) writeJoinConfig(ctx context.Context, node inventory.Pla
 	return target, nil
 }
 
-func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
+func RenderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
 	endpoint := strings.TrimSpace(controlPlaneEndpoint)
 	if endpoint == "" {
 		return base, nil
@@ -1185,6 +1179,10 @@ func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) 
 		return nil, errors.New("kubeadm init config did not contain ClusterConfiguration")
 	}
 	return encodeYAMLDocuments(docs)
+}
+
+func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
+	return RenderInitConfig(base, controlPlaneEndpoint)
 }
 
 func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]byte, error) {
@@ -1243,6 +1241,37 @@ func RenderWorkerJoinConfig(base []byte, material JoinMaterial) ([]byte, error) 
 		return nil, errors.New("worker join material must not include --certificate-key")
 	}
 	return renderJoinConfig(base, material, false)
+}
+
+func RenderControlPlaneJoinConfig(base []byte, material JoinMaterial) ([]byte, error) {
+	if len(material.Argv) == 0 {
+		return nil, errors.New("control-plane join material is required")
+	}
+	if !hasFlag(material.Argv, "--control-plane") {
+		return nil, errors.New("control-plane join material must include --control-plane")
+	}
+	if flagValue(material.Argv, "--certificate-key") == "" {
+		return nil, errors.New("control-plane join material must include --certificate-key")
+	}
+	return renderJoinConfig(base, material, true)
+}
+
+func ControlPlaneJoinMaterial(output string, certificateKey string) (JoinMaterial, error) {
+	certificateKey = strings.TrimSpace(certificateKey)
+	if certificateKey == "" {
+		return JoinMaterial{}, errors.New("control-plane join material must include --certificate-key")
+	}
+	material, err := parseJoinMaterial(output)
+	if err != nil {
+		return JoinMaterial{}, err
+	}
+	material.Argv = ensureFlag(material.Argv, "--control-plane")
+	material.Argv = ensureFlagValue(material.Argv, "--certificate-key", certificateKey)
+	return material, nil
+}
+
+func CertificateKey(output string) string {
+	return certificateKey(output)
 }
 
 func appendUniqueString(value any, item string) []any {

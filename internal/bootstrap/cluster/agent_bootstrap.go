@@ -180,6 +180,18 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed")
+	for _, node := range controlPlaneJoinNodes(plan) {
+		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.OperationID, deps)
+		if err != nil {
+			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
+			return result, fmt.Errorf("control-plane join material for %s: %s", node.Name, inventory.Redact(err.Error()))
+		}
+		if err := submitAndWaitControlPlaneJoin(ctx, node, plan, statuses[node.Name], material, deps); err != nil {
+			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
+			return result, fmt.Errorf("control-plane join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
+		}
+		result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed")
+	}
 	for _, node := range workerNodes(plan) {
 		material, err := createWorkerJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.OperationID, deps)
 		if err != nil {
@@ -244,7 +256,6 @@ func validateAgentPlan(plan inventory.Plan) error {
 		switch node.Action {
 		case inventory.ActionInit:
 		case inventory.ActionControlPlaneJoin:
-			return fmt.Errorf("node %q requires %s, which is not supported until katlc exposes join material over the agent API", node.Name, node.Action)
 		case inventory.ActionWorkerJoin:
 		default:
 			return fmt.Errorf("node %q has unsupported bootstrap action %q", node.Name, node.Action)
@@ -350,13 +361,21 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	return bootstrapInitResult{OperationID: accepted.GetOperationId(), Credentials: credentials}, nil
 }
 
+func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	return createJoinMaterial(ctx, initNode, controlPlane, status, initOperationID, deps, "control-plane")
+}
+
 func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	return createJoinMaterial(ctx, initNode, worker, status, initOperationID, deps, "worker")
+}
+
+func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies, role string) (workerJoinMaterial, error) {
 	conn, err := deps.Connector.Connect(ctx, initNode)
 	if err != nil {
 		return workerJoinMaterial{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
-	requestRef := "operation:" + strings.TrimSpace(initOperationID) + "/worker:" + worker.Name
+	requestRef := "operation:" + strings.TrimSpace(initOperationID) + "/" + role + ":" + joinNode.Name
 	response, err := conn.Client.CreateWorkerJoinMaterial(ctx, &agentapi.CreateWorkerJoinMaterialRequest{
 		ApiVersion:        agentAPIVersion,
 		Kind:              agentJoinMaterialKind,
@@ -365,17 +384,17 @@ func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.Pl
 		RequestRef:        requestRef,
 	})
 	if err != nil {
-		return workerJoinMaterial{}, fmt.Errorf("create worker join material: %w", err)
+		return workerJoinMaterial{}, fmt.Errorf("create %s join material: %w", role, err)
 	}
 	material := response.GetWorkerJoinMaterial()
 	if material == nil {
-		return workerJoinMaterial{}, errors.New("agent did not return worker join material")
+		return workerJoinMaterial{}, fmt.Errorf("agent did not return %s join material", role)
 	}
 	if len(material.GetJoinArgv()) == 0 {
-		return workerJoinMaterial{}, errors.New("agent returned worker join material without argv")
+		return workerJoinMaterial{}, fmt.Errorf("agent returned %s join material without argv", role)
 	}
 	if strings.TrimSpace(material.GetExpiresAt()) == "" {
-		return workerJoinMaterial{}, errors.New("agent returned worker join material without expiry")
+		return workerJoinMaterial{}, fmt.Errorf("agent returned %s join material without expiry", role)
 	}
 	ref := strings.TrimSpace(response.GetMaterialRef())
 	if ref == "" {
@@ -384,13 +403,21 @@ func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.Pl
 	return workerJoinMaterial{Ref: ref, Material: material}, nil
 }
 
+func submitAndWaitControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) error {
+	return submitAndWaitJoin(ctx, node, plan, status, material, deps, "bootstrap-join-control-plane")
+}
+
 func submitAndWaitWorkerJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) error {
+	return submitAndWaitJoin(ctx, node, plan, status, material, deps, "bootstrap-join-worker")
+}
+
+func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies, kind string) error {
 	conn, err := deps.Connector.Connect(ctx, node)
 	if err != nil {
 		return fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
-	req := bootstrapOperationRequest(node, plan, status, deps, "bootstrap-join-worker")
+	req := bootstrapOperationRequest(node, plan, status, deps, kind)
 	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(material.Ref)
 	req.Bootstrap.WorkerJoinMaterial = material.Material
 	accepted, err := conn.Client.SubmitOperation(ctx, req)

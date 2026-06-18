@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -58,7 +59,7 @@ func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bo
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm); err != nil {
 		failWorldFixtureSetup(t, world, "installed-runtime-three-control-plane-stacked-etcd", err)
 	}
-	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), kvm)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, operationBackedKubernetesVersion(t, repo), kvm)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -154,7 +155,6 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		OVMF:    true,
 		KVM:     options.KVM,
 	})
-	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	etcdTranscriptDir := filepath.Join(result.RunDir, "etcd-transcripts")
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
@@ -163,6 +163,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
 	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
+	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
 	bootstrapFixture := bootstrapFixtureInputsFromEnv()
 	plannedNodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
@@ -172,7 +173,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		plannedNodes = append(plannedNodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
 	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, transcriptDir, etcdTranscriptDir, plannedNodes, bootstrapFixture); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, plannedNodes, bootstrapFixture); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
@@ -187,7 +188,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 
 	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2MAC, 43202), vmtest.VMRunner{})
 	if err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cp1Node)
+		collectTwoNodeDiagnostics("", cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-2 VM: %v", err)
 	}
@@ -195,22 +196,40 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 
 	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3MAC, 43203), vmtest.VMRunner{})
 	if err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cp1Node, cp2Node)
+		collectTwoNodeDiagnostics("", cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-3 VM: %v", err)
 	}
 	defer stopNode(t, cp3Node)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cp1Node, cp2Node, cp3Node}
-	if err := writeThreeControlPlaneInventory(inventoryPath, inputs.KubernetesVersion, nodes); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, transcriptDir, etcdTranscriptDir, nodes, bootstrapFixture); err != nil {
-		t.Fatal(err)
-	}
 	cp1Address := firstString(cp1Node.Result.IPAddress, inputs.CP1Address)
 	cp2Address := firstString(cp2Node.Result.IPAddress, inputs.CP2Address)
 	cp3Address := firstString(cp3Node.Result.IPAddress, inputs.CP3Address)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tokenFiles := map[string]string{}
+	for _, node := range nodes {
+		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, 2*time.Minute)
+		if err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("read %s katlc agent token: %v", node.Name, err)
+		}
+		tokenPath := filepath.Join(result.RunDir, node.Name+"-katlc-agent.token")
+		if err := os.WriteFile(tokenPath, token, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		tokenFiles[node.Name] = tokenPath
+	}
+	addresses := map[string]string{"cp-1": cp1Address, "cp-2": cp2Address, "cp-3": cp3Address}
+	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, nodes, addresses, tokenFiles); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
@@ -223,22 +242,35 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		"--node-address", "cp-3=" + cp3Address,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
-		"--vmtest-transcript-dir", transcriptDir,
 	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
+	err = bootstrapCommandError(err, stdout.String())
 	if err != nil {
+		collectOperationBackedFailureEvidence(ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
+		collectOperationBackedFailureEvidence(ctx, cp2Node, filepath.Join(evidenceDir, "cp-2"), "bootstrap-join-control-plane")
+		collectOperationBackedFailureEvidence(ctx, cp3Node, filepath.Join(evidenceDir, "cp-3"), "bootstrap-join-control-plane")
 		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics(transcriptDir, nodes...)
+		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	assertThreeControlPlaneBootstrapPhases(t, stdout.String())
-	if err := verifyBootstrapTranscripts(transcriptDir, []string{"cp-1", "cp-2", "cp-3"}); err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, nodes...)
+	if _, _, err := collectOperationEvidence(ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init"); err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("bootstrap transcripts: %v", err)
+		t.Fatalf("collect cp-1 operation evidence: %v", err)
+	}
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
+		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(evidenceDir, node.Name), "bootstrap-join-control-plane")
+		if err != nil {
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("collect %s operation evidence: %v", node.Name, err)
+		}
+		if record.ExecutorPlan == nil || record.ExecutorPlan.Phase != "kubeadm-join-control-plane" || record.OperationKind != "bootstrap-join-control-plane" {
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "unexpected control-plane join operation record")
+			t.Fatalf("%s operation record = %#v", node.Name, record)
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
@@ -246,14 +278,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics(transcriptDir, nodes...)
+		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
 	}
 	for _, want := range []string{"node/cp-1", "node/cp-2", "node/cp-3"} {
 		if !strings.Contains(string(output), want) {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-			collectTwoNodeDiagnostics(transcriptDir, nodes...)
+			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
 		}
@@ -266,7 +298,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			t.Fatalf("write failed etcd report: %v; original error: %v", writeErr, err)
 		}
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics(transcriptDir, nodes...)
+		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("verify stacked etcd: %v", err)
 	}
@@ -350,6 +382,33 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
+func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, tokenFiles map[string]string) error {
+	if len(nodes) != 3 {
+		return fmt.Errorf("three control-plane inventory requires three nodes, got %d", len(nodes))
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("controlPlaneEndpoint: \"\"\n")
+	b.WriteString("kubernetesVersion: " + kubernetesVersion + "\n")
+	b.WriteString("nodes:\n")
+	for _, node := range nodes {
+		b.WriteString("- name: " + node.Name + "\n")
+		b.WriteString("  address: " + addresses[node.Name] + "\n")
+		b.WriteString("  systemRole: control-plane\n")
+		b.WriteString("  access:\n")
+		b.WriteString("    method: agent\n")
+		b.WriteString("    credentialRef: " + strconv.Quote("file:"+tokenFiles[node.Name]) + "\n")
+		b.WriteString("  kubeadmConfig:\n")
+		b.WriteString("    ref: control-plane\n")
+		b.WriteString("    path: /etc/katl/kubeadm/control-plane/config.yaml\n")
+		b.WriteString("    intent: control-plane\n")
+		b.WriteString("  kubernetesVersion: " + kubernetesVersion + "\n")
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
 type threeControlPlaneArtifactManifest struct {
 	VMTestRun                string                      `json:"vmtestRun,omitempty"`
 	WorldManifest            string                      `json:"worldManifest,omitempty"`
@@ -380,6 +439,7 @@ type threeControlPlaneArtifactManifest struct {
 	EtcdReport               string                      `json:"etcdReport"`
 	Transcripts              map[string]string           `json:"transcripts"`
 	EtcdTranscripts          map[string]string           `json:"etcdTranscripts"`
+	OperationEvidence        map[string]string           `json:"operationEvidence,omitempty"`
 	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
 	NetworkLeases            string                      `json:"networkLeases,omitempty"`
 	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
@@ -416,6 +476,7 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		EtcdReport:               filepath.Join(result.RunDir, "etcd-report.json"),
 		Transcripts:              transcriptPaths(transcriptDir, nodes),
 		EtcdTranscripts:          transcriptPaths(etcdTranscriptDir, nodes),
+		OperationEvidence:        operationEvidencePaths(filepath.Join(result.RunDir, "operation-evidence"), nodes),
 		SerialLogs:               serialLogPaths(nodes),
 		NetworkLeases:            inputs.WorldProvenance.NetworkLeaseFile,
 		Diagnostics:              diagnosticSummaryPaths(nodes),
@@ -445,12 +506,9 @@ func assertThreeControlPlaneBootstrapPhases(t *testing.T, output string) {
 	t.Helper()
 	for _, want := range []string{
 		"katlctl cluster bootstrap init-node=cp-1",
-		"phase=kubeadm-init node=cp-1 status=passed",
-		"phase=control-plane-join-material node=cp-1 status=passed",
+		"phase=bootstrap-init node=cp-1 status=passed",
 		"phase=control-plane-join node=cp-2 status=passed",
-		"phase=control-plane-ready node=cp-2 status=passed",
 		"phase=control-plane-join node=cp-3 status=passed",
-		"phase=control-plane-ready node=cp-3 status=passed",
 		"phase=kubeconfig status=passed",
 	} {
 		if !strings.Contains(output, want) {
@@ -856,6 +914,14 @@ func transcriptPaths(root string, nodes []vmtest.RunningInstalledRuntimeNode) ma
 	return out
 }
 
+func operationEvidencePaths(root string, nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	out := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		out[node.Name] = filepath.Join(root, node.Name)
+	}
+	return out
+}
+
 func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	nodes := []vmtest.RunningInstalledRuntimeNode{
 		{Name: "cp-1", VSock: vmtest.VSockPlan{Enabled: true, GuestCID: 1, Port: 10240}},
@@ -961,6 +1027,9 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
 		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
+	}
+	if manifest.OperationEvidence["cp-2"] != filepath.Join(result.RunDir, "operation-evidence", "cp-2") {
+		t.Fatalf("operation evidence = %#v", manifest.OperationEvidence)
 	}
 	if manifest.WorldManifest != "/tmp/world.json" || manifest.NetworkLeases != "/tmp/network-leases.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
 		t.Fatalf("planned provenance = %#v", manifest)
@@ -1170,6 +1239,7 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 		KubeconfigMetadata:       "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:         (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		SerialLogs:               map[string]string{"cp-1": "/tmp/cp-1-run/vm/runtime-serial.log"},
+		OperationEvidence:        map[string]string{"cp-2": "/tmp/run/operation-evidence/cp-2"},
 		Diagnostics:              map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 		KubectlDiagnostics:       map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
@@ -1197,6 +1267,9 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	if manifest.SerialLogs["cp-1"] != "/tmp/cp-1-run/vm/runtime-serial.log" {
 		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
+	}
+	if manifest.OperationEvidence["cp-2"] != "/tmp/run/operation-evidence/cp-2" {
+		t.Fatalf("artifact manifest operation evidence = %#v", manifest.OperationEvidence)
 	}
 	if manifest.NodeResults["cp-1"] != "/tmp/cp-1-run/result.json" || manifest.LaunchCommands["cp-1"] != "/tmp/cp-1-run/vm/launch-command.txt" {
 		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.LaunchCommands)

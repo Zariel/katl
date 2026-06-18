@@ -234,7 +234,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		resultText = operation.ResultTimedOut
 	}
 	if result.Err != nil || result.ExitStatus != 0 {
-		if alreadyJoinedWorker(record, result) && e.workerPostHealthPassed(ctx, record) {
+		if alreadyJoined(record, result) && e.joinPostHealthPassed(ctx, record) {
 			result.Err = nil
 			result.ExitStatus = 0
 			resultText = operation.ResultSucceeded
@@ -676,7 +676,7 @@ func requiresBootstrapRuntime(record operation.OperationRecord) bool {
 		return false
 	}
 	switch record.OperationKind {
-	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker:
+	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker, bootstrapplan.OperationKindJoinControlPlane:
 		return true
 	default:
 		return false
@@ -688,7 +688,7 @@ func requiresBootstrapGenerationCommit(record operation.OperationRecord) bool {
 		return false
 	}
 	switch record.OperationKind {
-	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker:
+	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker, bootstrapplan.OperationKindJoinControlPlane:
 		return true
 	default:
 		return false
@@ -823,36 +823,40 @@ func cleanupTemporaryJoinConfig(root string, record operation.OperationRecord) {
 }
 
 func expiredJoinMaterial(record operation.OperationRecord, now time.Time) string {
-	if record.OperationKind != bootstrapplan.OperationKindJoinWorker || record.BootstrapRequest == nil {
+	if !bootstrapJoinOperation(record.OperationKind) || record.BootstrapRequest == nil {
 		return ""
 	}
 	expiresAt := strings.TrimSpace(record.BootstrapRequest.JoinMaterialExpiresAt)
 	if expiresAt == "" {
-		return "worker join material expiry is not recorded"
+		return "join material expiry is not recorded"
 	}
 	parsed, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
-		return "worker join material expiry is invalid"
+		return "join material expiry is invalid"
 	}
 	if !parsed.After(now.UTC()) {
-		return "worker join material is expired"
+		return "join material is expired"
 	}
 	return ""
 }
 
-func alreadyJoinedWorker(record operation.OperationRecord, result ToolResult) bool {
-	if record.OperationKind != bootstrapplan.OperationKindJoinWorker {
+func alreadyJoined(record operation.OperationRecord, result ToolResult) bool {
+	if !bootstrapJoinOperation(record.OperationKind) {
 		return false
 	}
 	text := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr) + "\n" + toolFailure(result))
 	return strings.Contains(text, "already joined")
 }
 
-func (e *Executor) workerPostHealthPassed(ctx context.Context, record operation.OperationRecord) bool {
+func (e *Executor) joinPostHealthPassed(ctx context.Context, record operation.OperationRecord) bool {
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
 	result := e.postHealthRunner()(healthCtx, postKubeadmHealthArgs(record), func(int) {})
 	return healthCtx.Err() == nil && result.Err == nil && result.ExitStatus == 0
+}
+
+func bootstrapJoinOperation(kind string) bool {
+	return kind == bootstrapplan.OperationKindJoinWorker || kind == bootstrapplan.OperationKindJoinControlPlane
 }
 
 func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {

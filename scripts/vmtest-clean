@@ -68,6 +68,30 @@ cleanup_orphan_qemu() {
     return 0
 }
 
+wait_domain_inactive() {
+    local domain="$1"
+    local uri="$2"
+    local state
+
+    for _ in {1..50}; do
+        state="$("$virsh_bin" -c "$uri" domstate "$domain" 2>/dev/null || true)"
+        case "$state" in
+            ""|*"shut off"*|*"no state"*|*"not found"*)
+                return 0
+                ;;
+        esac
+        sleep 0.1
+    done
+    return 1
+}
+
+domain_exists() {
+    local domain="$1"
+    local uri="$2"
+
+    "$virsh_bin" -c "$uri" dominfo "$domain" >/dev/null 2>&1
+}
+
 for result in "${result_files[@]}"; do
     while IFS=$'\t' read -r domain uri; do
         if [[ -z "$domain" ]]; then
@@ -83,12 +107,26 @@ for result in "${result_files[@]}"; do
             exit 2
         fi
         printf 'vmtest-clean: destroying %s on %s\n' "$domain" "$uri" >&2
-        "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || true
+        "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || {
+            printf 'vmtest-clean: virsh destroy failed for %s; checking domain state\n' "$domain" >&2
+        }
+        if ! wait_domain_inactive "$domain" "$uri"; then
+            printf 'vmtest-clean: %s is still active after destroy; checking for orphan qemu process\n' "$domain" >&2
+            cleanup_orphan_qemu "$domain"
+            if ! wait_domain_inactive "$domain" "$uri"; then
+                printf 'vmtest-clean: failed to stop %s on %s\n' "$domain" "$uri" >&2
+                exit 1
+            fi
+        fi
         printf 'vmtest-clean: undefining %s on %s\n' "$domain" "$uri" >&2
         "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null 2>&1 || {
             printf 'vmtest-clean: virsh undefine failed for %s; checking for orphan qemu process\n' "$domain" >&2
+            cleanup_orphan_qemu "$domain"
+            if domain_exists "$domain" "$uri"; then
+                printf 'vmtest-clean: failed to undefine %s on %s\n' "$domain" "$uri" >&2
+                exit 1
+            fi
         }
-        cleanup_orphan_qemu "$domain"
         cleaned=$((cleaned + 1))
     done < <(
         jq -r '
