@@ -978,7 +978,7 @@ vocabulary:
 artifact identity
   name
   artifactVersion or buildID
-  payloadVersion, for example v1.36.2
+  payloadVersion, for example v1.36.0
   kubernetesMinor, for example v1.36
   architecture
   sha256

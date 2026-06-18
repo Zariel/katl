@@ -35,7 +35,7 @@ ValidatedInstallRequest
   install policy, including destructive install guard and target disk selector
   systemRole
   exact Kubernetes payload bundle source/ref, such as a source URL plus
-    `v1.36.2@sha256:<bundle-manifest-digest>`
+    `v1.36.0@sha256:<bundle-manifest-digest>`
   bootstrap profile refs, not kubeadm actions
   one katlosImage reference with digest and expected metadata
 ```

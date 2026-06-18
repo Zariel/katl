@@ -51,21 +51,21 @@ Publishing prebuilt user-specific confext is outside the default path.
 image creates generation 0, installs the KatlOS runtime, and records bootstrap
 intent such as the requested Kubernetes version or catalog reference.
 
-A user who wants Kubernetes `v1.36.2` installs a compatible KatlOS image and
+A user who wants Kubernetes `v1.36.0` installs a compatible KatlOS image and
 supplies `katlc` with an HTTPS source for the Kubernetes payload bundle, such as
 a GHCR OCI reference endpoint or a GitHub Releases-hosted OCI layout/catalog,
-together with an exact selection such as `v1.36.2`. The explicit bootstrap
+together with an exact selection such as `v1.36.0`. The explicit bootstrap
 operation later asks `katlc` to fetch the bundle, verify the Katl custom
 manifest and payload digests, stage the sysext under Katl-owned storage, create
 generation 1, select the staged sysext, render node-specific generated confext,
 run kubeadm, and commit only after operation health checks pass.
 
-A user who wants a fresh cluster on Kubernetes `v1.36.3` can use the same
+A user who wants a fresh cluster on Kubernetes `v1.36.1` can use the same
 KatlOS install image when runtime compatibility permits it, but supplies an
-HTTPS source/ref that resolves to the `v1.36.3` bundle. `v1.36.2` and
-`v1.36.3` remain separately addressable by exact payload version and digest.
+HTTPS source/ref that resolves to the `v1.36.1` bundle. `v1.36.0` and
+`v1.36.1` remain separately addressable by exact payload version and digest.
 
-Upgrading an already bootstrapped node from `v1.36.2` to `v1.36.3` is a
+Upgrading an already bootstrapped node from `v1.36.0` to `v1.36.1` is a
 different workflow. The target sysext can be produced and cataloged now, but
 node mutation remains unsupported until the kubeadm-aware upgrade operation and
 kubelet activation gate are implemented and VM-tested.
@@ -91,7 +91,7 @@ The YAML-facing install or bootstrap intent uses:
 node:
   bootstrap:
     kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
-    kubernetesBundleRef: v1.36.2@sha256:<bundle-manifest-digest>
+    kubernetesBundleRef: v1.36.0@sha256:<bundle-manifest-digest>
 ```
 
 `katlctl cluster bootstrap` and node-local `katlc` operations use the same
@@ -104,10 +104,10 @@ Examples:
 
 ```text
 source=https://ghcr.io/v2/katl/kubernetes-payloads
-ref=v1.36.2@sha256:<bundle-manifest-digest>
+ref=v1.36.0@sha256:<bundle-manifest-digest>
 
-source=https://github.com/katl/releases/download/kubernetes-v1.36.2/oci
-ref=v1.36.2@sha256:<bundle-manifest-digest>
+source=https://github.com/katl/releases/download/kubernetes-v1.36.0/oci
+ref=v1.36.0@sha256:<bundle-manifest-digest>
 ```
 
 `source` is a location, not a trust root. `ref` resolves to one exact Katl
@@ -368,7 +368,7 @@ Kubernetes patch updates should be ordinary reviewed dependency updates.
 Renovate should update the declared target payload and package expectations in
 `mkosi.profiles/kubernetes-sysext/kubernetes.env` or its successor. That change
 triggers the producer workflow, which builds a new immutable sysext artifact and
-catalog entry. A successful `v1.36.3` publication does not replace `v1.36.2`;
+catalog entry. A successful `v1.36.1` publication does not replace `v1.36.0`;
 both remain addressable by exact payload version and digest until retention
 policy removes or deprecates them.
 
@@ -379,14 +379,12 @@ kubeadm upgrade gate allows them.
 
 ## v0.1 Release Version Policy
 
-v0.1 targets Kubernetes minor `v1.36`. The release is cut against an exact base
-`v1.36.x` payload bundle for install and an exact next patch bundle for the
-Kubernetes upgrade proof, not against a floating minor or whatever the node can
-resolve at bootstrap time. Development fixtures follow the package lock and
-currently resolve the base bundle to `v1.36.2`; the paired upgrade bundle is the
-next available `v1.36` patch, expected to be `v1.36.3` when it is published by
-the upstream package repository. If a newer patch is selected for the final
-release candidate, both base and next payload versions must move through a
+v0.1 targets Kubernetes minor `v1.36`. The default release proof pair is exact
+payload bundle `v1.36.0` for install/bootstrap and exact next patch bundle
+`v1.36.1` for the Kubernetes upgrade proof. The milestone does not target a
+floating minor, a scheduled-but-unreleased patch, or whatever the node can
+resolve at bootstrap time. If the pair changes, both base and next payload
+versions must be already-released `v1.36` patches and must move through a
 reviewed package-lock update, bundle rebuild, and VM gate. After that cut,
 user-facing install examples, fixture metadata, catalog entries, kubeadm YAML,
 and generation records must name the exact `vMAJOR.MINOR.PATCH` payload version
@@ -396,11 +394,11 @@ The release policy intentionally separates three versions:
 
 ```text
 kubernetes payloadVersion
-  Exact Kubernetes patch carried by the sysext, for example v1.36.2.
+  Exact Kubernetes patch carried by the sysext, for example v1.36.0.
 
 bundle artifactVersion
   Immutable Katl build/revision identity for the bundle that carries that
-  payload, for example v1.36.2-katl.1 or a release-candidate build ID.
+  payload, for example v1.36.0-katl.1 or a release-candidate build ID.
 
 katlos runtimeInterface
   Compatibility contract consumed before selection, currently katl-runtime-1.

@@ -183,7 +183,7 @@ to:
 ```text
 install manifest -> KatlOS install image URL/ref/digest + Kubernetes bundle source/ref
 KatlOS install image -> generation 0 runtime payload only
-katlctl cluster bootstrap -> katlc fetches HTTPS payload bundle and selects staged katl-kubernetes-v1.36.2-x86_64.sysext.raw
+katlctl cluster bootstrap -> katlc fetches HTTPS payload bundle and selects staged katl-kubernetes-v1.36.0-x86_64.sysext.raw
 ```
 
 ## Upgrade Image

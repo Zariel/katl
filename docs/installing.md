@@ -97,7 +97,7 @@ node:
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
     kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
-    kubernetesBundleRef: v1.36.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
   allowDestructiveInstall: true
   targetDisk:
@@ -138,7 +138,7 @@ node:
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
     kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
-    kubernetesBundleRef: v1.36.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
@@ -337,14 +337,14 @@ Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
 The Kubernetes bundle reference is exact. For example,
-`node.bootstrap.kubernetesBundleRef: v1.36.2@sha256:<digest>` means bootstrap
+`node.bootstrap.kubernetesBundleRef: v1.36.0@sha256:<digest>` means bootstrap
 must select the compatible Kubernetes payload bundle whose manifest digest
 matches that pin. During the explicit bootstrap operation, `katlc` fetches that
 bundle from `node.bootstrap.kubernetesBundleSource`, verifies the Katl bundle
 metadata and payload digests, stages the sysext locally, and selects it for
-generation 1. To bootstrap a fresh cluster on `v1.36.3`, keep the KatlOS install
+generation 1. To bootstrap a fresh cluster on `v1.36.1`, keep the KatlOS install
 image when runtime compatibility permits it and supply a source/ref pair that
-resolves to the `v1.36.3` bundle.
+resolves to the `v1.36.1` bundle.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:
@@ -380,8 +380,8 @@ Kubernetes version upgrades remain separate from day-one install. They require a
 kubeadm-aware operation that can make the target `kubeadm` available before the
 target kubelet starts. Until that path is implemented and tested, treat
 Kubernetes upgrades as unsupported operational work. Producing and publishing a
-new sysext such as `v1.36.3` is useful immediately for fresh installs and
-future upgrade planning, but it does not by itself make `v1.36.2` to `v1.36.3`
+new sysext such as `v1.36.1` is useful immediately for fresh installs and
+future upgrade planning, but it does not by itself make `v1.36.0` to `v1.36.1`
 mutation safe on an existing cluster.
 
 ## Troubleshooting

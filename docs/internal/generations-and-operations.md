@@ -833,10 +833,10 @@ plan-only `katlc` status:
 
 ```text
 Generation N
-  Kubernetes 1.36.2
+  Kubernetes 1.36.0
 
 Generation N+1
-  Kubernetes 1.36.3
+  Kubernetes 1.36.1
 
 kubeadm-upgrade
   -> katlc validates and records a plan-only or refused operation
