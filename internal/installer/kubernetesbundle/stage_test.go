@@ -1,0 +1,369 @@
+package kubernetesbundle
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zariel/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/sysextcatalog"
+)
+
+func TestFetchAndStage(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	server := fixtureServer(t, fixture.root)
+	cacheDir := t.TempDir()
+
+	staged, err := FetchAndStage(context.Background(), Request{
+		Source:           server.URL,
+		Ref:              fixture.ref(),
+		CacheDir:         cacheDir,
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+		Client:           server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("FetchAndStage() error = %v", err)
+	}
+
+	if staged.PayloadVersion != "v1.36.0" || staged.Architecture != "x86_64" {
+		t.Fatalf("staged identity = %#v", staged)
+	}
+	if staged.BundleManifestDigest != fixture.staged.BundleManifestDigest {
+		t.Fatalf("bundle digest = %q, want %q", staged.BundleManifestDigest, fixture.staged.BundleManifestDigest)
+	}
+	if staged.SysextPayloadDigest != fixture.indexEntry.SysextPayloadDigest {
+		t.Fatalf("payload digest = %q, want %q", staged.SysextPayloadDigest, fixture.indexEntry.SysextPayloadDigest)
+	}
+	for _, path := range []string{staged.SysextPath, staged.MetadataPath, filepath.Join(staged.BundleDir, "bundle.json"), filepath.Join(staged.BundleDir, "package-provenance.json"), filepath.Join(staged.BundleDir, "catalog-entry.json"), filepath.Join(cacheDir, "index.json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("stat staged path %s: %v", path, err)
+		}
+	}
+	payload, err := os.ReadFile(staged.SysextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "kubernetes sysext 1.36.0" {
+		t.Fatalf("payload = %q", payload)
+	}
+
+	ref := staged.ExtensionRef
+	if ref.Name != sysextcatalog.KubernetesName || ref.ActivationPath != "/run/extensions/katl-kubernetes.raw" || ref.Path != staged.SysextPath {
+		t.Fatalf("extension ref location = %#v", ref)
+	}
+	if ref.SHA256 != strings.TrimPrefix(staged.SysextPayloadDigest, "sha256:") || ref.PayloadVersion != "v1.36.0" || ref.ArtifactVersion == "" {
+		t.Fatalf("extension ref identity = %#v", ref)
+	}
+	if len(ref.Compatibility.RuntimeInterfaces) != 1 || ref.Compatibility.RuntimeInterfaces[0] != "katl-runtime-1" {
+		t.Fatalf("extension ref compatibility = %#v", ref.Compatibility)
+	}
+
+	var index Index
+	readJSON(t, filepath.Join(cacheDir, "index.json"), &index)
+	if len(index.Entries) != 1 || index.Entries[0].BundleManifestDigest != staged.BundleManifestDigest {
+		t.Fatalf("local index = %#v", index)
+	}
+}
+
+func TestFetchAndStageRejectsDescriptorDigestMismatch(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	corruptBlob(t, fixture.root, fixture.indexEntry.SysextPayloadDigest, []byte("changed payload"))
+	server := fixtureServer(t, fixture.root)
+
+	_, err := FetchAndStage(context.Background(), fixture.request(t, server))
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "descriptor systemd-sysext digest got") {
+		t.Fatalf("FetchAndStage() error = %v, want descriptor digest mismatch", err)
+	}
+}
+
+func TestFetchAndStageRejectsIncompatibleSysextMetadata(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	fixture = rewriteBundle(t, fixture, func(bundle *Bundle) {
+		var meta artifact.LocalMeta
+		readJSON(t, fixture.staged.MetadataPath, &meta)
+		meta.RuntimeInterface = "katl-runtime-2"
+		meta.CompatibleRuntime.Interface = "katl-runtime-2"
+		metadata := marshalJSON(t, meta)
+		digest := writeBlob(t, fixture.root, metadata)
+		for i := range bundle.Metadata {
+			if bundle.Metadata[i].Role == metadataRole {
+				bundle.Metadata[i].Digest = digest
+				bundle.Metadata[i].SizeBytes = int64(len(metadata))
+			}
+		}
+	})
+	server := fixtureServer(t, fixture.root)
+
+	_, err := FetchAndStage(context.Background(), fixture.request(t, server))
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "sysext metadata does not support runtime interface") {
+		t.Fatalf("FetchAndStage() error = %v, want incompatible metadata", err)
+	}
+}
+
+func TestFetchAndStageRejectsMissingPayload(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	if err := os.Remove(blobPath(fixture.root, fixture.indexEntry.SysextPayloadDigest)); err != nil {
+		t.Fatal(err)
+	}
+	server := fixtureServer(t, fixture.root)
+
+	_, err := FetchAndStage(context.Background(), fixture.request(t, server))
+	if err == nil || !strings.Contains(err.Error(), "fetch descriptor systemd-sysext") || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("FetchAndStage() error = %v, want missing payload fetch error", err)
+	}
+}
+
+func TestFetchAndStageRejectsWrongMediaType(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	fixture = rewriteBundle(t, fixture, func(bundle *Bundle) {
+		for i := range bundle.Payloads {
+			if bundle.Payloads[i].Role == sysextRole {
+				bundle.Payloads[i].MediaType = "application/octet-stream"
+			}
+		}
+	})
+	server := fixtureServer(t, fixture.root)
+
+	_, err := FetchAndStage(context.Background(), fixture.request(t, server))
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "descriptor systemd-sysext media type") {
+		t.Fatalf("FetchAndStage() error = %v, want media type rejection", err)
+	}
+}
+
+func TestFetchAndStageRejectsUnsafePayloadFileName(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	fixture = rewriteBundle(t, fixture, func(bundle *Bundle) {
+		for i := range bundle.Payloads {
+			if bundle.Payloads[i].Role == sysextRole {
+				bundle.Payloads[i].FileName = "../katl-kubernetes.raw"
+			}
+		}
+	})
+	server := fixtureServer(t, fixture.root)
+
+	_, err := FetchAndStage(context.Background(), fixture.request(t, server))
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "not a safe file name") {
+		t.Fatalf("FetchAndStage() error = %v, want unsafe file name rejection", err)
+	}
+}
+
+func TestFetchAndStageRejectsStaleRef(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	server := fixtureServer(t, fixture.root)
+	request := fixture.request(t, server)
+	request.Ref = "v1.36.0@sha256:" + strings.Repeat("0", sha256.Size*2)
+
+	_, err := FetchAndStage(context.Background(), request)
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "no index entry matches ref") {
+		t.Fatalf("FetchAndStage() error = %v, want stale ref", err)
+	}
+}
+
+func TestFetchAndStageRejectsRawSysextSource(t *testing.T) {
+	_, err := FetchAndStage(context.Background(), Request{
+		Source:           "https://artifacts.example.invalid/katl-kubernetes.SYSEXT.RAW?token=secret",
+		Ref:              "v1.36.0@sha256:" + strings.Repeat("0", sha256.Size*2),
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+		Client:           http.DefaultClient,
+	})
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "raw sysext URLs") {
+		t.Fatalf("FetchAndStage() error = %v, want raw sysext rejection", err)
+	}
+}
+
+func TestFetchAndStageRedactsSourceCredentials(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	server := fixtureServer(t, fixture.root)
+	source, err := url.Parse(server.URL + "/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.User = url.UserPassword("user", "secret")
+	request := fixture.request(t, server)
+	request.Source = source.String()
+
+	_, err = FetchAndStage(context.Background(), request)
+	if err == nil {
+		t.Fatal("FetchAndStage() error = nil, want missing index")
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "user:") {
+		t.Fatalf("FetchAndStage() leaked source credentials: %v", err)
+	}
+}
+
+type fixture struct {
+	root       string
+	staged     sysextcatalog.StagedArtifact
+	indexEntry IndexEntry
+}
+
+func (f fixture) ref() string {
+	return f.indexEntry.PayloadVersion + "@" + f.indexEntry.BundleManifestDigest
+}
+
+func (f fixture) request(t *testing.T, server *httptest.Server) Request {
+	t.Helper()
+	return Request{
+		Source:           server.URL,
+		Ref:              f.ref(),
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+		Client:           server.Client(),
+	}
+}
+
+func writeFixture(t *testing.T, payloadVersion string, payload string) fixture {
+	t.Helper()
+	sourceDir := t.TempDir()
+	outputDir := t.TempDir()
+	_, metadataPath := writeSysextArtifact(t, sourceDir, payloadVersion, payload)
+	staged, err := sysextcatalog.StageKubernetesSysext(sysextcatalog.StageRequest{
+		MetadataPath: metadataPath,
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("StageKubernetesSysext() error = %v", err)
+	}
+	var index Index
+	readJSON(t, filepath.Join(outputDir, "index.json"), &index)
+	if len(index.Entries) != 1 {
+		t.Fatalf("index entries = %d, want 1", len(index.Entries))
+	}
+	return fixture{root: outputDir, staged: staged, indexEntry: index.Entries[0]}
+}
+
+func fixtureServer(t *testing.T, root string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(root)))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func writeSysextArtifact(t *testing.T, dir string, payloadVersion string, payload string) (string, string) {
+	t.Helper()
+	rawPath := filepath.Join(dir, "katl-kubernetes-"+payloadVersion+".raw")
+	if err := os.WriteFile(rawPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digestBytes := sha256.Sum256([]byte(payload))
+	digest := hex.EncodeToString(digestBytes[:])
+	meta := artifact.LocalMeta{
+		Name:           sysextcatalog.KubernetesName,
+		Kind:           artifact.ArtifactSysext,
+		Format:         "sysext",
+		Path:           filepath.Base(rawPath),
+		SizeBytes:      int64(len(payload)),
+		SHA256:         digest,
+		Version:        payloadVersion + "-build.1",
+		PayloadVersion: payloadVersion,
+		Architecture:   "x86_64",
+		SourceRepo: &artifact.SourceRepo{
+			ID:      "kubernetes",
+			BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
+			Minor:   "v1.36",
+		},
+		PackageVersions: map[string]string{
+			"cri-tools": "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubeadm":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubectl":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubelet":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+		},
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &artifact.Compat{
+			Interface:    "katl-runtime-1",
+			ArtifactPath: filepath.Join(dir, "katl-runtime-root.squashfs"),
+		},
+		Created: "2026-06-04T20:00:00Z",
+	}
+	metadataPath := rawPath + ".json"
+	if err := os.WriteFile(metadataPath, marshalJSON(t, meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return rawPath, metadataPath
+}
+
+func rewriteBundle(t *testing.T, f fixture, mutate func(*Bundle)) fixture {
+	t.Helper()
+	bundlePath := filepath.Join(f.root, filepath.FromSlash(f.indexEntry.BundleManifestPath))
+	var bundle Bundle
+	readJSON(t, bundlePath, &bundle)
+	mutate(&bundle)
+	bundleBytes := marshalJSON(t, bundle)
+	bundleDigest := writeBlob(t, f.root, bundleBytes)
+	if err := os.WriteFile(bundlePath, bundleBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var index Index
+	indexPath := filepath.Join(f.root, "index.json")
+	readJSON(t, indexPath, &index)
+	for i := range index.Entries {
+		if index.Entries[i].PayloadVersion == f.indexEntry.PayloadVersion {
+			index.Entries[i].BundleManifestDigest = bundleDigest
+			f.indexEntry = index.Entries[i]
+		}
+	}
+	if err := os.WriteFile(indexPath, marshalJSON(t, index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.staged.BundleManifestDigest = bundleDigest
+	return f
+}
+
+func corruptBlob(t *testing.T, root string, digest string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(blobPath(root, digest), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeBlob(t *testing.T, root string, data []byte) string {
+	t.Helper()
+	digest := "sha256:" + testDataSHA256(data)
+	if err := os.WriteFile(blobPath(root, digest), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func blobPath(root string, digest string) string {
+	return filepath.Join(root, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))
+}
+
+func readJSON(t *testing.T, path string, target any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+}
+
+func marshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func testDataSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
