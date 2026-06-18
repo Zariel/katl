@@ -203,11 +203,13 @@ before the renderer writes a generation. Rejection is required for unknown domai
 unsupported fields inside a known domain, unsupported apply modes, unsupported
 sysext selection requests, and raw confext or sysext activation paths.
 
-The live versus next-boot runtime apply contract is defined in
+The online versus next-boot runtime apply contract is defined in
 `docs/internal/adrs/adr-002-live-and-next-boot-config-apply-modes.md`. Domain
-implementations must declare whether their diffs are online-applicable,
-staged-only, or rejected for live application before `katlc` and KatlOS runtime
-services accept them.
+implementations must declare whether each diff is online-applicable,
+next-boot-only, operation-only, or rejected before `katlc` and KatlOS runtime
+services accept it. The default `auto` apply mode prefers online in-place apply
+only when every changed domain has a tested live plan; otherwise it accepts a
+next-boot generation or rejects with the required operation kind.
 
 Normal confext activation must not run kubeadm, kubectl, CNI installers, package
 managers, or application controllers. Kubeadm-aware actions remain explicit

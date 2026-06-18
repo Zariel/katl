@@ -1,11 +1,14 @@
-# ADR-002: Runtime configuration supports live and next-boot apply modes
+# ADR-002: Runtime configuration prefers online apply with next-boot fallback
 
 Status: accepted.
 
 Date: 2026-06-05.
 
+Updated: 2026-06-18.
+
 This ADR defines how later Katl runtime configuration changes choose between
-immediate live application and staging for the next boot. It builds on
+online in-place application, staging for the next boot, explicit operation-only
+workflows, and rejection. It builds on
 `adr-001-generated-confext-configuration.md` and
 `supported-node-config-domains.md`. The input transport, trust roots, freshness,
 and audit policy for those requests are defined in
@@ -25,14 +28,21 @@ apply modes, sysext selections, and raw extension activation paths are rejected
 before rendering.
 
 The key distinction is whether a requested change can be made effective on the
-currently running node, or whether it must be staged as the next bootable
-generation.
+currently running node, whether it must be staged as the next bootable
+generation, or whether it is not normal configuration apply at all.
 
 ## Decision
 
-Runtime configuration change requests use one explicit apply mode:
+Runtime configuration change requests use one apply mode:
 
 ```text
+auto
+  Default. Render and validate the requested configuration, classify the domain
+  diffs, and choose online in-place application when every diff has a proven
+  live plan. If any diff is safe only for boot activation, accept the whole
+  request as next-boot. If any diff is operation-only or rejected, reject the
+  request with diagnostics before rendering partial state.
+
 next-boot
   Render and validate a new generation, set it as the next boot candidate, and
   leave the current boot unchanged.
@@ -45,10 +55,32 @@ live
 ```
 
 The apply mode belongs to the runtime configuration change request envelope, not
-to individual raw files. Domain renderers and the planner decide whether the
-requested domain diffs are valid for that mode. If a request mixes domains and
-any diff is not accepted for the requested mode, Katl rejects the request before
-rendering or activating partial state.
+to individual raw files. Domain renderers and the planner classify every domain
+diff before anything is activated. If a request mixes domains, the accepted mode
+is the most conservative supported mode for the whole request. `auto` may accept
+the request as `live` or `next-boot`; strict `live` rejects any diff that would
+need next boot; strict `next-boot` never attempts live activation.
+
+The planner outcome is explicit:
+
+```text
+accepted live
+  candidate generation rendered and activated in the current boot with bounded
+  online actions
+
+accepted next-boot
+  candidate generation rendered and selected for bounded trial boot; current
+  boot remains unchanged
+
+operation-only
+  request is rejected as normal config apply and must be submitted through a
+  named lifecycle operation such as host-upgrade, bootstrap, join, or
+  kubeadm-upgrade
+
+rejected
+  unsupported, unsafe, ambiguous, or out-of-policy input; no generation artifacts
+  are written
+```
 
 The render step happens on the node that receives the request. A successful
 request creates local generation artifacts from trusted Katl config: generated
@@ -68,15 +100,22 @@ The initial runtime change surface should be shaped like:
 apiVersion: katl.dev/v1alpha1
 kind: NodeConfigurationChange
 apply:
-  mode: next-boot | live
+  mode: auto | live | next-boot
 spec:
   node:
     ...
 ```
 
-`next-boot` is the default for unattended or ambiguous runtime changes. `live`
-is opt-in because it can restart services, change networking, or alter operator
-access.
+`auto` is the default when `apply.mode` is omitted. `auto` prefers online
+in-place application where the planner has a tested, rollback-aware plan for
+every changed domain. It falls back to `next-boot` for boot-coupled but
+otherwise valid changes. It rejects operation-only and unsafe changes rather
+than silently changing the requested behavior.
+
+`live` is a strict request for online in-place apply. It is useful when an
+operator wants a fast failure instead of an implicit reboot path. `next-boot` is
+a strict request to stage a new boot generation without changing the current
+boot, even if the same diff could be applied online.
 
 The request still uses supported Katl configuration domains. It is not an
 arbitrary `/etc` patch interface, does not accept user-provided confext images,
@@ -85,7 +124,9 @@ and does not expose systemd extension activation as a raw user knob.
 ## Domain Classification
 
 Each supported domain must declare its apply behavior before it can be changed
-at runtime.
+at runtime. The classification is about a specific diff, not just a domain name:
+for example, adding a non-critical DNS server may be live-applicable while
+changing the active management route is next-boot or rejected.
 
 Online-applicable domains may be used with `live` when their domain-specific
 preflight passes:
@@ -113,7 +154,7 @@ Bootstrap node metadata
   Kubernetes payload.
 ```
 
-Staged-only domains can be rendered into a candidate generation, but normal
+Next-boot-only domains can be rendered into a candidate generation, but normal
 runtime configuration apply does not make them live:
 
 ```text
@@ -130,7 +171,7 @@ mount units and extra disks
   apply.
 
 SSH and operator access
-  Operator access changes are staged-only until a lockout-safe validation and
+  Operator access changes are next-boot-only until a lockout-safe validation and
   reload path exists.
 
 Bootstrap profile input
@@ -139,7 +180,24 @@ Bootstrap profile input
   objects.
 ```
 
-Rejected-live changes fail before render or activation:
+Operation-only changes require a named operation with its own preflights,
+resource locks, mutation markers, status, and tests:
+
+```text
+KatlOS root or UKI upgrade execution
+  host-upgrade operation using the verified KatlOS image and sysupdate-backed
+  staging path. Host OS image updates are next-boot generations, but they are
+  not normal runtime configuration apply.
+
+Kubernetes sysext payload changes on a bootstrapped node
+  kubeadm-upgrade operation or plan-only/refused status until that gate is
+  implemented and tested
+
+bootstrap, join, reset, repair, certificate renewal, etcd membership changes
+  explicit lifecycle operations only
+```
+
+Rejected changes fail before render or activation:
 
 ```text
 systemRole changes
@@ -152,18 +210,19 @@ unknown domains or arbitrary /etc paths
 root, UKI, kernel command line, or raw sysext activation changes
 ```
 
-The planner may later promote a staged-only domain to online-applicable only
+The planner may later promote a next-boot-only domain to online-applicable only
 after its live preflight, activation, rollback, and VM tests exist.
 
 ## Generated Confext And Generation Metadata
 
-Every accepted runtime change creates a new generation spec and status. A confext-only
+Every accepted runtime change creates a new generation spec and status. `auto`
+does not authorize mutable edits to an existing generation. A confext-only
 change reuses the current root slot, root artifact digest, UKI, kernel command
 line, and sysext set, but records a new generated confext path and digest.
-Changes that select a different compatible sysext payload are staged as a new
-generation that records the selected sysext set with the generated confext.
-Raw sysext activation paths and unsupported sysext selections remain rejected
-runtime config input.
+Changes that select a different compatible sysext payload are not normal config
+apply on bootstrapped nodes; they are staged only by a named operation that owns
+the needed lifecycle checks. Raw sysext activation paths and unsupported sysext
+selections remain rejected runtime config input.
 
 The immutable generation `spec.json` for runtime configuration changes must
 record:
@@ -173,6 +232,7 @@ configuration source digest
 changed domains
 requested apply mode
 accepted apply mode
+planner classification: live, next-boot, operation-only, or rejected
 previous generation id
 kubeadm explicit-action-required flag, when rendered input differs from live
   cluster state
@@ -214,7 +274,10 @@ selected generated confext in the current boot, runs the accepted live apply
 action plan, and records progress in the node-local `OperationRecord`.
 `operationPhase: live-active` means the current boot is using the candidate
 confext and accepted live actions passed. It does not mean the generation has
-passed boot health.
+passed boot health. After live checks pass, Katl may mark the generation
+`commitState: committed` as accepted desired host state, but it is not
+known-good and must not become the persistent default until a later boot reaches
+boot health.
 
 After successful live apply, Katl may select the same generation as a bounded
 next-boot candidate. It becomes the persistent default only after a boot reaches
@@ -294,14 +357,14 @@ request, status, rollback limits, and tests.
 Implementation follow-up work must cover:
 
 ```text
-planner unit tests for live, next-boot, staged-only, and rejected-live decisions
+planner unit tests for live, next-boot, operation-only, and rejected decisions
 golden tests for generation spec/status fields and generated confext paths
 golden tests for OperationRecord snapshots and any config-apply-status.json
   compatibility summary
 negative tests proving mixed live requests fail atomically
 negative tests proving kubeadm and /etc/kubernetes changes are never live-applied
 status serialization tests with redaction
-VM tests for at least one online-applicable domain and one staged-only domain
+VM tests for at least one online-applicable domain and one next-boot-only domain
 ```
 
 Generated paths and test fixtures must remain repo-relative or under the VM test
@@ -312,7 +375,8 @@ machine-local paths into committed configuration.
 
 A follow-up should implement a typed planner before `katlc` executes live
 changes. The planner should produce an explicit decision: accepted `live`,
-accepted `next-boot`, or rejected with domain diagnostics.
+accepted `next-boot`, rejected as operation-only with the required operation
+kind, or rejected with domain diagnostics.
 
 Another follow-up should prove the decision in VM tests before live application
 is considered supported.

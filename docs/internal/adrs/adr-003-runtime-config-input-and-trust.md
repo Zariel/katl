@@ -34,7 +34,7 @@ metadata:
   desiredVersion: <monotonic operator-chosen version>
   sourceID: <operator/local source identity>
 apply:
-  mode: next-boot | live
+  mode: auto | live | next-boot
 spec:
   clusterDefaults: ...
   systemRoleOverrides: ...
@@ -45,6 +45,11 @@ The initial implementation accepts this request from `katlc`, running as an
 operator command on the node. A local file path is therefore the first concrete
 transport. The local file is not the trust root by itself; it is only the
 handoff format for an authenticated operator action.
+
+`apply.mode` defaults to `auto` when omitted. The requested mode and accepted
+mode are separate audit fields: `auto` may be accepted as `live` or
+`next-boot`, strict `live` may not silently fall back to next boot, and strict
+`next-boot` may not apply changes online.
 
 The request contains desired Katl configuration, not generated extension
 artifacts. After authentication and validation, `katlc` locally renders the
@@ -148,6 +153,7 @@ desiredVersion
 request digest
 requested apply mode
 accepted apply mode, when accepted
+planner classification: live, next-boot, operation-only, or rejected
 changed domains
 previous generation id
 candidate generation id, when rendered
@@ -211,6 +217,7 @@ unknown domains
 unsupported fields in known domains
 unsafe paths or duplicate rendered outputs
 unsupported live domain decisions
+operation-only changes submitted as normal config apply
 unsupported sysext selection requests
 attempted kubeadm/kubectl/CNI/GitOps/package-manager side effects
 attempted /etc/kubernetes or host account ownership

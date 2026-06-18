@@ -228,7 +228,7 @@ PARTUUID, UKI path, kernel command line, sysext selection, or confext selection
 in place. If those fields are wrong or missing, Katl must create a new
 generation, roll back to an existing valid generation, or refuse.
 
-## Updates
+## Update And Apply Classification
 
 Updates create a new generation directory before switching boot selection. A new
 generation may change the runtime root, the Kubernetes sysext, the generated
@@ -238,6 +238,44 @@ current root slot and root artifact digest while selecting new extension content
 KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
 compatible with the new runtime root. Kubernetes-only updates may keep the
 existing KatlOS runtime root when the new sysext is compatible with it.
+
+The planner classifies each requested change before writing generation
+artifacts:
+
+```text
+online in-place config apply
+  Confext-only change that reuses the current root, UKI, kernel command line,
+  and sysext set. The request creates a new generation, activates its generated
+  confext in the current boot, runs only bounded domain live actions, and records
+  a `config-apply` OperationRecord. This is the default accepted mode for
+  `apply.mode: auto` when every diff is proven live-applicable.
+
+next-boot config apply
+  Confext-only change that is valid but boot-coupled, lockout-sensitive, or not
+  proven safe online. The request creates a new generation and arms a bounded
+  trial boot without changing the current boot.
+
+host-upgrade
+  KatlOS runtime root, UKI, kernel command line, or runtime image update. The
+  request is an explicit host-upgrade operation and always stages a next-boot
+  generation through the verified KatlOS image and sysupdate-backed transfer
+  path.
+
+Kubernetes payload upgrade
+  Kubernetes sysext payload change on a bootstrapped node. The request is an
+  explicit kubeadm-aware operation, not normal config apply. Until its gate is
+  implemented and VM-tested, `katlc` rejects or records plan-only status.
+
+operation-only lifecycle change
+  Bootstrap, join, reset, repair, certificate renewal, etcd membership changes,
+  and other workflows that run mutating tools. These require named operations
+  and must not be hidden inside generation activation.
+
+rejected input
+  Unknown domains, unsupported fields, arbitrary /etc writes, raw extension
+  activation paths, package-manager requests, host account ownership, or any
+  ambiguous change where safety cannot be proven.
+```
 
 A Kubernetes upgrade operation may stage a candidate generation before every
 service consumes it. That does not create an intermediate generation with mixed

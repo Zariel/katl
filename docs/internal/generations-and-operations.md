@@ -166,6 +166,8 @@ Examples include:
 bootstrap-init
 bootstrap-join-worker
 bootstrap-join-control-plane (future additional control-plane join path)
+config-apply
+host-upgrade
 kubeadm-upgrade
 kubeadm-reset
 recover-control-plane
@@ -183,13 +185,22 @@ Operations are explicit. Normal configuration apply and generation activation
 must not silently run kubeadm, kubectl, CNI installers, GitOps controllers,
 package managers, or cluster repair commands.
 
-Normal `katlc apply` is the generation apply path. Creating or activating the
-first Kubernetes-capable generation during cluster bootstrap is still generation
-management, but it is part of an explicit bootstrap or join
+Normal `katlc apply` is the generation apply path and records a `config-apply`
+operation for accepted changes. Its default request mode is `auto`: the planner
+prefers online in-place apply when every changed domain has a proven live plan,
+falls back to next-boot for safe boot-coupled changes, and rejects
+operation-only or unsafe input before rendering partial state. Creating or
+activating the first Kubernetes-capable generation during cluster bootstrap is
+still generation management, but it is part of an explicit bootstrap or join
 operation because kubeadm will mutate node or cluster state before the generation
 can be committed. Named operations are reserved for transactional workflows that
-run mutating tools such as kubeadm, coordinate external state, or repair state
-outside normal generation apply.
+run mutating tools such as kubeadm, coordinate external state, change root/UKI
+bytes, or repair state outside normal generation apply.
+
+`host-upgrade` is the durable operation kind for KatlOS runtime root and UKI
+updates from one verified KatlOS upgrade image. It always stages a next-boot
+candidate generation. It is not an online in-place config apply even when the
+request is submitted through the same node-local `katlc` API.
 
 `bootstrap-init` and `bootstrap-join-worker` are the day-one durable operation
 kinds initiated by `katlctl cluster bootstrap`, but the accepted operation
@@ -730,6 +741,44 @@ Install KatlOS
   -> reach installed-runtime health
 ```
 
+Runtime configuration apply creates a new generation for every accepted change:
+
+```text
+katlc apply
+  -> authenticate and audit the NodeConfigurationChange request
+  -> merge cluster defaults, systemRole overrides, and node overrides
+  -> classify domain diffs for auto, live, next-boot, operation-only, or reject
+  -> write a config-apply OperationRecord before mutation
+  -> render generated confext and write candidate generation spec/status
+
+accepted live
+  -> activate the candidate confext in the current boot
+  -> run only bounded domain live actions
+  -> commit the generation after live checks pass
+  -> leave boot health and persistent default promotion pending until a later boot
+
+accepted next-boot
+  -> arm bounded trial boot selection for the candidate
+  -> leave the current boot unchanged
+
+operation-only or rejected
+  -> record redacted diagnostics
+  -> write no partial generation artifacts
+```
+
+Host KatlOS upgrades use the same generation records but a separate operation:
+
+```text
+host-upgrade
+  -> accept exactly one verified KatlOS upgrade image reference
+  -> verify image and component digests, architecture, and runtime interface
+  -> stage runtime root and UKI through the sysupdate-backed transfer path
+  -> render or preserve generated confext according to the accepted request
+  -> write candidate generation spec/status
+  -> arm bounded trial boot selection
+  -> commit/promotion waits for boot health after the candidate boot
+```
+
 Cluster bootstrap creates and commits the first Kubernetes-capable generation:
 
 ```text
@@ -848,7 +897,9 @@ live apply
   record live phases in the katlc-owned OperationRecord; an optional
   generation-local config-apply-status.json may mirror the latest summary, but
   it is not authoritative. Live activation does not by itself prove boot health
-  or known-good eligibility
+  or known-good eligibility. A successful live apply may commit the generation
+  as accepted desired host state, but persistent default promotion still waits
+  for a later boot to become good and healthy
 ```
 
 ## Failure And Rollback

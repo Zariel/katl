@@ -225,6 +225,11 @@ metadata, arm bounded boot selection, boot candidate, reach
 `katl-boot-complete.target`, mark `good/healthy`, then promote the candidate to
 the persistent default through the boot-selection transaction.
 
+KatlOS root, UKI, kernel command line, or runtime interface changes are never
+online in-place configuration applies. Even when an operator submits the request
+through `katlc`, the accepted workflow is a `host-upgrade` operation that stages
+a next-boot generation and relies on boot health for promotion.
+
 After health passes, Katl updates generation status to:
 
 ```text
