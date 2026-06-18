@@ -258,6 +258,12 @@ signatures/
 fixtures must use this same shape; loose raw sysext files are not valid bundle
 sources.
 
+The bundle-local `catalog-entry.json` is the descriptor-stable catalog fragment
+referenced by the bundle manifest, so it must not contain the bundle manifest's
+own digest. The source-root `index.json`, `catalog/node-extensions.json`, and
+`catalog/<appID>.json` entries record the computed bundle manifest digest after
+the bundle manifest bytes are written.
+
 The source root `index.json` records:
 
 ```text
