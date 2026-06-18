@@ -326,9 +326,14 @@ own activation.
 
 ## Producer Workflow
 
-The first producer can live in this repository because the sysext currently
-depends on Katl runtime compatibility metadata and the local mkosi build layout.
-The workflow should be narrow:
+The v0.1 Kubernetes payload producer stays in this repository. The first
+release workflow needs one reviewed place where KatlOS runtime-interface
+metadata, mkosi inputs, package locks, sysext content checks, bundle manifest
+generation, VM fixtures, and milestone gates can move together. Splitting the
+producer before the artifact contract is executable would create a second
+release surface without reducing risk for the v0.1 proof.
+
+The in-repository workflow is narrow:
 
 ```text
 Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
@@ -339,12 +344,125 @@ Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
   -> GHCR or GitHub Releases-hosted OCI artifacts are published immutably
 ```
 
-Moving this producer to a separate repository is desirable once the artifact
-contract is stable enough that the producer can consume Katl runtime interface
-metadata without importing the whole KatlOS build tree. The split should happen
-when it reduces release coupling, not before local VM and artifact validation are
-reliable. A separate repo still needs to publish the same catalog schema and
-must not weaken Katl runtime compatibility checks.
+The producer consumes Katl runtime compatibility as data, even while it lives in
+this repository. That data is the same contract a future split producer must
+consume:
+
+```text
+runtimeInterface
+  Current KatlOS runtime extension contract, for example katl-runtime-1.
+
+architecture
+  Target architecture asserted by the runtime root and sysext metadata.
+
+systemd extension identity
+  SYSEXT_LEVEL or equivalent extension-release compatibility fields, when used.
+
+required host prerequisites
+  Runtime-provided kernel modules, mounts, units, sysctls, and userspace
+  services that the Kubernetes payload expects before kubeadm or kubelet runs.
+
+kubeadm config API support
+  Kubeadm config API families and Kubernetes skew policy the payload may serve.
+
+build input identity
+  Runtime artifact digest, package-lock or build-input digest, source revision,
+  and tool versions needed to reproduce or audit compatibility.
+```
+
+The Kubernetes producer does not consume node inventory, node identity,
+kubeadm config files, bootstrap tokens, certificates, kubeconfigs, BGP peer
+addresses, platform API VIPs, or per-node network configuration. Those inputs
+belong to `katlc` render and operation planning. Keeping that line prevents the
+producer from becoming a node image or a cluster bootstrap engine.
+
+The producer output is identical whether it remains in this repository or moves
+later:
+
+```text
+custom KubernetesPayloadBundle manifest
+  apiVersion, kind, artifactKind, artifactVersion, payloadVersion,
+  kubernetesMinor, architecture, supportedRuntimeInterfaces[],
+  supportedKubeadmConfigAPIFamilies[], supportedSourceKubernetesMinors[],
+  skewPolicy, sourceRepository, packageVersions, packageLockDigest or
+  buildInputDigest, createdAt, signatures[] or explicit unsigned-fixture marker
+
+payload descriptors
+  systemd-sysext payload layer with digest, size, media type, role, and file
+  name; sidecar metadata and package-provenance descriptors with the same
+  digest and size discipline
+
+OCI or static layout
+  GHCR OCI manifest/config/layers using the Katl media types once finalized, or
+  a GitHub Releases/static layout that contains an index, the same custom
+  manifest bytes, descriptor files, payload blobs, checksums, and optional
+  signatures
+
+static layout paths
+  index.json at the source root; bundles/<payloadVersion>/<architecture>/bundle.json
+  for the custom manifest; blobs/sha256/<digest> for sysext payloads and
+  sidecar metadata; catalog/<kubernetesMinor>.json for discovery; checksums.txt
+  and signatures/ when enabled
+
+catalog fragment
+  exact payload version, artifact version, architecture, runtime interfaces,
+  bundle manifest digest, sysext payload digest, source URL shape, and
+  deprecation/retention metadata when applicable
+```
+
+The exact OCI media type strings and final schema IDs are fixed by the
+Kubernetes payload bundle OCI format decision. This producer boundary requires
+that both the in-repository producer and any future split producer emit those
+same finalized bytes and digest relationships.
+
+Raw sysext files may remain build outputs or payload layers, but they are not
+the producer's stable publication API. A consumer must be able to mirror or move
+the bundle without changing the manifest bytes, descriptor digests, sysext
+payload digest, or generation metadata recorded after staging.
+
+Generic confext supplements are not part of the v0.1 Kubernetes producer unless
+they are safe for every node that selects the payload and their paths and
+semantics are declared in the same bundle manifest. Examples could include a
+future read-only default kubelet drop-in that is independent of node identity
+and cluster topology. The producer must reject or omit anything that depends on
+node role, hostname, IP address, bootstrap token, certificate material, kubeadm
+InitConfiguration or JoinConfiguration, CNI choice, platform API endpoint, BGP
+peer, or operator secret. For v0.1, the practical default is no published
+Kubernetes confext supplement.
+
+Node-specific kubeadm and generated confext stay with `katlc` because they are
+operation outputs, not redistributable payloads. `katlc` has the validated
+install/bootstrap intent, selected bundle digest, node role, node identity,
+operator-supplied kubeadm YAML, secret material, generation ID, and
+OperationRecord context needed to render and verify those files immediately
+before activation. Rendering them in the producer would either bake one node's
+state into a shared artifact or force the producer to accept secret and
+inventory inputs that belong on the node.
+
+Moving the Kubernetes producer to a separate repository is allowed only after
+all of the following are true:
+
+```text
+the KubernetesPayloadBundle manifest and layout are implemented and
+  compatibility-tested in this repository
+katlc fetch, cache, digest verification, runtime compatibility validation, and
+  generation selection consume only the published bundle contract
+the producer can obtain runtimeInterface and build-input metadata from a
+  versioned KatlOS runtime metadata artifact instead of the local build tree
+package-lock refresh, sysext content verification, catalog generation,
+  signature or unsigned-fixture policy, and VM fixture publication have
+  equivalent gates in the split repository
+cross-repository release ordering is explicit for the v1.36.0 -> v1.36.1 proof
+  pair and does not require floating tags or mutable bundle contents
+the split demonstrably reduces release coupling, build time, or ownership
+  complexity enough to justify the extra publication surface
+```
+
+Until those criteria are met, separate-repository production is a future
+topology choice, not a v0.1 requirement. A split producer must publish the same
+catalog schema and bundle layout and must not weaken runtime compatibility,
+package provenance, digest verification, or node-local generated-confext
+boundaries.
 
 ## Publication Target
 
