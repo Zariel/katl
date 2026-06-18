@@ -293,9 +293,9 @@ func bootInput(runDir, etcDir string) (installer.BootInput, error) {
 	var request installer.BootInputRequest
 	request.KernelCmdline = readText("/proc/cmdline")
 	addInputFile(&request, installer.InputSourceEtcKatl, filepath.Join(etcDir, "install-input.json"))
-	addManifestFile(&request, installer.InputSourceEtcKatl, filepath.Join(etcDir, "install-manifest.json"))
+	addManifestFiles(&request, installer.InputSourceEtcKatl, etcDir)
 	addInputFile(&request, installer.InputSourceRunKatl, filepath.Join(runDir, "install-input.json"))
-	addManifestFile(&request, installer.InputSourceRunKatl, filepath.Join(runDir, "install-manifest.json"))
+	addManifestFiles(&request, installer.InputSourceRunKatl, runDir)
 	return installer.DiscoverBootInput(request)
 }
 
@@ -322,6 +322,12 @@ func addManifestFile(request *installer.BootInputRequest, source installer.Input
 		Path:    path + ".input",
 		Content: []byte(fmt.Sprintf(`{"manifestPath":%q}`, path)),
 	})
+}
+
+func addManifestFiles(request *installer.BootInputRequest, source installer.InputSource, dir string) {
+	for _, name := range []string{"install-manifest.json", "install-manifest.yml", "install-manifest.yaml"} {
+		addManifestFile(request, source, filepath.Join(dir, name))
+	}
 }
 
 func readText(path string) string {

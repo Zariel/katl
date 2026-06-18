@@ -24,6 +24,63 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	}
 }
 
+func TestDecodeAcceptsYAML(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(`apiVersion: install.katl.dev/v1alpha1
+kind: InstallManifest
+node:
+  identity:
+    hostname: lab-node-01
+    ssh:
+      authorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: control-plane
+  networkd:
+    files:
+      - name: 10-lan.network
+        content: |
+          [Match]
+          Name=enp1s0
+
+          [Network]
+          DHCP=yes
+  kubernetes:
+    kubeadm:
+      configRef: control-plane
+  bootstrap:
+    clusterName: lab
+    inventoryNodeName: cp-1
+    nodeAddress: 10.0.0.11
+    controlPlaneEndpoint: api.katl.test:6443
+    bootstrapProfileRef: control-plane
+    kubernetesCatalogRef: v1.36.1
+install:
+  allowDestructiveInstall: true
+  targetDisk:
+    byID: /dev/disk/by-id/ata-root
+    minSizeMiB: 32768
+katlosImage:
+  url: https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sizeBytes: 1073741824
+  version: "2026.06.04"
+  architecture: x86_64
+  runtimeInterface: katl-runtime-1
+  role: install
+`))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
+		t.Fatalf("configRef = %q", manifest.Node.Kubernetes.Kubeadm.ConfigRef)
+	}
+	if len(manifest.Node.Networkd.Files) != 1 || !strings.Contains(manifest.Node.Networkd.Files[0].Content, "DHCP=yes") {
+		t.Fatalf("networkd files = %#v", manifest.Node.Networkd.Files)
+	}
+	if manifest.Node.Bootstrap == nil || manifest.Node.Bootstrap.KubernetesCatalogRef != "v1.36.1" {
+		t.Fatalf("bootstrap = %#v", manifest.Node.Bootstrap)
+	}
+}
+
 func TestDecodeRejectsInvalidIdentityScalars(t *testing.T) {
 	tests := []struct {
 		name string

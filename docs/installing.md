@@ -61,98 +61,82 @@ and bootstrap intent in the install manifest.
 
 ## Install Manifest
 
-Each node needs an `install.katl.dev/v1alpha1` manifest. This example is a
-control-plane node that uses DHCP and one published KatlOS image:
+Each node needs an `install.katl.dev/v1alpha1` manifest. YAML is the preferred
+operator-facing format because it keeps native systemd and kubeadm snippets
+readable. JSON manifests are accepted for tooling compatibility.
 
-```json
-{
-  "apiVersion": "install.katl.dev/v1alpha1",
-  "kind": "InstallManifest",
-  "node": {
-    "identity": {
-      "hostname": "cp-1",
-      "ssh": {
-        "authorizedKeys": [
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
-        ]
-      }
-    },
-    "systemRole": "control-plane",
-    "networkd": {
-      "files": [
-        {
-          "name": "10-lan.network",
-          "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
-        }
-      ]
-    },
-    "kubernetes": {
-      "kubeadm": {
-        "configRef": "control-plane"
-      }
-    },
-    "bootstrap": {
-      "clusterName": "katl-lab",
-      "inventoryNodeName": "cp-1",
-      "nodeAddress": "192.0.2.11",
-      "controlPlaneEndpoint": "api.katl.test:6443",
-      "bootstrapProfileRef": "control-plane",
-      "kubernetesCatalogRef": "v1.36.1"
-    }
-  },
-  "install": {
-    "allowDestructiveInstall": true,
-    "targetDisk": {
-      "byID": "/dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK",
-      "minSizeMiB": 32768
-    }
-  },
-  "katlosImage": {
-    "url": "https://artifacts.example.invalid/katl/katlos-install-2026.06.04-x86_64.squashfs",
-    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "sizeBytes": 1073741824,
-    "version": "2026.06.04",
-    "architecture": "x86_64",
-    "runtimeInterface": "katl-runtime-1",
-    "role": "install"
-  }
-}
+This example is a control-plane node that uses DHCP and one published KatlOS
+image:
+
+```yaml
+apiVersion: install.katl.dev/v1alpha1
+kind: InstallManifest
+node:
+  identity:
+    hostname: cp-1
+    ssh:
+      authorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: control-plane
+  networkd:
+    files:
+      - name: 10-lan.network
+        content: |
+          [Match]
+          Name=enp1s0
+
+          [Network]
+          DHCP=yes
+  kubernetes:
+    kubeadm:
+      configRef: control-plane
+  bootstrap:
+    clusterName: katl-lab
+    inventoryNodeName: cp-1
+    nodeAddress: 192.0.2.11
+    controlPlaneEndpoint: api.katl.test:6443
+    bootstrapProfileRef: control-plane
+    kubernetesCatalogRef: v1.36.1
+install:
+  allowDestructiveInstall: true
+  targetDisk:
+    byID: /dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK
+    minSizeMiB: 32768
+katlosImage:
+  url: https://artifacts.example.invalid/katl/katlos-install-2026.06.04-x86_64.squashfs
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sizeBytes: 1073741824
+  version: "2026.06.04"
+  architecture: x86_64
+  runtimeInterface: katl-runtime-1
+  role: install
 ```
 
-Worker nodes use the same schema with `"systemRole": "worker"` and a worker
+Worker nodes use the same schema with `systemRole: worker` and a worker
 bootstrap profile reference when you want to preserve that intent for later
 `katlctl cluster bootstrap`.
 
 Worker node fields differ only where the node identity, role, disk selector, and
 bootstrap profile differ:
 
-```json
-{
-  "node": {
-    "identity": {
-      "hostname": "worker-1",
-      "ssh": {
-        "authorizedKeys": [
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
-        ]
-      }
-    },
-    "systemRole": "worker",
-    "kubernetes": {
-      "kubeadm": {
-        "configRef": "worker"
-      }
-    },
-    "bootstrap": {
-      "clusterName": "katl-lab",
-      "inventoryNodeName": "worker-1",
-      "nodeAddress": "192.0.2.21",
-      "controlPlaneEndpoint": "api.katl.test:6443",
-      "bootstrapProfileRef": "worker",
-      "kubernetesCatalogRef": "v1.36.1"
-    }
-  }
-}
+```yaml
+node:
+  identity:
+    hostname: worker-1
+    ssh:
+      authorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: worker
+  kubernetes:
+    kubeadm:
+      configRef: worker
+  bootstrap:
+    clusterName: katl-lab
+    inventoryNodeName: worker-1
+    nodeAddress: 192.0.2.21
+    controlPlaneEndpoint: api.katl.test:6443
+    bootstrapProfileRef: worker
+    kubernetesCatalogRef: v1.36.1
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
@@ -210,7 +194,7 @@ Illustrative iPXE entry:
 set base https://boot.example.invalid/katl/2026.06.04
 set node cp-1
 set manifest_sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-kernel ${base}/katl-installer-2026.06.04-x86_64.vmlinuz initrd=katl-installer-2026.06.04-x86_64.initrd console=ttyS0,115200n8 katl.node=${node} katl.manifest.url=https://boot.example.invalid/katl/manifests/${node}.json katl.manifest.sha256=${manifest_sha} katl.install.mode=auto
+kernel ${base}/katl-installer-2026.06.04-x86_64.vmlinuz initrd=katl-installer-2026.06.04-x86_64.initrd console=ttyS0,115200n8 katl.node=${node} katl.manifest.url=https://boot.example.invalid/katl/manifests/${node}.yaml katl.manifest.sha256=${manifest_sha} katl.install.mode=auto
 initrd ${base}/katl-installer-2026.06.04-x86_64.initrd
 boot
 ```
@@ -229,7 +213,7 @@ Illustrative matchbox profile:
     "args": [
       "console=ttyS0,115200n8",
       "katl.node=${mac:hexhyp}",
-      "katl.manifest.url=https://boot.example.invalid/katl/manifests/${mac:hexhyp}.json",
+      "katl.manifest.url=https://boot.example.invalid/katl/manifests/${mac:hexhyp}.yaml",
       "katl.manifest.sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "katl.install.mode=auto"
     ]
@@ -274,8 +258,8 @@ Operator flow:
 4. Submit the same install manifest used by PXE:
    curl -X POST \
      -H "Authorization: Bearer <token>" \
-     -H "Content-Type: application/json" \
-     --data-binary @cp-1.install.json \
+     -H "Content-Type: application/yaml" \
+     --data-binary @cp-1.install.yaml \
      http://<installer-ip>:8080/v1/install
 ```
 
@@ -287,18 +271,15 @@ current installer looks for seed media with the `KATLSEED` label or the
 `virtio-katl-seed` disk ID and copies local payloads into `/run/katl/preseed`.
 Use `katlosImage.localRef` for paths under that preseed root:
 
-```json
-{
-  "katlosImage": {
-    "localRef": "images/katlos-install-2026.06.04-x86_64.squashfs",
-    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "sizeBytes": 1073741824,
-    "version": "2026.06.04",
-    "architecture": "x86_64",
-    "runtimeInterface": "katl-runtime-1",
-    "role": "install"
-  }
-}
+```yaml
+katlosImage:
+  localRef: images/katlos-install-2026.06.04-x86_64.squashfs
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sizeBytes: 1073741824
+  version: "2026.06.04"
+  architecture: x86_64
+  runtimeInterface: katl-runtime-1
+  role: install
 ```
 
 The full manifest still carries node identity, disk selection, role, kubeadm

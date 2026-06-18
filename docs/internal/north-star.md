@@ -300,6 +300,8 @@ Schemas and examples:
 
 ```text
 docs/internal/schemas/install-manifest-v1alpha1.schema.json
+docs/internal/examples/minimal-install-manifest.yaml
+docs/internal/examples/config-domain-install-manifest.yaml
 docs/internal/examples/minimal-install-manifest.json
 docs/internal/examples/config-domain-install-manifest.json
 ```

@@ -99,6 +99,38 @@ func TestBootInput(t *testing.T) {
 	}
 }
 
+func TestBootInputDiscoversYAMLManifest(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	etcDir := filepath.Join(root, "etc")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	manifestPath := filepath.Join(runDir, "install-manifest.yaml")
+	if err := os.WriteFile(manifestPath, []byte(`node:
+  identity:
+    hostname: yaml-node
+katlosImage:
+  url: https://manifest.example/artifacts/katlos-install.squashfs
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	input, err := bootInput(runDir, etcDir)
+	if err != nil {
+		t.Fatalf("bootInput() error = %v", err)
+	}
+	if input.ManifestPath != manifestPath {
+		t.Fatalf("manifest path = %q, want %q", input.ManifestPath, manifestPath)
+	}
+	if input.NodeName != "yaml-node" {
+		t.Fatalf("node name = %q", input.NodeName)
+	}
+	if got := bootInputMode(input); got != installstatus.InputModeOfflineMedia {
+		t.Fatalf("boot input mode = %q, want offline media", got)
+	}
+}
+
 func TestBootInputMode(t *testing.T) {
 	tests := []struct {
 		name  string

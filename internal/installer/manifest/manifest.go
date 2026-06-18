@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/zariel/katl/internal/installer/disk"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -141,15 +141,18 @@ type RootDiskProfile struct {
 }
 
 func Decode(reader io.Reader) (Manifest, error) {
-	decoder := json.NewDecoder(reader)
-	decoder.DisallowUnknownFields()
+	decoder := yaml.NewDecoder(reader)
+	decoder.KnownFields(true)
 
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
-		return Manifest{}, fmt.Errorf("decode install manifest: %w", err)
+		return Manifest{}, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return Manifest{}, fmt.Errorf("decode install manifest: multiple JSON values")
+		if err == nil {
+			return Manifest{}, fmt.Errorf("decode install manifest: multiple YAML documents")
+		}
+		return Manifest{}, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
 	}
 	if manifest.APIVersion != APIVersion {
 		return Manifest{}, fmt.Errorf("apiVersion must be %s", APIVersion)
@@ -161,6 +164,16 @@ func Decode(reader io.Reader) (Manifest, error) {
 		return Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func normalizeDecodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "field ") && strings.Contains(err.Error(), " not found in type ") {
+		return fmt.Errorf("unknown field: %w", err)
+	}
+	return err
 }
 
 func Validate(manifest Manifest) error {

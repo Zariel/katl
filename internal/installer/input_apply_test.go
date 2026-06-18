@@ -57,6 +57,33 @@ func TestApplyInputCopiesManifestLocalRef(t *testing.T) {
 	}
 }
 
+func TestApplyInputCopiesYAMLManifestLocalRef(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-manifest.yaml"), `katlosImage:
+  localRef: payloads/katlos-install.squashfs
+`)
+	writeTestFile(t, filepath.Join(preseed, "payloads/katlos-install.squashfs"), "katlos payload")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, "install-manifest.yaml"), `katlosImage:
+  localRef: payloads/katlos-install.squashfs
+`)
+	assertFile(t, filepath.Join(runDir, "payloads/katlos-install.squashfs"), "katlos payload")
+	if got := stdout.String(); !strings.Contains(got, "payloads/katlos-install.squashfs") {
+		t.Fatalf("stdout = %q, want localRef copy log", got)
+	}
+}
+
 func TestApplyInputCopiesManifestKubeadmDirs(t *testing.T) {
 	root := t.TempDir()
 	preseed := filepath.Join(root, "seed")

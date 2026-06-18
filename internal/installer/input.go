@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type InputSource string
@@ -110,14 +112,14 @@ func (r *inputResolver) applyManifest(data []byte) error {
 	var manifest struct {
 		Node struct {
 			Identity struct {
-				Hostname string `json:"hostname"`
-			} `json:"identity"`
-		} `json:"node"`
+				Hostname string `yaml:"hostname"`
+			} `yaml:"identity"`
+		} `yaml:"node"`
 		KatlosImage struct {
-			URL string `json:"url"`
-		} `json:"katlosImage"`
+			URL string `yaml:"url"`
+		} `yaml:"katlosImage"`
 	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		return fmt.Errorf("decode manifest-derived input: %w", err)
 	}
 

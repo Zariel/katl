@@ -328,11 +328,14 @@ The schema lives at:
 docs/internal/schemas/install-manifest-v1alpha1.schema.json
 ```
 
-A minimal manifest example lives at:
+YAML is the preferred operator-facing manifest format, with JSON accepted for
+tooling compatibility. A minimal YAML manifest example lives at:
 
 ```text
-docs/internal/examples/minimal-install-manifest.json
+docs/internal/examples/minimal-install-manifest.yaml
 ```
+
+JSON examples are kept beside the YAML examples for schema and tool tests.
 
 The v1alpha1 manifest contains these top-level sections:
 

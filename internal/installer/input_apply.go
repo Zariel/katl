@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type InputApplyRequest struct {
@@ -210,7 +212,7 @@ func applyDir(dir, runDir, etcDir, networkDir string, stdout io.Writer) (int, er
 
 	applied := 0
 	for _, item := range preseedItems(dir, runDir, etcDir) {
-		ok, err := copyInput(item.src, item.dst)
+		ok, err := copyInput(item.src, item.dst, item.manifest)
 		if err != nil {
 			return applied, err
 		}
@@ -249,15 +251,21 @@ type preseedItem struct {
 func preseedItems(dir, runDir, etcDir string) []preseedItem {
 	return []preseedItem{
 		{src: filepath.Join(dir, "install-input.json"), dst: filepath.Join(runDir, "install-input.json")},
+		{src: filepath.Join(dir, "install-manifest.yaml"), dst: filepath.Join(runDir, "install-manifest.yaml"), manifest: true},
+		{src: filepath.Join(dir, "install-manifest.yml"), dst: filepath.Join(runDir, "install-manifest.yml"), manifest: true},
 		{src: filepath.Join(dir, "install-manifest.json"), dst: filepath.Join(runDir, "install-manifest.json"), manifest: true},
 		{src: filepath.Join(dir, "run/katl/install-input.json"), dst: filepath.Join(runDir, "install-input.json")},
+		{src: filepath.Join(dir, "run/katl/install-manifest.yaml"), dst: filepath.Join(runDir, "install-manifest.yaml"), manifest: true},
+		{src: filepath.Join(dir, "run/katl/install-manifest.yml"), dst: filepath.Join(runDir, "install-manifest.yml"), manifest: true},
 		{src: filepath.Join(dir, "run/katl/install-manifest.json"), dst: filepath.Join(runDir, "install-manifest.json"), manifest: true},
 		{src: filepath.Join(dir, "etc/katl/install-input.json"), dst: filepath.Join(etcDir, "install-input.json")},
+		{src: filepath.Join(dir, "etc/katl/install-manifest.yaml"), dst: filepath.Join(etcDir, "install-manifest.yaml"), manifest: true},
+		{src: filepath.Join(dir, "etc/katl/install-manifest.yml"), dst: filepath.Join(etcDir, "install-manifest.yml"), manifest: true},
 		{src: filepath.Join(dir, "etc/katl/install-manifest.json"), dst: filepath.Join(etcDir, "install-manifest.json"), manifest: true},
 	}
 }
 
-func copyInput(src, dst string) (bool, error) {
+func copyInput(src, dst string, manifest bool) (bool, error) {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -265,7 +273,12 @@ func copyInput(src, dst string) (bool, error) {
 		}
 		return false, fmt.Errorf("read preseed file %s: %w", src, err)
 	}
-	if !json.Valid(data) {
+	if manifest {
+		var value any
+		if err := yaml.Unmarshal(data, &value); err != nil {
+			return false, fmt.Errorf("preseed manifest %s is not valid YAML: %w", src, err)
+		}
+	} else if !json.Valid(data) {
 		return false, fmt.Errorf("preseed file %s is not valid JSON", src)
 	}
 	if _, err := os.Stat(dst); err == nil {
@@ -338,10 +351,10 @@ func manifestLocalRef(manifestPath string) (string, error) {
 	}
 	var input struct {
 		KatlosImage struct {
-			LocalRef string `json:"localRef"`
-		} `json:"katlosImage"`
+			LocalRef string `yaml:"localRef"`
+		} `yaml:"katlosImage"`
 	}
-	if err := json.Unmarshal(data, &input); err != nil {
+	if err := yaml.Unmarshal(data, &input); err != nil {
 		return "", fmt.Errorf("decode preseed manifest %s: %w", manifestPath, err)
 	}
 	localRef := strings.TrimSpace(input.KatlosImage.LocalRef)

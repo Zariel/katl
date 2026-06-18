@@ -1,0 +1,40 @@
+apiVersion: install.katl.dev/v1alpha1
+kind: InstallManifest
+node:
+  identity:
+    hostname: control-plane-01
+    ssh:
+      authorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: control-plane
+  kubernetes:
+    kubeadm:
+      configRef: control-plane
+  bootstrap:
+    clusterName: katl-lab
+    inventoryNodeName: control-plane-01
+    controlPlaneEndpoint: api.katl.test:6443
+    bootstrapProfileRef: control-plane
+    kubernetesCatalogRef: v1.36.1
+  networkd:
+    files:
+      - name: 10-lan.network
+        content: |
+          [Match]
+          Name=enp1s0
+
+          [Network]
+          DHCP=yes
+install:
+  allowDestructiveInstall: true
+  targetDisk:
+    byID: /dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK
+    minSizeMiB: 32768
+katlosImage:
+  url: https://artifacts.example.invalid/katl/katlos-install-2026.06.04-x86_64.squashfs
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sizeBytes: 1073741824
+  version: "2026.06.04"
+  architecture: x86_64
+  runtimeInterface: katl-runtime-1
+  role: install

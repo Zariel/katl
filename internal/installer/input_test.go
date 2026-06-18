@@ -69,6 +69,27 @@ func TestDiscoverBootInputURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
 	}
 }
 
+func TestDiscoverBootInputDerivesDefaultsFromYAMLManifest(t *testing.T) {
+	input, err := DiscoverBootInput(BootInputRequest{
+		Manifest: []byte(`node:
+  identity:
+    hostname: manifest-node
+katlosImage:
+  url: https://manifest.example/artifacts/katlos-install.squashfs
+`),
+	})
+	if err != nil {
+		t.Fatalf("DiscoverBootInput() error = %v", err)
+	}
+
+	if input.NodeName != "manifest-node" {
+		t.Fatalf("node name = %q", input.NodeName)
+	}
+	if input.ArtifactBaseURL != "https://manifest.example/artifacts/" {
+		t.Fatalf("artifact base URL = %q", input.ArtifactBaseURL)
+	}
+}
+
 func TestDiscoverBootInputRunOverridesEtcAndManifest(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
 		Files: []BootInputFile{
