@@ -44,6 +44,7 @@ Required `GenerationSpec` fields:
 | `boot.loaderEntryPath` | `$BOOT`-relative loader entry path when a separate loader entry is used |
 | `sysexts[]` | Sysext name, generation-scoped path, activation path, digest, artifact version, payload version such as Kubernetes version, architecture, and compatibility metadata from the canonical sysext vocabulary |
 | `confexts[]` | Generated confext name, path, activation path, digest, and compatibility metadata |
+| `nodeExtensions[]` | Optional app extension selections, each bound to a staged node extension bundle, app sysext payload, generated app config digest, activation path, status path, health contract, and compatibility metadata |
 | `kernelCommandLine[]` | Kernel arguments selected for this generation |
 | `createdAt` | Generation creation timestamp |
 
@@ -58,6 +59,7 @@ Required `GenerationStatus` fields:
 | `healthState` | Mutable unknown, healthy, unhealthy, or deferred runtime health state |
 | `updatedAt` | Last status update timestamp |
 | `statusTransitions[]` | Optional bounded history of status changes, reasons, and operation IDs |
+| `nodeExtensions[]` | Mutable observed status summary for selected app extensions, keyed by app ID and linked to operation records |
 | `committedAt` | Present when `commitState` becomes committed |
 | `committedByOperationID` | Operation that committed the generation, when present |
 
@@ -75,6 +77,131 @@ Mutable boot selection fields such as `defaultGenerationID`,
 `trialGenerationID`, `previousKnownGoodGenerationID`, `bootedGenerationID`,
 boot-counted trial UKI paths, and recovery flags belong under
 `/var/lib/katl/boot/selection.json`, not in generation spec.
+
+## Node Extension Selection
+
+`nodeExtensions[]` is the typed generation-level view of optional app sysexts.
+It exists in addition to `sysexts[]` so generic systemd extension activation can
+stay mechanical while app-specific selection, configuration, status, health, and
+rollback metadata remain explicit. A selected node extension also has a matching
+`sysexts[]` entry for the staged app sysext payload and, when the app has
+node-specific configuration, a matching `confexts[]` entry for the generated
+app config.
+
+Each `GenerationSpec.nodeExtensions[]` entry records immutable selection data:
+
+```text
+appID
+artifactKind: katl.node-app-sysext.v1
+artifactVersion
+payloadVersion
+sourceRef, normalized to <appID>/<payloadVersion>@sha256:<bundle-manifest-digest>
+bundleManifestDigest
+sysextPayloadDigest
+architecture
+capabilities[]
+  name
+  version
+  configSchemaIDs[]
+  operationKinds[]
+runtimeCompatibility
+  supportedRuntimeInterfaces[]
+  minKatlOSVersion, when present
+  maxKatlOSVersion, when present
+  requiredKernelModules[]
+  requiredUnits[]
+  requiredMounts[]
+  requiredCapabilities[]
+stagedPayloadPath
+activationPath
+configDigest, when generated app config exists
+configConfextName, when generated app config exists
+configActivationPath, when generated app config exists
+statusPath
+operationSnapshotPathTemplate
+readinessUnits[]
+healthStates[]
+rollback
+  failClosedActions[]
+  liveRollbackSupported
+  requiresRebootForRollback
+  externalStateWarning
+```
+
+`sourceRef` pins the node extension bundle manifest digest. The sysext payload
+digest is the activation digest and must match the corresponding `sysexts[]`
+entry. `configDigest` is the digest of the generated app-specific configuration
+inside the selected confext; it is present only for apps with config handoff. A
+selected app sysext without the required generated config is invalid unless the
+bundle declares no required config handoff paths.
+
+The first activation paths are generation-selected `/run` paths:
+
+```text
+/run/extensions/katl-node-extension-<appID>.raw
+/run/confexts/katl-node-extension-<appID>-config.raw
+/run/katl/apps/<appID>/status.json
+/var/lib/katl/operations/<operation-id>/apps/<appID>/status.json
+```
+
+`activationPath` and `configActivationPath` are links or activation inputs
+regenerated from the selected generation during boot or live activation. They
+are not mutable desired state. The selected payloads remain under the
+generation-scoped `sysext/` and `confext/` material or verified artifact cache
+entries pinned by digest.
+
+Katl validates node extension selections as part of the same compatibility set
+as root, UKI, kernel command line, Kubernetes sysext, and generated confext.
+Validation must prove:
+
+```text
+the bundle manifest digest and sysext payload digest match staged content
+artifactKind is katl.node-app-sysext.v1
+appID is unique within the generation
+capability names and versions are supported by Katl
+runtimeCompatibility accepts the selected KatlOS runtime interface
+required kernel modules, units, mounts, and host capabilities are available
+generated app config matches a supported config schema and selected digest
+statusPath and operation snapshot paths are Katl-owned paths
+readinessUnits and healthStates are declared by the selected bundle
+```
+
+Generation metadata must reject mutable extension state outside generation
+records. In particular, Katl must reject:
+
+```text
+raw sysext paths supplied as desired config
+global systemd extension directories as desired config
+package-manager requests as extension selection
+mutable latest tags without bundle digest pins
+in-place rewrites of app sysext or app config activation paths
+app-owned durable selection files such as /var/lib/katl/apps/<appID>/current
+status files as authority for selecting a payload or config digest
+```
+
+`GenerationStatus.nodeExtensions[]` summarizes observed app extension state and
+links it to durable operation evidence. It may contain only mutable health and
+diagnostic fields:
+
+```text
+appID
+healthState: unknown | healthy | unhealthy | deferred
+readinessUnitStates[]
+lastStatusPath
+lastStatusDigest, when a redacted snapshot was captured
+lastOperationID
+operationSnapshotPath
+failureReason, redacted
+updatedAt
+```
+
+App live status under `/run/katl/apps/<appID>/status.json` is ephemeral runtime
+state. Durable app status evidence belongs to the relevant `OperationRecord`
+under `/var/lib/katl/operations/<operation-id>/apps/<appID>/status.json`.
+Generation status may cache the latest health summary and operation link for
+operator display, but rollback and known-good selection must validate
+`spec.json`, `status.json.specDigest`, and the generation health fields rather
+than trusting app status content.
 
 ## Generation 0
 
@@ -176,6 +303,7 @@ commitState
 bootState
 healthState
 statusTransitions[]
+nodeExtensions[]
 committedAt
 committedByOperationID
 ```
@@ -231,13 +359,15 @@ generation, roll back to an existing valid generation, or refuse.
 ## Update And Apply Classification
 
 Updates create a new generation directory before switching boot selection. A new
-generation may change the runtime root, the Kubernetes sysext, the generated
-confext, or any supported combination of those artifacts. Runtime-root updates
-write the inactive root slot. Sysext-only or confext-only updates may reuse the
-current root slot and root artifact digest while selecting new extension content.
-KatlOS-only updates may keep the existing Kubernetes sysext when that sysext is
-compatible with the new runtime root. Kubernetes-only updates may keep the
-existing KatlOS runtime root when the new sysext is compatible with it.
+generation may change the runtime root, the Kubernetes sysext, selected node
+extension sysexts, generated confexts, or any supported combination of those
+artifacts. Runtime-root updates write the inactive root slot. Sysext-only,
+node-extension-only, or confext-only updates may reuse the current root slot and
+root artifact digest while selecting new extension content. KatlOS-only updates
+may keep the existing Kubernetes sysext and node extension selections when those
+payloads are compatible with the new runtime root. Kubernetes-only updates may
+keep the existing KatlOS runtime root and node extension selections when the new
+sysext is compatible with them.
 
 The planner classifies each requested change before writing generation
 artifacts:
@@ -329,9 +459,10 @@ unsupported sysext selection requests, and unsupported apply modes do not get
 placeholder generation directories; they produce rejected request status only.
 
 Before a candidate generation is made bootable, Katl must validate the selected
-runtime root, UKI, sysexts, and confexts as one compatibility set. The generation
-spec stores the exact artifact digests and versions that were validated, then
-asks the boot selector to try that generation.
+runtime root, UKI, Kubernetes sysext, node extension sysexts, generated confexts,
+app config digests, status paths, readiness units, and health expectations as one
+compatibility set. The generation spec stores the exact artifact digests and
+versions that were validated, then asks the boot selector to try that generation.
 
 Rollback returns to the previous generation spec and therefore restores:
 
@@ -341,6 +472,7 @@ UKI path
 kernel command line
 sysext activation set
 confext activation set
+node extension selection and generated app config selection
 ```
 
 Rollback selection rules are defined in

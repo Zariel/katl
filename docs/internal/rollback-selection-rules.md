@@ -14,6 +14,7 @@ UKI path
 kernel command line
 sysext activation set
 confext activation set
+node extension selection and generated app config selection
 ```
 
 Katl must never roll back only the root slot while leaving sysext or confext
@@ -22,8 +23,9 @@ activation pointed at the failed generation.
 Rollback should use native systemd mechanisms where they fit. Boot selection
 should use systemd-boot one-shot, boot counting, or loader-entry behavior before
 custom boot selectors. Extension rollback should regenerate the selected
-systemd-sysext and systemd-confext activation inputs from generation spec
-rather than maintaining a separate mutable extension state.
+systemd-sysext, systemd-confext, node app sysext, generated app config, and app
+status roots from generation spec rather than maintaining a separate mutable
+extension state.
 
 ## Known-Good Rule
 
@@ -53,7 +55,7 @@ When a tried generation fails its boot attempt:
 mark tried generation failed/unhealthy
 select previous known-good generation by validated status and spec
 set boot entry for previous known-good UKI/root slot from spec
-regenerate /run extension activation links from previous known-good spec
+regenerate /run extension, confext, and app status roots from previous known-good spec
 boot previous known-good generation
 ```
 
@@ -84,8 +86,9 @@ than marking the abandoned generation as repaired.
 
 Rollback is host generation selection, not repair. It is allowed to select a
 previous known-good generation, restore the root slot, UKI, kernel command line,
-sysext activation set, confext activation set, and regenerate `/run` activation
-links from that generation spec.
+sysext activation set, confext activation set, selected node app sysexts,
+generated app config, and regenerate `/run` activation links and app status
+roots from that generation spec.
 
 Rollback must not:
 
@@ -99,6 +102,7 @@ restore an etcd snapshot
 mutate Kubernetes API objects
 replace install input
 clean partial bootstrap, join, upgrade, or repair state
+trust app live status as rollback authority
 ```
 
 After kubeadm has mutated node or cluster state, host rollback may make the node
@@ -129,6 +133,8 @@ root-a PARTUUID and runtime artifact digest
 UKI path and kernel command line
 generated confext path, digest, compatibility, and activation path
 sysext paths, activation paths, and digests
+node extension selections, generated app config digests, activation paths,
+  status paths, and health expectations when present
 commitState committed
 bootState pending
 healthState unknown
@@ -186,7 +192,10 @@ selected generation status validates against selected spec digest
 selected root slot PARTUUID exists
 selected UKI path exists
 selected sysext/confext paths exist under the selected generation
+selected node extension sysext payloads and generated app config match their
+  recorded digests and compatibility metadata
 activation links under /run point only to the selected generation
+app status roots under /run/katl/apps are regenerated for only selected apps
 failed generation is not left partially active
 ```
 
