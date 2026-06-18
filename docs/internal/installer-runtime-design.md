@@ -946,9 +946,10 @@ init/join action embedded in node configuration. The focused decision is
 recorded in `docs/internal/kubeadm-config-input-design.md`.
 
 The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
-inputs. In early development it can be built locally. Later CI can publish the
-same artifact shape for users to download, but CI publishing is not part of the
-current local loop.
+inputs. In early development it can be built locally and bundled into the KatlOS
+install image. The publication direction for golden exact-version sysext
+artifacts, catalog metadata, release assets, OCI follow-up, and Renovate-driven
+patch bumps is defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
 For first install, the KatlOS image bundles exact-version Kubernetes sysext
 artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest records
@@ -957,7 +958,10 @@ bootstrap intent with `node.bootstrap.kubernetesCatalogRef` and optional
 select the matching bundled sysext for generation 1 and record its path, digest,
 payload version, activation path, and compatibility metadata in generation spec.
 A day-one install does not use a version range, remote Kubernetes catalog, or
-compatibility matrix resolver. Those are day-2 update planning concerns.
+compatibility matrix resolver. Those are day-2 update planning concerns. A
+published remote sysext for the same exact payload version may exist before the
+node fetch path is implemented; fresh install still consumes the bundled copy
+from the verified KatlOS image.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes

@@ -354,6 +354,14 @@ Installation does not run `kubeadm`. It stores the node role, validated
 Kubernetes payload metadata, and bootstrap intent needed for a later explicit
 operator action.
 
+The Kubernetes version reference is exact. For example,
+`node.bootstrap.kubernetesCatalogRef: v1.36.1` means the verified KatlOS image
+must contain a compatible Kubernetes sysext for payload `v1.36.1`. To bootstrap
+a fresh cluster on `v1.36.2`, use a KatlOS image that bundles the `v1.36.2`
+sysext and set the manifest reference to `v1.36.2`. Published sysext catalog
+artifacts may be produced independently, but day-one install validation uses the
+bundled sysext metadata from the KatlOS image.
+
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:
 
@@ -387,7 +395,10 @@ that image and validates component compatibility before selection.
 Kubernetes version upgrades remain separate from day-one install. They require a
 kubeadm-aware operation that can make the target `kubeadm` available before the
 target kubelet starts. Until that path is implemented and tested, treat
-Kubernetes upgrades as unsupported operational work.
+Kubernetes upgrades as unsupported operational work. Producing and publishing a
+new sysext such as `v1.36.2` is useful immediately for fresh installs and
+future upgrade planning, but it does not by itself make `v1.36.1` to `v1.36.2`
+mutation safe on an existing cluster.
 
 ## Troubleshooting
 

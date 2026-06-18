@@ -271,8 +271,11 @@ KatlOS runtime root. KatlOS upgrades should be able to keep the current
 Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
 KatlOS root, when the selected artifacts are compatible. Day-one install records
 an exact manifest version such as `1.36.1` as cluster intent. Cluster bootstrap
-selects the matching bundled sysext for generation 1; broader compatibility
-matrices and remote catalog resolution are day-2 update planning concerns.
+selects the matching bundled sysext for generation 1. The publication and
+catalog direction for producing exact-version Kubernetes sysext payloads is
+defined in `docs/internal/kubernetes-sysext-delivery.md`; remote catalog
+fetching and already-bootstrapped Kubernetes upgrades remain separate day-2
+implementation work.
 
 After the installer UKI and installed runtime boot path works, the next local
 step is `katlctl cluster bootstrap`. That operation asks `katlc` to validate
@@ -529,6 +532,10 @@ docs/internal/kubeadm-api-smoke-design.md
 docs/internal/kubernetes-upgrade-operations.md
   Explicit kubeadm-backed Kubernetes upgrade operations selected and supervised
   through Katl generations.
+
+docs/internal/kubernetes-sysext-delivery.md
+  Kubernetes sysext artifact publication, catalog, and patch-version bump
+  direction.
 
 docs/internal/adrs/adr-001-generated-confext-configuration.md
   Accepted decision for Katl-native configuration and generated confext. The file
