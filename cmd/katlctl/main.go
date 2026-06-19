@@ -131,7 +131,7 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 	endpoint := flags.String("endpoint", "", "katlc agent TCP endpoint host:port")
 	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
 	configPath := flags.String("file", "", "Katl node configuration YAML")
-	mode := flags.String("mode", generation.ApplyModeNextBoot, "apply mode: live or next-boot")
+	mode := flags.String("mode", generation.ApplyModeAuto, "apply mode: auto, live, or next-boot")
 	candidateGeneration := flags.String("candidate-generation", "", "candidate generation id")
 	clientRequestID := flags.String("client-request-id", "", "idempotency key for this apply request")
 	actor := flags.String("actor", "katlctl config apply", "operation actor")
@@ -191,6 +191,7 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 		_, err = stdout.Write(append(data, '\n'))
 		return err
 	}
+	requestedMode := strings.TrimSpace(*mode)
 	req := &agentapi.GenerationApplyRequest{
 		ApiVersion:            operation.APIVersion,
 		Kind:                  "GenerationApplyRequest",
@@ -200,13 +201,51 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 		ConfigYaml:            string(configYAML),
 	}
 	var accepted *agentapi.OperationAccepted
-	switch strings.TrimSpace(*mode) {
+	switch requestedMode {
 	case generation.ApplyModeLive:
 		accepted, err = conn.Client.ApplyGeneration(ctx, req)
 	case generation.ApplyModeNextBoot:
 		accepted, err = conn.Client.StageGeneration(ctx, req)
+	case generation.ApplyModeAuto:
+		if strings.TrimSpace(*candidateGeneration) == "" {
+			return fmt.Errorf("--candidate-generation is required with --mode auto")
+		}
+		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
+			ApiVersion:            operation.APIVersion,
+			Kind:                  "ValidateConfigRequest",
+			ClientRequestId:       *clientRequestID,
+			Actor:                 *actor,
+			ApplyMode:             requestedMode,
+			CandidateGenerationId: *candidateGeneration,
+			ConfigYaml:            string(configYAML),
+		})
+		if err != nil {
+			return err
+		}
+		if !result.Accepted {
+			if strings.TrimSpace(result.FailureReason) != "" {
+				return fmt.Errorf("config validation rejected: %s", result.FailureReason)
+			}
+			return fmt.Errorf("config validation rejected: %s", strings.Join(result.Diagnostics, "; "))
+		}
+		operationKind, err := configApplyOperationKind(result.AcceptedApplyMode)
+		if err != nil {
+			return err
+		}
+		accepted, err = conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+			ApiVersion:      operation.APIVersion,
+			Kind:            "SubmitOperationRequest",
+			ClientRequestId: *clientRequestID,
+			OperationKind:   operationKind,
+			Actor:           *actor,
+			ConfigApply: &agentapi.ConfigApplyOperationRequest{
+				CandidateGenerationId: *candidateGeneration,
+				ApplyMode:             requestedMode,
+				ConfigYaml:            string(configYAML),
+			},
+		})
 	default:
-		return fmt.Errorf("--mode must be %q or %q", generation.ApplyModeLive, generation.ApplyModeNextBoot)
+		return fmt.Errorf("--mode must be %q, %q, or %q", generation.ApplyModeAuto, generation.ApplyModeLive, generation.ApplyModeNextBoot)
 	}
 	if err != nil {
 		return err
@@ -217,6 +256,17 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
+}
+
+func configApplyOperationKind(acceptedMode string) (string, error) {
+	switch strings.TrimSpace(acceptedMode) {
+	case generation.ApplyModeLive:
+		return "generation-apply", nil
+	case generation.ApplyModeNextBoot:
+		return "generation-stage", nil
+	default:
+		return "", fmt.Errorf("config validation accepted unsupported apply mode %q", acceptedMode)
+	}
 }
 
 func runConfigApplyValidate(ctx context.Context, args []string, stdout, stderr io.Writer) error {

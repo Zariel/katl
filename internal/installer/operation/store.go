@@ -1381,9 +1381,9 @@ func validateBootstrapRequest(request BootstrapRequest) error {
 
 func validateConfigApplyRequest(request ConfigApplyRequest) error {
 	switch strings.TrimSpace(request.ApplyMode) {
-	case "live", "next-boot":
+	case "auto", "live", "next-boot":
 	default:
-		return fmt.Errorf("configApplyRequest applyMode must be live or next-boot")
+		return fmt.Errorf("configApplyRequest applyMode must be auto, live, or next-boot")
 	}
 	if strings.TrimSpace(request.CandidateGenerationID) != "" {
 		if _, err := cleanSegment("configApplyRequest candidateGenerationID", request.CandidateGenerationID); err != nil {

@@ -551,6 +551,60 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	}
 }
 
+func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeKatlcAgentClient{
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:              true,
+			RequestDigest:         strings.Repeat("c", 64),
+			RequestedApplyMode:    generation.ApplyModeAuto,
+			AcceptedApplyMode:     generation.ApplyModeLive,
+			CandidateGenerationId: "generation-auto",
+			ChangedDomains:        []string{"sysctl"},
+		},
+		stageAccepted: &agentapi.OperationAccepted{
+			OperationId:   "generation-apply-auto-01",
+			OperationKind: "generation-apply",
+			RequestDigest: strings.Repeat("a", 64),
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" || token != "" {
+			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply",
+		"--endpoint", "node-a.example.test:9443",
+		"--file", configPath,
+		"--candidate-generation", "generation-auto",
+		"--client-request-id", "req-auto",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" {
+		t.Fatalf("validate request = %+v", fake.validateRequest)
+	}
+	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
+		t.Fatalf("submit request = %+v", fake.submitRequest)
+	}
+	if fake.stageRequest != nil || fake.applyRequest != nil {
+		t.Fatalf("direct mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
+	}
+	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-apply-auto-01"`) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
 func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
@@ -723,6 +777,7 @@ type fakeKatlcAgentClient struct {
 	applyRequest      *agentapi.GenerationApplyRequest
 	validateResult    *agentapi.ConfigValidationResult
 	validateRequest   *agentapi.ValidateConfigRequest
+	submitRequest     *agentapi.SubmitOperationRequest
 	generation        *agentapi.Generation
 	generationRequest *agentapi.GetGenerationRequest
 }
@@ -746,8 +801,9 @@ func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.
 	return c.stageAccepted, nil
 }
 
-func (c *fakeKatlcAgentClient) SubmitOperation(context.Context, *agentapi.SubmitOperationRequest, ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
-	return nil, nil
+func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	c.submitRequest = req
+	return c.stageAccepted, nil
 }
 
 func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agentapi.CreateWorkerJoinMaterialRequest, ...grpc.CallOption) (*agentapi.CreateWorkerJoinMaterialResponse, error) {

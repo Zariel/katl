@@ -78,6 +78,12 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("StartInstalledRuntimeNode() error = %v", err)
 	}
 	defer func() {
+		if t.Failed() {
+			if err := node.StopFailure("installed runtime config apply smoke failed"); err != nil && err != context.Canceled {
+				t.Logf("StopFailure() error = %v", err)
+			}
+			return
+		}
 		if err := node.Stop(); err != nil && err != context.Canceled {
 			t.Logf("Stop() error = %v", err)
 		}
@@ -249,6 +255,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	beforeBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
+	beforeKernelPanic := guestSysctl(t, ctx, guest, "kernel.panic")
+	if beforeKernelPanic == "137" {
+		t.Fatalf("guest kernel.panic is already 137 before live apply; choose a distinct smoke test value")
+	}
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
 	liveGeneration := "2026.06.06-vmtest-live"
 	stagedGeneration := "2026.06.06-vmtest-staged"
@@ -286,23 +296,24 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
-	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "live", liveGeneration, "vmtest-config-apply-live", configApplyFixture(t, "live-sysctl.yaml"))
+	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "", liveGeneration, "vmtest-config-apply-live", configApplyFixture(t, "live-sysctl.yaml"))
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
 	}
 	liveGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, tokenFile, "status-live", liveGeneration)
-	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
-		t.Fatalf("live katlctl generation status = %+v, want active live config apply", liveGenerationStatus.GetConfigApply())
+	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetRequestedApplyMode() != "auto" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
+		t.Fatalf("live katlctl generation status = %+v, want active auto->live config apply", liveGenerationStatus.GetConfigApply())
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/spec.json", `"generationID": "`+liveGeneration+`"`, `"previousGenerationID": "`+currentGeneration+`"`)
 	if beforeSysext != "" {
 		assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/spec.json", `"name": "kubernetes"`)
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json", `"commitState": "candidate"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"acceptedApplyMode": "live"`)
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf", "net.ipv4.ip_forward = 1")
-	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"configApplyPhase": "active"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"requestedApplyMode": "auto"`, `"acceptedApplyMode": "live"`)
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf", "kernel.panic = 137")
+	assertGuestSysctl(t, ctx, guest, "kernel.panic", "137")
+	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged", "next-boot", stagedGeneration, "vmtest-config-apply-staged", configApplyFixture(t, "next-boot-identity.yaml"))
@@ -315,7 +326,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 		t.Fatalf("staged katlctl generation status = %+v, want next-boot config apply", stagedGenerationStatus.GetConfigApply())
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json", `"generationID": "`+stagedGeneration+`"`, `"previousGenerationID": "`+currentGeneration+`"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperation": "`+stagedAccepted.OperationId+`"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperationID": "`+stagedAccepted.OperationId+`"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "next-boot"`, `"acceptedApplyMode": "next-boot"`, `"domain": "node-identity"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/katl/node.json", `"hostname": "cp-1-staged"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+currentGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
@@ -330,16 +341,19 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 
 func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, clientRequestID, fixture string) agentapi.OperationAccepted {
 	t.Helper()
-	output := runKatlctl(t, ctx, result, katlctl, name,
+	args := []string{
 		"config", "apply",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--file", fixture,
-		"--mode", mode,
 		"--candidate-generation", generationID,
 		"--client-request-id", clientRequestID,
 		"--actor", "installed-runtime config apply vmtest",
-	)
+	}
+	if mode != "" {
+		args = append(args, "--mode", mode)
+	}
+	output := runKatlctl(t, ctx, result, katlctl, name, args...)
 	var accepted agentapi.OperationAccepted
 	mustUnmarshalProtoJSON(t, output, &accepted)
 	if strings.TrimSpace(accepted.OperationId) == "" || strings.TrimSpace(accepted.RecordPath) == "" {
@@ -606,6 +620,25 @@ func readGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, path 
 		t.Fatalf("read guest file %s: %v", path, err)
 	}
 	return readFile(t, record.Artifact)
+}
+
+func guestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, key string) string {
+	t.Helper()
+	record, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name: "sysctl-" + strings.ReplaceAll(key, ".", "-"),
+		Argv: []string{"sysctl", "-n", key},
+	})
+	if err != nil {
+		t.Fatalf("read sysctl %s: %v", key, err)
+	}
+	return strings.TrimSpace(readFile(t, record.Stdout))
+}
+
+func assertGuestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, key, want string) {
+	t.Helper()
+	if got := guestSysctl(t, ctx, guest, key); got != want {
+		t.Fatalf("sysctl %s = %q, want %q", key, got, want)
+	}
 }
 
 func assertGuestFileContains(t *testing.T, ctx context.Context, guest *GuestControl, path string, wants ...string) {

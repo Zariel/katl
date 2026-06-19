@@ -41,6 +41,9 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
+	if got, want := runner.commands[1].Argv, []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("systemd-sysctl argv = %#v, want %#v", got, want)
+	}
 	persisted, err := generation.ReadConfigApplyStatus(statusPath)
 	if err != nil {
 		t.Fatalf("ReadConfigApplyStatus() error = %v", err)

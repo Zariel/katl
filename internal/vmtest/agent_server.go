@@ -482,6 +482,7 @@ func defaultAgentFilePaths() []string {
 		"/etc/kubernetes/admin.conf",
 		"/etc/kubernetes/kubelet.conf",
 		"/etc/os-release",
+		"/run/confexts/",
 		"/proc/cmdline",
 		"/run/katl/",
 		"/var/lib/katl/agent/token",

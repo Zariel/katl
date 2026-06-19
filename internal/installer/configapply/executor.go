@@ -156,7 +156,7 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	case DomainResolved:
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
 	case DomainSysctl:
-		commands = append(commands, Command{Name: "systemd-sysctl", Argv: []string{"systemd-sysctl"}})
+		commands = append(commands, Command{Name: "systemd-sysctl", Argv: []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}})
 	case DomainTmpfiles:
 		commands = append(commands, Command{Name: "systemd-tmpfiles", Argv: []string{"systemd-tmpfiles", "--create", "--remove"}})
 	case DomainNetworkd:

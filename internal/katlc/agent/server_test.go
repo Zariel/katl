@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -641,6 +642,52 @@ func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
+	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
+	server.Dispatcher = executor
+
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-auto-live-digest",
+		Actor:                 "test-actor",
+		ApplyMode:             generation.ApplyModeAuto,
+		CandidateGenerationId: "generation-auto-live-digest",
+		ConfigYaml:            configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.RequestDigest == "" || result.RequestedApplyMode != generation.ApplyModeAuto || result.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("validation result = %+v, want accepted auto->live with digest", result)
+	}
+
+	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: "req-auto-live-digest",
+		OperationKind:   OperationKindGenerationApply,
+		Actor:           "test-actor",
+		RequestDigest:   result.RequestDigest,
+		ConfigApply: &agentapi.ConfigApplyOperationRequest{
+			CandidateGenerationId: "generation-auto-live-digest",
+			ApplyMode:             generation.ApplyModeAuto,
+			ConfigYaml:            configApplyLiveYAML(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.RequestDigest != result.RequestDigest {
+		t.Fatalf("accepted digest = %q, want validation digest %q", accepted.RequestDigest, result.RequestDigest)
+	}
+}
+
 func TestValidateConfigRejectsPlanPolicyWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -755,6 +802,106 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	}
 	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultSucceeded {
 		t.Fatalf("invocations = %+v, want completed live config apply invocation", record.Invocations)
+	}
+	if activator.activated == "" || runner.calls == 0 {
+		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)
+	}
+}
+
+func TestSubmitOperationAutoConfigApplyRejectsOperationKindMismatch(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		operationKind string
+		configYAML    string
+		wantMode      string
+	}{
+		{
+			name:          "stage request cannot live apply",
+			operationKind: OperationKindGenerationStage,
+			configYAML:    configApplyLiveYAML(),
+			wantMode:      generation.ApplyModeLive,
+		},
+		{
+			name:          "apply request cannot stage",
+			operationKind: OperationKindGenerationApply,
+			configYAML:    configApplyYAML(generation.ApplyModeNextBoot),
+			wantMode:      generation.ApplyModeNextBoot,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+				t.Fatal("dispatcher should not run for operation kind mismatch")
+				return nil
+			})
+
+			_, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
+				ApiVersion:      APIVersion,
+				Kind:            RequestKind,
+				ClientRequestId: "req-auto-mismatch-" + strings.ReplaceAll(tt.name, " ", "-"),
+				OperationKind:   tt.operationKind,
+				Actor:           "test-actor",
+				ConfigApply: &agentapi.ConfigApplyOperationRequest{
+					CandidateGenerationId: "generation-auto-mismatch",
+					ApplyMode:             generation.ApplyModeAuto,
+					ConfigYaml:            tt.configYAML,
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "does not match accepted applyMode "+strconv.Quote(tt.wantMode)) {
+				t.Fatalf("SubmitOperation() error = %v, want operation kind mismatch for %s", err, tt.wantMode)
+			}
+			if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			} else if len(entries) != 0 {
+				t.Fatalf("operation store entries = %d, want no record for operation kind mismatch", len(entries))
+			}
+		})
+	}
+}
+
+func TestSubmitOperationAutoConfigApplyRunsAcceptedLivePath(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	runner := &fakeConfigApplyRunner{}
+	activator := &fakeConfigApplyActivator{}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = runner
+	executor.ConfigApplyActivator = activator
+	server.Dispatcher = executor
+
+	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: "req-auto-live-generation",
+		OperationKind:   OperationKindGenerationApply,
+		Actor:           "test-actor",
+		ConfigApply: &agentapi.ConfigApplyOperationRequest{
+			CandidateGenerationId: "generation-auto-live",
+			ApplyMode:             generation.ApplyModeAuto,
+			ConfigYaml:            configApplyLiveYAML(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.ConfigApplyPhase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("record = %+v, want successful auto->live config apply", record)
+	}
+	if record.ConfigApplyRequest == nil || record.ConfigApplyRequest.ApplyMode != generation.ApplyModeAuto {
+		t.Fatalf("config apply request = %+v", record.ConfigApplyRequest)
+	}
+	status, err := generation.ReadConfigApplyStatus(filepath.Join(server.Root, "var/lib/katl/generations/generation-auto-live/config-apply-status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RequestedApplyMode != generation.ApplyModeAuto || status.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("config apply status = %#v, want requested auto accepted live", status)
 	}
 	if activator.activated == "" || runner.calls == 0 {
 		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)

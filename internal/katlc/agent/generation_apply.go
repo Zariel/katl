@@ -68,11 +68,11 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	if strings.TrimSpace(req.ConfigYaml) == "" {
 		return nil, status.Error(codes.InvalidArgument, "configYAML is required")
 	}
-	operationKind := OperationKindGenerationStage
+	provisionalOperationKind := OperationKindGenerationStage
 	if applyMode == generation.ApplyModeLive {
-		operationKind = OperationKindGenerationApply
+		provisionalOperationKind = OperationKindGenerationApply
 	}
-	submit := generationSubmitRequest(&agentapi.GenerationApplyRequest{
+	submitBase := &agentapi.GenerationApplyRequest{
 		ApiVersion:                  APIVersion,
 		Kind:                        "GenerationApplyRequest",
 		ClientRequestId:             req.ClientRequestId,
@@ -84,15 +84,16 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		CandidateGenerationId:       candidateID,
 		NodeName:                    req.NodeName,
 		ConfigYaml:                  req.ConfigYaml,
-	}, operationKind, applyMode)
+	}
+	submit := generationSubmitRequest(submitBase, provisionalOperationKind, applyMode)
+	requestDigest, err := RequestDigest(submit)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "request digest: %v", err)
+	}
 	if applyMode != generation.ApplyModeAuto {
 		if err := s.validateSubmit(submit); err != nil {
 			return nil, err
 		}
-	}
-	requestDigest, err := RequestDigest(submit)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "request digest: %v", err)
 	}
 	rejected := func(err error, diagnostics []string) *agentapi.ConfigValidationResult {
 		return &agentapi.ConfigValidationResult{
@@ -127,6 +128,18 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
+	}
+	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	submit = generationSubmitRequest(submitBase, operationKind, applyMode)
+	if err := s.validateSubmit(submit); err != nil {
+		return nil, err
+	}
+	requestDigest, err = RequestDigest(submit)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "request digest: %v", err)
 	}
 	return &agentapi.ConfigValidationResult{
 		ApiVersion:            APIVersion,
@@ -323,8 +336,21 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 	if diagnostics := validateConfigApplyDocument(configReq.ConfigYAML, base.KubeadmConfigs); !diagnostics.Accepted() {
 		return operation.OperationRecord{}, nil, status.Error(codes.InvalidArgument, configValidationError(diagnostics.Strings()).Error())
 	}
-	if _, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(configReq.ConfigYAML), base); err != nil {
+	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(configReq.ConfigYAML), base)
+	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "config validation rejected: %v", err)
+	}
+	decoded.ApplyMode = configReq.ApplyMode
+	decoded.GenerationID = configReq.CandidateGenerationID
+	plan, err := configapply.PlanTrustedBundle(decoded)
+	if err == nil {
+		operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
+		if err != nil {
+			return operation.OperationRecord{}, nil, status.Error(codes.Internal, err.Error())
+		}
+		if req.OperationKind != operationKind {
+			return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operationKind %q does not match accepted applyMode %q", req.OperationKind, plan.Plan.Decision.AcceptedMode)
+		}
 	}
 	record := operation.OperationRecord{
 		OperationID:                 id,
@@ -340,7 +366,7 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 		PhasePlan:                   []string{"accepted", "render-generation", "record-operation-complete"},
 		CandidateGenerationID:       configReq.CandidateGenerationID,
 		ConfigApplyRequest:          &configReq,
-		ActivationMode:              configReq.ApplyMode,
+		ActivationMode:              configApplyActivationMode(req.OperationKind),
 		ActivationState:             operation.ActivationStatePending,
 		GenerationCommitState:       operation.GenerationCommitCandidate,
 		ResourceLocks:               locks,
@@ -385,17 +411,17 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	}
 	decoded.ApplyMode = record.ConfigApplyRequest.ApplyMode
 	decoded.GenerationID = record.ConfigApplyRequest.CandidateGenerationID
-	if decoded.ApplyMode == generation.ApplyModeLive {
-		plan, err := configapply.PlanTrustedBundle(decoded)
-		if err != nil {
-			cause := err
-			if diagnostics := strings.TrimSpace(strings.Join(configApplyDiagnostics(plan.Plan.Decision), "\n")); diagnostics != "" {
-				_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "config-apply-plan-diagnostics", []byte(inventory.Redact(diagnostics)+"\n"), e.clock())
-				cause = errorsJoin(err, fmt.Errorf("%s", diagnostics), artifactErr)
-			}
-			_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed planning", cause)
-			return errorsJoin(err, markErr)
+	plan, err := configapply.PlanTrustedBundle(decoded)
+	if err != nil {
+		cause := err
+		if diagnostics := strings.TrimSpace(strings.Join(configApplyDiagnostics(plan.Plan.Decision), "\n")); diagnostics != "" {
+			_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "config-apply-plan-diagnostics", []byte(inventory.Redact(diagnostics)+"\n"), e.clock())
+			cause = errorsJoin(err, fmt.Errorf("%s", diagnostics), artifactErr)
 		}
+		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed planning", cause)
+		return errorsJoin(err, markErr)
+	}
+	if plan.Plan.Decision.AcceptedMode == generation.ApplyModeLive {
 		if err := e.markLiveConfigApplyStarted(record.OperationID, plan, startedAt); err != nil {
 			return err
 		}
@@ -517,18 +543,36 @@ func configApplyRequestFromProto(req *agentapi.ConfigApplyOperationRequest) oper
 	}
 }
 
+func configApplyActivationMode(operationKind string) string {
+	if operationKind == OperationKindGenerationStage {
+		return operation.ActivationModeNextBoot
+	}
+	return operation.ActivationModeLive
+}
+
+func configApplyOperationKind(acceptedMode string) (string, error) {
+	switch acceptedMode {
+	case generation.ApplyModeLive:
+		return OperationKindGenerationApply, nil
+	case generation.ApplyModeNextBoot:
+		return OperationKindGenerationStage, nil
+	default:
+		return "", fmt.Errorf("unsupported accepted applyMode %q", acceptedMode)
+	}
+}
+
 func validateConfigApplyRequest(operationKind string, req *agentapi.ConfigApplyOperationRequest) error {
 	if req == nil {
 		return fmt.Errorf("configApply is required")
 	}
 	switch operationKind {
 	case OperationKindGenerationApply:
-		if req.ApplyMode != generation.ApplyModeLive {
-			return fmt.Errorf("generation-apply requires applyMode %q", generation.ApplyModeLive)
+		if req.ApplyMode != generation.ApplyModeLive && req.ApplyMode != generation.ApplyModeAuto {
+			return fmt.Errorf("generation-apply requires applyMode %q or %q", generation.ApplyModeLive, generation.ApplyModeAuto)
 		}
 	case OperationKindGenerationStage:
-		if req.ApplyMode != generation.ApplyModeNextBoot {
-			return fmt.Errorf("generation-stage requires applyMode %q", generation.ApplyModeNextBoot)
+		if req.ApplyMode != generation.ApplyModeNextBoot && req.ApplyMode != generation.ApplyModeAuto {
+			return fmt.Errorf("generation-stage requires applyMode %q or %q", generation.ApplyModeNextBoot, generation.ApplyModeAuto)
 		}
 	default:
 		return fmt.Errorf("operationKind %q does not accept configApply", operationKind)

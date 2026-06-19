@@ -3,10 +3,8 @@ kind: NodeConfigurationChange
 metadata:
   sourceID: operator
   desiredVersion: "21"
-apply:
-  mode: live
 spec:
   clusterDefaults:
     sysctl:
       settings:
-        net.ipv4.ip_forward: "1"
+        kernel.panic: "137"
