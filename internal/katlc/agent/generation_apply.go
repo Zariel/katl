@@ -420,6 +420,11 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			err = errorsJoin(err, splitErr)
 		}
 	}
+	if err == nil && result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
+		if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
+			err = commitErr
+		}
+	}
 	if err != nil {
 		_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "config-apply-error", []byte(inventory.Redact(err.Error())), completedAt)
 		_, markErr := e.failConfigApplyRecord(record.OperationID, result, "render-generation-failed", "render-generation", "render-generation", "config apply failed before completion", errorsJoin(err, artifactErr), completedAt)
@@ -434,12 +439,19 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		record.ConfigApplyPhase = result.Status.Phase
 		record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
 		record.GenerationCommitState = operation.GenerationCommitCandidate
+		if result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
+			record.GenerationCommitState = operation.GenerationCommitCommitted
+			record.BootHealthPending = true
+		}
 		record.ActivationState = configApplyActivationState(result.Status, false)
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(record.OperationID), completedAt, operation.ResultSucceeded)
 		record.CompletedAt = &completedAt
 		record.Terminal = true
 		record.Result = operation.ResultSucceeded
 		record.NextAction = "generation config apply completed by katlc agent executor"
+		if result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
+			record.NextAction = "reboot into committed config apply generation for boot health validation"
+		}
 		record.UpdatedAt = completedAt
 		return record, nil
 	})

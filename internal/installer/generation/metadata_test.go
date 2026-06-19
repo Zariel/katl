@@ -184,7 +184,8 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
     "runtimeArtifactSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "boot": {
-    "ukiPath": "/efi/EFI/Linux/katl-2026.06.05-001.efi"
+    "ukiPath": "/efi/EFI/Linux/katl-2026.06.05-001.efi",
+    "loaderEntryPath": "loader/entries/katl-2026.06.05-002.conf"
   },
   "sysexts": [
     {
@@ -242,8 +243,8 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
 	if string(data) != want {
 		t.Fatalf("runtime record json:\n%s\nwant:\n%s", data, want)
 	}
-	if record.Root != previous.Root || record.Boot != previous.Boot || record.Sysexts[0].Path != previous.Sysexts[0].Path {
-		t.Fatalf("runtime config record did not reuse root, boot, and sysext selections: %#v", record)
+	if record.Root != previous.Root || record.Boot.UKIPath != previous.Boot.UKIPath || record.Boot.LoaderEntryPath == previous.Boot.LoaderEntryPath || record.Sysexts[0].Path != previous.Sysexts[0].Path {
+		t.Fatalf("runtime config record did not reuse root/UKI/sysext and select a new loader entry: %#v", record)
 	}
 }
 

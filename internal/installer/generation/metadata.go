@@ -192,7 +192,11 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return Record{}, fmt.Errorf("generation id is required")
 	}
-	if request.GenerationID == request.Previous.GenerationID {
+	generationID, err := cleanSegment("generation id", request.GenerationID)
+	if err != nil {
+		return Record{}, err
+	}
+	if generationID == request.Previous.GenerationID {
 		return Record{}, fmt.Errorf("runtime configuration generation must differ from previous generation")
 	}
 	if err := validateSHA256("configuration source", request.SourceDigest); err != nil {
@@ -231,14 +235,17 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	record := Record{
 		APIVersion:           APIVersion,
 		Kind:                 Kind,
-		GenerationID:         strings.TrimSpace(request.GenerationID),
+		GenerationID:         generationID,
 		RuntimeVersion:       request.Previous.RuntimeVersion,
 		PreviousGenerationID: strings.TrimSpace(request.Previous.GenerationID),
 		Root:                 request.Previous.Root,
-		Boot:                 request.Previous.Boot,
-		Sysexts:              sysexts,
-		Confexts:             []GeneratedConfext{confext},
-		KernelCommandLine:    append([]string(nil), request.Previous.KernelCommandLine...),
+		Boot: BootSelection{
+			UKIPath:         request.Previous.Boot.UKIPath,
+			LoaderEntryPath: filepath.ToSlash(filepath.Join("loader/entries", "katl-"+generationID+".conf")),
+		},
+		Sysexts:           sysexts,
+		Confexts:          []GeneratedConfext{confext},
+		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
 		ConfigApply: &ConfigApplyRecord{
 			SourceDigest:       strings.ToLower(request.SourceDigest),
 			ChangedDomains:     domains,

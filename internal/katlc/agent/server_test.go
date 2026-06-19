@@ -356,6 +356,9 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	if !record.Terminal || record.Result != operation.ResultSucceeded || record.ConfigApplyPhase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("record = %+v, want successful staged config apply", record)
 	}
+	if record.GenerationCommitState != operation.GenerationCommitCommitted || !record.BootHealthPending || record.ActivationState != operation.ActivationStatePending {
+		t.Fatalf("record lifecycle = commit %q bootPending %v activation %q, want committed pending boot", record.GenerationCommitState, record.BootHealthPending, record.ActivationState)
+	}
 	if record.ConfigApplyRequest == nil || record.ConfigApplyRequest.ApplyMode != generation.ApplyModeNextBoot {
 		t.Fatalf("config apply request = %+v", record.ConfigApplyRequest)
 	}
@@ -366,9 +369,10 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gen.GenerationId != "generation-1" || gen.PreviousGenerationId != "generation-0" || gen.ConfigApply == nil || gen.ConfigApply.Phase != generation.ConfigApplyPhaseNextBoot {
+	if gen.GenerationId != "generation-1" || gen.PreviousGenerationId != "generation-0" || gen.CommitState != generation.CommitStateCommitted || gen.ConfigApply == nil || gen.ConfigApply.Phase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("generation read model = %+v", gen)
 	}
+	assertConfigApplyGenerationCommitted(t, server.Root, "generation-1", accepted.OperationId)
 	list, err := server.ListGenerations(context.Background(), &agentapi.ListGenerationsRequest{IncludeConfigApply: true})
 	if err != nil {
 		t.Fatal(err)
@@ -1763,6 +1767,38 @@ func writeBootSelection(t *testing.T, root string, generationID string) {
 		UpdatedAt:             time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertConfigApplyGenerationCommitted(t *testing.T, root string, candidate string, operationID string) {
+	t.Helper()
+	spec, status, err := generation.ReadGeneration(root, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateTrying || status.CommittedAt == nil || status.CommittedByOperation != operationID {
+		t.Fatalf("candidate status = %#v, want committed trying by %s", status, operationID)
+	}
+	if spec.Boot.UKIPath != "/efi/EFI/Linux/katl-generation-0.efi" || spec.Boot.LoaderEntryPath != "loader/entries/katl-"+candidate+".conf" {
+		t.Fatalf("boot selection in spec = %#v", spec.Boot)
+	}
+	assertFileContains(t, filepath.Join(root, "efi", spec.Boot.LoaderEntryPath), "katl.generation="+candidate)
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "generation-0" ||
+		selection.TargetBootGenerationID != candidate ||
+		selection.TrialGenerationID != candidate ||
+		selection.PreviousKnownGoodGenerationID != "generation-0" ||
+		selection.Generation0FallbackID != "generation-0" ||
+		!selection.PendingHealthValidation ||
+		selection.PersistentDefaultPromotion != generation.DefaultPromotionPending ||
+		selection.PendingTransactionID != operationID {
+		t.Fatalf("boot selection = %#v, want config apply generation %s armed for boot health", selection, candidate)
+	}
+	if selection.TargetBootEntry != spec.Boot.LoaderEntryPath || selection.TrialBootEntry != spec.Boot.LoaderEntryPath || selection.DefaultBootEntry != "loader/entries/katl-generation-0.conf" {
+		t.Fatalf("boot entries = %#v, want staged target and unchanged default", selection)
 	}
 }
 

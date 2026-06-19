@@ -41,8 +41,8 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if got, want := strings.Join(metadata.ChangedDomains, ","), "sysctl"; got != want {
 		t.Fatalf("metadata changed domains = %q, want %q", got, want)
 	}
-	if result.GenerationRecord.Root != current.Root || result.GenerationRecord.Boot != current.Boot || result.GenerationRecord.Sysexts[0].Path != current.Sysexts[0].Path {
-		t.Fatalf("runtime config record did not reuse current immutable selections: %#v", result.GenerationRecord)
+	if result.GenerationRecord.Root != current.Root || result.GenerationRecord.Boot.UKIPath != current.Boot.UKIPath || result.GenerationRecord.Boot.LoaderEntryPath != "loader/entries/katl-2026.06.05-002.conf" || result.GenerationRecord.Sysexts[0].Path != current.Sysexts[0].Path {
+		t.Fatalf("runtime config record did not reuse root/UKI/sysext and select a new loader entry: %#v", result.GenerationRecord)
 	}
 	if result.Status.GenerationID != "2026.06.05-002" || result.Status.Phase != generation.ConfigApplyPhasePlanned {
 		t.Fatalf("status = %#v", result.Status)

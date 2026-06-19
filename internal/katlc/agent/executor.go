@@ -509,7 +509,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if err := e.commitBootstrapGeneration(ctx, record, completedAt); err != nil {
+	if err := e.commitCandidateGeneration(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed"); err != nil {
 		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "post-kubeadm-health"
 			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
@@ -542,7 +542,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	return errors.Join(err, artifactErr)
 }
 
-func (e *Executor) commitBootstrapGeneration(ctx context.Context, record operation.OperationRecord, now time.Time) error {
+func (e *Executor) commitCandidateGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
 	candidate := strings.TrimSpace(record.CandidateGenerationID)
 	if candidate == "" {
 		return fmt.Errorf("candidate generation id is required")
@@ -622,7 +622,7 @@ func (e *Executor) commitBootstrapGeneration(ctx context.Context, record operati
 	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
 		At:          committedAt,
 		OperationID: record.OperationID,
-		Reason:      "kubeadm completed and post-kubeadm health checks passed",
+		Reason:      reason,
 		CommitState: status.CommitState,
 		BootState:   status.BootState,
 		HealthState: status.HealthState,
