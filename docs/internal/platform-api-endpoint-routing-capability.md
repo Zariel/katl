@@ -1,9 +1,9 @@
 # Platform API Endpoint Routing Capability
 
-Status: deferred proposal. This is not a supported Katl capability until the
-helper-specific app bundle, status schema, operation/apply/rollback behavior,
-and ownership rules are defined and tested against the node app sysext
-contract.
+Status: partially implemented v0.1 capability. Cluster planning supports
+`external` endpoint selection and `hostAdvertisedBGP` composition through the
+accepted BGP API VIP extension contract. Day-2 enable, disable, live apply,
+rollback, and repair operations remain future work.
 
 Katl needs a way to support greenfield clusters where Cilium must reach the
 Kubernetes API before Cilium can advertise any service or API VIP. The
@@ -29,23 +29,52 @@ operator story for endpoint reachability. This document only covers the opt-in
 dynamic-routing helper for users who do not already have an independently
 reachable platform API endpoint.
 
-## Deferral Gate
+## Implementation Gate
 
-This document must not be used as implementation approval by itself. The
-app-specific BGP API VIP contract is now accepted in
-`docs/internal/bgp-api-vip-extension-contract.md`, but `katlc` must still
-reject platform API endpoint helper input, and `katlctl` must not expose helper
-enablement, until follow-up implementation work provides:
+This document must not be used as broad implementation approval by itself. The
+app-specific BGP API VIP contract is accepted in
+`docs/internal/bgp-api-vip-extension-contract.md`, and v0.1 cluster planning
+may compose that extension for pre-Cilium bootstrap reachability. `katlctl`
+must not expose broader helper enablement until follow-up implementation work
+provides:
 
 ```text
-helper app bundle metadata, compatibility, unit, config, health, and status
-  implementation using the node app sysext contract
-the bgp-api-vip bundle, generic BIRD bundle, validation, renderer, and tests
 node-local operation records for enable, disable, live apply, withdrawal,
   rollback, and repair
 ownership boundaries between Katl, the app sysext, Cilium, GitOps, and user
   infrastructure
 ```
+
+The v0.1 cluster-plan input is deliberately narrow:
+
+```yaml
+spec:
+  platformAPIEndpoint:
+    mode: hostAdvertisedBGP
+    bgpAPIEndpoint:
+      endpoint:
+        host: api.home.example
+        vip: 10.40.0.10/32
+      vipInterface:
+        kind: dummy
+        name: katl-api0
+      routing:
+        routerID: 10.0.0.11
+        localASN: 64512
+        sourceAddress: 10.0.0.11
+        sourceInterface: enp1s0
+      fabricPeers:
+      - name: router-a
+        address: 10.0.0.1
+        asn: 64500
+        allowedExportPrefixes:
+        - 10.40.0.10/32
+```
+
+The selected endpoint populates kubeadm `controlPlaneEndpoint` and the bootstrap
+stable endpoint wait before user manifests. `mode: cilium` and
+`endpoint.provenance: cilium` are rejected because they describe post-Cilium
+state and cannot satisfy the pre-Cilium path.
 
 ## Decision
 

@@ -1,8 +1,10 @@
 # BGP API VIP Extension Contract
 
-Status: accepted app-specific contract for the BGP API VIP node extension.
-Concrete packaging, validation, rendering, operation, and VM proof remain
-follow-up work.
+Status: accepted and partially implemented app-specific contract for the BGP
+API VIP node extension. The v0.1 implementation has typed validation,
+rendering, cluster-plan composition, fixture bundle metadata, health-gated
+controller behavior, and unit coverage. Real mkosi-built packaging, operation
+integration, and VM proof remain follow-up work.
 
 The BGP API VIP extension is a Katl-owned node application sysext that makes a
 Kubernetes control-plane endpoint reachable through a host-owned VIP before
@@ -72,6 +74,24 @@ configuration.secretRefKinds[]
 The app bundle contains helper binaries, base units, status helpers, and
 metadata. Generated confext contains node-specific config, networkd files, and
 bounded config handed to generic BIRD.
+
+The v0.1 cluster-plan composition path uses:
+
+```yaml
+spec:
+  platformAPIEndpoint:
+    mode: hostAdvertisedBGP
+    bgpAPIEndpoint:
+      endpoint:
+        host: api.home.example
+        vip: 10.40.0.10/32
+```
+
+The composer normalizes this BGP API endpoint, renders the owned native
+artifacts for control-plane nodes, exposes app status metadata, and uses the
+selected `host:port` value as kubeadm `controlPlaneEndpoint`. External endpoint
+inputs use `mode: external` and do not render this app. Cilium-owned API
+endpoint provenance is rejected for bootstrap readiness.
 
 ## Input Shape
 

@@ -122,12 +122,49 @@ spec:
       caRef: kube-apiserver-ca
 ```
 
-The final location of this block depends on the app-specific platform endpoint
-contract. For BIRD-backed API VIP advertisement, the accepted field ownership
-and status rules are in
-`docs/internal/bgp-api-vip-extension-contract.md`. `katlc` must reject this
-input until the selected app sysext advertises the capability and Katl has a
-matching validator, renderer, status reader, and operation implementation.
+The broad day-2 node application shape remains a sketch. For the v0.1
+BIRD-backed API VIP path, cluster planning accepts a narrower
+`spec.platformAPIEndpoint` wrapper:
+
+```yaml
+spec:
+  platformAPIEndpoint:
+    mode: external
+    endpoint:
+      host: api.example.test
+      port: 6443
+      provenance: external
+```
+
+or:
+
+```yaml
+spec:
+  platformAPIEndpoint:
+    mode: hostAdvertisedBGP
+    bgpAPIEndpoint:
+      endpoint:
+        host: api.home.example
+        vip: 10.40.0.10/32
+      vipInterface:
+        kind: dummy
+        name: katl-api0
+      routing:
+        routerID: 10.0.0.11
+        localASN: 64512
+      fabricPeers:
+      - name: router-a
+        address: 10.0.0.1
+        asn: 64500
+        allowedExportPrefixes:
+        - 10.40.0.10/32
+```
+
+For BIRD-backed API VIP advertisement, the accepted field ownership and status
+rules are in `docs/internal/bgp-api-vip-extension-contract.md`. The selected
+endpoint is compiled into kubeadm `controlPlaneEndpoint` and a pre-manifest
+stable endpoint wait. `mode: cilium` and `endpoint.provenance: cilium` are
+rejected for this pre-Cilium helper path.
 
 ## Endpoint Fields
 

@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer/confext"
 	"github.com/zariel/katl/internal/installer/configdomain"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/platformendpoint"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 )
 
@@ -48,6 +50,10 @@ func Compile(request CompileRequest) (Plan, error) {
 	if len(config.Spec.Nodes) == 0 {
 		return Plan{}, fmt.Errorf("spec.nodes must not be empty")
 	}
+	endpointPlan, controlPlaneEndpoint, err := selectedPlatformEndpoint(config.Spec)
+	if err != nil {
+		return Plan{}, err
+	}
 
 	nodes := append([]Node(nil), config.Spec.Nodes...)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
@@ -76,7 +82,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
-		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs)
+		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint, endpointPlan)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -112,8 +118,9 @@ func Compile(request CompileRequest) (Plan, error) {
 		return addressOverrides[i].Node < addressOverrides[j].Node
 	})
 	bootstrapInventory := inventory.Inventory{
-		ControlPlaneEndpoint: strings.TrimSpace(config.Spec.ControlPlaneEndpoint),
+		ControlPlaneEndpoint: controlPlaneEndpoint,
 		KubernetesVersion:    kubernetes.version,
+		Bootstrap:            bootstrapEndpoint(endpointPlan),
 		Nodes:                inventoryNodes,
 	}
 	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
@@ -121,6 +128,7 @@ func Compile(request CompileRequest) (Plan, error) {
 	}
 	return Plan{
 		ControlPlaneEndpoint: bootstrapInventory.ControlPlaneEndpoint,
+		PlatformAPIEndpoint:  endpointPlan,
 		KubernetesVersion:    kubernetes.version,
 		KubernetesCatalogRef: kubernetes.catalogRef,
 		KubernetesSysext:     kubernetes.sysext,
@@ -131,7 +139,7 @@ func Compile(request CompileRequest) (Plan, error) {
 	}, nil
 }
 
-func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan) (NodeMaterial, inventory.Node, error) {
+func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, controlPlaneEndpoint string, endpointPlan *platformendpoint.Plan) (NodeMaterial, inventory.Node, error) {
 	hostname := strings.TrimSpace(layer.Hostname)
 	if hostname == "" {
 		hostname = name
@@ -161,7 +169,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				ClusterName:          strings.TrimSpace(config.Metadata.Name),
 				InventoryNodeName:    name,
 				NodeAddress:          strings.TrimSpace(layer.Bootstrap.Address),
-				ControlPlaneEndpoint: strings.TrimSpace(config.Spec.ControlPlaneEndpoint),
+				ControlPlaneEndpoint: controlPlaneEndpoint,
 				BootstrapProfileRef:  kubeadmRef,
 				ProfileResolvedID:    bootstrapProfileResolvedID,
 				KubernetesCatalogRef: kubernetes.catalogRef,
@@ -204,6 +212,12 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q config domains: %w", name, err)
 	}
+	if endpointPlan != nil && role == inventory.RoleControlPlane {
+		nativeEtcFiles = append(nativeEtcFiles, platformendpoint.NativeEtcFiles(*endpointPlan)...)
+	}
+	if _, err := confext.ValidateNativeEtcBundle("", nativeEtcFiles); err != nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q native /etc files: %w", name, err)
+	}
 	if err := rejectHostSpecificMaterials(installManifest, nativeEtcFiles, kubeadmConfig, kubernetes.sysext); err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q: %w", name, err)
 	}
@@ -231,6 +245,31 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		KubernetesCatalogRef: kubernetes.catalogRef,
 		KubernetesSysext:     kubernetes.sysext,
 	}, invNode, nil
+}
+
+func selectedPlatformEndpoint(spec Spec) (*platformendpoint.Plan, string, error) {
+	controlPlaneEndpoint := strings.TrimSpace(spec.ControlPlaneEndpoint)
+	if spec.PlatformAPIEndpoint == nil {
+		return nil, controlPlaneEndpoint, nil
+	}
+	plan, err := platformendpoint.Compose(*spec.PlatformAPIEndpoint)
+	if err != nil {
+		return nil, "", err
+	}
+	if controlPlaneEndpoint != "" && controlPlaneEndpoint != plan.ControlPlaneEndpoint {
+		return nil, "", fmt.Errorf("spec.controlPlaneEndpoint %q does not match selected platformAPIEndpoint %q", controlPlaneEndpoint, plan.ControlPlaneEndpoint)
+	}
+	return &plan, plan.ControlPlaneEndpoint, nil
+}
+
+func bootstrapEndpoint(endpointPlan *platformendpoint.Plan) *inventory.Bootstrap {
+	if endpointPlan == nil || strings.TrimSpace(endpointPlan.StableEndpoint) == "" {
+		return nil
+	}
+	return &inventory.Bootstrap{
+		StableEndpoint:                endpointPlan.StableEndpoint,
+		StableEndpointBeforeManifests: endpointPlan.StableEndpointBeforeManifests,
+	}
 }
 
 func manifestAccess(access inventory.Access) manifest.BootstrapAccess {

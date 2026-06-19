@@ -6,6 +6,7 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/platformendpoint"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 )
 
@@ -27,6 +28,7 @@ type Metadata struct {
 
 type Spec struct {
 	ControlPlaneEndpoint    string                             `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	PlatformAPIEndpoint     *platformendpoint.Config           `yaml:"platformAPIEndpoint,omitempty" json:"platformAPIEndpoint,omitempty"`
 	Kubernetes              KubernetesSelection                `yaml:"kubernetes" json:"kubernetes"`
 	KatlosImage             manifest.KatlosImage               `yaml:"katlosImage" json:"katlosImage"`
 	AllowDestructiveInstall bool                               `yaml:"allowDestructiveInstall" json:"allowDestructiveInstall"`
@@ -82,6 +84,7 @@ type CompileRequest struct {
 
 type Plan struct {
 	ControlPlaneEndpoint string                      `json:"controlPlaneEndpoint,omitempty"`
+	PlatformAPIEndpoint  *platformendpoint.Plan      `json:"platformAPIEndpoint,omitempty"`
 	KubernetesVersion    string                      `json:"kubernetesVersion,omitempty"`
 	KubernetesCatalogRef string                      `json:"kubernetesCatalogRef,omitempty"`
 	KubernetesSysext     *generation.ExtensionRef    `json:"kubernetesSysext,omitempty"`

@@ -9,8 +9,10 @@ import (
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/bgpapivip"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/platformendpoint"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 )
 
@@ -137,6 +139,68 @@ func TestCompileSelectsCatalogRef(t *testing.T) {
 	}
 }
 
+func TestCompileComposesHostAdvertisedBGPAPIEndpoint(t *testing.T) {
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = ""
+	config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
+		Mode:           platformendpoint.ModeHostAdvertisedBGP,
+		BGPAPIEndpoint: ptrBGPConfig(clusterBGPConfig()),
+	}
+	plan, err := Compile(CompileRequest{
+		Config:         config,
+		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if plan.ControlPlaneEndpoint != "api.home.example:6443" {
+		t.Fatalf("control plane endpoint = %q", plan.ControlPlaneEndpoint)
+	}
+	if plan.PlatformAPIEndpoint == nil || plan.PlatformAPIEndpoint.HelperStatus == nil || plan.PlatformAPIEndpoint.HelperStatus.AppID != bgpapivip.AppID {
+		t.Fatalf("platform endpoint plan = %#v", plan.PlatformAPIEndpoint)
+	}
+	if plan.BootstrapInventory.ControlPlaneEndpoint != "api.home.example:6443" {
+		t.Fatalf("bootstrap inventory endpoint = %q", plan.BootstrapInventory.ControlPlaneEndpoint)
+	}
+	if plan.BootstrapInventory.Bootstrap == nil || plan.BootstrapInventory.Bootstrap.StableEndpoint != "api.home.example:6443" || !plan.BootstrapInventory.Bootstrap.StableEndpointBeforeManifests {
+		t.Fatalf("bootstrap stable endpoint = %#v", plan.BootstrapInventory.Bootstrap)
+	}
+	if got := plan.Nodes[0].InstallManifest.Node.Bootstrap.ControlPlaneEndpoint; got != "api.home.example:6443" {
+		t.Fatalf("control-plane install manifest endpoint = %q", got)
+	}
+	if got := plan.Nodes[1].InstallManifest.Node.Bootstrap.ControlPlaneEndpoint; got != "api.home.example:6443" {
+		t.Fatalf("worker install manifest endpoint = %q", got)
+	}
+	assertNodeNativeFile(t, plan.Nodes[0], bgpapivip.ConfigPath, "kind: BGPAPIEndpoint\n")
+	assertNodeNativeFile(t, plan.Nodes[0], bgpapivip.BirdConfigPath, "neighbor 10.0.0.1 as 64500;\n")
+	assertNodeNoNativeFile(t, plan.Nodes[1], bgpapivip.ConfigPath)
+}
+
+func TestCompileComposesExternalPlatformAPIEndpoint(t *testing.T) {
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = ""
+	config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
+		Mode:     platformendpoint.ModeExternal,
+		Endpoint: platformendpoint.Endpoint{Host: "api.external.test", Port: 7443},
+	}
+	plan, err := Compile(CompileRequest{
+		Config:         config,
+		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if plan.ControlPlaneEndpoint != "api.external.test:7443" {
+		t.Fatalf("control plane endpoint = %q", plan.ControlPlaneEndpoint)
+	}
+	if plan.PlatformAPIEndpoint == nil || plan.PlatformAPIEndpoint.HelperStatus != nil || len(plan.PlatformAPIEndpoint.NativeEtcFiles) != 0 {
+		t.Fatalf("platform endpoint plan = %#v", plan.PlatformAPIEndpoint)
+	}
+	if plan.BootstrapInventory.Bootstrap == nil || plan.BootstrapInventory.Bootstrap.StableEndpoint != "api.external.test:7443" {
+		t.Fatalf("bootstrap stable endpoint = %#v", plan.BootstrapInventory.Bootstrap)
+	}
+}
+
 func TestDecodeRejectsUnknownFields(t *testing.T) {
 	_, err := Decode(strings.NewReader(`apiVersion: cluster.katl.dev/v1alpha1
 kind: ClusterPlan
@@ -249,6 +313,42 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "control-plane endpoint is required",
 		},
 		{
+			name: "conflicting platform endpoint",
+			mut: func(config *Config) {
+				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
+					Mode:     platformendpoint.ModeExternal,
+					Endpoint: platformendpoint.Endpoint{Host: "other.katl.test"},
+				}
+			},
+			want: "does not match selected platformAPIEndpoint",
+		},
+		{
+			name: "cilium platform endpoint",
+			mut: func(config *Config) {
+				config.Spec.ControlPlaneEndpoint = ""
+				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
+					Mode:     platformendpoint.ModeCilium,
+					Endpoint: platformendpoint.Endpoint{Host: "api.katl.test"},
+				}
+			},
+			want: "post-Cilium",
+		},
+		{
+			name: "platform endpoint generated file collision",
+			mut: func(config *Config) {
+				config.Spec.ControlPlaneEndpoint = ""
+				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
+					Mode:           platformendpoint.ModeHostAdvertisedBGP,
+					BGPAPIEndpoint: ptrBGPConfig(clusterBGPConfig()),
+				}
+				config.Spec.Nodes[0].Overrides.Networkd.Files = append(config.Spec.Nodes[0].Overrides.Networkd.Files, manifest.NetworkdFile{
+					Name:    "20-katl-bgp-api-vip.network",
+					Content: "[Match]\nName=enp2s0\n",
+				})
+			},
+			want: "native /etc files",
+		},
+		{
 			name: "unknown address override",
 			mut: func(config *Config) {
 				config.Spec.Nodes[1].Name = "renamed-worker"
@@ -345,6 +445,57 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertNodeNativeFile(t *testing.T, node NodeMaterial, path string, content string) {
+	t.Helper()
+	for _, file := range node.NativeEtcFiles {
+		if file.Path == path {
+			if !strings.Contains(file.Content, content) {
+				t.Fatalf("%s did not contain %q:\n%s", path, content, file.Content)
+			}
+			return
+		}
+	}
+	t.Fatalf("node %s missing native file %s", node.Name, path)
+}
+
+func assertNodeNoNativeFile(t *testing.T, node NodeMaterial, path string) {
+	t.Helper()
+	for _, file := range node.NativeEtcFiles {
+		if file.Path == path {
+			t.Fatalf("node %s unexpectedly rendered native file %s", node.Name, path)
+		}
+	}
+}
+
+func clusterBGPConfig() bgpapivip.Config {
+	return bgpapivip.Config{
+		Endpoint: bgpapivip.Endpoint{
+			Host: "api.home.example",
+			VIP:  "10.40.0.10/32",
+		},
+		VIPInterface: bgpapivip.VIPInterface{
+			Kind: "dummy",
+			Name: "katl-api0",
+		},
+		Routing: bgpapivip.Routing{
+			RouterID:        "10.0.0.11",
+			LocalASN:        64512,
+			SourceAddress:   "10.0.0.11",
+			SourceInterface: "enp1s0",
+		},
+		FabricPeers: []bgpapivip.Peer{{
+			Name:                  "router-a",
+			Address:               "10.0.0.1",
+			ASN:                   64500,
+			AllowedExportPrefixes: []string{"10.40.0.10/32"},
+		}},
+	}
+}
+
+func ptrBGPConfig(config bgpapivip.Config) *bgpapivip.Config {
+	return &config
 }
 
 func TestCompileRejectsHostSpecificKubeadmMaterial(t *testing.T) {
