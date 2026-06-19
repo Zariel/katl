@@ -186,6 +186,25 @@ World run directories and scenario manifests are the supported inspection path
 for already-produced artifacts during harness development. Lower-level helper
 scripts are not the supported way to run enabled VM or kubeadm suites.
 
+## GitHub Fast Checks
+
+The low-cost pull-request workflow runs formatting, whitespace, unit/golden, and
+delivery fixture checks only:
+
+```sh
+git ls-files '*.go' | xargs gofmt -l
+git diff --check
+go test ./...
+go test ./internal/installer/sysextcatalog \
+  ./internal/installer/kubernetesbundle \
+  ./internal/installer/nodeextensionbundle \
+  -count=1
+```
+
+It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
+publishing. Those host-specific gates belong to the capable-host vmtest workflow
+and release gates.
+
 ### Capable-Host Proof
 
 Run the full enabled world suite from the Nix VM shell on a host with readable
