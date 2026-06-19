@@ -207,7 +207,7 @@ func TestAgentCommandAllowlist(t *testing.T) {
 }
 
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
-	for _, command := range []string{"blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate", "test"} {
+	for _, command := range []string{"bgp-api-vip-smoke", "blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate", "test"} {
 		if !commandAllowed(command, defaultAgentCommands()) {
 			t.Fatalf("%s is not allowlisted", command)
 		}
