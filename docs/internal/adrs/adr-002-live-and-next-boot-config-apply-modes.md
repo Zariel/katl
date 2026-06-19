@@ -128,8 +128,120 @@ at runtime. The classification is about a specific diff, not just a domain name:
 for example, adding a non-critical DNS server may be live-applicable while
 changing the active management route is next-boot or rejected.
 
-Online-applicable domains may be used with `live` when their domain-specific
-preflight passes:
+## v0.1 Release Cut
+
+The v0.1 milestone supports a smaller runtime-apply surface than the long-term
+matrix above. This cut is intentionally narrow so the first release proves one
+online path and one staged network path without creating an operator lockout
+risk.
+
+`sysctl` is the only online in-place domain for v0.1. A sysctl change may be
+accepted as `live` by strict `live` mode or by omitted/`auto` mode when every
+changed domain is sysctl. Katl renders the requested keys into the generated
+confext for the candidate generation, activates that confext for the current
+boot, and runs the bounded sysctl apply action for only the rendered keys. The
+live proof must show the new kernel value through `/proc/sys` or `sysctl -n`,
+not just the generated file.
+
+The first supported network interface manifest change set is a staged
+`networkd` generation containing Katl-owned native `.link`, `.netdev`, and
+`.network` files under `/etc/systemd/network/`. For v0.1 the accepted staged
+case is additive or replacement configuration for explicitly named
+non-management interfaces, bridges, bonds, VLANs, and static addresses or routes
+that do not alter the currently used operator/API management path. The staged
+proof may use a VM-test secondary interface, dummy interface, bridge, or VLAN,
+but it must prove that the current boot's `/run/confexts/katl-node` selection
+does not change when the request is accepted as next boot.
+
+Network changes are not live-applicable in v0.1. Strict `live` requests that
+contain any `networkd` diff are rejected with a diagnostic that names the
+network domain and says the change is staged-only for this release. Omitted or
+`auto` mode accepts a safe network-only request as `next-boot`. Strict
+`next-boot` accepts the same safe request as a candidate generation.
+
+Network changes are rejected before rendering when the planner cannot prove they
+are safe to stage. Rejected v0.1 network diffs include:
+
+```text
+renaming or rematching the active management interface
+removing the address used for operator, API VIP, or default-route reachability
+changing the default route or DHCP gateway for the management path
+deleting the current management interface networkd unit
+writing networkd units outside Katl-owned generated confext paths
+using absolute paths, path traversal, duplicate render names, or unsupported
+  file extensions
+using arbitrary systemd unit passthrough to control networking
+```
+
+Unsupported domains in v0.1 are rejected as normal config apply rather than
+silently staged. This includes root or UKI selection, sysext selection,
+Kubernetes sysext payload changes, kubeadm live changes, kubelet node identity,
+`/etc/kubernetes`, host account policy, PAM, sudo, passwd, shadow, sysusers,
+raw confext activation paths, and arbitrary `/etc` files. Kubeadm desired input
+may be rendered only by a named kubeadm-aware operation after the M8 gate; M6
+normal config apply must not run kubeadm, kubectl, CNI installers, or cluster
+add-on installers.
+
+Every rejected v0.1 request reports structured diagnostics before any candidate
+generation is rendered. Each diagnostic names the rejected domain, records the
+classification as `rejected`, `staged-only`, or `operation-only`, states the
+decision as rejected, and gives an operator-facing message. When a supported
+domain belongs to another lifecycle flow, the message names the required
+operation family, such as `host-upgrade`, `kubeadm-aware operation`,
+`kubernetes-upgrade`, or `wipe-reinstall`, instead of returning a generic
+unsupported-field error. Unknown domains and arbitrary paths use
+`unsupported-domain` or `unsupported-field` diagnostics with the original
+configuration path.
+
+The v0.1 artifact mapping is:
+
+```text
+sysctl live
+  generated confext:
+    /var/lib/katl/generations/<id>/confext/etc/sysctl.d/<katl file>
+  active selection:
+    /run/confexts/katl-node -> candidate confext after live activation
+  OperationRecord:
+    generation-apply, requestedApplyMode auto|live, acceptedApplyMode live,
+    domain action systemd-sysctl or bounded sysctl, phase live-active on success
+  rollback:
+    restore previous /run/confexts/katl-node selection and reapply the previous
+    generation's sysctl values for the changed keys; failed rollback selects the
+    previous generation for next boot and reports repair-required
+
+networkd staged
+  generated confext:
+    /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.link
+    /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.netdev
+    /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.network
+  active selection:
+    unchanged in the current boot
+  OperationRecord:
+    generation-stage, requestedApplyMode auto|next-boot, acceptedApplyMode
+    next-boot, phase next-boot on success, domain action stage-next-boot
+  rollback:
+    before boot, unselect the candidate and keep the current generation active;
+    after boot, use the normal generation boot-health rollback path
+```
+
+The M6 VM proof must cover this release cut before v0.1 marks config apply
+supported:
+
+```text
+omitted apply.mode defaults to auto and accepts sysctl as live
+strict live accepts sysctl and changes the running kernel value
+strict live rejects the staged-only networkd change before activation
+auto or next-boot accepts the safe networkd change as a candidate generation
+the staged network candidate writes generated networkd artifacts but does not
+  change /run/confexts/katl-node in the current boot
+OperationRecords and generation config-apply status record requested and
+  accepted modes, domains, action results, diagnostics, and rollback target
+unsupported kubeadm, Kubernetes sysext, root/UKI, account, and arbitrary /etc
+  changes fail before candidate generation render
+```
+
+Outside the v0.1 release cut, online-applicable domains may be used with `live`
+when their domain-specific preflight passes:
 
 ```text
 resolved and host DNS
@@ -154,8 +266,9 @@ Bootstrap node metadata
   Kubernetes payload.
 ```
 
-Next-boot-only domains can be rendered into a candidate generation, but normal
-runtime configuration apply does not make them live:
+Outside the v0.1 release cut, next-boot-only domains can be rendered into a
+candidate generation, but normal runtime configuration apply does not make them
+live:
 
 ```text
 node identity and hostname
