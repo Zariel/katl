@@ -523,7 +523,7 @@ func extractInstalledESP(ctx context.Context, result Result, config FirstInstall
 
 func firstTargetDisk(result Result) (DiskPlan, error) {
 	for _, disk := range result.Disks {
-		if disk.Kind == DiskTarget {
+		if disk.Kind == DiskTarget || disk.Kind == DiskSnapshot {
 			return disk, nil
 		}
 	}
@@ -838,7 +838,7 @@ func runtimeConfig(result Result, config InstalledRuntimeConfig) (InstalledRunti
 		return config, nil
 	}
 	for _, disk := range result.Disks {
-		if disk.Kind == DiskTarget {
+		if disk.Kind == DiskTarget || disk.Kind == DiskSnapshot {
 			config.Disk = disk.HostPath
 			config.DiskFormat = disk.Format
 			return config, nil

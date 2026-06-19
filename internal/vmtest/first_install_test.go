@@ -100,6 +100,29 @@ func TestFirstInstallFailure(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigAcceptsSnapshotTargetDisk(t *testing.T) {
+	result := Result{Disks: []DiskPlan{{
+		Name:     "root",
+		Kind:     DiskSnapshot,
+		Format:   DiskQCOW2,
+		HostPath: "/tmp/installed-target.snapshot.qcow2",
+	}}}
+	config, err := runtimeConfig(result, InstalledRuntimeConfig{})
+	if err != nil {
+		t.Fatalf("runtimeConfig() error = %v", err)
+	}
+	if config.Disk != "/tmp/installed-target.snapshot.qcow2" || config.DiskFormat != DiskQCOW2 {
+		t.Fatalf("runtimeConfig() = disk %q format %q", config.Disk, config.DiskFormat)
+	}
+	target, err := firstTargetDisk(result)
+	if err != nil {
+		t.Fatalf("firstTargetDisk() error = %v", err)
+	}
+	if target.HostPath != "/tmp/installed-target.snapshot.qcow2" {
+		t.Fatalf("firstTargetDisk() host path = %q", target.HostPath)
+	}
+}
+
 func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")

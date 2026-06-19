@@ -476,6 +476,7 @@ func defaultAgentCommands() map[string]bool {
 func defaultAgentFilePaths() []string {
 	return []string{
 		"/etc/katl/",
+		"/etc/machine-id",
 		"/etc/kubernetes/admin.conf",
 		"/etc/kubernetes/kubelet.conf",
 		"/etc/os-release",
@@ -484,6 +485,7 @@ func defaultAgentFilePaths() []string {
 		"/var/lib/katl/agent/token",
 		"/var/lib/katl/boot/",
 		"/var/lib/katl/config-requests/",
+		"/var/lib/katl/identity/",
 		"/var/lib/katl/operations/",
 		"/usr/lib/os-release",
 		"/var/lib/katl/generations/",

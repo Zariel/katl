@@ -16,18 +16,31 @@ type InstalledRuntimeWorldNode struct {
 }
 
 type PublishedFirstInstallRuntimeFixture struct {
-	APIVersion      string `json:"apiVersion"`
-	Kind            string `json:"kind"`
-	NodeName        string `json:"nodeName"`
-	SystemRole      string `json:"systemRole"`
-	FixtureManifest string `json:"fixtureManifest"`
-	DiskFormat      string `json:"diskFormat"`
-	InputDigest     string `json:"inputDigest,omitempty"`
+	APIVersion           string   `json:"apiVersion"`
+	Kind                 string   `json:"kind"`
+	NodeName             string   `json:"nodeName"`
+	SystemRole           string   `json:"systemRole"`
+	FixtureManifest      string   `json:"fixtureManifest"`
+	DiskFormat           string   `json:"diskFormat"`
+	InputDigest          string   `json:"inputDigest,omitempty"`
+	InstallerUKI         string   `json:"installerUKI,omitempty"`
+	InstallerKernel      string   `json:"installerKernel,omitempty"`
+	InstallerInitrd      string   `json:"installerInitrd,omitempty"`
+	InstallerCommandLine []string `json:"installerCommandLine,omitempty"`
+	RuntimeArtifact      string   `json:"runtimeArtifact,omitempty"`
+	InstallManifest      string   `json:"installManifest,omitempty"`
+	FirstInstallMode     string   `json:"firstInstallMode,omitempty"`
+	UseInstalledESP      bool     `json:"useInstalledESP,omitempty"`
 }
 
 type publishedFixtureCandidate struct {
 	Path    string
 	ModTime time.Time
+}
+
+func (p PublishedFirstInstallRuntimeFixture) HasInstallerProvenance() bool {
+	return strings.TrimSpace(p.InstallManifest) != "" &&
+		(strings.TrimSpace(p.InstallerUKI) != "" || (strings.TrimSpace(p.InstallerKernel) != "" && strings.TrimSpace(p.InstallerInitrd) != ""))
 }
 
 func AddPublishedInstalledRuntimeNode(scenario *WorldScenario, repo string, spec NodeSpec) (InstalledRuntimeWorldNode, error) {
@@ -161,6 +174,10 @@ func WritePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string
 }
 
 func writePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string, format DiskFormat, inputDigest string) (string, error) {
+	return writePublishedFirstInstallRuntimeFixtureForContract(root, name, fixtureManifest, format, inputDigest, FirstInstallRuntimeFixtureContract{})
+}
+
+func writePublishedFirstInstallRuntimeFixtureForContract(root, name, fixtureManifest string, format DiskFormat, inputDigest string, contract FirstInstallRuntimeFixtureContract) (string, error) {
 	source, err := readInstalledRuntimeFixture(fixtureManifest)
 	if err != nil {
 		return "", err
@@ -196,6 +213,22 @@ func writePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string
 		DiskFormat:      string(format),
 		InputDigest:     inputDigest,
 	}
+	if strings.TrimSpace(contract.ManifestPath) != "" {
+		relOptional := func(value string) string {
+			if strings.TrimSpace(value) == "" {
+				return ""
+			}
+			return relFrom(filepath.Dir(path), value)
+		}
+		published.InstallerUKI = relOptional(contract.InstallerBoot.InstallerUKI)
+		published.InstallerKernel = relOptional(contract.InstallerBoot.InstallerKernel)
+		published.InstallerInitrd = relOptional(contract.InstallerBoot.InstallerInitrd)
+		published.InstallerCommandLine = append([]string(nil), contract.InstallerBoot.CommandLine...)
+		published.RuntimeArtifact = relOptional(contract.RuntimeArtifact)
+		published.InstallManifest = relOptional(contract.ManifestPath)
+		published.FirstInstallMode = string(firstInstallModeForContract(contract))
+		published.UseInstalledESP = contract.UseInstalledESP
+	}
 	if err := writeJSON(path, published); err != nil {
 		return "", err
 	}
@@ -223,6 +256,17 @@ func ReadPublishedFirstInstallRuntimeFixture(path string) (PublishedFirstInstall
 	if !filepath.IsAbs(published.FixtureManifest) {
 		published.FixtureManifest = filepath.Join(filepath.Dir(path), published.FixtureManifest)
 	}
+	resolve := func(value string) string {
+		if strings.TrimSpace(value) == "" || filepath.IsAbs(value) {
+			return value
+		}
+		return filepath.Join(filepath.Dir(path), value)
+	}
+	published.InstallerUKI = resolve(published.InstallerUKI)
+	published.InstallerKernel = resolve(published.InstallerKernel)
+	published.InstallerInitrd = resolve(published.InstallerInitrd)
+	published.RuntimeArtifact = resolve(published.RuntimeArtifact)
+	published.InstallManifest = resolve(published.InstallManifest)
 	if published.DiskFormat == "" {
 		published.DiskFormat = string(DiskQCOW2)
 	}

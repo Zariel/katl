@@ -37,9 +37,10 @@ type ProducedInstalledRuntimeFixture struct {
 }
 
 type FirstInstallRuntimeFixtureOptions struct {
-	Input   FirstInstallWorldInput
-	KVM     KVMPolicy
-	Produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)
+	Input                      FirstInstallWorldInput
+	KVM                        KVMPolicy
+	RequireInstallerProvenance bool
+	Produce                    func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)
 }
 
 type firstInstallRuntimeFixtureInputIdentity struct {
@@ -94,8 +95,10 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	if err != nil {
 		return "", err
 	}
-	if _, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
-		return inputDigest, nil
+	if published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
+		if !options.RequireInstallerProvenance || published.HasInstallerProvenance() {
+			return inputDigest, nil
+		}
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return "", err
 	}
@@ -104,8 +107,10 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 		return "", err
 	}
 	defer unlock()
-	if _, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
-		return inputDigest, nil
+	if published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest); err == nil {
+		if !options.RequireInstallerProvenance || published.HasInstallerProvenance() {
+			return inputDigest, nil
+		}
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return "", err
 	}
@@ -115,9 +120,12 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 		}
 		return "", err
 	}
-	_, err = findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest)
+	published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest)
 	if err != nil {
 		return "", err
+	}
+	if options.RequireInstallerProvenance && !published.HasInstallerProvenance() {
+		return "", errors.New("published installed runtime fixture is missing installer provenance")
 	}
 	return inputDigest, nil
 }
@@ -392,7 +400,7 @@ func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureC
 	if err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("cache first-install runtime fixture: %w", err)
 	}
-	if _, err := writePublishedFirstInstallRuntimeFixture(WorldFixtureCacheDir(contract.WorldScenario.World), FirstInstallRuntimeFixtureScenarioName(contract.Node), cached.ManifestPath, DiskQCOW2, inputDigest); err != nil {
+	if _, err := writePublishedFirstInstallRuntimeFixtureForContract(WorldFixtureCacheDir(contract.WorldScenario.World), FirstInstallRuntimeFixtureScenarioName(contract.Node), cached.ManifestPath, DiskQCOW2, inputDigest, contract); err != nil {
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("publish first-install runtime fixture: %w", err)
 	}
 	return ProducedInstalledRuntimeFixture{

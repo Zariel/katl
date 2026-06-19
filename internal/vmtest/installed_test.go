@@ -127,6 +127,9 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
+	if result.VSock.GuestCID == 0 || result.VSock.Port != DefaultAgentPort {
+		t.Fatalf("vsock = %#v", result.VSock)
+	}
 	domainXML := readDomainXML(t, result)
 	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("runtime domain XML did not boot injected ESP image:\n%s", domainXML)

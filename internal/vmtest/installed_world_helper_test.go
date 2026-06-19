@@ -262,6 +262,50 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *test
 	}
 }
 
+func TestEnsurePublishedFirstInstallRuntimeFixturesRegeneratesMissingInstallerProvenance(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	staleManifest := writePublishedInstalledRuntimeFixture(t, world.CacheDir, "stale-cp", spec.Name, spec.Role, time.Unix(10, 0))
+	if stale, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, spec); err != nil {
+		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() stale error = %v", err)
+	} else if stale.FixtureManifest != staleManifest || stale.HasInstallerProvenance() {
+		t.Fatalf("stale published fixture = %#v", stale)
+	}
+	produced := 0
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input:                      input,
+		KVM:                        KVMOff,
+		RequireInstallerProvenance: true,
+		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			produced++
+			manifest := writePublishedInstalledRuntimeFixture(t, world.CacheDir, "fresh-cp", contract.Node.Name, contract.Node.Role, time.Unix(20, 0))
+			inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
+			if err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			if _, err := writePublishedFirstInstallRuntimeFixtureForContract(world.CacheDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), manifest, DiskQCOW2, inputDigest, contract); err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+	if produced != 1 {
+		t.Fatalf("produced = %d, want 1", produced)
+	}
+	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, spec)
+	if err != nil {
+		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() fresh error = %v", err)
+	}
+	if !published.HasInstallerProvenance() || published.InstallManifest == "" || published.InstallerUKI == "" || published.FirstInstallMode != string(FirstInstallWorldPreseed) {
+		t.Fatalf("published fixture missing installer provenance: %#v", published)
+	}
+}
+
 func TestEnsurePublishedFirstInstallRuntimeFixturesRegeneratesChangedInput(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()

@@ -237,7 +237,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		t.Fatalf("installer package set = %#v", installerSet)
 	}
 	katlosSet := packageSet(manifest.PackageSets, "katlos-install-image")
-	if packageChecksum(katlosSet.Packages, "katlos-component-runtime-root") != strings.Repeat("d", 64) {
+	if packageChecksum(katlosSet.Packages, "katlos-component-runtime-root") != "" {
 		t.Fatalf("KatlOS package set = %#v", katlosSet)
 	}
 	if packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root") != "runtime-root-component.x86_64" {
@@ -467,7 +467,7 @@ func TestRunPrepareMkosiStrictRejectsMissingInstallerLock(t *testing.T) {
 	}
 }
 
-func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
+func TestRunPrepareMkosiStrictIgnoresKatlOSComponentChecksumDrift(t *testing.T) {
 	oldQuery := queryRPMPackages
 	oldReadKatlOSIndex := readKatlOSIndex
 	t.Cleanup(func() {
@@ -511,6 +511,67 @@ func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
 	readKatlOSIndex = func(path string) (katlosIndex, error) {
 		return katlosTestIndex(strings.Repeat("e", 64)), nil
 	}
+	if err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare strict error = %v, want component checksum drift ignored", err)
+	}
+}
+
+func TestRunPrepareMkosiStrictRejectsKatlOSPackageVersionDrift(t *testing.T) {
+	oldQuery := queryRPMPackages
+	oldReadKatlOSIndex := readKatlOSIndex
+	t.Cleanup(func() {
+		queryRPMPackages = oldQuery
+		readKatlOSIndex = oldReadKatlOSIndex
+	})
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		return katlosTestIndex(strings.Repeat("d", 64)), nil
+	}
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	args := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}
+	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		index := katlosTestIndex(strings.Repeat("d", 64))
+		index.Components[1].PackageVersions["kubeadm"] = "0:1.36.0-150500.1.1"
+		return index, nil
+	}
 	err := run([]string{
 		"prepare-mkosi",
 		"--manifest", manifestPath,
@@ -522,8 +583,8 @@ func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
 		"--git-revision", "test",
 		"--mkosi-version", "26",
 	}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "checksum drift") {
-		t.Fatalf("prepare strict error = %v, want checksum drift", err)
+	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
+		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)
 	}
 }
 

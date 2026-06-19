@@ -88,6 +88,9 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 		ImageSnapshot: true,
 		EFITree:       runtimeESPPath(result),
 	}
+	if config.RequireVMTestAgent || vm.Agent.RequireHealth {
+		vm.VSock.Enabled = true
+	}
 	return runner.Run(ctx, result, vm)
 }
 

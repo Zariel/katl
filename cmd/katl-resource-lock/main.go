@@ -570,9 +570,8 @@ func katlosPackages(index katlosIndex) ([]resourcetest.Package, error) {
 			nevra += "." + architecture
 		}
 		packages = append(packages, resourcetest.Package{
-			Name:     "katlos-component-" + role,
-			NEVRA:    nevra,
-			Checksum: component.SHA256,
+			Name:  "katlos-component-" + role,
+			NEVRA: nevra,
 		})
 		if len(component.PackageVersions) > 0 {
 			names := make([]string, 0, len(component.PackageVersions))

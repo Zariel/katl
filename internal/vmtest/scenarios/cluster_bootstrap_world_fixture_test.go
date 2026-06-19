@@ -29,8 +29,9 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return vmtest.EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, specs, vmtest.FirstInstallRuntimeFixtureOptions{
-		Input: vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
-		KVM:   kvm,
+		Input:                      vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
+		KVM:                        kvm,
+		RequireInstallerProvenance: true,
 	})
 }
 

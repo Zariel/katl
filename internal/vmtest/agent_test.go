@@ -207,7 +207,7 @@ func TestAgentCommandAllowlist(t *testing.T) {
 }
 
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
-	for _, command := range []string{"blkid", "chmod", "crictl", "ctr", "dd", "install", "katlc", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate"} {
+	for _, command := range []string{"blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate", "test"} {
 		if !commandAllowed(command, defaultAgentCommands()) {
 			t.Fatalf("%s is not allowlisted", command)
 		}
@@ -215,10 +215,12 @@ func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 	for _, path := range []string{
 		"/etc/katl/node.json",
 		"/etc/katl/kubeadm/control-plane/config.yaml",
+		"/etc/machine-id",
 		"/etc/kubernetes/admin.conf",
 		"/etc/kubernetes/kubelet.conf",
 		"/var/lib/katl/agent/token",
 		"/var/lib/katl/boot/selection.json",
+		"/var/lib/katl/identity/machine-id",
 		"/var/lib/katl/operations/bootstrap-init-1/record.json",
 	} {
 		if !pathAllowed(path, defaultAgentFilePaths()) {
