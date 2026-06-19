@@ -1,0 +1,216 @@
+# VM test fixture only. This is an operator-owned baseline stack proof: Katl
+# applies it only when explicitly passed as a bootstrap/workload manifest.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: katl-vmtest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cilium
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: cilium
+    k8s-app: cilium
+spec:
+  selector:
+    matchLabels:
+      k8s-app: cilium
+  template:
+    metadata:
+      labels:
+        k8s-app: cilium
+    spec:
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: cilium-fixture
+        image: localhost/katl-vmtest/net-server:latest
+        imagePullPolicy: Never
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          periodSeconds: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cilium-operator
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: cilium-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cilium-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cilium-operator
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: cp-1
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: operator-fixture
+        image: localhost/katl-vmtest/net-server:latest
+        imagePullPolicy: Never
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          periodSeconds: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: katl-vmtest
+  labels:
+    app.kubernetes.io/name: echo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo
+    spec:
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: echo
+        image: localhost/katl-vmtest/net-server:latest
+        imagePullPolicy: Never
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /hostname
+            port: http
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: katl-vmtest
+spec:
+  selector:
+    app.kubernetes.io/name: echo
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway
+  namespace: envoy-gateway-system
+  labels:
+    app.kubernetes.io/name: envoy-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: envoy-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: envoy-gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: cp-1
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: gateway
+        image: localhost/katl-vmtest/gateway-proxy:latest
+        imagePullPolicy: Never
+        env:
+        - name: KATL_VMTEST_BACKEND_URL
+          value: http://echo.katl-vmtest.svc.cluster.local:8080
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /hostname
+            port: http
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoy-gateway
+  namespace: envoy-gateway-system
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: envoy-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    nodePort: 31080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: katl-vmtest-envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: echo
+  namespace: katl-vmtest
+spec:
+  gatewayClassName: katl-vmtest-envoy
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo
+  namespace: katl-vmtest
+spec:
+  parentRefs:
+  - name: echo
+  rules:
+  - backendRefs:
+    - name: echo
+      port: 8080

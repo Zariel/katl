@@ -38,7 +38,7 @@ import (
 )
 
 func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t); ok {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-stacked-etcd", false); ok {
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
 	}
@@ -46,6 +46,19 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run three-control-plane stacked-etcd smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
+func TestInstalledRuntimeThreeControlPlaneV01WorkloadProof(t *testing.T) {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-v01-workload-proof", true); ok {
+		runThreeControlPlaneStackedEtcdSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run three-control-plane v0.1 workload proof")
 	}
 	_ = vmtest.RequireWorld(t)
 }
@@ -59,9 +72,10 @@ type threeControlPlaneSmokeRun struct {
 	Inputs        threeControlPlaneSmokeInputs
 	LibvirtURI    string
 	Network       string
+	WorkloadProof bool
 }
 
-func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bool) {
+func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadProof bool) (threeControlPlaneSmokeRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
 		return threeControlPlaneSmokeRun{}, false
@@ -70,9 +84,9 @@ func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bo
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm); err != nil {
-		failWorldFixtureSetup(t, world, "installed-runtime-three-control-plane-stacked-etcd", err)
+		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, operationBackedKubernetesVersion(t, repo), kvm)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, operationBackedKubernetesVersion(t, repo), kvm, workloadProof)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -89,8 +103,8 @@ func threeControlPlaneWorldRuntimeSpecs() []vmtest.NodeSpec {
 	}
 }
 
-func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (threeControlPlaneSmokeRun, error) {
-	scenario, err := world.PlanScenario("installed-runtime-three-control-plane-stacked-etcd")
+func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, kubernetesVersion string, kvm vmtest.KVMPolicy, workloadProof bool) (threeControlPlaneSmokeRun, error) {
+	scenario, err := world.PlanScenario(scenarioName)
 	if err != nil {
 		return threeControlPlaneSmokeRun{}, err
 	}
@@ -113,7 +127,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 		Missing:   vmtest.MissingFails,
 	}
 	runner := vmtest.NewRunner(options)
-	vmScenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
+	vmScenario := vmtest.Scenario{Name: scenarioName}
 	result, err := runner.Plan(vmScenario)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -128,6 +142,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
 		Network:       world.Libvirt.Network,
+		WorkloadProof: workloadProof,
 		Inputs: threeControlPlaneSmokeInputs{
 			CP1Disk:           nodes["cp-1"].Config.Disk,
 			CP1DiskFormat:     string(nodes["cp-1"].Config.DiskFormat),
@@ -205,7 +220,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		plannedNodes = append(plannedNodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
 	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, plannedNodes, bootstrapFixture, kubernetesBundle, nil); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, plannedNodes, bootstrapFixture, kubernetesBundle, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
@@ -252,6 +267,15 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage test CNI fixtures: %v", err)
 	}
+	var imageFixtures map[string][]nodeImageFixture
+	if smoke.WorkloadProof {
+		imageFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+		if err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("stage release workload images: %v", err)
+		}
+	}
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +296,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses, tokenFiles); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,6 +363,19 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 			t.Fatalf("collect %s Kubernetes version evidence: %v", node.Name, err)
+		}
+	}
+	var workloadStack *releaseWorkloadStackEvidence
+	if smoke.WorkloadProof {
+		workloadStack, err = proveReleaseWorkloadStack(ctx, katlRepoRoot(t), result.RunDir, result.ManifestDir, kubeconfigPath, cp1Address)
+		if err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("prove release workload stack: %v", err)
+		}
+		if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, workloadStack); err != nil {
+			t.Fatal(err)
 		}
 	}
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
@@ -728,8 +765,10 @@ type threeControlPlaneArtifactManifest struct {
 	BootstrapStderr           string                                    `json:"bootstrapStderr"`
 	BootstrapFixture          *bootstrapFixtureInputs                   `json:"bootstrapFixture,omitempty"`
 	CNIFixtures               map[string]nodeCNIFixture                 `json:"cniFixtures,omitempty"`
+	ImageFixtures             map[string][]nodeImageFixture             `json:"imageFixtures,omitempty"`
 	KubernetesPayloadBundle   *threeControlPlaneKubernetesPayloadBundle `json:"kubernetesPayloadBundle,omitempty"`
 	KubernetesVersionEvidence map[string]string                         `json:"kubernetesVersionEvidence,omitempty"`
+	ReleaseWorkloadStack      *releaseWorkloadStackEvidence             `json:"releaseWorkloadStack,omitempty"`
 	KubectlOutput             string                                    `json:"kubectlOutput"`
 	KubectlDiagnostics        map[string]string                         `json:"kubectlDiagnostics,omitempty"`
 	EtcdReport                string                                    `json:"etcdReport"`
@@ -741,7 +780,23 @@ type threeControlPlaneArtifactManifest struct {
 	Diagnostics               map[string]string                         `json:"diagnostics,omitempty"`
 }
 
-func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
+type releaseWorkloadStackEvidence struct {
+	Manifest              string            `json:"manifest"`
+	CRDManifest           string            `json:"crdManifest"`
+	ApplyOutput           string            `json:"applyOutput"`
+	CRDApplyOutput        string            `json:"crdApplyOutput"`
+	CiliumPods            string            `json:"ciliumPods"`
+	CoreDNSPods           string            `json:"coreDNSPods"`
+	EnvoyGatewayPods      string            `json:"envoyGatewayPods"`
+	EchoPods              string            `json:"echoPods"`
+	GatewayClasses        string            `json:"gatewayClasses"`
+	GatewayAPIResources   string            `json:"gatewayAPIResources"`
+	GatewayURL            string            `json:"gatewayURL"`
+	GatewayResponse       string            `json:"gatewayResponse"`
+	AdditionalDiagnostics map[string]string `json:"additionalDiagnostics,omitempty"`
+}
+
+func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, imageFixtures map[string][]nodeImageFixture, workloadStack *releaseWorkloadStackEvidence) error {
 	var bundle *threeControlPlaneKubernetesPayloadBundle
 	if strings.TrimSpace(kubernetesBundle.Ref) != "" {
 		copy := kubernetesBundle
@@ -774,8 +829,10 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		BootstrapStderr:           filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
 		BootstrapFixture:          bootstrapFixture.manifestValue(),
 		CNIFixtures:               cniFixtures,
+		ImageFixtures:             imageFixtures,
 		KubernetesPayloadBundle:   bundle,
 		KubernetesVersionEvidence: kubernetesVersionEvidencePaths(filepath.Join(result.RunDir, "kubernetes-version-evidence"), nodes),
+		ReleaseWorkloadStack:      workloadStack,
 		KubectlOutput:             filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
 		KubectlDiagnostics:        kubectlDiagnosticPaths(result.RunDir),
 		EtcdReport:                filepath.Join(result.RunDir, "etcd-report.json"),
@@ -805,6 +862,208 @@ func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPl
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func proveReleaseWorkloadStack(ctx context.Context, repo, runDir, manifestDir, kubeconfigPath, gatewayAddress string) (*releaseWorkloadStackEvidence, error) {
+	source := filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "release-workload-stack.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return nil, fmt.Errorf("read release workload stack manifest: %w", err)
+	}
+	target := filepath.Join(manifestDir, "release-workload-stack.yaml")
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		return nil, fmt.Errorf("stage release workload stack manifest: %w", err)
+	}
+	crdSource := filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "release-workload-stack-crds.yaml")
+	crdData, err := os.ReadFile(crdSource)
+	if err != nil {
+		return nil, fmt.Errorf("read release workload stack CRD manifest: %w", err)
+	}
+	crdTarget := filepath.Join(manifestDir, "release-workload-stack-crds.yaml")
+	if err := os.WriteFile(crdTarget, crdData, 0o644); err != nil {
+		return nil, fmt.Errorf("stage release workload stack CRD manifest: %w", err)
+	}
+	evidenceDir := filepath.Join(runDir, "release-workload-stack")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		return nil, err
+	}
+	evidence := &releaseWorkloadStackEvidence{
+		Manifest:              target,
+		CRDManifest:           crdTarget,
+		ApplyOutput:           filepath.Join(evidenceDir, "kubectl-apply.txt"),
+		CRDApplyOutput:        filepath.Join(evidenceDir, "kubectl-apply-crds.txt"),
+		CiliumPods:            filepath.Join(evidenceDir, "kubectl-get-cilium-pods.txt"),
+		CoreDNSPods:           filepath.Join(evidenceDir, "kubectl-get-coredns-pods.txt"),
+		EnvoyGatewayPods:      filepath.Join(evidenceDir, "kubectl-get-envoy-gateway-pods.txt"),
+		EchoPods:              filepath.Join(evidenceDir, "kubectl-get-echo-pods.txt"),
+		GatewayClasses:        filepath.Join(evidenceDir, "kubectl-get-gateway-classes.txt"),
+		GatewayAPIResources:   filepath.Join(evidenceDir, "kubectl-get-gateway-api.txt"),
+		GatewayURL:            "http://" + net.JoinHostPort(gatewayAddress, "31080") + "/hostname",
+		GatewayResponse:       filepath.Join(evidenceDir, "gateway-response.txt"),
+		AdditionalDiagnostics: releaseWorkloadDiagnosticPaths(evidenceDir),
+	}
+	if err := runKubectlCapture(ctx, kubeconfigPath, evidence.CRDApplyOutput, "apply", "-f", crdTarget); err != nil {
+		return evidence, err
+	}
+	for _, crd := range []string{
+		"gatewayclasses.gateway.networking.k8s.io",
+		"gateways.gateway.networking.k8s.io",
+		"httproutes.gateway.networking.k8s.io",
+	} {
+		if err := runKubectlCapture(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-wait-crd-"+safeEvidenceName(crd)+".txt"), "wait", "--for=condition=Established", "crd/"+crd, "--timeout=2m"); err != nil {
+			return evidence, err
+		}
+	}
+	if err := runKubectlCapture(ctx, kubeconfigPath, evidence.ApplyOutput, "apply", "-f", target); err != nil {
+		return evidence, err
+	}
+	waits := [][]string{
+		{"-n", "kube-system", "rollout", "status", "daemonset/cilium", "--timeout=5m"},
+		{"-n", "kube-system", "rollout", "status", "deployment/cilium-operator", "--timeout=5m"},
+		{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=5m"},
+		{"-n", "envoy-gateway-system", "rollout", "status", "deployment/envoy-gateway", "--timeout=5m"},
+		{"-n", "katl-vmtest", "rollout", "status", "deployment/echo", "--timeout=5m"},
+		{"-n", "kube-system", "wait", "--for=condition=Ready", "pod", "-l", "k8s-app=kube-dns", "--timeout=5m"},
+		{"-n", "katl-vmtest", "wait", "--for=condition=Ready", "pod", "-l", "app.kubernetes.io/name=echo", "--timeout=5m"},
+	}
+	for _, args := range waits {
+		if err := runKubectlCapture(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-wait-"+safeEvidenceName(strings.Join(args, "-"))+".txt"), args...); err != nil {
+			collectReleaseWorkloadDiagnostics(ctx, kubeconfigPath, evidence)
+			return evidence, err
+		}
+	}
+	captures := []struct {
+		path string
+		args []string
+	}{
+		{evidence.CiliumPods, []string{"-n", "kube-system", "get", "pods", "-l", "k8s-app=cilium", "-o", "wide"}},
+		{evidence.CoreDNSPods, []string{"-n", "kube-system", "get", "pods", "-l", "k8s-app=kube-dns", "-o", "wide"}},
+		{evidence.EnvoyGatewayPods, []string{"-n", "envoy-gateway-system", "get", "pods", "-o", "wide"}},
+		{evidence.EchoPods, []string{"-n", "katl-vmtest", "get", "pods", "-o", "wide"}},
+		{evidence.GatewayClasses, []string{"get", "gatewayclass", "-o", "yaml"}},
+		{evidence.GatewayAPIResources, []string{"-n", "katl-vmtest", "get", "gateway,httproute", "-o", "yaml"}},
+	}
+	for _, capture := range captures {
+		if err := runKubectlCapture(ctx, kubeconfigPath, capture.path, capture.args...); err != nil {
+			collectReleaseWorkloadDiagnostics(ctx, kubeconfigPath, evidence)
+			return evidence, err
+		}
+	}
+	response, err := waitForHTTPText(ctx, evidence.GatewayURL, 5*time.Minute)
+	if err != nil {
+		collectReleaseWorkloadDiagnostics(ctx, kubeconfigPath, evidence)
+		return evidence, err
+	}
+	if err := os.WriteFile(evidence.GatewayResponse, []byte(response), 0o644); err != nil {
+		return evidence, err
+	}
+	return evidence, nil
+}
+
+func runKubectlCapture(ctx context.Context, kubeconfigPath, outputPath string, args ...string) error {
+	argv := append([]string{selectedKubectl(), "--kubeconfig", kubeconfigPath}, args...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var combined bytes.Buffer
+	combined.WriteString("$ " + strings.Join(argv, " ") + "\n")
+	combined.Write(stdout.Bytes())
+	if stderr.Len() > 0 {
+		combined.WriteString("\n[stderr]\n")
+		combined.Write(stderr.Bytes())
+	}
+	_ = os.WriteFile(outputPath, combined.Bytes(), 0o644)
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+	}
+	return nil
+}
+
+func waitForHTTPText(ctx context.Context, url string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	client := http.Client{Timeout: 2 * time.Second}
+	var lastErr error
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			data, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				return "", readErr
+			}
+			body := string(data)
+			if got := resp.Header.Get("X-Katl-VMTest-Gateway"); got != "envoy-gateway-fixture" {
+				lastErr = fmt.Errorf("gateway header %q", got)
+			} else if hostname := strings.TrimSpace(body); !strings.HasPrefix(hostname, "echo-") {
+				lastErr = fmt.Errorf("gateway response body %q does not look like an echo pod hostname", hostname)
+			} else {
+				return "X-Katl-VMTest-Gateway: " + got + "\n\n" + body, nil
+			}
+		} else if err == nil {
+			lastErr = fmt.Errorf("status %s", resp.Status)
+			_ = resp.Body.Close()
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("GET %s did not succeed within %s: %w", url, timeout, lastErr)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func releaseWorkloadDiagnosticPaths(dir string) map[string]string {
+	return map[string]string{
+		"events":        filepath.Join(dir, "kubectl-get-events.txt"),
+		"allPods":       filepath.Join(dir, "kubectl-get-pods-all-namespaces.txt"),
+		"services":      filepath.Join(dir, "kubectl-get-services-all-namespaces.txt"),
+		"gatewaySystem": filepath.Join(dir, "kubectl-describe-envoy-gateway.txt"),
+	}
+}
+
+func collectReleaseWorkloadDiagnostics(ctx context.Context, kubeconfigPath string, evidence *releaseWorkloadStackEvidence) {
+	if evidence == nil {
+		return
+	}
+	commands := map[string][]string{
+		"events":        {"get", "events", "-A", "--sort-by=.lastTimestamp"},
+		"allPods":       {"get", "pods", "-A", "-o", "wide"},
+		"services":      {"get", "svc", "-A", "-o", "wide"},
+		"gatewaySystem": {"-n", "envoy-gateway-system", "describe", "deployment/envoy-gateway"},
+	}
+	for name, args := range commands {
+		if path := evidence.AdditionalDiagnostics[name]; path != "" {
+			_ = runKubectlCapture(ctx, kubeconfigPath, path, args...)
+		}
+	}
+}
+
+func safeEvidenceName(value string) string {
+	value = strings.ToLower(value)
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('-')
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 80 {
+		out = out[:80]
+	}
+	if out == "" {
+		return "command"
+	}
+	return out
 }
 
 func collectKubernetesVersionEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, payloadVersion string) (string, error) {
@@ -1386,6 +1645,27 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		CACertGuestPath: "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem",
 		CACertPEM:       []byte("test-ca"),
 	}
+	imageFixtures := map[string][]nodeImageFixture{
+		"cp-1": {{
+			Image:     "localhost/katl-vmtest/gateway-proxy:latest",
+			Source:    "/tmp/gateway-proxy.tar",
+			GuestPath: "/var/lib/katl/test-artifacts/bootstrap-images/gateway-proxy.tar",
+		}},
+	}
+	workloadStack := &releaseWorkloadStackEvidence{
+		Manifest:            "/tmp/run/manifests/release-workload-stack.yaml",
+		CRDManifest:         "/tmp/run/manifests/release-workload-stack-crds.yaml",
+		ApplyOutput:         "/tmp/run/release-workload-stack/kubectl-apply.txt",
+		CRDApplyOutput:      "/tmp/run/release-workload-stack/kubectl-apply-crds.txt",
+		CiliumPods:          "/tmp/run/release-workload-stack/kubectl-get-cilium-pods.txt",
+		CoreDNSPods:         "/tmp/run/release-workload-stack/kubectl-get-coredns-pods.txt",
+		EnvoyGatewayPods:    "/tmp/run/release-workload-stack/kubectl-get-envoy-gateway-pods.txt",
+		EchoPods:            "/tmp/run/release-workload-stack/kubectl-get-echo-pods.txt",
+		GatewayClasses:      "/tmp/run/release-workload-stack/kubectl-get-gateway-classes.txt",
+		GatewayAPIResources: "/tmp/run/release-workload-stack/kubectl-get-gateway-api.txt",
+		GatewayURL:          "http://192.0.2.21:31080/hostname",
+		GatewayResponse:     "/tmp/run/release-workload-stack/gateway-response.txt",
+	}
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, threeControlPlaneSmokeInputs{
 		CP1Disk:     "cp1.raw",
 		CP1ESP:      "esp",
@@ -1407,7 +1687,7 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 			FixtureProducerScenarios: map[string]string{"cp-2": "/tmp/fixture-cp-2/scenario.json"},
 			FixtureProducerResults:   map[string]string{"cp-3": "/tmp/fixture-cp-3/result.json"},
 		},
-	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}, kubernetesBundle, nil); err != nil {
+	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}, kubernetesBundle, nil, imageFixtures, workloadStack); err != nil {
 		t.Fatalf("writeThreeControlPlaneSmokeArtifactManifest() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"))
@@ -1452,6 +1732,16 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if len(manifest.KubernetesPayloadBundle.CACertPEM) != 0 {
 		t.Fatalf("Kubernetes payload bundle manifest leaked CA PEM bytes")
+	}
+	if manifest.ImageFixtures["cp-1"][0].Image != "localhost/katl-vmtest/gateway-proxy:latest" {
+		t.Fatalf("image fixtures = %#v", manifest.ImageFixtures)
+	}
+	if manifest.ReleaseWorkloadStack == nil ||
+		manifest.ReleaseWorkloadStack.Manifest != workloadStack.Manifest ||
+		manifest.ReleaseWorkloadStack.GatewayClasses != workloadStack.GatewayClasses ||
+		manifest.ReleaseWorkloadStack.GatewayURL != workloadStack.GatewayURL ||
+		manifest.ReleaseWorkloadStack.GatewayResponse != workloadStack.GatewayResponse {
+		t.Fatalf("release workload stack evidence = %#v, want %#v", manifest.ReleaseWorkloadStack, workloadStack)
 	}
 }
 
@@ -1498,7 +1788,7 @@ func TestWriteThreeControlPlaneEtcdReportPreservesFailureEvidence(t *testing.T) 
 
 func TestPlanThreeControlPlaneWorldSmokeRunWritesSetupFailureForMissingPublishedFixture(t *testing.T) {
 	world := twoNodeTestWorld(t)
-	run, err := planThreeControlPlaneWorldSmokeRun(world, t.TempDir(), "v1.36.1", vmtest.KVMOff)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, t.TempDir(), "installed-runtime-three-control-plane-v01-workload-proof", "v1.36.1", vmtest.KVMOff, true)
 	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
 		t.Fatalf("planThreeControlPlaneWorldSmokeRun() error = %v, want missing published fixture", err)
 	}
@@ -1530,9 +1820,12 @@ func TestPlanThreeControlPlaneWorldSmokeRunPrefersWorldPublishedFixtures(t *test
 		writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-"+name, name, vmtest.ControlPlane)
 	}
 
-	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, "installed-runtime-three-control-plane-v01-workload-proof", "v1.36.1", vmtest.KVMOff, true)
 	if err != nil {
 		t.Fatalf("planThreeControlPlaneWorldSmokeRun() error = %v", err)
+	}
+	if !run.WorkloadProof || run.Scenario.Name != "installed-runtime-three-control-plane-v01-workload-proof" {
+		t.Fatalf("planned workload proof run = %#v", run)
 	}
 	assertFileContent(t, run.Inputs.CP1Disk, "disk-world-cp-1")
 	assertFileContent(t, run.Inputs.CP2Disk, "disk-world-cp-2")
@@ -1731,5 +2024,36 @@ func TestThreeControlPlaneCNISpecs(t *testing.T) {
 	}
 	if specs["cp-2"].PodSubnet != "10.244.1.0/24" || specs["cp-3"].PodSubnet != "10.244.2.0/24" {
 		t.Fatalf("control-plane CNI pod subnets = %#v", specs)
+	}
+}
+
+func TestReleaseWorkloadStackFixtureContainsExpectedProofObjects(t *testing.T) {
+	stackPath := filepath.Join(katlRepoRoot(t), "internal", "vmtest", "scenarios", "testdata", "bootstrap", "release-workload-stack.yaml")
+	stackData, err := os.ReadFile(stackPath)
+	if err != nil {
+		t.Fatalf("read release workload stack fixture: %v", err)
+	}
+	crdPath := filepath.Join(katlRepoRoot(t), "internal", "vmtest", "scenarios", "testdata", "bootstrap", "release-workload-stack-crds.yaml")
+	crdData, err := os.ReadFile(crdPath)
+	if err != nil {
+		t.Fatalf("read release workload stack CRD fixture: %v", err)
+	}
+	text := string(stackData) + "\n" + string(crdData)
+	for _, want := range []string{
+		"kind: DaemonSet",
+		"name: cilium",
+		"name: cilium-operator",
+		"name: envoy-gateway",
+		"api-approved.kubernetes.io",
+		"kind: GatewayClass",
+		"kind: Gateway",
+		"kind: HTTPRoute",
+		"name: echo",
+		"nodePort: 31080",
+		"localhost/katl-vmtest/gateway-proxy:latest",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("release workload stack fixture missing %q:\n%s", want, text)
+		}
 	}
 }

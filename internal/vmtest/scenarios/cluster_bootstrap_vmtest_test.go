@@ -1435,6 +1435,13 @@ func buildBootstrapImageFixtures(ctx context.Context, repo, workDir string) ([]n
 			entrypoint: "/net-client",
 			archive:    "net-client.tar",
 		},
+		{
+			image:      "localhost/katl-vmtest/gateway-proxy:latest",
+			pkg:        "./internal/vmtest/testcmd/gateway-proxy",
+			binaryName: "gateway-proxy",
+			entrypoint: "/gateway-proxy",
+			archive:    "gateway-proxy.tar",
+		},
 	}
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, err
@@ -1442,7 +1449,7 @@ func buildBootstrapImageFixtures(ctx context.Context, repo, workDir string) ([]n
 	fixtures := make([]nodeImageFixture, 0, len(specs))
 	for _, spec := range specs {
 		binaryPath := filepath.Join(workDir, spec.binaryName)
-		cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", binaryPath, spec.pkg)
+		cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-trimpath", "-ldflags", "-s -w", "-o", binaryPath, spec.pkg)
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
 		output, err := cmd.CombinedOutput()
