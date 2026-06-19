@@ -1446,8 +1446,12 @@ Kubernetes API availability, add-ons, workload scheduling, or GitOps convergence
 
 3. Should `etcd` always get a separate partition on control-plane nodes?
 
-   Initial recommendation: support it as a profile option early, but keep the
-   default VM layout simple until install tests are reliable.
+   Current decision: no. The default stacked-etcd data path is `/var/lib/etcd`
+   on the writable state partition. A dedicated Katl-owned `KATL_ETCD`
+   partition may be selected by an explicit install storage profile, but it is
+   persistent node state and not a generation artifact. See
+   `docs/internal/stacked-etcd-bootstrap-data-policy.md` and
+   `docs/internal/kubernetes-upgrade-operations.md`.
 
 4. Should the runtime root use SquashFS long-term?
 

@@ -124,8 +124,44 @@ kubelet only at the point accepted by the kubeadm flow for that node role.
 
 ## Target Kubeadm Access
 
-The concrete target kubeadm access mode is an implementation decision that must
-be made before Kubernetes upgrade execution is enabled. Candidate mechanisms:
+The first supported `targetKubeadmAccess.mode` is
+`operation-private-sysext`.
+
+The upgrade executor mounts or otherwise exposes the verified target Kubernetes
+sysext only inside the node-local operation tool view, for example under
+`/var/lib/katl/operations/<operation-id>/tools/kubernetes/`. The executor runs
+target-version `kubeadm` from that private path and records the observed version,
+artifact digest, mount path, and argv in the operation record. The global
+systemd-sysext view remains on the source generation until the operation reaches
+the recorded target kubelet restart phase.
+
+The first supported `kubeletActivationGate` is
+`operation-released-target-kubelet`.
+
+Upgrade candidate generations install a generated `kubelet.service` drop-in
+that keeps target-version kubelet inactive until the katlc agent releases the
+operation gate at:
+
+```text
+/run/katl/operation-gates/<operation-id>/target-kubelet-released
+```
+
+The drop-in must be enforced by systemd before `ExecStart` for kubelet. A direct
+boot into a Kubernetes-upgrade candidate with no matching released gate leaves
+kubelet inactive and reports the candidate health as blocked instead of silently
+starting target kubelet. The katlc agent releases the gate only after the
+operation has flushed the post-kubeadm mutation marker and entered the planned
+`kubelet-restart-running` phase. The operation then restarts kubelet, verifies
+that the running kubelet reports the target version, and only then allows host
+generation health promotion.
+
+Source-version kubelet remains running until the recorded kubeadm phase
+completes for control-plane and worker nodes. `stop-source-kubelet-before-kubeadm`
+is not part of the first supported path because control-plane kubelet owns the
+static pod lifecycle and stopping it before kubeadm creates a larger failure
+surface. Any later role-specific stop policy needs its own decision and VM gate.
+
+Candidate mechanisms considered:
 
 ```text
 operation-private-sysext
@@ -148,18 +184,127 @@ stop-source-kubelet-before-kubeadm
   because kubelet manages static pods.
 ```
 
-Until one access mode and one kubelet activation gate are selected, implemented,
-and VM-tested, Kubernetes upgrade execution is unsupported by default. `katlc`
-must reject normal apply requests that change the Kubernetes sysext on an
+This decision selects the first access mode and gate, but mutating Kubernetes
+upgrade execution remains unsupported until they are implemented and VM-tested.
+`katlc` must reject normal apply requests that change the Kubernetes sysext on an
 already bootstrapped node. `katlc` may produce a rejected or plan-only
 node-local operation record, but must not select the candidate for boot, globally
 activate the target sysext, run kubeadm, or restart kubelet. `katlctl` may only
 request and display that result.
 
-## Post-ADR Execution Sketches
+Repair access after host rollback uses the same operation-private sysext mode.
+Katl reopens the failed operation, verifies the target sysext digest from the
+operation record, and recreates the private tool view from the retained artifact
+or a freshly fetched artifact with the same digest. Katl must not preserve a
+hidden globally active target sysext after rollback. If the target artifact
+cannot be verified, repair is refused until the operator supplies or fetches the
+matching payload again.
 
-The following role flows are the intended shape after the target kubeadm access
-mode and kubelet activation gate have an accepted ADR, implementation, and VM
+Combined KatlOS root plus Kubernetes sysext upgrades are unsupported in the
+first mutating Kubernetes upgrade implementation. The first supported path keeps
+the KatlOS runtime root generation constant and changes only the Kubernetes
+sysext plus generated config required by kubeadm. A combined root and
+Kubernetes change needs a separate gate proving host boot rollback, target
+kubeadm repair access, and Kubernetes post-mutation recovery together.
+
+Required gates before mutating execution is enabled:
+
+```text
+unit tests for request rejection, selected targetKubeadmAccess.mode, and
+  kubeletActivationGate transitions
+golden tests for the generated kubelet gate drop-in and operation record fields
+systemd-analyze verify for kubelet.service, the generated drop-in, and
+  katl-kubeadm-ready.target ordering
+VM test proving target kubeadm runs from operation-private sysext while source
+  kubelet stays active
+VM test proving direct boot into an unreleased upgrade candidate blocks target
+  kubelet
+VM test proving repair access after host rollback recreates only the private
+  target kubeadm tool view
+```
+
+## Etcd Ownership For Upgrades
+
+Day-one Katl control-plane support is stacked etcd only. External etcd remains
+out of scope until a separate decision defines credentials, member health,
+backup, restore, upgrade, and disaster recovery gates.
+
+For stacked etcd, Katl owns storage planning, mount ordering, operation records,
+redacted diagnostics, and the health evidence it collects. Kubeadm and etcd own
+member creation, member removal, data contents under `/var/lib/etcd`, static pod
+manifests, and etcd certificates. The default data path is `/var/lib/etcd` on
+the writable state partition. A dedicated `KATL_ETCD` partition may be mounted
+there when the install plan explicitly selects it, but it is persistent node
+state and not a generation artifact.
+
+Every mutating Kubernetes upgrade that can affect control-plane or etcd state
+requires snapshot evidence before kubeadm is invoked. The first supported path
+must refuse control-plane upgrade execution unless the operation request names a
+verified etcd snapshot record with at least:
+
+```text
+snapshotRef
+snapshotDigest
+snapshotRevision, when observable
+createdAt
+capturedMemberListDigest
+sourceKubernetesVersion
+sourceEtcdVersion, when observable
+storageLocation
+operatorIdentityContext
+```
+
+The snapshot may be operator-managed or produced by a future Katl snapshot
+operation, but the upgrade operation must record what was checked. Katl must not
+write raw snapshots into normal operation records and must redact credentials or
+keys from snapshot metadata. Worker-only `kubeadm upgrade node` operations do
+not require a new snapshot, but they must reference the control-plane snapshot
+record that authorized the rollout.
+
+Upgrade ordering is serialized:
+
+```text
+1. verify API health, etcd endpoint health, and member list before the first
+   control-plane mutation
+2. run exactly one kubeadm upgrade apply operation on the selected apply node
+3. verify API health, local etcd health, and member list after the apply node
+4. run additional control-plane kubeadm upgrade node operations one at a time
+5. after each control-plane node, verify API health, local etcd health, member
+   list, and quorum before continuing
+6. upgrade workers only after the control-plane rollout is healthy
+```
+
+Katl must reject minor-version skips, downgrades, and Kubernetes or kubeadm
+version-skew violations before staging a mutating operation. A healthy
+three-control-plane cluster may tolerate one unavailable etcd member, but a
+planned upgrade must not intentionally make more than one member unavailable or
+continue when quorum evidence is unknown. Failed control-plane upgrade or join
+operations stop the rollout; Katl must not remove members, restore snapshots, or
+retry on another control-plane automatically.
+
+Host rollback after etcd or Kubernetes control-plane mutation is not cluster
+rollback. Rolling back the KatlOS root, Kubernetes sysext, or generated config
+does not roll back `/var/lib/etcd`, `/etc/kubernetes`, Kubernetes API objects,
+static pod manifests, member records, or etcd schema/data changes. The operation
+record must state whether kubeadm or etcd mutation started, whether snapshot
+evidence exists, and whether the next supported action is retry, kubeadm-aware
+repair, snapshot restore, or destructive wipe/reinstall.
+
+Minimum gates before mutating upgrade execution:
+
+```text
+unit tests for snapshot-required rejection and version-skew rejection
+golden tests for etcd evidence and snapshot fields in operation records
+VM test for three-control-plane serial upgrade with member/quorum evidence
+VM test for failed post-mutation control-plane upgrade that records recovery
+  required and does not auto-remove or restore etcd state
+snapshot/restore VM tests before Katl claims snapshot recovery support
+```
+
+## Post-Decision Execution Sketches
+
+The following role flows are the intended shape after the selected target
+kubeadm access mode and kubelet activation gate have implementation and VM
 coverage. They are not supported execution paths before that gate is closed.
 
 Control-plane apply node:
@@ -465,23 +610,22 @@ default. Plan-only records are allowed; mutating execution is refused until the
 target kubeadm access mode and kubelet activation gate are selected,
 implemented, and proven.
 
-## Open Questions
+## Deferred Questions
 
-Open implementation choices:
+Deferred implementation choices:
 
 ```text
-Which targetKubeadmAccess.mode is supported first?
+Should a later role-specific path stop source kubelet before target kubeadm for
+  workers or non-apply control planes?
 
-Should source kubelet continue running until kubeadm completes for all roles, or
-  should any role stop kubelet before invoking target kubeadm?
+Should target kubeadm eventually be split into a separate signed tool payload
+  after operation-private sysext is proven?
 
-What exact systemd gate enforces target kubelet activation?
+What UX should katlctl expose for operator-managed snapshot records before Katl
+  has its own snapshot operation?
 
-Are combined KatlOS root plus Kubernetes sysext upgrades unsupported until this
-  gate is proven?
-
-How is target-version kubeadm repair access exposed after host rollback without
-  preserving a hidden target sysext?
+When can combined KatlOS root plus Kubernetes sysext upgrades be enabled after
+  the independent root-update and Kubernetes-upgrade gates exist?
 ```
 
 ## References
