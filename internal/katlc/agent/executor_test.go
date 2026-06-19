@@ -25,6 +25,11 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	var bootOneshot []string
+	executor.SetBootOneshot = func(ctx context.Context, root string, bootEntry string) error {
+		bootOneshot = append(bootOneshot, root+" "+bootEntry)
+		return nil
+	}
 	ready := false
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		assertBootstrapRuntimePrepared(t, server.Root, "bootstrap-init-01-candidate")
@@ -78,6 +83,9 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	}
 	if record.GenerationCommitState != operation.GenerationCommitCommitted || record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !record.BootHealthPending {
 		t.Fatalf("lifecycle state = commit %q health %q pending %v", record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
+	}
+	if len(bootOneshot) != 1 || bootOneshot[0] != server.Root+" loader/entries/katl-bootstrap-init-01-candidate.conf" {
+		t.Fatalf("boot one-shot calls = %v", bootOneshot)
 	}
 	if len(record.PreExecMutationMarkers) != 1 || record.PreExecMutationMarkers[0].MarkerID != "kubeadm-init" {
 		t.Fatalf("markers = %+v", record.PreExecMutationMarkers)

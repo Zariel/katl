@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +65,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 	vm.Agent.Timeout = 30 * time.Second
+	vm.PreserveNVRAM = true
 	node, err := StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: InstalledRuntimeConfig{
@@ -92,7 +95,11 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialAgent() error = %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		if client != nil {
+			_ = client.Close()
+		}
+	}()
 	guest := NewGuestControl(node.Result, client)
 	if err := RunKatlcSmoke(ctx, guest); err != nil {
 		t.Fatalf("katlc runtime smoke: %v", err)
@@ -105,7 +112,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
 	endpoint := katlcEndpoint(t, node, plannedAddress)
 	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
-	runConfigApplyModeSmoke(t, ctx, guest, result, katlctl, endpoint, tokenFile, token, currentGeneration)
+	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, tokenFile, token, currentGeneration)
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint, token)
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
@@ -250,7 +257,7 @@ func writeKatlcAgentTokenFile(t *testing.T, ctx context.Context, guest *GuestCon
 	return path, token
 }
 
-func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl, endpoint, tokenFile, token, currentGeneration string) {
+func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, tokenFile, token, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
@@ -261,7 +268,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
 	liveGeneration := "2026.06.06-vmtest-live"
-	stagedGeneration := "2026.06.06-vmtest-staged"
+	stagedGeneration := "2026.06.06-vmtest-networkd"
 
 	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected",
 		"config", "apply", "validate",
@@ -316,7 +323,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
-	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged", "next-boot", stagedGeneration, "vmtest-config-apply-staged", configApplyFixture(t, "next-boot-identity.yaml"))
+	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged-networkd", "next-boot", stagedGeneration, "vmtest-config-apply-staged-networkd", configApplyFixture(t, "next-boot-networkd.yaml"))
 	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, stagedAccepted.OperationId)
 	if stagedStatus.Result != operation.ResultSucceeded || stagedStatus.ConfigApplyPhase != "next-boot" {
 		t.Fatalf("staged operation status = %+v, want succeeded next-boot config apply", stagedStatus)
@@ -327,8 +334,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json", `"generationID": "`+stagedGeneration+`"`, `"previousGenerationID": "`+currentGeneration+`"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperationID": "`+stagedAccepted.OperationId+`"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "next-boot"`, `"acceptedApplyMode": "next-boot"`, `"domain": "node-identity"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/katl/node.json", `"hostname": "cp-1-staged"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "next-boot"`, `"acceptedApplyMode": "next-boot"`, `"domain": "networkd"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+currentGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", liveConfext)
@@ -337,6 +344,20 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	if afterBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); afterBootSelection == beforeBootSelection {
 		t.Fatalf("boot selection did not change after staged config apply")
 	}
+
+	guest, client = restartGuestAndReconnect(t, ctx, node, guest, client)
+	if got := currentGenerationFromGuest(t, ctx, guest); got != stagedGeneration {
+		t.Fatalf("booted generation = %q, want staged networkd generation %q", got, stagedGeneration)
+	}
+	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
+	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+stagedGeneration+`"`, `"bootedGenerationID": "`+stagedGeneration+`"`, `"pendingHealthValidation": false`)
+	bootedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, tokenFile, "status-booted-networkd", stagedGeneration)
+	if bootedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
+		t.Fatalf("booted networkd katlctl generation status = %+v, want next-boot config apply", bootedGenerationStatus.GetConfigApply())
+	}
+	return guest, client
 }
 
 func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, clientRequestID, fixture string) agentapi.OperationAccepted {
@@ -373,6 +394,152 @@ func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, k
 	var gen agentapi.Generation
 	mustUnmarshalProtoJSON(t, output, &gen)
 	return gen
+}
+
+func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient) (*GuestControl, *AgentClient) {
+	t.Helper()
+	if node == nil || node.handle == nil {
+		t.Fatal("running installed runtime node handle is required")
+	}
+	health, err := client.Health(ctx)
+	if err != nil {
+		t.Fatalf("vmtest agent health before staged generation restart: %v", err)
+	}
+	previousBootID := strings.TrimSpace(health.GetBootId())
+	if previousBootID == "" {
+		t.Fatal("vmtest agent health returned empty boot ID before staged generation restart")
+	}
+
+	previous := node.handle
+	bootImage, bootFormat := bootDisk(t, previous.Plan)
+	restartConfig := previous.Config
+	restartConfig.Boot = VMBoot{
+		EFIImage:    previous.Plan.EFIImage,
+		Image:       bootImage,
+		ImageFormat: bootFormat,
+	}
+	restartConfig.OVMFVars = previous.Plan.OVMFVars
+	restartConfig.PreserveNVRAM = true
+	restartConfig.VSock.Enabled = true
+	restartConfig.VSock.GuestCID = previous.Plan.VSock.GuestCID
+	restartConfig.VSock.Port = previous.Plan.VSock.Port
+	restartConfig.Agent.RequireHealth = true
+	if restartConfig.Agent.Timeout == 0 {
+		restartConfig.Agent.Timeout = 30 * time.Second
+	}
+	if restartConfig.Boot.EFIImage == "" {
+		t.Fatal("VM plan has no EFI image for staged generation restart")
+	}
+	if restartConfig.OVMFVars == "" {
+		t.Fatal("VM plan has no OVMF vars image for staged generation restart")
+	}
+
+	if _, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name:    "poweroff-for-staged-generation",
+		Argv:    []string{"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-poweroff-for-staged-generation", "--on-active=1s", "/usr/bin/systemctl", "poweroff", "--no-block"},
+		Timeout: 10 * time.Second,
+	}); err != nil {
+		t.Fatalf("request guest poweroff before staged generation restart: %v", err)
+	}
+	_ = client.Close()
+	if err := waitGuestPoweredOff(previous, 45*time.Second); err != nil {
+		t.Fatalf("wait for guest poweroff before staged generation restart: %v", err)
+	}
+
+	handle, setupResult, ok := previous.runner.startVM(ctx, node.Result, restartConfig)
+	if !ok {
+		node.Result = setupResult
+		t.Fatalf("restart runtime VM for staged config apply: %s", setupResult.FailureSummary)
+	}
+	node.handle = handle
+	node.Result = handle.Result
+	node.VSock = handle.Plan.VSock
+	if handle.Plan.MACAddress != "" {
+		lease, err := WaitLibvirtLease(handle.ctx, handle.Plan.VirshPath, handle.Plan.LibvirtURI, handle.Plan.LibvirtNetwork, handle.Plan.MACAddress, 30*time.Second)
+		if err != nil {
+			t.Fatalf("wait libvirt lease after staged generation restart: %v", err)
+		}
+		node.Result.IPAddress = lease.IPAddress
+		if err := writeJSON(node.Result.Artifacts.LibvirtLease, lease); err != nil {
+			t.Fatalf("write libvirt lease after staged generation restart: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		next, err := DialAgent(dialCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+		cancel()
+		if err != nil {
+			lastErr = err
+			time.Sleep(time.Second)
+			failIfRestartExited(t, handle)
+			continue
+		}
+		healthCtx, healthCancel := context.WithTimeout(ctx, 5*time.Second)
+		health, err := next.Health(healthCtx)
+		healthCancel()
+		if err != nil {
+			lastErr = err
+			_ = next.Close()
+			time.Sleep(time.Second)
+			failIfRestartExited(t, handle)
+			continue
+		}
+		if bootID := strings.TrimSpace(health.GetBootId()); bootID != "" && bootID != previousBootID {
+			guest := NewGuestControl(node.Result, next)
+			if err := RunKatlcSmoke(ctx, guest); err != nil {
+				_ = next.Close()
+				t.Fatalf("katlc runtime smoke after staged generation restart: %v", err)
+			}
+			return guest, next
+		}
+		lastErr = errors.New("vmtest agent still reports previous boot ID")
+		_ = next.Close()
+		time.Sleep(time.Second)
+		failIfRestartExited(t, handle)
+	}
+	t.Fatalf("vmtest agent did not reconnect with a new boot ID after staged generation restart: %v", lastErr)
+	return nil, nil
+}
+
+func waitGuestPoweredOff(handle *VMHandle, timeout time.Duration) error {
+	if handle == nil || handle.done == nil {
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-handle.done:
+		if err := handle.Wait(); err != nil {
+			return err
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("guest did not power off within %s", timeout)
+	}
+}
+
+func failIfRestartExited(t *testing.T, handle *VMHandle) {
+	t.Helper()
+	select {
+	case <-handle.done:
+		err := handle.Wait()
+		t.Fatalf("runtime VM exited before vmtest agent reconnected after staged generation restart: %v", err)
+	default:
+	}
+}
+
+func bootDisk(t *testing.T, plan VMPlan) (string, DiskFormat) {
+	t.Helper()
+	for _, disk := range plan.DomainDisks {
+		if disk.Serial == "katl-boot" {
+			return disk.Path, disk.Format
+		}
+	}
+	t.Fatalf("VM plan has no katl-boot disk: %+v", plan.DomainDisks)
+	return "", ""
 }
 
 func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) []byte {
@@ -641,6 +808,50 @@ func assertGuestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, k
 	}
 }
 
+func assertGuestAddress(t *testing.T, ctx context.Context, guest *GuestControl, address string, prefix int) {
+	t.Helper()
+	want := address + "/" + strconv.Itoa(prefix)
+	record, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name: "ip-addresses",
+		Argv: []string{"ip", "-o", "-4", "address", "show"},
+	})
+	if err != nil {
+		t.Fatalf("read guest IPv4 addresses: %v", err)
+	}
+	output := readFile(t, record.Stdout)
+	if !strings.Contains(output, want) {
+		t.Fatalf("guest IPv4 addresses missing %s:\n%s", want, output)
+	}
+}
+
+func waitGuestFileContains(t *testing.T, ctx context.Context, guest *GuestControl, path string, wants ...string) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	var lastErr error
+	for time.Now().Before(deadline) {
+		record, err := guest.ReadFile(ctx, GuestFileRequest{
+			Name:         filepath.Base(path),
+			Path:         path,
+			StoreContent: true,
+		})
+		if err != nil {
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		last = readFile(t, record.Artifact)
+		if containsAll(last, wants...) {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("read guest file %s while waiting: %v", path, lastErr)
+	}
+	t.Fatalf("%s did not contain %q before timeout:\n%s", path, wants, last)
+}
+
 func assertGuestFileContains(t *testing.T, ctx context.Context, guest *GuestControl, path string, wants ...string) {
 	t.Helper()
 	content := readGuestFile(t, ctx, guest, path)
@@ -649,6 +860,15 @@ func assertGuestFileContains(t *testing.T, ctx context.Context, guest *GuestCont
 			t.Fatalf("%s missing %q:\n%s", path, want, content)
 		}
 	}
+}
+
+func containsAll(content string, wants ...string) bool {
+	for _, want := range wants {
+		if !strings.Contains(content, want) {
+			return false
+		}
+	}
+	return true
 }
 
 func assertGuestExists(t *testing.T, ctx context.Context, guest *GuestControl, path string) {

@@ -22,6 +22,7 @@ type VMBoot struct {
 	Initrd        string
 	CommandLine   []string
 	EFITree       string
+	EFIImage      string
 	Image         string
 	ImageFormat   DiskFormat
 	ImageSnapshot bool
@@ -41,6 +42,7 @@ type VMConfig struct {
 	LibvirtNetwork    string
 	OVMFCode          string
 	OVMFVars          string
+	PreserveNVRAM     bool
 	KVM               KVMPolicy
 	RAMMiB            int
 	CPUs              int
@@ -165,6 +167,7 @@ type LibvirtVMExecutor struct {
 	PollInterval      time.Duration
 	CleanupTimeout    time.Duration
 	PreserveOnFailure bool
+	PreserveNVRAM     bool
 	Preservation      *DomainPreservation
 }
 
@@ -191,7 +194,13 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 	started := false
 	defer func() {
 		if defined && !e.preserveDomain(ctx, runErr, started) {
-			_ = e.cleanupVirsh("undefine", e.DomainName, "--nvram")
+			args := []string{"undefine", e.DomainName}
+			if e.PreserveNVRAM {
+				args = append(args, "--keep-nvram")
+			} else {
+				args = append(args, "--nvram")
+			}
+			_ = e.cleanupVirsh(args...)
 		}
 	}()
 	if err := e.virsh(ctx, "start", e.DomainName); err != nil {
@@ -474,7 +483,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 	defaultExecutor := executor == nil
 	var preservation *DomainPreservation
 	if executor == nil {
-		executor, preservation = defaultVMExecutor(result, plan)
+		executor, preservation = defaultVMExecutor(result, plan, config)
 	}
 	if defaultExecutor && config.Expect != "" && config.SerialIdleTimeout == 0 {
 		config.SerialIdleTimeout = defaultSerialIdleTimeout
@@ -612,7 +621,7 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 	}
 }
 
-func defaultVMExecutor(result Result, plan VMPlan) (VMExecutor, *DomainPreservation) {
+func defaultVMExecutor(result Result, plan VMPlan, config VMConfig) (VMExecutor, *DomainPreservation) {
 	var preservation *DomainPreservation
 	preserve := result.Debug != nil && result.Debug.OnFailure
 	if preserve {
@@ -626,6 +635,7 @@ func defaultVMExecutor(result Result, plan VMPlan) (VMExecutor, *DomainPreservat
 		DomainName:        plan.DomainName,
 		DomainXMLFile:     plan.DomainXMLFile,
 		PreserveOnFailure: preserve,
+		PreserveNVRAM:     config.PreserveNVRAM,
 		Preservation:      preservation,
 	}, preservation
 }
@@ -991,7 +1001,15 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 		return err
 	}
 	if plan.OVMFVarsSource != "" {
-		if err := copyFile(plan.OVMFVarsSource, plan.OVMFVars, 0o600); err != nil {
+		if sameFilePath(plan.OVMFVarsSource, plan.OVMFVars) {
+			info, err := os.Stat(plan.OVMFVarsSource)
+			if err != nil {
+				return fmt.Errorf("stat OVMF vars image: %w", err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("OVMF vars image %s is not a regular file", plan.OVMFVarsSource)
+			}
+		} else if err := copyFile(plan.OVMFVarsSource, plan.OVMFVars, 0o600); err != nil {
 			return err
 		}
 	}
@@ -1002,8 +1020,18 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 		}
 	}
 	if plan.EFIImage != "" {
-		if err := createFATImage(context.Background(), plan.EFITree, plan.EFIImage, "KATLEFI", config.MediaRunner); err != nil {
-			return err
+		if config.Boot.EFIImage != "" {
+			info, err := os.Stat(config.Boot.EFIImage)
+			if err != nil {
+				return fmt.Errorf("stat VM EFI image: %w", err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("VM EFI image %s is not a regular file", config.Boot.EFIImage)
+			}
+		} else {
+			if err := createFATImage(context.Background(), plan.EFITree, plan.EFIImage, "KATLEFI", config.MediaRunner); err != nil {
+				return err
+			}
 		}
 	}
 	if config.PreseedDir != "" {
@@ -1300,18 +1328,25 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		nextTarget++
 	}
 	bootModes := 0
-	for _, value := range []string{boot.UKI, boot.EFITree, boot.Kernel} {
+	for _, value := range []string{boot.UKI, boot.EFITree, boot.EFIImage, boot.Kernel} {
 		if value != "" {
 			bootModes++
 		}
 	}
 	if bootModes > 1 {
-		return nil, "", "", "", "", errors.New("VM boot requires at most one of UKI, EFI tree, or kernel")
+		return nil, "", "", "", "", errors.New("VM boot requires at most one of UKI, EFI tree, EFI image, or kernel")
 	}
 	if boot.Kernel != "" {
 		if boot.Image != "" {
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 		}
+	} else if boot.EFIImage != "" {
+		efiImage = boot.EFIImage
+		add(efiImage, DiskRaw, "katl-efi", false)
+		if boot.Image == "" {
+			return nil, "", "", "", "", errors.New("VM boot from EFI image requires disk image")
+		}
+		add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 	} else if boot.UKI != "" {
 		efiImage = filepath.Join(result.VMDir, "efi.img")
 		add(efiImage, DiskRaw, "katl-efi", false)
@@ -1516,6 +1551,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return os.WriteFile(dst, data, mode)
+}
+
+func sameFilePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 func commandLine(name string, args []string) string {

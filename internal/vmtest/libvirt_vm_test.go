@@ -152,6 +152,39 @@ func TestVMPrepare(t *testing.T) {
 	}
 }
 
+func TestVMPrepareReusesExistingOVMFVars(t *testing.T) {
+	result, config := vmFixture(t)
+	existingVars := filepath.Join(result.VMDir, "OVMF_VARS.fd")
+	if err := os.MkdirAll(filepath.Dir(existingVars), 0o755); err != nil {
+		t.Fatalf("create VM dir: %v", err)
+	}
+	if err := os.WriteFile(existingVars, []byte("mutated vars"), 0o600); err != nil {
+		t.Fatalf("write existing OVMF vars: %v", err)
+	}
+	config.OVMFVars = existingVars
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if plan.OVMFVarsSource != existingVars || plan.OVMFVars != existingVars {
+		t.Fatalf("OVMF vars source=%q target=%q, want existing image %q", plan.OVMFVarsSource, plan.OVMFVars, existingVars)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+	vars, err := os.ReadFile(existingVars)
+	if err != nil {
+		t.Fatalf("read existing OVMF vars: %v", err)
+	}
+	if string(vars) != "mutated vars" {
+		t.Fatalf("existing OVMF vars were overwritten: %q", vars)
+	}
+}
+
 func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "vm-tmp")
 	var serial strings.Builder
@@ -405,6 +438,56 @@ esac
 	}
 }
 
+func TestLibvirtVMExecutorCanPreserveNVRAMOnCleanup(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "virsh.log")
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine)
+        exit 0
+        ;;
+    domstate)
+        printf 'shut off\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	t.Setenv("KATL_FAKE_VIRSH_LOG", logPath)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	err := LibvirtVMExecutor{
+		VirshPath:     virsh,
+		URI:           "qemu:///system",
+		DomainName:    "katl-run-1",
+		DomainXMLFile: xmlPath,
+		PollInterval:  time.Millisecond,
+		PreserveNVRAM: true,
+	}.Run(context.Background(), "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	log := readFile(t, logPath)
+	if !strings.Contains(log, "-c qemu:///system undefine katl-run-1 --keep-nvram") {
+		t.Fatalf("virsh log missing keep-NVRAM undefine:\n%s", log)
+	}
+	if strings.Contains(log, "undefine katl-run-1 --nvram") {
+		t.Fatalf("NVRAM cleanup was not preserved:\n%s", log)
+	}
+}
+
 func TestLibvirtVMExecutorFailsCrashedDomain(t *testing.T) {
 	tmp := t.TempDir()
 	virsh := filepath.Join(tmp, "virsh")
@@ -571,6 +654,40 @@ func TestVMEFITreeBoot(t *testing.T) {
 	}
 	if !strings.Contains(plan.DomainXML, `<source file="`+config.Boot.Image+`"></source>`) {
 		t.Fatalf("disk drive missing from XML:\n%s", plan.DomainXML)
+	}
+}
+
+func TestVMExistingEFIImageBoot(t *testing.T) {
+	result, config := vmFixture(t)
+	efiImage := filepath.Join(t.TempDir(), "efi.img")
+	if err := os.WriteFile(efiImage, []byte("existing efi image"), 0o644); err != nil {
+		t.Fatalf("write EFI image: %v", err)
+	}
+	config.Boot.UKI = ""
+	config.Boot.EFIImage = efiImage
+	config.Boot.ImageSnapshot = false
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if plan.EFIImage != efiImage || plan.EFITree != filepath.Join(result.VMDir, "efi") {
+		t.Fatalf("EFI plan image=%q tree=%q", plan.EFIImage, plan.EFITree)
+	}
+	if !strings.Contains(plan.DomainXML, `<source file="`+efiImage+`"></source>`) {
+		t.Fatalf("existing EFI image disk missing from XML:\n%s", plan.DomainXML)
+	}
+	if !strings.Contains(plan.DomainXML, `<source file="`+config.Boot.Image+`"></source>`) {
+		t.Fatalf("boot disk missing from XML:\n%s", plan.DomainXML)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+	if data, err := os.ReadFile(efiImage); err != nil || string(data) != "existing efi image" {
+		t.Fatalf("EFI image was modified: %q err=%v", data, err)
 	}
 }
 

@@ -44,6 +44,7 @@ type ToolResult struct {
 type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
 type BootRootMounter func(context.Context, string) error
+type BootEntrySetter func(context.Context, string, string) error
 
 type Executor struct {
 	Root                 string
@@ -54,6 +55,7 @@ type Executor struct {
 	RunReadiness         ToolRunner
 	RunPostHealth        ToolRunner
 	MountBootRoot        BootRootMounter
+	SetBootOneshot       BootEntrySetter
 	ConfigApplyRunner    configapply.CommandRunner
 	ConfigApplyActivator configapply.ConfextActivator
 	Async                bool
@@ -62,7 +64,7 @@ type Executor struct {
 type toolPlan = operation.ExecutorPlan
 
 func NewExecutor(root string, store operation.Store, agentStartID string) *Executor {
-	return &Executor{
+	executor := &Executor{
 		Root:          strings.TrimSpace(root),
 		Store:         store,
 		AgentStartID:  strings.TrimSpace(agentStartID),
@@ -73,6 +75,10 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		MountBootRoot: mountRuntimeBootRoot,
 		Async:         true,
 	}
+	if runtimeRoot(executor.Root) == "/" {
+		executor.SetBootOneshot = setBootOneshot
+	}
+	return executor
 }
 
 func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileReport, error) {
@@ -613,6 +619,14 @@ func (e *Executor) commitCandidateGeneration(ctx context.Context, record operati
 	if err := generation.WriteBootSelection(e.Root, selection); err != nil {
 		return fmt.Errorf("arm boot health validation: %w", err)
 	}
+	if e.SetBootOneshot != nil {
+		if err := e.SetBootOneshot(ctx, e.Root, selection.TrialBootEntry); err != nil {
+			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
+				return fmt.Errorf("arm boot health validation: %w; restore boot selection: %w", err, restoreErr)
+			}
+			return fmt.Errorf("arm boot health validation: %w", err)
+		}
+	}
 	status.CommitState = generation.CommitStateCommitted
 	status.BootState = generation.BootStateTrying
 	status.HealthState = generation.HealthStateUnknown
@@ -912,6 +926,26 @@ func bootRootIsMountpoint(ctx context.Context, bootRoot string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("check boot root mountpoint %s: %s", bootRoot, toolFailure(result))
+}
+
+func setBootOneshot(ctx context.Context, root string, bootEntry string) error {
+	bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
+	if bootEntry == "." || bootEntry == "" {
+		return fmt.Errorf("boot entry is required")
+	}
+	args := []string{"bootctl"}
+	root = runtimeRoot(root)
+	if root != "/" {
+		args = append(args, "--esp-path="+filepath.Join(root, "efi"))
+	}
+	args = append(args, "set-oneshot", bootEntry)
+	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
+	defer cancel()
+	result := runChildProcess(bootCtx, args, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("%s: %s", strings.Join(args, " "), toolFailure(result))
+	}
+	return nil
 }
 
 func runChildProcess(ctx context.Context, argv []string, started func(int)) ToolResult {
