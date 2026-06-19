@@ -90,6 +90,32 @@ require_packages() {
     done
 }
 
+lock_pkgs() {
+    local set="$1"
+    local lock="$repo_root/mkosi.profiles/resource-package-lock.json"
+    [[ -f "$lock" ]] || fail "package lock not found: $(rel "$lock")"
+    command -v jq >/dev/null 2>&1 || fail "jq is required to inspect $(rel "$lock")"
+    jq -er --arg set "$set" '
+        .packageSets[]
+        | select(.name == $set)
+        | .packages[]
+        | .name
+    ' "$lock"
+}
+
+deny_lock_packages() {
+    local set="$1"
+    local label="$2"
+    shift 2
+    local package packages
+    packages="$(lock_pkgs "$set")" || fail "package lock missing package set: $set"
+    for package in "$@"; do
+        if grep -Fxq "$package" <<<"$packages"; then
+            fail "$label package lock must not include $package"
+        fi
+    done
+}
+
 check_profiles() {
     local installer_profile="$repo_root/mkosi.profiles/installer-image/mkosi.conf"
     local runtime_profile="$repo_root/mkosi.profiles/runtime/mkosi.conf"
@@ -99,8 +125,10 @@ check_profiles() {
     need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=_build/mkosi/package-cache"
     require_packages "$installer_profile" installer kernel-core kernel-modules
     require_packages "$runtime_profile" runtime kernel-core kernel-modules kmod conntrack-tools iptables-nft ipset ipvsadm containernetworking-plugins
-    deny "$installer_profile" installer mkosi dnf dnf5 gcc kubeadm kubelet kubectl containerd crun
+    deny "$installer_profile" installer mkosi dnf dnf5 rpm yum gcc go make cc kubeadm kubelet kubectl crictl containerd crun helm flux cilium rook
     deny "$runtime_profile" runtime mkosi dnf dnf5 rpm yum gcc go make cc curl wget kubeadm kubelet kubectl crictl helm flux cilium rook coredns
+    deny_lock_packages installer-image installer mkosi dnf dnf5 rpm yum gcc go make kubeadm kubelet kubectl crictl containerd crun helm flux cilium rook coredns
+    deny_lock_packages runtime runtime mkosi dnf dnf5 rpm yum gcc go make curl wget kubeadm kubelet kubectl crictl helm flux cilium rook coredns
     echo "mkosi profile controls: docs/recommends disabled, caches external, denied packages absent"
 }
 

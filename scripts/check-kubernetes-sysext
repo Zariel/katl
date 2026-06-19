@@ -68,6 +68,11 @@ misses_path() {
     fi
 }
 
+runtime_has_path() {
+    local path="$1"
+    [[ -e "$runtime_root$path" ]] || fail "missing runtime prerequisite path: $path"
+}
+
 need awk
 need dd
 need dump.erofs
@@ -138,12 +143,17 @@ for path in \
     /usr/bin/kubectl \
     /usr/bin/kubelet \
     /usr/bin/crictl \
-    /usr/bin/conntrack \
     /usr/bin/ethtool \
-    /usr/bin/socat \
-    /usr/bin/iptables-nft
+    /usr/bin/socat
 do
     has_path "$path"
+done
+
+for path in \
+    /usr/bin/conntrack \
+    /usr/bin/iptables-nft
+do
+    runtime_has_path "$path"
 done
 
 release="$(dump.erofs --cat --path /usr/lib/extension-release.d/extension-release.katl-kubernetes "$part" 2>&1)"
