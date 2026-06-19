@@ -102,6 +102,38 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 	}
 }
 
+func TestLoadInventoryPreservesKubernetesBundleSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inventory.yaml")
+	bundleRef := "v1.36.1@sha256:" + strings.Repeat("a", 64)
+	if err := os.WriteFile(path, []byte(`
+controlPlaneEndpoint: api.katl.test:6443
+kubernetesVersion: v1.36.1
+kubernetesBundleSource: https://artifacts.example.test/kubernetes
+kubernetesBundleRef: `+bundleRef+`
+nodes:
+- name: cp-1
+  address: 192.0.2.10
+  systemRole: control-plane
+  access:
+    method: katlc-agent
+    user: root
+    credentialRef: file:/tmp/token
+  kubeadmConfig:
+    ref: control-plane
+    path: /etc/katl/kubeadm/control-plane/config.yaml
+    intent: init
+`), 0o600); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+	inv, err := loadInventory(path)
+	if err != nil {
+		t.Fatalf("loadInventory() error = %v", err)
+	}
+	if inv.KubernetesBundleSource != "https://artifacts.example.test/kubernetes" || inv.KubernetesBundleRef != bundleRef {
+		t.Fatalf("bundle selection = %q %q", inv.KubernetesBundleSource, inv.KubernetesBundleRef)
+	}
+}
+
 func TestConfigTopologyCommandPrintsResolvedContext(t *testing.T) {
 	configPath := writeKatlctlConfig(t, `currentContext: prod
 contexts:

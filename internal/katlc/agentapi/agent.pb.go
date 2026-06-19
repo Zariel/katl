@@ -317,6 +317,8 @@ type BootstrapOperationRequest struct {
 	KubeadmInputDigest       string                 `protobuf:"bytes,8,opt,name=kubeadm_input_digest,json=kubeadmInputDigest,proto3" json:"kubeadm_input_digest,omitempty"`
 	JoinMaterialRef          string                 `protobuf:"bytes,9,opt,name=join_material_ref,json=joinMaterialRef,proto3" json:"join_material_ref,omitempty"`
 	WorkerJoinMaterial       *WorkerJoinMaterial    `protobuf:"bytes,10,opt,name=worker_join_material,json=workerJoinMaterial,proto3" json:"worker_join_material,omitempty"`
+	KubernetesBundleSource   string                 `protobuf:"bytes,11,opt,name=kubernetes_bundle_source,json=kubernetesBundleSource,proto3" json:"kubernetes_bundle_source,omitempty"`
+	KubernetesBundleRef      string                 `protobuf:"bytes,12,opt,name=kubernetes_bundle_ref,json=kubernetesBundleRef,proto3" json:"kubernetes_bundle_ref,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -419,6 +421,20 @@ func (x *BootstrapOperationRequest) GetWorkerJoinMaterial() *WorkerJoinMaterial 
 		return x.WorkerJoinMaterial
 	}
 	return nil
+}
+
+func (x *BootstrapOperationRequest) GetKubernetesBundleSource() string {
+	if x != nil {
+		return x.KubernetesBundleSource
+	}
+	return ""
+}
+
+func (x *BootstrapOperationRequest) GetKubernetesBundleRef() string {
+	if x != nil {
+		return x.KubernetesBundleRef
+	}
+	return ""
 }
 
 type WorkerJoinMaterial struct {
@@ -2423,7 +2439,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\x12F\n" +
 	"\tbootstrap\x18\f \x01(\v2(.katl.agent.v1.BootstrapOperationRequestR\tbootstrap\x12M\n" +
 	"\fconfig_apply\x18\r \x01(\v2*.katl.agent.v1.ConfigApplyOperationRequestR\vconfigApply\x12o\n" +
-	"\x18kubernetes_sysext_update\x18\x0e \x01(\v25.katl.agent.v1.KubernetesSysextUpdateOperationRequestR\x16kubernetesSysextUpdate\"\xa8\x04\n" +
+	"\x18kubernetes_sysext_update\x18\x0e \x01(\v25.katl.agent.v1.KubernetesSysextUpdateOperationRequestR\x16kubernetesSysextUpdate\"\x96\x05\n" +
 	"\x19BootstrapOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vsystem_role\x18\x02 \x01(\tR\n" +
@@ -2436,7 +2452,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x14kubeadm_input_digest\x18\b \x01(\tR\x12kubeadmInputDigest\x12*\n" +
 	"\x11join_material_ref\x18\t \x01(\tR\x0fjoinMaterialRef\x12S\n" +
 	"\x14worker_join_material\x18\n" +
-	" \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\"P\n" +
+	" \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\x128\n" +
+	"\x18kubernetes_bundle_source\x18\v \x01(\tR\x16kubernetesBundleSource\x122\n" +
+	"\x15kubernetes_bundle_ref\x18\f \x01(\tR\x13kubernetesBundleRef\"P\n" +
 	"\x12WorkerJoinMaterial\x12\x1b\n" +
 	"\tjoin_argv\x18\x01 \x03(\tR\bjoinArgv\x12\x1d\n" +
 	"\n" +

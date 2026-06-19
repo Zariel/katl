@@ -35,10 +35,12 @@ const (
 )
 
 type Inventory struct {
-	ControlPlaneEndpoint string     `json:"controlPlaneEndpoint"`
-	KubernetesVersion    string     `json:"kubernetesVersion"`
-	Bootstrap            *Bootstrap `json:"bootstrap,omitempty" yaml:"bootstrap"`
-	Nodes                []Node     `json:"nodes"`
+	ControlPlaneEndpoint   string     `json:"controlPlaneEndpoint"`
+	KubernetesVersion      string     `json:"kubernetesVersion"`
+	KubernetesBundleSource string     `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef    string     `json:"kubernetesBundleRef,omitempty"`
+	Bootstrap              *Bootstrap `json:"bootstrap,omitempty" yaml:"bootstrap"`
+	Nodes                  []Node     `json:"nodes"`
 }
 
 type Bootstrap struct {
@@ -88,12 +90,14 @@ type PlanRequest struct {
 }
 
 type Plan struct {
-	InitNode             string            `json:"initNode"`
-	ControlPlaneEndpoint string            `json:"controlPlaneEndpoint"`
-	KubernetesVersion    string            `json:"kubernetesVersion"`
-	Bootstrap            *Bootstrap        `json:"bootstrap,omitempty"`
-	Nodes                []PlannedNode     `json:"nodes"`
-	AddressOverrides     []AddressOverride `json:"addressOverrides,omitempty"`
+	InitNode               string            `json:"initNode"`
+	ControlPlaneEndpoint   string            `json:"controlPlaneEndpoint"`
+	KubernetesVersion      string            `json:"kubernetesVersion"`
+	KubernetesBundleSource string            `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef    string            `json:"kubernetesBundleRef,omitempty"`
+	Bootstrap              *Bootstrap        `json:"bootstrap,omitempty"`
+	Nodes                  []PlannedNode     `json:"nodes"`
+	AddressOverrides       []AddressOverride `json:"addressOverrides,omitempty"`
 }
 
 type PlannedNode struct {
@@ -200,14 +204,49 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 	sort.Slice(overrides, func(i, j int) bool {
 		return overrides[i].Node < overrides[j].Node
 	})
+	bundleSource := strings.TrimSpace(request.Inventory.KubernetesBundleSource)
+	bundleRef := strings.TrimSpace(request.Inventory.KubernetesBundleRef)
+	if (bundleSource == "") != (bundleRef == "") {
+		return Plan{}, fmt.Errorf("kubernetesBundleSource and kubernetesBundleRef must be set together")
+	}
+	if bundleSource != "" {
+		if err := validateKubernetesBundleSelection(bundleSource, bundleRef, version); err != nil {
+			return Plan{}, err
+		}
+	}
 	return Plan{
-		InitNode:             initNode,
-		ControlPlaneEndpoint: controlPlaneEndpoint,
-		KubernetesVersion:    version,
-		Bootstrap:            request.Inventory.Bootstrap,
-		Nodes:                nodes,
-		AddressOverrides:     overrides,
+		InitNode:               initNode,
+		ControlPlaneEndpoint:   controlPlaneEndpoint,
+		KubernetesVersion:      version,
+		KubernetesBundleSource: bundleSource,
+		KubernetesBundleRef:    bundleRef,
+		Bootstrap:              request.Inventory.Bootstrap,
+		Nodes:                  nodes,
+		AddressOverrides:       overrides,
 	}, nil
+}
+
+func validateKubernetesBundleSelection(source string, ref string, kubernetesVersion string) error {
+	sourceURL, err := url.Parse(source)
+	if err != nil || !sourceURL.IsAbs() || sourceURL.Scheme != "https" || sourceURL.Host == "" {
+		return fmt.Errorf("kubernetesBundleSource must be an absolute HTTPS URL")
+	}
+	payloadVersion, ok := payloadVersionFromBundleRef(ref)
+	if !ok {
+		return fmt.Errorf("kubernetesBundleRef is invalid: expected vMAJOR.MINOR.PATCH@sha256:<digest>")
+	}
+	if payloadVersion != strings.TrimSpace(kubernetesVersion) {
+		return fmt.Errorf("kubernetesBundleRef payload version %q does not match Kubernetes version %q", payloadVersion, kubernetesVersion)
+	}
+	return nil
+}
+
+func payloadVersionFromBundleRef(ref string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(ref), "@")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !sha256DigestPattern.MatchString(parts[1]) {
+		return "", false
+	}
+	return strings.TrimSpace(parts[0]), true
 }
 
 func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
@@ -465,6 +504,7 @@ func readinessDiagnostics(node PlannedNode, snapshot ReadinessSnapshot) []Diagno
 
 var (
 	urlPattern                = regexp.MustCompile(`https?://[^\s]+`)
+	sha256DigestPattern       = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	dnsLabelPattern           = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	bootstrapTokenPattern     = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
 	discoveryTokenHashPattern = regexp.MustCompile(`(?i)\b(discovery-token-ca-cert-hash\s+)?sha256:[a-f0-9]{64}\b`)

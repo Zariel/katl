@@ -44,6 +44,73 @@ func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
 	}
 }
 
+func TestStoreAllowsBootstrapBundleDigestResolution(t *testing.T) {
+	store := testStore(t)
+	created, err := store.Create(bootstrapBundleRecord("op-bootstrap-digest"), "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	manifestDigest := "sha256:" + strings.Repeat("2", 64)
+	payloadDigest := "sha256:" + strings.Repeat("3", 64)
+	updated, err := store.Update(created.OperationID, "prepare-bootstrap-runtime-complete", "prepare-bootstrap-runtime", func(record OperationRecord) (OperationRecord, error) {
+		record.BootstrapRequest.KubernetesBundleManifestDigest = manifestDigest
+		record.BootstrapRequest.KubernetesSysextPayloadDigest = payloadDigest
+		return record, nil
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.BootstrapRequest.KubernetesBundleManifestDigest != manifestDigest || updated.BootstrapRequest.KubernetesSysextPayloadDigest != payloadDigest {
+		t.Fatalf("resolved bundle digests = %+v", updated.BootstrapRequest)
+	}
+}
+
+func TestStoreRejectsBootstrapBundleRequestMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*BootstrapRequest)
+	}{
+		{
+			name: "source",
+			mutate: func(request *BootstrapRequest) {
+				request.KubernetesBundleSource = "https://example.invalid/other"
+			},
+		},
+		{
+			name: "ref",
+			mutate: func(request *BootstrapRequest) {
+				request.KubernetesBundleRef = "v1.36.1@sha256:" + strings.Repeat("4", 64)
+			},
+		},
+		{
+			name: "resolved-digest",
+			mutate: func(request *BootstrapRequest) {
+				request.KubernetesBundleManifestDigest = "sha256:" + strings.Repeat("5", 64)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := testStore(t)
+			record := bootstrapBundleRecord("op-bootstrap-mutate-" + tt.name)
+			record.BootstrapRequest.KubernetesBundleManifestDigest = "sha256:" + strings.Repeat("2", 64)
+			record.BootstrapRequest.KubernetesSysextPayloadDigest = "sha256:" + strings.Repeat("3", 64)
+			created, err := store.Create(record, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			_, err = store.Update(created.OperationID, "mutate-bootstrap-request", "prepare-bootstrap-runtime", func(record OperationRecord) (OperationRecord, error) {
+				tt.mutate(record.BootstrapRequest)
+				return record, nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "bootstrapRequest is immutable") {
+				t.Fatalf("Update() error = %v, want immutable bootstrap request", err)
+			}
+		})
+	}
+}
+
 func TestStoreWritesGoldenAcceptedJournalEvent(t *testing.T) {
 	store := testStore(t)
 	created := mustCreate(t, store, "op-golden")
@@ -833,6 +900,19 @@ func baseRecord(id string) OperationRecord {
 		PreviousGenerationID:  "0",
 		CandidateGenerationID: "1",
 	}
+}
+
+func bootstrapBundleRecord(id string) OperationRecord {
+	record := baseRecord(id)
+	record.BootstrapRequest = &BootstrapRequest{
+		InventoryNodeName:        "cp-1",
+		SystemRole:               "control-plane",
+		KubernetesPayloadVersion: "v1.36.1",
+		KubernetesBundleSource:   "https://example.invalid/kubernetes",
+		KubernetesBundleRef:      "v1.36.1@sha256:" + strings.Repeat("1", 64),
+		BootstrapProfileRef:      "control-plane",
+	}
+	return record
 }
 
 func assertExists(t *testing.T, path string) {

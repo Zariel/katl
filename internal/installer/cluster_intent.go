@@ -55,6 +55,8 @@ type ClusterIntentInventory struct {
 type ClusterIntentKubernetes struct {
 	PayloadVersion string `json:"payloadVersion,omitempty"`
 	CatalogRef     string `json:"catalogRef,omitempty"`
+	BundleSource   string `json:"bundleSource,omitempty"`
+	BundleRef      string `json:"bundleRef,omitempty"`
 	SysextPath     string `json:"sysextPath,omitempty"`
 	SysextSHA256   string `json:"sysextSHA256,omitempty"`
 	SysextSize     uint64 `json:"sysextSizeBytes,omitempty"`
@@ -195,6 +197,8 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		intent.Inventory.Labels = copyBootstrapLabels(bootstrap.Labels)
 		intent.Inventory.Taints = append([]manifest.NodeTaint(nil), bootstrap.Taints...)
 		intent.Kubernetes.CatalogRef = strings.TrimSpace(bootstrap.KubernetesCatalogRef)
+		intent.Kubernetes.BundleSource = strings.TrimSpace(bootstrap.KubernetesBundleSource)
+		intent.Kubernetes.BundleRef = strings.TrimSpace(bootstrap.KubernetesBundleRef)
 	}
 	if request.KubernetesSysext != nil {
 		intent.Kubernetes.SysextPath = strings.TrimSpace(request.KubernetesSysext.Path)

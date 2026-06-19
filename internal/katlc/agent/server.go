@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -977,6 +978,24 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 	if strings.TrimSpace(request.KubernetesPayloadVersion) == "" {
 		return fmt.Errorf("kubernetesPayloadVersion is required")
 	}
+	if (strings.TrimSpace(request.KubernetesBundleSource) == "") != (strings.TrimSpace(request.KubernetesBundleRef) == "") {
+		return fmt.Errorf("kubernetesBundleSource and kubernetesBundleRef must be set together")
+	}
+	if strings.TrimSpace(request.KubernetesBundleSource) != "" {
+		parsed, err := url.Parse(strings.TrimSpace(request.KubernetesBundleSource))
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return fmt.Errorf("kubernetesBundleSource must be an absolute HTTPS URL")
+		}
+	}
+	if strings.TrimSpace(request.KubernetesBundleRef) != "" {
+		parts := strings.Split(strings.TrimSpace(request.KubernetesBundleRef), "@")
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != strings.TrimSpace(request.KubernetesPayloadVersion) {
+			return fmt.Errorf("kubernetesBundleRef must be pinned to kubernetesPayloadVersion")
+		}
+		if err := validateDigestValue("kubernetesBundleRef digest", parts[1]); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
 		return fmt.Errorf("bootstrapProfileRef is required")
 	}
@@ -1010,6 +1029,8 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		InventoryNodeName:        strings.TrimSpace(request.InventoryNodeName),
 		SystemRole:               strings.TrimSpace(request.SystemRole),
 		KubernetesPayloadVersion: strings.TrimSpace(request.KubernetesPayloadVersion),
+		KubernetesBundleSource:   strings.TrimSpace(request.KubernetesBundleSource),
+		KubernetesBundleRef:      strings.TrimSpace(request.KubernetesBundleRef),
 		BootstrapProfileRef:      strings.TrimSpace(request.BootstrapProfileRef),
 		ControlPlaneEndpoint:     strings.TrimSpace(request.ControlPlaneEndpoint),
 		StableEndpoint:           strings.TrimSpace(request.StableEndpoint),

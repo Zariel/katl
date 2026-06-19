@@ -181,7 +181,7 @@ func buildKatlctlForConfigApplySmoke(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "katlctl")
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", path, "./cmd/katlctl")
+	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", path, "./cmd/katlctl")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = os.Environ()
 	if output, err := cmd.CombinedOutput(); err != nil {

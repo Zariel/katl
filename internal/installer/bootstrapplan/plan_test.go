@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +13,11 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/artifact"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/sysextcatalog"
 )
 
 func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
@@ -167,6 +171,92 @@ func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 	}
 	assertBootSelectionStillGeneration0(t, root)
 	assertNoKubeadmMutation(t, root)
+}
+
+func TestCreateFetchesKubernetesBundleFromStoredIntent(t *testing.T) {
+	root := cleanRoot(t, "control-plane")
+	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "fetched kubernetes sysext payload")
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
+	t.Cleanup(server.Close)
+	editIntent(t, root, func(intent *installer.ClusterIntent) {
+		intent.Kubernetes.CatalogRef = ""
+		intent.Kubernetes.BundleSource = server.URL
+		intent.Kubernetes.BundleRef = fixture.ref
+		intent.Kubernetes.SysextPath = ""
+		intent.Kubernetes.SysextSHA256 = ""
+		intent.Kubernetes.SysextSize = 0
+	})
+	if err := os.Remove(filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")); err != nil {
+		t.Fatalf("remove bundled sysext: %v", err)
+	}
+	req := controlPlaneRequest()
+	req.KubernetesBundleSource = server.URL
+	req.KubernetesBundleRef = fixture.ref
+
+	plan, err := Create(Request{
+		Root:         root,
+		OperationID:  "bootstrap-init-cp-1",
+		Kind:         OperationKindInit,
+		Bootstrap:    req,
+		BundleClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	selected := plan.RuntimeInputs.SelectedKubernetesSysext
+	if selected.PayloadVersion != "v1.36.1" || selected.BundleManifestDigest != fixture.bundleDigest || selected.SysextPayloadDigest == "" {
+		t.Fatalf("selected fetched sysext = %#v", selected)
+	}
+	if !strings.HasPrefix(selected.Path, "/var/lib/katl/artifacts/kubernetes-bundles/sysext/sha256-") {
+		t.Fatalf("selected path = %q", selected.Path)
+	}
+	if selected.ArtifactVersion == "" || selected.BundleSource != server.URL || selected.BundleRef != fixture.ref {
+		t.Fatalf("selected bundle identity = %#v", selected)
+	}
+	read, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	record, err := read.Read("bootstrap-init-cp-1")
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if record.BootstrapRequest == nil || record.BootstrapRequest.KubernetesBundleManifestDigest != fixture.bundleDigest || record.BootstrapRequest.KubernetesSysextPayloadDigest == "" {
+		t.Fatalf("stored bootstrap request = %#v", record.BootstrapRequest)
+	}
+	assertBootSelectionStillGeneration0(t, root)
+	assertNoKubeadmMutation(t, root)
+}
+
+func TestCreateFetchesKubernetesBundleFromOperationWhenStoredIntentUnpinned(t *testing.T) {
+	root := cleanRoot(t, "control-plane")
+	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "operation selected kubernetes sysext payload")
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
+	t.Cleanup(server.Close)
+	if err := os.Remove(filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")); err != nil {
+		t.Fatalf("remove bundled sysext: %v", err)
+	}
+	req := controlPlaneRequest()
+	req.KubernetesBundleSource = server.URL
+	req.KubernetesBundleRef = fixture.ref
+
+	plan, err := Create(Request{
+		Root:         root,
+		OperationID:  "bootstrap-init-cp-1",
+		Kind:         OperationKindInit,
+		Bootstrap:    req,
+		BundleClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	selected := plan.RuntimeInputs.SelectedKubernetesSysext
+	if selected.PayloadVersion != "v1.36.1" || selected.BundleSource != server.URL || selected.BundleRef != fixture.ref {
+		t.Fatalf("selected fetched sysext = %#v", selected)
+	}
+	if selected.BundleManifestDigest != fixture.bundleDigest || selected.SysextPayloadDigest == "" {
+		t.Fatalf("selected bundle digests = %#v", selected)
+	}
 }
 
 func TestCreateRefusalsLeaveNoPartialPersistentState(t *testing.T) {
@@ -418,6 +508,70 @@ func editIntent(t *testing.T, root string, edit func(*installer.ClusterIntent)) 
 func writeSysext(t *testing.T, root string, content string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), content)
+}
+
+type kubernetesBundleFixture struct {
+	root         string
+	ref          string
+	bundleDigest string
+}
+
+func writeKubernetesBundleFixture(t *testing.T, payloadVersion string, payload string) kubernetesBundleFixture {
+	t.Helper()
+	sourceDir := t.TempDir()
+	outputDir := t.TempDir()
+	rawPath := filepath.Join(sourceDir, "katl-kubernetes-"+payloadVersion+".raw")
+	if err := os.WriteFile(rawPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := artifact.LocalMeta{
+		Name:           sysextcatalog.KubernetesName,
+		Kind:           artifact.ArtifactSysext,
+		Format:         "sysext",
+		Path:           filepath.Base(rawPath),
+		SizeBytes:      int64(len(payload)),
+		SHA256:         digest([]byte(payload)),
+		Version:        payloadVersion + "-build.1",
+		PayloadVersion: payloadVersion,
+		Architecture:   "x86_64",
+		SourceRepo: &artifact.SourceRepo{
+			ID:      "kubernetes",
+			BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
+			Minor:   "v1.36",
+		},
+		PackageVersions: map[string]string{
+			"cri-tools": "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubeadm":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubectl":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubelet":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+		},
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &artifact.Compat{
+			Interface:    "katl-runtime-1",
+			ArtifactPath: filepath.Join(sourceDir, "katl-runtime-root.squashfs"),
+		},
+		Created: "2026-06-04T20:00:00Z",
+	}
+	metadataPath := rawPath + ".json"
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := sysextcatalog.StageKubernetesSysext(sysextcatalog.StageRequest{
+		MetadataPath: metadataPath,
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("StageKubernetesSysext() error = %v", err)
+	}
+	return kubernetesBundleFixture{
+		root:         outputDir,
+		ref:          payloadVersion + "@" + staged.BundleManifestDigest,
+		bundleDigest: staged.BundleManifestDigest,
+	}
 }
 
 func controlPlaneRequest() operation.BootstrapRequest {

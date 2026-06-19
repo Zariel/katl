@@ -125,18 +125,22 @@ type ExecutorPlan struct {
 }
 
 type BootstrapRequest struct {
-	InventoryNodeName        string `json:"inventoryNodeName"`
-	SystemRole               string `json:"systemRole"`
-	KubernetesPayloadVersion string `json:"kubernetesPayloadVersion"`
-	BootstrapProfileRef      string `json:"bootstrapProfileRef"`
-	ControlPlaneEndpoint     string `json:"controlPlaneEndpoint,omitempty"`
-	StableEndpoint           string `json:"stableEndpoint,omitempty"`
-	CandidateGenerationID    string `json:"candidateGenerationID,omitempty"`
-	KubeadmInputDigest       string `json:"kubeadmInputDigest,omitempty"`
-	JoinMaterialRef          string `json:"joinMaterialRef,omitempty"`
-	JoinMaterialDigest       string `json:"joinMaterialDigest,omitempty"`
-	JoinMaterialExpiresAt    string `json:"joinMaterialExpiresAt,omitempty"`
-	TemporaryJoinConfigPath  string `json:"temporaryJoinConfigPath,omitempty"`
+	InventoryNodeName              string `json:"inventoryNodeName"`
+	SystemRole                     string `json:"systemRole"`
+	KubernetesPayloadVersion       string `json:"kubernetesPayloadVersion"`
+	KubernetesBundleSource         string `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef            string `json:"kubernetesBundleRef,omitempty"`
+	KubernetesBundleManifestDigest string `json:"kubernetesBundleManifestDigest,omitempty"`
+	KubernetesSysextPayloadDigest  string `json:"kubernetesSysextPayloadDigest,omitempty"`
+	BootstrapProfileRef            string `json:"bootstrapProfileRef"`
+	ControlPlaneEndpoint           string `json:"controlPlaneEndpoint,omitempty"`
+	StableEndpoint                 string `json:"stableEndpoint,omitempty"`
+	CandidateGenerationID          string `json:"candidateGenerationID,omitempty"`
+	KubeadmInputDigest             string `json:"kubeadmInputDigest,omitempty"`
+	JoinMaterialRef                string `json:"joinMaterialRef,omitempty"`
+	JoinMaterialDigest             string `json:"joinMaterialDigest,omitempty"`
+	JoinMaterialExpiresAt          string `json:"joinMaterialExpiresAt,omitempty"`
+	TemporaryJoinConfigPath        string `json:"temporaryJoinConfigPath,omitempty"`
 }
 
 type ConfigApplyRequest struct {
@@ -787,7 +791,7 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !hasPrefixArtifacts(next.DiagnosticArtifacts, previous.DiagnosticArtifacts) {
 		return fmt.Errorf("operation diagnosticArtifacts must be append-only")
 	}
-	if !reflect.DeepEqual(next.BootstrapRequest, previous.BootstrapRequest) {
+	if !bootstrapRequestTransitionAllowed(previous.BootstrapRequest, next.BootstrapRequest) {
 		return fmt.Errorf("operation bootstrapRequest is immutable")
 	}
 	if !reflect.DeepEqual(next.ConfigApplyRequest, previous.ConfigApplyRequest) {
@@ -797,6 +801,29 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
 	}
 	return nil
+}
+
+func bootstrapRequestTransitionAllowed(previous *BootstrapRequest, next *BootstrapRequest) bool {
+	if previous == nil || next == nil {
+		return previous == nil && next == nil
+	}
+	previousComparable := *previous
+	nextComparable := *next
+	previousComparable.KubernetesBundleManifestDigest = ""
+	nextComparable.KubernetesBundleManifestDigest = ""
+	previousComparable.KubernetesSysextPayloadDigest = ""
+	nextComparable.KubernetesSysextPayloadDigest = ""
+	if !reflect.DeepEqual(previousComparable, nextComparable) {
+		return false
+	}
+	return resolvedDigestTransitionAllowed(previous.KubernetesBundleManifestDigest, next.KubernetesBundleManifestDigest) &&
+		resolvedDigestTransitionAllowed(previous.KubernetesSysextPayloadDigest, next.KubernetesSysextPayloadDigest)
+}
+
+func resolvedDigestTransitionAllowed(previous string, next string) bool {
+	previous = strings.TrimSpace(previous)
+	next = strings.TrimSpace(next)
+	return previous == next || previous == "" && next != ""
 }
 
 func ClassifyStale(record OperationRecord) string {
@@ -1333,6 +1360,19 @@ func validateBootstrapRequest(request BootstrapRequest) error {
 	if strings.TrimSpace(request.KubernetesPayloadVersion) == "" {
 		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion is required")
 	}
+	if (strings.TrimSpace(request.KubernetesBundleSource) == "") != (strings.TrimSpace(request.KubernetesBundleRef) == "") {
+		return fmt.Errorf("bootstrapRequest kubernetesBundleSource and kubernetesBundleRef must be set together")
+	}
+	if strings.TrimSpace(request.KubernetesBundleManifestDigest) != "" {
+		if err := validateSHA256Digest("bootstrapRequest kubernetesBundleManifestDigest", request.KubernetesBundleManifestDigest); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(request.KubernetesSysextPayloadDigest) != "" {
+		if err := validateSHA256Digest("bootstrapRequest kubernetesSysextPayloadDigest", request.KubernetesSysextPayloadDigest); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef is required")
 	}
@@ -1393,6 +1433,14 @@ func validateSHA256Hex(name string, value string) error {
 		return fmt.Errorf("%s SHA-256 is invalid: %w", name, err)
 	}
 	return nil
+}
+
+func validateSHA256Digest(name string, value string) error {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "sha256:") {
+		return fmt.Errorf("%s must start with sha256:", name)
+	}
+	return validateSHA256Hex(name, strings.TrimPrefix(value, "sha256:"))
 }
 
 func mutatingPhase(phase string) bool {

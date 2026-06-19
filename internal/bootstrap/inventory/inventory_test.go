@@ -237,6 +237,41 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 			},
 			want: "address override",
 		},
+		{
+			name: "partial bundle source",
+			mut: func(inv Inventory) PlanRequest {
+				inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+				return PlanRequest{Inventory: inv}
+			},
+			want: "must be set together",
+		},
+		{
+			name: "non HTTPS bundle source",
+			mut: func(inv Inventory) PlanRequest {
+				inv.KubernetesBundleSource = "http://artifacts.example.test/kubernetes"
+				inv.KubernetesBundleRef = "v1.36.1@sha256:" + strings.Repeat("1", 64)
+				return PlanRequest{Inventory: inv}
+			},
+			want: "absolute HTTPS URL",
+		},
+		{
+			name: "invalid bundle ref",
+			mut: func(inv Inventory) PlanRequest {
+				inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+				inv.KubernetesBundleRef = "v1.36.1"
+				return PlanRequest{Inventory: inv}
+			},
+			want: "kubernetesBundleRef is invalid",
+		},
+		{
+			name: "bundle ref version mismatch",
+			mut: func(inv Inventory) PlanRequest {
+				inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+				inv.KubernetesBundleRef = "v1.36.0@sha256:" + strings.Repeat("1", 64)
+				return PlanRequest{Inventory: inv}
+			},
+			want: "does not match Kubernetes version",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

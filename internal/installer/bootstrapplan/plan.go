@@ -1,11 +1,13 @@
 package bootstrapplan
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubernetesbundle"
 	"github.com/zariel/katl/internal/installer/operation"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
@@ -27,14 +30,15 @@ const (
 )
 
 type Request struct {
-	Root        string
-	StoreRoot   string
-	OperationID string
-	Kind        string
-	Actor       string
-	ClientID    string
-	Now         time.Time
-	Bootstrap   operation.BootstrapRequest
+	Root         string
+	StoreRoot    string
+	OperationID  string
+	Kind         string
+	Actor        string
+	ClientID     string
+	Now          time.Time
+	Bootstrap    operation.BootstrapRequest
+	BundleClient *http.Client
 }
 
 type Plan struct {
@@ -52,13 +56,18 @@ type RuntimeInputs struct {
 }
 
 type SelectedKubernetesSysext struct {
-	Path             string `json:"path"`
-	SHA256           string `json:"sha256"`
-	SizeBytes        uint64 `json:"sizeBytes"`
-	PayloadVersion   string `json:"payloadVersion"`
-	ActivationPath   string `json:"activationPath"`
-	Architecture     string `json:"architecture"`
-	RuntimeInterface string `json:"runtimeInterface"`
+	Path                 string `json:"path"`
+	SHA256               string `json:"sha256"`
+	SizeBytes            uint64 `json:"sizeBytes"`
+	PayloadVersion       string `json:"payloadVersion"`
+	ActivationPath       string `json:"activationPath"`
+	Architecture         string `json:"architecture"`
+	RuntimeInterface     string `json:"runtimeInterface"`
+	ArtifactVersion      string `json:"artifactVersion,omitempty"`
+	BundleSource         string `json:"bundleSource,omitempty"`
+	BundleRef            string `json:"bundleRef,omitempty"`
+	BundleManifestDigest string `json:"bundleManifestDigest,omitempty"`
+	SysextPayloadDigest  string `json:"sysextPayloadDigest,omitempty"`
 }
 
 type HostConfig struct {
@@ -110,10 +119,12 @@ func Create(request Request) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
 	}
-	inputs, err := runtimeInputs(root, previous, intent, bootstrap)
+	inputs, err := runtimeInputs(root, previous, intent, bootstrap, request.BundleClient)
 	if err != nil {
 		return Plan{}, err
 	}
+	bootstrap.KubernetesBundleManifestDigest = inputs.SelectedKubernetesSysext.BundleManifestDigest
+	bootstrap.KubernetesSysextPayloadDigest = inputs.SelectedKubernetesSysext.SysextPayloadDigest
 
 	storeRoot := strings.TrimSpace(request.StoreRoot)
 	if storeRoot == "" {
@@ -193,7 +204,7 @@ func FromOperation(root string, record operation.OperationRecord) (Plan, error) 
 	if err != nil {
 		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
 	}
-	inputs, err := runtimeInputs(root, previous, intent, bootstrap)
+	inputs, err := runtimeInputs(root, previous, intent, bootstrap, nil)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -285,6 +296,14 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
 		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion %q does not match stored intent %q", request.KubernetesPayloadVersion, intent.Kubernetes.PayloadVersion)
 	}
+	if strings.TrimSpace(intent.Kubernetes.BundleSource) != "" || strings.TrimSpace(intent.Kubernetes.BundleRef) != "" {
+		if request.KubernetesBundleSource != intent.Kubernetes.BundleSource {
+			return fmt.Errorf("bootstrapRequest kubernetesBundleSource does not match stored intent")
+		}
+		if request.KubernetesBundleRef != intent.Kubernetes.BundleRef {
+			return fmt.Errorf("bootstrapRequest kubernetesBundleRef does not match stored intent")
+		}
+	}
 	if request.BootstrapProfileRef != intent.BootstrapProfile.Ref {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef %q does not match stored intent %q", request.BootstrapProfileRef, intent.BootstrapProfile.Ref)
 	}
@@ -320,8 +339,8 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	})
 }
 
-func runtimeInputs(root string, previous generation.GenerationSpec, intent installer.ClusterIntent, request operation.BootstrapRequest) (RuntimeInputs, error) {
-	selected, err := selectBundledSysext(root, previous, intent.Kubernetes)
+func runtimeInputs(root string, previous generation.GenerationSpec, intent installer.ClusterIntent, request operation.BootstrapRequest, client *http.Client) (RuntimeInputs, error) {
+	selected, err := selectKubernetesSysext(root, previous, intent.Kubernetes, request, client)
 	if err != nil {
 		return RuntimeInputs{}, err
 	}
@@ -344,6 +363,77 @@ func runtimeInputs(root string, previous generation.GenerationSpec, intent insta
 			Where: generation.KubernetesTarget,
 		},
 	}, nil
+}
+
+func selectKubernetesSysext(root string, previous generation.GenerationSpec, kubernetes installer.ClusterIntentKubernetes, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
+	if strings.TrimSpace(request.KubernetesBundleSource) == "" && strings.TrimSpace(request.KubernetesBundleRef) == "" {
+		return selectBundledSysext(root, previous, kubernetes)
+	}
+	return selectFetchedBundleSysext(root, previous, request, client)
+}
+
+func selectFetchedBundleSysext(root string, previous generation.GenerationSpec, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
+	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(request.KubernetesBundleRef)
+	if err != nil {
+		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleRef: %w", err)
+	}
+	if payloadVersion != request.KubernetesPayloadVersion {
+		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleRef payload version %q does not match kubernetesPayloadVersion %q", payloadVersion, request.KubernetesPayloadVersion)
+	}
+	cacheDir := filepath.Join(filepath.Clean(root), "var/lib/katl/artifacts/kubernetes-bundles")
+	staged, err := kubernetesbundle.FetchAndStage(context.Background(), kubernetesbundle.Request{
+		Source:           request.KubernetesBundleSource,
+		Ref:              request.KubernetesBundleRef,
+		CacheDir:         cacheDir,
+		RuntimeInterface: previous.Root.RuntimeInterface,
+		Architecture:     previous.Root.Architecture,
+		Client:           client,
+		ActivationPath:   "/run/extensions/katl-kubernetes.raw",
+	})
+	if err != nil {
+		return SelectedKubernetesSysext{}, err
+	}
+	if expected := strings.TrimSpace(request.KubernetesBundleManifestDigest); expected != "" && staged.BundleManifestDigest != expected {
+		return SelectedKubernetesSysext{}, fmt.Errorf("staged Kubernetes bundle manifest digest %s does not match operation record %s", staged.BundleManifestDigest, expected)
+	}
+	if expected := strings.TrimSpace(request.KubernetesSysextPayloadDigest); expected != "" && staged.SysextPayloadDigest != expected {
+		return SelectedKubernetesSysext{}, fmt.Errorf("staged Kubernetes sysext payload digest %s does not match operation record %s", staged.SysextPayloadDigest, expected)
+	}
+	runtimePath, err := runtimeRootPath(root, staged.SysextPath)
+	if err != nil {
+		return SelectedKubernetesSysext{}, err
+	}
+	info, err := os.Stat(staged.SysextPath)
+	if err != nil {
+		return SelectedKubernetesSysext{}, fmt.Errorf("inspect staged Kubernetes sysext: %w", err)
+	}
+	return SelectedKubernetesSysext{
+		Path:                 runtimePath,
+		SHA256:               staged.ExtensionRef.SHA256,
+		SizeBytes:            uint64(info.Size()),
+		PayloadVersion:       staged.PayloadVersion,
+		ActivationPath:       staged.ExtensionRef.ActivationPath,
+		Architecture:         staged.Architecture,
+		RuntimeInterface:     previous.Root.RuntimeInterface,
+		ArtifactVersion:      staged.ArtifactVersion,
+		BundleSource:         strings.TrimSpace(request.KubernetesBundleSource),
+		BundleRef:            strings.TrimSpace(request.KubernetesBundleRef),
+		BundleManifestDigest: staged.BundleManifestDigest,
+		SysextPayloadDigest:  staged.SysextPayloadDigest,
+	}, nil
+}
+
+func runtimeRootPath(root string, path string) (string, error) {
+	root = filepath.Clean(root)
+	path = filepath.Clean(strings.TrimSpace(path))
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("staged Kubernetes sysext path %q is outside runtime root", path)
+	}
+	return "/" + filepath.ToSlash(rel), nil
 }
 
 func selectBundledSysext(root string, previous generation.GenerationSpec, kubernetes installer.ClusterIntentKubernetes) (SelectedKubernetesSysext, error) {
@@ -462,18 +552,22 @@ func isJoinOperation(kind string) bool {
 
 func cloneBootstrapRequest(request operation.BootstrapRequest) *operation.BootstrapRequest {
 	return &operation.BootstrapRequest{
-		InventoryNodeName:        strings.TrimSpace(request.InventoryNodeName),
-		SystemRole:               strings.TrimSpace(request.SystemRole),
-		KubernetesPayloadVersion: strings.TrimSpace(request.KubernetesPayloadVersion),
-		BootstrapProfileRef:      strings.TrimSpace(request.BootstrapProfileRef),
-		ControlPlaneEndpoint:     strings.TrimSpace(request.ControlPlaneEndpoint),
-		StableEndpoint:           strings.TrimSpace(request.StableEndpoint),
-		CandidateGenerationID:    strings.TrimSpace(request.CandidateGenerationID),
-		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
-		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
-		JoinMaterialDigest:       strings.TrimSpace(request.JoinMaterialDigest),
-		JoinMaterialExpiresAt:    strings.TrimSpace(request.JoinMaterialExpiresAt),
-		TemporaryJoinConfigPath:  strings.TrimSpace(request.TemporaryJoinConfigPath),
+		InventoryNodeName:              strings.TrimSpace(request.InventoryNodeName),
+		SystemRole:                     strings.TrimSpace(request.SystemRole),
+		KubernetesPayloadVersion:       strings.TrimSpace(request.KubernetesPayloadVersion),
+		KubernetesBundleSource:         strings.TrimSpace(request.KubernetesBundleSource),
+		KubernetesBundleRef:            strings.TrimSpace(request.KubernetesBundleRef),
+		KubernetesBundleManifestDigest: strings.TrimSpace(request.KubernetesBundleManifestDigest),
+		KubernetesSysextPayloadDigest:  strings.TrimSpace(request.KubernetesSysextPayloadDigest),
+		BootstrapProfileRef:            strings.TrimSpace(request.BootstrapProfileRef),
+		ControlPlaneEndpoint:           strings.TrimSpace(request.ControlPlaneEndpoint),
+		StableEndpoint:                 strings.TrimSpace(request.StableEndpoint),
+		CandidateGenerationID:          strings.TrimSpace(request.CandidateGenerationID),
+		KubeadmInputDigest:             strings.TrimSpace(request.KubeadmInputDigest),
+		JoinMaterialRef:                strings.TrimSpace(request.JoinMaterialRef),
+		JoinMaterialDigest:             strings.TrimSpace(request.JoinMaterialDigest),
+		JoinMaterialExpiresAt:          strings.TrimSpace(request.JoinMaterialExpiresAt),
+		TemporaryJoinConfigPath:        strings.TrimSpace(request.TemporaryJoinConfigPath),
 	}
 }
 

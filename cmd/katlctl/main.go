@@ -425,6 +425,8 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	inventoryPath := flags.String("inventory", "", "path to cluster bootstrap inventory")
 	initNode := flags.String("init-node", "", "first control-plane node for kubeadm init")
 	controlPlaneEndpoint := flags.String("control-plane-endpoint", "", "control-plane endpoint host:port")
+	kubernetesBundleSource := flags.String("kubernetes-bundle-source", "", "HTTPS Kubernetes payload bundle source")
+	kubernetesBundleRef := flags.String("kubernetes-bundle-ref", "", "exact Kubernetes payload bundle ref vMAJOR.MINOR.PATCH@sha256:<digest>")
 	kubeconfigOut := flags.String("kubeconfig-out", "", "operator kubeconfig output path")
 	overwriteKubeconfig := flags.Bool("overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	dryRun := flags.Bool("dry-run", false, "validate and print the bootstrap plan without running kubeadm")
@@ -452,6 +454,12 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	inv, err := loadInventory(*inventoryPath)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(*kubernetesBundleSource) != "" {
+		inv.KubernetesBundleSource = strings.TrimSpace(*kubernetesBundleSource)
+	}
+	if strings.TrimSpace(*kubernetesBundleRef) != "" {
+		inv.KubernetesBundleRef = strings.TrimSpace(*kubernetesBundleRef)
 	}
 	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapPreWaitValues.values, bootstrapWaitValues.values, *bootstrapStableEndpoint, *bootstrapStableEndpointBeforeManifests)
 	if err != nil {
@@ -586,10 +594,12 @@ func loadInventory(path string) (inventory.Inventory, error) {
 }
 
 type inventoryDocument struct {
-	ControlPlaneEndpoint string               `yaml:"controlPlaneEndpoint"`
-	KubernetesVersion    string               `yaml:"kubernetesVersion"`
-	Bootstrap            *inventory.Bootstrap `yaml:"bootstrap"`
-	Nodes                []nodeDocument       `yaml:"nodes"`
+	ControlPlaneEndpoint   string               `yaml:"controlPlaneEndpoint"`
+	KubernetesVersion      string               `yaml:"kubernetesVersion"`
+	KubernetesBundleSource string               `yaml:"kubernetesBundleSource"`
+	KubernetesBundleRef    string               `yaml:"kubernetesBundleRef"`
+	Bootstrap              *inventory.Bootstrap `yaml:"bootstrap"`
+	Nodes                  []nodeDocument       `yaml:"nodes"`
 }
 
 type nodeDocument struct {
@@ -634,10 +644,12 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 		})
 	}
 	return inventory.Inventory{
-		ControlPlaneEndpoint: d.ControlPlaneEndpoint,
-		KubernetesVersion:    d.KubernetesVersion,
-		Bootstrap:            d.Bootstrap,
-		Nodes:                nodes,
+		ControlPlaneEndpoint:   d.ControlPlaneEndpoint,
+		KubernetesVersion:      d.KubernetesVersion,
+		KubernetesBundleSource: d.KubernetesBundleSource,
+		KubernetesBundleRef:    d.KubernetesBundleRef,
+		Bootstrap:              d.Bootstrap,
+		Nodes:                  nodes,
 	}
 }
 

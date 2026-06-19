@@ -71,16 +71,18 @@ type KubeadmReference struct {
 }
 
 type BootstrapIntent struct {
-	ClusterName          string            `json:"clusterName,omitempty" yaml:"clusterName,omitempty"`
-	InventoryNodeName    string            `json:"inventoryNodeName,omitempty" yaml:"inventoryNodeName,omitempty"`
-	NodeAddress          string            `json:"nodeAddress,omitempty" yaml:"nodeAddress,omitempty"`
-	ControlPlaneEndpoint string            `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
-	BootstrapProfileRef  string            `json:"bootstrapProfileRef,omitempty" yaml:"bootstrapProfileRef,omitempty"`
-	ProfileResolvedID    string            `json:"profileResolvedID,omitempty" yaml:"profileResolvedID,omitempty"`
-	KubernetesCatalogRef string            `json:"kubernetesCatalogRef,omitempty" yaml:"kubernetesCatalogRef,omitempty"`
-	Access               BootstrapAccess   `json:"access,omitempty" yaml:"access,omitempty"`
-	Labels               map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
-	Taints               []NodeTaint       `json:"taints,omitempty" yaml:"taints,omitempty"`
+	ClusterName            string            `json:"clusterName,omitempty" yaml:"clusterName,omitempty"`
+	InventoryNodeName      string            `json:"inventoryNodeName,omitempty" yaml:"inventoryNodeName,omitempty"`
+	NodeAddress            string            `json:"nodeAddress,omitempty" yaml:"nodeAddress,omitempty"`
+	ControlPlaneEndpoint   string            `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
+	BootstrapProfileRef    string            `json:"bootstrapProfileRef,omitempty" yaml:"bootstrapProfileRef,omitempty"`
+	ProfileResolvedID      string            `json:"profileResolvedID,omitempty" yaml:"profileResolvedID,omitempty"`
+	KubernetesCatalogRef   string            `json:"kubernetesCatalogRef,omitempty" yaml:"kubernetesCatalogRef,omitempty"`
+	KubernetesBundleSource string            `json:"kubernetesBundleSource,omitempty" yaml:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef    string            `json:"kubernetesBundleRef,omitempty" yaml:"kubernetesBundleRef,omitempty"`
+	Access                 BootstrapAccess   `json:"access,omitempty" yaml:"access,omitempty"`
+	Labels                 map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Taints                 []NodeTaint       `json:"taints,omitempty" yaml:"taints,omitempty"`
 }
 
 type BootstrapAccess struct {
@@ -233,16 +235,18 @@ func Validate(manifest Manifest) error {
 
 func validateBootstrapIntent(intent BootstrapIntent) error {
 	for field, value := range map[string]string{
-		"node.bootstrap.clusterName":          intent.ClusterName,
-		"node.bootstrap.inventoryNodeName":    intent.InventoryNodeName,
-		"node.bootstrap.nodeAddress":          intent.NodeAddress,
-		"node.bootstrap.controlPlaneEndpoint": intent.ControlPlaneEndpoint,
-		"node.bootstrap.bootstrapProfileRef":  intent.BootstrapProfileRef,
-		"node.bootstrap.profileResolvedID":    intent.ProfileResolvedID,
-		"node.bootstrap.kubernetesCatalogRef": intent.KubernetesCatalogRef,
-		"node.bootstrap.access.method":        intent.Access.Method,
-		"node.bootstrap.access.user":          intent.Access.User,
-		"node.bootstrap.access.credentialRef": intent.Access.CredentialRef,
+		"node.bootstrap.clusterName":            intent.ClusterName,
+		"node.bootstrap.inventoryNodeName":      intent.InventoryNodeName,
+		"node.bootstrap.nodeAddress":            intent.NodeAddress,
+		"node.bootstrap.controlPlaneEndpoint":   intent.ControlPlaneEndpoint,
+		"node.bootstrap.bootstrapProfileRef":    intent.BootstrapProfileRef,
+		"node.bootstrap.profileResolvedID":      intent.ProfileResolvedID,
+		"node.bootstrap.kubernetesCatalogRef":   intent.KubernetesCatalogRef,
+		"node.bootstrap.kubernetesBundleSource": intent.KubernetesBundleSource,
+		"node.bootstrap.kubernetesBundleRef":    intent.KubernetesBundleRef,
+		"node.bootstrap.access.method":          intent.Access.Method,
+		"node.bootstrap.access.user":            intent.Access.User,
+		"node.bootstrap.access.credentialRef":   intent.Access.CredentialRef,
 	} {
 		if strings.TrimSpace(value) != value {
 			return fmt.Errorf("%s %q must not contain leading or trailing whitespace", field, value)

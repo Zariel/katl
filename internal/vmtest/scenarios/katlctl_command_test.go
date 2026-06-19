@@ -23,7 +23,7 @@ func runKatlctlCommand(t *testing.T, ctx context.Context, repo string, args []st
 func buildKatlctlCommand(t *testing.T, ctx context.Context, repo string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "katlctl")
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", path, "./cmd/katlctl")
+	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", path, "./cmd/katlctl")
 	cmd.Dir = repo
 	cmd.Env = os.Environ()
 	output, err := cmd.CombinedOutput()

@@ -40,6 +40,8 @@ type Spec struct {
 type KubernetesSelection struct {
 	PayloadVersion string `yaml:"payloadVersion,omitempty" json:"payloadVersion,omitempty"`
 	CatalogRef     string `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
+	BundleSource   string `yaml:"bundleSource,omitempty" json:"bundleSource,omitempty"`
+	BundleRef      string `yaml:"bundleRef,omitempty" json:"bundleRef,omitempty"`
 }
 
 type Node struct {
@@ -83,27 +85,31 @@ type CompileRequest struct {
 }
 
 type Plan struct {
-	ControlPlaneEndpoint string                      `json:"controlPlaneEndpoint,omitempty"`
-	PlatformAPIEndpoint  *platformendpoint.Plan      `json:"platformAPIEndpoint,omitempty"`
-	KubernetesVersion    string                      `json:"kubernetesVersion,omitempty"`
-	KubernetesCatalogRef string                      `json:"kubernetesCatalogRef,omitempty"`
-	KubernetesSysext     *generation.ExtensionRef    `json:"kubernetesSysext,omitempty"`
-	KatlosImage          manifest.KatlosImage        `json:"katlosImage"`
-	Nodes                []NodeMaterial              `json:"nodes"`
-	BootstrapInventory   inventory.Inventory         `json:"bootstrapInventory"`
-	AddressOverrides     []inventory.AddressOverride `json:"addressOverrides,omitempty"`
+	ControlPlaneEndpoint   string                      `json:"controlPlaneEndpoint,omitempty"`
+	PlatformAPIEndpoint    *platformendpoint.Plan      `json:"platformAPIEndpoint,omitempty"`
+	KubernetesVersion      string                      `json:"kubernetesVersion,omitempty"`
+	KubernetesCatalogRef   string                      `json:"kubernetesCatalogRef,omitempty"`
+	KubernetesBundleSource string                      `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef    string                      `json:"kubernetesBundleRef,omitempty"`
+	KubernetesSysext       *generation.ExtensionRef    `json:"kubernetesSysext,omitempty"`
+	KatlosImage            manifest.KatlosImage        `json:"katlosImage"`
+	Nodes                  []NodeMaterial              `json:"nodes"`
+	BootstrapInventory     inventory.Inventory         `json:"bootstrapInventory"`
+	AddressOverrides       []inventory.AddressOverride `json:"addressOverrides,omitempty"`
 }
 
 type NodeMaterial struct {
-	Name                 string                   `json:"name"`
-	SystemRole           inventory.SystemRole     `json:"systemRole"`
-	BootstrapAddress     string                   `json:"bootstrapAddress,omitempty"`
-	InstallManifest      manifest.Manifest        `json:"installManifest"`
-	NativeEtcFiles       []confext.NativeEtcFile  `json:"nativeEtcFiles,omitempty"`
-	KubeadmConfig        inventory.KubeadmConfig  `json:"kubeadmConfig,omitempty"`
-	NodeLabels           map[string]string        `json:"nodeLabels,omitempty"`
-	NodeTaints           []manifest.NodeTaint     `json:"nodeTaints,omitempty"`
-	KubernetesVersion    string                   `json:"kubernetesVersion,omitempty"`
-	KubernetesCatalogRef string                   `json:"kubernetesCatalogRef,omitempty"`
-	KubernetesSysext     *generation.ExtensionRef `json:"kubernetesSysext,omitempty"`
+	Name                   string                   `json:"name"`
+	SystemRole             inventory.SystemRole     `json:"systemRole"`
+	BootstrapAddress       string                   `json:"bootstrapAddress,omitempty"`
+	InstallManifest        manifest.Manifest        `json:"installManifest"`
+	NativeEtcFiles         []confext.NativeEtcFile  `json:"nativeEtcFiles,omitempty"`
+	KubeadmConfig          inventory.KubeadmConfig  `json:"kubeadmConfig,omitempty"`
+	NodeLabels             map[string]string        `json:"nodeLabels,omitempty"`
+	NodeTaints             []manifest.NodeTaint     `json:"nodeTaints,omitempty"`
+	KubernetesVersion      string                   `json:"kubernetesVersion,omitempty"`
+	KubernetesCatalogRef   string                   `json:"kubernetesCatalogRef,omitempty"`
+	KubernetesBundleSource string                   `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef    string                   `json:"kubernetesBundleRef,omitempty"`
+	KubernetesSysext       *generation.ExtensionRef `json:"kubernetesSysext,omitempty"`
 }

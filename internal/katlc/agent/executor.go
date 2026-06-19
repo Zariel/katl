@@ -332,6 +332,10 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 		record.ActivationState = operation.ActivationStateActiveLive
 		record.GenerationCommitState = operation.GenerationCommitCandidate
 		record.CandidateGenerationID = result.Record.GenerationID
+		if record.BootstrapRequest != nil {
+			record.BootstrapRequest.KubernetesBundleManifestDigest = plan.RuntimeInputs.SelectedKubernetesSysext.BundleManifestDigest
+			record.BootstrapRequest.KubernetesSysextPayloadDigest = plan.RuntimeInputs.SelectedKubernetesSysext.SysextPayloadDigest
+		}
 		record.NextAction = "run bootstrap runtime readiness checks before kubeadm"
 		record.UpdatedAt = updatedAt
 		return record, nil

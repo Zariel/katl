@@ -70,6 +70,28 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		return nil
+	})
+	req := submitRequest("req-bundle")
+	req.Bootstrap.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+	req.Bootstrap.KubernetesBundleRef = req.Bootstrap.KubernetesPayloadVersion + "@sha256:" + strings.Repeat("a", 64)
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.BootstrapRequest == nil || record.BootstrapRequest.KubernetesBundleSource != req.Bootstrap.KubernetesBundleSource || record.BootstrapRequest.KubernetesBundleRef != req.Bootstrap.KubernetesBundleRef {
+		t.Fatalf("bootstrap request = %+v", record.BootstrapRequest)
+	}
+}
+
 func TestKubernetesSysextUpdateRefusesBootstrappedNode(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1117,6 +1139,17 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 		{name: "missing inventory node", edit: func(req *agentapi.SubmitOperationRequest) { req.Bootstrap.InventoryNodeName = "" }},
 		{name: "bad role", edit: func(req *agentapi.SubmitOperationRequest) { req.Bootstrap.SystemRole = "database" }},
 		{name: "worker role for init", edit: func(req *agentapi.SubmitOperationRequest) { req.Bootstrap.SystemRole = "worker" }},
+		{name: "partial bundle ref", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.Bootstrap.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+		}},
+		{name: "non https bundle source", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.Bootstrap.KubernetesBundleSource = "http://artifacts.example.test/kubernetes"
+			req.Bootstrap.KubernetesBundleRef = req.Bootstrap.KubernetesPayloadVersion + "@sha256:" + strings.Repeat("a", 64)
+		}},
+		{name: "bundle version mismatch", edit: func(req *agentapi.SubmitOperationRequest) {
+			req.Bootstrap.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+			req.Bootstrap.KubernetesBundleRef = "v1.36.1@sha256:" + strings.Repeat("a", 64)
+		}},
 		{name: "bad expected generation", edit: func(req *agentapi.SubmitOperationRequest) { req.ExpectedCurrentGenerationId = "../gen-1" }},
 		{name: "bad expected cluster intent", edit: func(req *agentapi.SubmitOperationRequest) { req.ExpectedClusterIntentDigest = "not-a-digest" }},
 		{name: "bad timeout", edit: func(req *agentapi.SubmitOperationRequest) { req.OperationTimeout = "-1s" }},

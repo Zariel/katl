@@ -139,6 +139,35 @@ func TestCompileSelectsCatalogRef(t *testing.T) {
 	}
 }
 
+func TestCompileSelectsKubernetesBundleRef(t *testing.T) {
+	config := validConfig()
+	bundleRef := "v1.36.1@sha256:" + strings.Repeat("a", 64)
+	config.Spec.Kubernetes = KubernetesSelection{
+		BundleSource: "https://artifacts.example.test/kubernetes",
+		BundleRef:    bundleRef,
+	}
+	plan, err := Compile(CompileRequest{
+		Config:         config,
+		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if plan.KubernetesVersion != "v1.36.1" || plan.KubernetesBundleSource != "https://artifacts.example.test/kubernetes" || plan.KubernetesBundleRef != bundleRef {
+		t.Fatalf("selection = %#v", plan)
+	}
+	if plan.BootstrapInventory.KubernetesBundleSource != plan.KubernetesBundleSource || plan.BootstrapInventory.KubernetesBundleRef != bundleRef {
+		t.Fatalf("bootstrap inventory = %#v", plan.BootstrapInventory)
+	}
+	bootstrap := plan.Nodes[0].InstallManifest.Node.Bootstrap
+	if bootstrap == nil || bootstrap.KubernetesBundleSource != plan.KubernetesBundleSource || bootstrap.KubernetesBundleRef != bundleRef {
+		t.Fatalf("install manifest bootstrap = %#v", bootstrap)
+	}
+	if plan.Nodes[0].KubernetesBundleRef != bundleRef {
+		t.Fatalf("node material = %#v", plan.Nodes[0])
+	}
+}
+
 func TestCompileComposesHostAdvertisedBGPAPIEndpoint(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = ""

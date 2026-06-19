@@ -141,6 +141,7 @@ func TestAgentWriteFileDefaultAllowlistSupportsKatlMetadata(t *testing.T) {
 	for _, path := range []string{
 		"/var/lib/katl/boot/selection.json",
 		"/var/lib/katl/generations/2026.06.06-001/metadata.json",
+		"/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem",
 		"/var/lib/katl/test-artifacts/sysupdate/source/SHA256SUMS",
 	} {
 		if !pathAllowed(path, defaultAgentWritePaths()) {
@@ -207,7 +208,7 @@ func TestAgentCommandAllowlist(t *testing.T) {
 }
 
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
-	for _, command := range []string{"bgp-api-vip-smoke", "blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate", "test"} {
+	for _, command := range []string{"bgp-api-vip-smoke", "blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "kubeadm", "kubectl", "kubelet", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "systemd-sysupdate", "test"} {
 		if !commandAllowed(command, defaultAgentCommands()) {
 			t.Fatalf("%s is not allowlisted", command)
 		}

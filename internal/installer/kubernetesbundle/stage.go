@@ -228,6 +228,14 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 	return stage(request, bundle, bundleBytes, payloadBytes, metadataBytes, provenanceBytes, catalogBytes, *payload)
 }
 
+func PayloadVersionFromRef(value string) (string, error) {
+	ref, err := parseRef(value)
+	if err != nil {
+		return "", err
+	}
+	return ref.PayloadVersion, nil
+}
+
 type ref struct {
 	PayloadVersion string
 	BundleDigest   string

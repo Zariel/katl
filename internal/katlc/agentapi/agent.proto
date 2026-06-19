@@ -58,6 +58,8 @@ message BootstrapOperationRequest {
   string kubeadm_input_digest = 8;
   string join_material_ref = 9;
   WorkerJoinMaterial worker_join_material = 10;
+  string kubernetes_bundle_source = 11;
+  string kubernetes_bundle_ref = 12;
 }
 
 message WorkerJoinMaterial {

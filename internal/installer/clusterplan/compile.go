@@ -12,6 +12,7 @@ import (
 	"github.com/zariel/katl/internal/installer/configdomain"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/kubernetesbundle"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/platformendpoint"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
@@ -22,6 +23,8 @@ const validationActivationPath = "/run/extensions/katl-kubernetes.raw"
 type selectedKubernetes struct {
 	version        string
 	catalogRef     string
+	bundleSource   string
+	bundleRef      string
 	sysext         *generation.ExtensionRef
 	activationPath string
 }
@@ -118,24 +121,28 @@ func Compile(request CompileRequest) (Plan, error) {
 		return addressOverrides[i].Node < addressOverrides[j].Node
 	})
 	bootstrapInventory := inventory.Inventory{
-		ControlPlaneEndpoint: controlPlaneEndpoint,
-		KubernetesVersion:    kubernetes.version,
-		Bootstrap:            bootstrapEndpoint(endpointPlan),
-		Nodes:                inventoryNodes,
+		ControlPlaneEndpoint:   controlPlaneEndpoint,
+		KubernetesVersion:      kubernetes.version,
+		KubernetesBundleSource: kubernetes.bundleSource,
+		KubernetesBundleRef:    kubernetes.bundleRef,
+		Bootstrap:              bootstrapEndpoint(endpointPlan),
+		Nodes:                  inventoryNodes,
 	}
 	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
 		return Plan{}, err
 	}
 	return Plan{
-		ControlPlaneEndpoint: bootstrapInventory.ControlPlaneEndpoint,
-		PlatformAPIEndpoint:  endpointPlan,
-		KubernetesVersion:    kubernetes.version,
-		KubernetesCatalogRef: kubernetes.catalogRef,
-		KubernetesSysext:     kubernetes.sysext,
-		KatlosImage:          config.Spec.KatlosImage,
-		Nodes:                materials,
-		BootstrapInventory:   bootstrapInventory,
-		AddressOverrides:     addressOverrides,
+		ControlPlaneEndpoint:   bootstrapInventory.ControlPlaneEndpoint,
+		PlatformAPIEndpoint:    endpointPlan,
+		KubernetesVersion:      kubernetes.version,
+		KubernetesCatalogRef:   kubernetes.catalogRef,
+		KubernetesBundleSource: kubernetes.bundleSource,
+		KubernetesBundleRef:    kubernetes.bundleRef,
+		KubernetesSysext:       kubernetes.sysext,
+		KatlosImage:            config.Spec.KatlosImage,
+		Nodes:                  materials,
+		BootstrapInventory:     bootstrapInventory,
+		AddressOverrides:       addressOverrides,
 	}, nil
 }
 
@@ -166,16 +173,18 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
-				ClusterName:          strings.TrimSpace(config.Metadata.Name),
-				InventoryNodeName:    name,
-				NodeAddress:          strings.TrimSpace(layer.Bootstrap.Address),
-				ControlPlaneEndpoint: controlPlaneEndpoint,
-				BootstrapProfileRef:  kubeadmRef,
-				ProfileResolvedID:    bootstrapProfileResolvedID,
-				KubernetesCatalogRef: kubernetes.catalogRef,
-				Access:               manifestAccess(layer.Bootstrap.Access),
-				Labels:               copyLabels(layer.Kubernetes.NodeLabels),
-				Taints:               append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+				ClusterName:            strings.TrimSpace(config.Metadata.Name),
+				InventoryNodeName:      name,
+				NodeAddress:            strings.TrimSpace(layer.Bootstrap.Address),
+				ControlPlaneEndpoint:   controlPlaneEndpoint,
+				BootstrapProfileRef:    kubeadmRef,
+				ProfileResolvedID:      bootstrapProfileResolvedID,
+				KubernetesCatalogRef:   kubernetes.catalogRef,
+				KubernetesBundleSource: kubernetes.bundleSource,
+				KubernetesBundleRef:    kubernetes.bundleRef,
+				Access:                 manifestAccess(layer.Bootstrap.Access),
+				Labels:                 copyLabels(layer.Kubernetes.NodeLabels),
+				Taints:                 append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
 			},
 		},
 		Install: manifest.InstallConfig{
@@ -233,17 +242,19 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		KubernetesVersion: kubernetes.version,
 	}
 	return NodeMaterial{
-		Name:                 name,
-		SystemRole:           role,
-		BootstrapAddress:     invNode.Address,
-		InstallManifest:      installManifest,
-		NativeEtcFiles:       nativeEtcFiles,
-		KubeadmConfig:        kubeadmConfig,
-		NodeLabels:           copyLabels(layer.Kubernetes.NodeLabels),
-		NodeTaints:           append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
-		KubernetesVersion:    kubernetes.version,
-		KubernetesCatalogRef: kubernetes.catalogRef,
-		KubernetesSysext:     kubernetes.sysext,
+		Name:                   name,
+		SystemRole:             role,
+		BootstrapAddress:       invNode.Address,
+		InstallManifest:        installManifest,
+		NativeEtcFiles:         nativeEtcFiles,
+		KubeadmConfig:          kubeadmConfig,
+		NodeLabels:             copyLabels(layer.Kubernetes.NodeLabels),
+		NodeTaints:             append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+		KubernetesVersion:      kubernetes.version,
+		KubernetesCatalogRef:   kubernetes.catalogRef,
+		KubernetesBundleSource: kubernetes.bundleSource,
+		KubernetesBundleRef:    kubernetes.bundleRef,
+		KubernetesSysext:       kubernetes.sysext,
 	}, invNode, nil
 }
 
@@ -305,11 +316,22 @@ func validateSystemRoleDefaults(defaults map[inventory.SystemRole]NodeLayer) err
 func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage, request CompileRequest) (selectedKubernetes, error) {
 	version := strings.TrimSpace(selection.PayloadVersion)
 	catalogRef := strings.TrimSpace(selection.CatalogRef)
-	if version == "" && catalogRef == "" {
-		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion or catalogRef is required")
+	bundleSource := strings.TrimSpace(selection.BundleSource)
+	bundleRef := strings.TrimSpace(selection.BundleRef)
+	if (bundleSource == "") != (bundleRef == "") {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.bundleSource and bundleRef must be set together")
 	}
-	if version != "" && catalogRef != "" {
-		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes must not set both payloadVersion and catalogRef")
+	selectors := 0
+	for _, value := range []string{version, catalogRef, bundleRef} {
+		if value != "" {
+			selectors++
+		}
+	}
+	if selectors == 0 {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion, catalogRef, or bundleRef is required")
+	}
+	if selectors > 1 {
+		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes must set exactly one of payloadVersion, catalogRef, or bundleRef")
 	}
 	if version != "" {
 		if sysextcatalog.KubernetesMinor(version) == "" {
@@ -317,6 +339,18 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 		}
 		return selectedKubernetes{
 			version:        version,
+			activationPath: validationActivationPath,
+		}, nil
+	}
+	if bundleRef != "" {
+		payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(bundleRef)
+		if err != nil {
+			return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.bundleRef %q: %w", bundleRef, err)
+		}
+		return selectedKubernetes{
+			version:        payloadVersion,
+			bundleSource:   bundleSource,
+			bundleRef:      bundleRef,
 			activationPath: validationActivationPath,
 		}, nil
 	}

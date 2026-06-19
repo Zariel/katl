@@ -146,6 +146,10 @@ func TestRunAgentBootstrapReportsDaemonStatusFailureBeforeSubmit(t *testing.T) {
 }
 
 func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
+	inv := validSingleNodeInventory()
+	bundleRef := "v1.36.1@sha256:" + strings.Repeat("b", 64)
+	inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
+	inv.KubernetesBundleRef = bundleRef
 	client := &fakeAgentClient{
 		status: readyAgentStatus("machine-cp-1"),
 		accepted: &agentapi.OperationAccepted{
@@ -177,7 +181,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:            validSingleNodeInventory(),
+		Inventory:            inv,
 		ControlPlaneEndpoint: "api.katl.test:6443",
 		KubeconfigOut:        out,
 		OverwriteKubeconfig:  true,
@@ -202,6 +206,9 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	}
 	if req.Bootstrap.InventoryNodeName != "cp-1" || req.Bootstrap.ControlPlaneEndpoint != "api.katl.test:6443" || req.Bootstrap.BootstrapProfileRef != "control-plane" {
 		t.Fatalf("bootstrap request = %#v", req.Bootstrap)
+	}
+	if req.Bootstrap.KubernetesBundleSource != inv.KubernetesBundleSource || req.Bootstrap.KubernetesBundleRef != bundleRef {
+		t.Fatalf("bootstrap bundle request = %#v", req.Bootstrap)
 	}
 	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://api.katl.test:6443" {
 		t.Fatalf("kubeconfig result = %#v", result.Kubeconfig)

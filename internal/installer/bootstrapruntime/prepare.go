@@ -201,12 +201,16 @@ func materializeSysext(root string, candidate string, selected bootstrapplan.Sel
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		return generation.ExtensionRef{}, fmt.Errorf("write bootstrap sysext: %w", err)
 	}
+	artifactVersion := strings.TrimSpace(selected.ArtifactVersion)
+	if artifactVersion == "" {
+		artifactVersion = "bootstrap-" + selected.PayloadVersion
+	}
 	return generation.ExtensionRef{
 		Name:            "kubernetes",
 		Path:            targetRuntime,
 		ActivationPath:  selected.ActivationPath,
 		SHA256:          selected.SHA256,
-		ArtifactVersion: "bootstrap-" + selected.PayloadVersion,
+		ArtifactVersion: artifactVersion,
 		PayloadVersion:  selected.PayloadVersion,
 		Architecture:    selected.Architecture,
 		Compatibility: generation.ExtensionCompatibility{

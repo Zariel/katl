@@ -455,6 +455,7 @@ func defaultAgentCommands() map[string]bool {
 		"journalctl":        true,
 		"katlc":             true,
 		"kubeadm":           true,
+		"kubelet":           true,
 		"kubectl":           true,
 		"lsmod":             true,
 		"modprobe":          true,

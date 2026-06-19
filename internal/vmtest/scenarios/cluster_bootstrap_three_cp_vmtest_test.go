@@ -3,10 +3,20 @@ package scenarios
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +30,9 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
+	"github.com/zariel/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/sysextcatalog"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 )
@@ -164,7 +177,26 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
 	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
 	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
+	versionEvidenceDir := filepath.Join(result.RunDir, "kubernetes-version-evidence")
 	bootstrapFixture := bootstrapFixtureInputsFromEnv()
+	kubernetesBundle, err := stageThreeControlPlaneKubernetesPayloadBundles(katlRepoRoot(t), result, inputs.KubernetesVersion)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage Kubernetes payload bundles: %v", err)
+	}
+	bundleServer, err := startGuestReachableKubernetesBundleServer(smoke.WorldScenario.World.Network.Gateway, kubernetesBundle.Root)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("start Kubernetes payload bundle server: %v", err)
+	}
+	defer bundleServer.Close()
+	kubernetesBundle.Source = bundleServer.Source
+	kubernetesBundle.CACertPEM = bundleServer.CACertPEM
+	kubernetesBundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
+	kubernetesBundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
+	if err := os.WriteFile(kubernetesBundle.CACertPath, kubernetesBundle.CACertPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	plannedNodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		nodeResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, name)
@@ -173,7 +205,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		plannedNodes = append(plannedNodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
 	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, plannedNodes, bootstrapFixture); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, plannedNodes, bootstrapFixture, kubernetesBundle, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
@@ -203,9 +235,23 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	defer stopNode(t, cp3Node)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cp1Node, cp2Node, cp3Node}
+	for _, node := range nodes {
+		if err := installKubernetesBundleCA(ctx, node, kubernetesBundle); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("install Kubernetes bundle CA on %s: %v", node.Name, err)
+		}
+	}
 	cp1Address := firstString(cp1Node.Result.IPAddress, inputs.CP1Address)
 	cp2Address := firstString(cp2Node.Result.IPAddress, inputs.CP2Address)
 	cp3Address := firstString(cp3Node.Result.IPAddress, inputs.CP3Address)
+	addresses := map[string]string{"cp-1": cp1Address, "cp-2": cp2Address, "cp-3": cp3Address}
+	cniFixtures, err := stageThreeControlPlaneCNIFixtures(ctx, katlRepoRoot(t), nodes, addresses)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test CNI fixtures: %v", err)
+	}
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -223,11 +269,10 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		tokenFiles[node.Name] = tokenPath
 	}
-	addresses := map[string]string{"cp-1": cp1Address, "cp-2": cp2Address, "cp-3": cp3Address}
-	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, nodes, addresses, tokenFiles); err != nil {
+	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses, tokenFiles); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,6 +282,8 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
 		"--control-plane-endpoint", cp1Address + ":6443",
+		"--kubernetes-bundle-source", kubernetesBundle.Source,
+		"--kubernetes-bundle-ref", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cp1Address,
 		"--node-address", "cp-2=" + cp2Address,
 		"--node-address", "cp-3=" + cp3Address,
@@ -257,10 +304,13 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	assertThreeControlPlaneBootstrapPhases(t, stdout.String())
-	if _, _, err := collectOperationEvidence(ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init"); err != nil {
+	_, cp1Record, err := collectOperationEvidence(ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
+	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect cp-1 operation evidence: %v", err)
 	}
+	assertOperationKubernetesBundle(t, cp1Record, kubernetesBundle)
+	assertGenerationKubernetesBundle(t, ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), cp1Record, kubernetesBundle)
 	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
 		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(evidenceDir, node.Name), "bootstrap-join-control-plane")
 		if err != nil {
@@ -271,26 +321,26 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "unexpected control-plane join operation record")
 			t.Fatalf("%s operation record = %#v", node.Name, record)
 		}
+		assertOperationKubernetesBundle(t, record, kubernetesBundle)
+		assertGenerationKubernetesBundle(t, ctx, node, filepath.Join(evidenceDir, node.Name), record, kubernetesBundle)
 	}
 
-	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
-	output, err := cmd.CombinedOutput()
-	_ = os.WriteFile(kubectlOut, output, 0o644)
+	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3")
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
-	}
-	for _, want := range []string{"node/cp-1", "node/cp-2", "node/cp-3"} {
-		if !strings.Contains(string(output), want) {
-			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-			collectTwoNodeDiagnostics("", nodes...)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
-			t.Fatalf("kubectl output missing %q:\n%s", want, output)
-		}
+		t.Fatalf("wait for kubectl nodes failed: %v\n%s", err, output)
 	}
 	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+	for _, node := range nodes {
+		if _, err := collectKubernetesVersionEvidence(ctx, node, filepath.Join(versionEvidenceDir, node.Name), kubernetesBundle.PayloadVersion); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("collect %s Kubernetes version evidence: %v", node.Name, err)
+		}
+	}
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
 	if err != nil {
 		etcdReport.FailureSummary = err.Error()
@@ -334,6 +384,21 @@ type threeControlPlaneSmokeInputs struct {
 	WorldProvenance   multiNodeWorldProvenancePaths
 }
 
+type threeControlPlaneKubernetesPayloadBundle struct {
+	Source               string            `json:"source,omitempty"`
+	Ref                  string            `json:"ref,omitempty"`
+	PayloadVersion       string            `json:"payloadVersion,omitempty"`
+	BundleManifestDigest string            `json:"bundleManifestDigest,omitempty"`
+	SysextPayloadDigest  string            `json:"sysextPayloadDigest,omitempty"`
+	Root                 string            `json:"root,omitempty"`
+	IndexPath            string            `json:"indexPath,omitempty"`
+	CatalogPath          string            `json:"catalogPath,omitempty"`
+	BundlePaths          map[string]string `json:"bundlePaths,omitempty"`
+	CACertPath           string            `json:"caCertPath,omitempty"`
+	CACertGuestPath      string            `json:"caCertGuestPath,omitempty"`
+	CACertPEM            []byte            `json:"-"`
+}
+
 func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
 	return vmtest.InstalledRuntimeNodeConfig{
 		Name: name,
@@ -354,6 +419,157 @@ func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk
 	config.Runtime.VM.LibvirtNetwork = run.Network
 	config.Runtime.VM.Network.MAC = mac
 	return config
+}
+
+func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string) (threeControlPlaneKubernetesPayloadBundle, error) {
+	selectedVersion = firstString(strings.TrimSpace(selectedVersion), "v1.36.1")
+	if selectedVersion != "v1.36.0" && selectedVersion != "v1.36.1" {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("three-control-plane bundle proof supports v1.36.0 or v1.36.1, got %q", selectedVersion)
+	}
+	artifactPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw")
+	baseMetadataPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json")
+	baseMeta, err := artifact.ReadLocal(baseMetadataPath)
+	if err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("read Kubernetes sysext metadata %s: %w", baseMetadataPath, err)
+	}
+	if _, err := os.Stat(artifactPath); err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("inspect Kubernetes sysext artifact %s: %w", artifactPath, err)
+	}
+	if baseMeta.PayloadVersion != selectedVersion {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("Kubernetes sysext artifact payload version %q does not match selected version %q: rebuild with KATL_KUBERNETES_PAYLOAD_VERSION=%s", baseMeta.PayloadVersion, selectedVersion, selectedVersion)
+	}
+	root := filepath.Join(result.ManifestDir, "kubernetes-payload-bundles")
+	bundlePaths := map[string]string{}
+	selected, err := sysextcatalog.StageKubernetesSysext(sysextcatalog.StageRequest{
+		MetadataPath: baseMetadataPath,
+		ArtifactPath: artifactPath,
+		OutputDir:    root,
+	})
+	if err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("stage Kubernetes bundle %s: %w", selectedVersion, err)
+	}
+	bundlePaths[selectedVersion] = selected.BundlePath
+	return threeControlPlaneKubernetesPayloadBundle{
+		Ref:                  selectedVersion + "@" + selected.BundleManifestDigest,
+		PayloadVersion:       selectedVersion,
+		BundleManifestDigest: selected.BundleManifestDigest,
+		SysextPayloadDigest:  "sha256:" + selected.Entry.SHA256,
+		Root:                 root,
+		IndexPath:            selected.IndexPath,
+		CatalogPath:          selected.BundleCatalogPath,
+		BundlePaths:          bundlePaths,
+	}, nil
+}
+
+type guestReachableBundleServer struct {
+	Server    *httptest.Server
+	Source    string
+	CACertPEM []byte
+}
+
+func (s guestReachableBundleServer) Close() {
+	if s.Server != nil {
+		s.Server.Close()
+	}
+}
+
+func startGuestReachableKubernetesBundleServer(gateway string, root string) (guestReachableBundleServer, error) {
+	gateway = strings.TrimSpace(gateway)
+	if net.ParseIP(gateway) == nil {
+		return guestReachableBundleServer{}, fmt.Errorf("world network gateway %q is not an IP address", gateway)
+	}
+	cert, caPEM, err := kubernetesBundleServerCertificate(gateway)
+	if err != nil {
+		return guestReachableBundleServer{}, err
+	}
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		return guestReachableBundleServer{}, err
+	}
+	server := httptest.NewUnstartedServer(http.FileServer(http.Dir(root)))
+	server.Listener = listener
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	server.StartTLS()
+	port := listener.Addr().(*net.TCPAddr).Port
+	return guestReachableBundleServer{
+		Server:    server,
+		Source:    "https://" + net.JoinHostPort(gateway, strconv.Itoa(port)),
+		CACertPEM: caPEM,
+	}, nil
+}
+
+func kubernetesBundleServerCertificate(gateway string) (tls.Certificate, []byte, error) {
+	now := time.Now().UTC()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	caTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "katl vmtest Kubernetes bundle CA"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	serverTemplate := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: gateway},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP(gateway)},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, &serverTemplate, &caTemplate, &serverKey.PublicKey, caKey)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	return cert, caPEM, nil
+}
+
+func installKubernetesBundleCA(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, bundle threeControlPlaneKubernetesPayloadBundle) error {
+	if err := writeNodeFile(ctx, node, bundle.CACertGuestPath, bundle.CACertPEM, 0o644, false); err != nil {
+		return err
+	}
+	commands := []struct {
+		name string
+		argv []string
+	}{
+		{name: "set katlc-agent TLS CA", argv: []string{"systemctl", "set-environment", "SSL_CERT_FILE=" + bundle.CACertGuestPath}},
+		{name: "restart katlc-agent", argv: []string{"systemctl", "restart", "katlc-agent.service"}},
+		{name: "check katlc-agent", argv: []string{"systemctl", "is-active", "--quiet", "katlc-agent.service"}},
+	}
+	for _, command := range commands {
+		result, err := runNodeCommand(ctx, node, command.argv, 16<<10)
+		if err != nil {
+			return fmt.Errorf("%s: %w", command.name, err)
+		}
+		if result.ExitStatus != 0 {
+			return fmt.Errorf("%s: %w", command.name, commandErrorDetail(result))
+		}
+	}
+	return nil
 }
 
 func writeThreeControlPlaneInventory(path string, kubernetesVersion string, nodes []vmtest.RunningInstalledRuntimeNode) error {
@@ -382,7 +598,7 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, tokenFiles map[string]string) error {
+func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, tokenFiles map[string]string) error {
 	if len(nodes) != 3 {
 		return fmt.Errorf("three control-plane inventory requires three nodes, got %d", len(nodes))
 	}
@@ -392,6 +608,8 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 	var b strings.Builder
 	b.WriteString("controlPlaneEndpoint: \"\"\n")
 	b.WriteString("kubernetesVersion: " + kubernetesVersion + "\n")
+	b.WriteString("kubernetesBundleSource: " + strconv.Quote(kubernetesBundle.Source) + "\n")
+	b.WriteString("kubernetesBundleRef: " + strconv.Quote(kubernetesBundle.Ref) + "\n")
 	b.WriteString("nodes:\n")
 	for _, node := range nodes {
 		b.WriteString("- name: " + node.Name + "\n")
@@ -409,78 +627,173 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-type threeControlPlaneArtifactManifest struct {
-	VMTestRun                string                      `json:"vmtestRun,omitempty"`
-	WorldManifest            string                      `json:"worldManifest,omitempty"`
-	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
-	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
-	NodeRunDirs              map[string]string           `json:"nodeRunDirs"`
-	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
-	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
-	LaunchCommands           map[string]string           `json:"launchCommands,omitempty"`
-	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
-	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
-	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
-	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
-	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
-	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
-	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
-	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
-	Inventory                string                      `json:"inventory"`
-	Kubeconfig               string                      `json:"kubeconfig"`
-	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout          string                      `json:"bootstrapStdout"`
-	BootstrapStderr          string                      `json:"bootstrapStderr"`
-	BootstrapFixture         *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
-	KubectlOutput            string                      `json:"kubectlOutput"`
-	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	EtcdReport               string                      `json:"etcdReport"`
-	Transcripts              map[string]string           `json:"transcripts"`
-	EtcdTranscripts          map[string]string           `json:"etcdTranscripts"`
-	OperationEvidence        map[string]string           `json:"operationEvidence,omitempty"`
-	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
-	NetworkLeases            string                      `json:"networkLeases,omitempty"`
-	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
+type threeControlPlaneCNISpec struct {
+	PodSubnet  string
+	PodGateway string
+	PeerRoutes []cniPeerRoute
 }
 
-func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
+type cniPeerRoute struct {
+	Subnet  string
+	Address string
+}
+
+func threeControlPlaneCNISpecs(addresses map[string]string) map[string]threeControlPlaneCNISpec {
+	return map[string]threeControlPlaneCNISpec{
+		"cp-1": {
+			PodSubnet:  "10.244.0.0/24",
+			PodGateway: "10.244.0.1",
+			PeerRoutes: []cniPeerRoute{
+				{Subnet: "10.244.1.0/24", Address: addresses["cp-2"]},
+				{Subnet: "10.244.2.0/24", Address: addresses["cp-3"]},
+			},
+		},
+		"cp-2": {
+			PodSubnet:  "10.244.1.0/24",
+			PodGateway: "10.244.1.1",
+			PeerRoutes: []cniPeerRoute{
+				{Subnet: "10.244.0.0/24", Address: addresses["cp-1"]},
+				{Subnet: "10.244.2.0/24", Address: addresses["cp-3"]},
+			},
+		},
+		"cp-3": {
+			PodSubnet:  "10.244.2.0/24",
+			PodGateway: "10.244.2.1",
+			PeerRoutes: []cniPeerRoute{
+				{Subnet: "10.244.0.0/24", Address: addresses["cp-1"]},
+				{Subnet: "10.244.1.0/24", Address: addresses["cp-2"]},
+			},
+		},
+	}
+}
+
+func stageThreeControlPlaneCNIFixtures(ctx context.Context, repo string, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string) (map[string]nodeCNIFixture, error) {
+	byName := map[string]vmtest.RunningInstalledRuntimeNode{}
+	for _, node := range nodes {
+		byName[node.Name] = node
+	}
+	source := filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "bridge-cni.conflist")
+	fixtures := map[string]nodeCNIFixture{}
+	for nodeName, spec := range threeControlPlaneCNISpecs(addresses) {
+		node, ok := byName[nodeName]
+		if !ok {
+			return nil, fmt.Errorf("missing running node %s for CNI fixture", nodeName)
+		}
+		if len(spec.PeerRoutes) == 0 {
+			return nil, fmt.Errorf("missing peer routes for %s CNI fixture", nodeName)
+		}
+		firstPeer := spec.PeerRoutes[0]
+		fixture, err := stageNodeCNIFixture(ctx, node, source, spec.PodSubnet, spec.PodGateway, firstPeer.Subnet, firstPeer.Address)
+		if err != nil {
+			return nil, fmt.Errorf("stage %s CNI: %w", nodeName, err)
+		}
+		for _, peer := range spec.PeerRoutes[1:] {
+			argv := []string{"ip", "route", "replace", peer.Subnet, "via", peer.Address}
+			result, err := runNodeCommand(ctx, node, argv, 32<<10)
+			if err != nil {
+				return nil, fmt.Errorf("stage %s CNI peer route %s: %w", nodeName, peer.Subnet, err)
+			}
+			if result.ExitStatus != 0 {
+				return nil, fmt.Errorf("stage %s CNI peer route %s: %w", nodeName, peer.Subnet, commandErrorDetail(result))
+			}
+		}
+		fixtures[nodeName] = fixture
+	}
+	return fixtures, nil
+}
+
+type threeControlPlaneArtifactManifest struct {
+	VMTestRun                 string                                    `json:"vmtestRun,omitempty"`
+	WorldManifest             string                                    `json:"worldManifest,omitempty"`
+	HostCapabilities          string                                    `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex        string                                    `json:"mkosiArtifactIndex,omitempty"`
+	NodeRunDirs               map[string]string                         `json:"nodeRunDirs"`
+	NodeScenarios             map[string]string                         `json:"nodeScenarios,omitempty"`
+	NodeResults               map[string]string                         `json:"nodeResults,omitempty"`
+	LaunchCommands            map[string]string                         `json:"launchCommands,omitempty"`
+	DomainXMLs                map[string]string                         `json:"domainXMLs,omitempty"`
+	InstalledRuntimeInputs    map[string]string                         `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts          map[string]string                         `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases             map[string]string                         `json:"libvirtLeases,omitempty"`
+	NodeDomains               map[string]string                         `json:"nodeDomains,omitempty"`
+	NodeMACs                  map[string]string                         `json:"nodeMACs,omitempty"`
+	NodeIPs                   map[string]string                         `json:"nodeIPs,omitempty"`
+	FixtureInputs             map[string]nodeFixtureInput               `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios  map[string]string                         `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults    map[string]string                         `json:"fixtureProducerResults,omitempty"`
+	Inventory                 string                                    `json:"inventory"`
+	Kubeconfig                string                                    `json:"kubeconfig"`
+	KubeconfigMetadata        string                                    `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout           string                                    `json:"bootstrapStdout"`
+	BootstrapStderr           string                                    `json:"bootstrapStderr"`
+	BootstrapFixture          *bootstrapFixtureInputs                   `json:"bootstrapFixture,omitempty"`
+	CNIFixtures               map[string]nodeCNIFixture                 `json:"cniFixtures,omitempty"`
+	KubernetesPayloadBundle   *threeControlPlaneKubernetesPayloadBundle `json:"kubernetesPayloadBundle,omitempty"`
+	KubernetesVersionEvidence map[string]string                         `json:"kubernetesVersionEvidence,omitempty"`
+	KubectlOutput             string                                    `json:"kubectlOutput"`
+	KubectlDiagnostics        map[string]string                         `json:"kubectlDiagnostics,omitempty"`
+	EtcdReport                string                                    `json:"etcdReport"`
+	Transcripts               map[string]string                         `json:"transcripts"`
+	EtcdTranscripts           map[string]string                         `json:"etcdTranscripts"`
+	OperationEvidence         map[string]string                         `json:"operationEvidence,omitempty"`
+	SerialLogs                map[string]string                         `json:"serialLogs,omitempty"`
+	NetworkLeases             string                                    `json:"networkLeases,omitempty"`
+	Diagnostics               map[string]string                         `json:"diagnostics,omitempty"`
+}
+
+func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
+	var bundle *threeControlPlaneKubernetesPayloadBundle
+	if strings.TrimSpace(kubernetesBundle.Ref) != "" {
+		copy := kubernetesBundle
+		copy.CACertPEM = nil
+		bundle = &copy
+	}
 	return writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		VMTestRun:                inputs.WorldProvenance.VMTestRun,
-		WorldManifest:            inputs.WorldProvenance.WorldManifest,
-		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
-		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
-		NodeRunDirs:              nodeRunDirs(nodes),
-		NodeScenarios:            nodeScenarioPaths(nodes),
-		NodeResults:              nodeResultPaths(nodes),
-		LaunchCommands:           launchCommandPaths(nodes),
-		DomainXMLs:               domainXMLPaths(nodes),
-		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
-		VSockTranscripts:         vsockTranscriptPaths(nodes),
-		LibvirtLeases:            libvirtLeasePaths(nodes),
-		NodeDomains:              nodeDomainNames(nodes),
-		NodeMACs:                 nodeMACAddresses(nodes),
-		NodeIPs:                  nodeIPAddresses(nodes),
-		FixtureInputs:            threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
-		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
-		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
-		Inventory:                filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
-		Kubeconfig:               filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
-		KubeconfigMetadata:       filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
-		BootstrapStdout:          filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
-		BootstrapStderr:          filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
-		BootstrapFixture:         bootstrapFixture.manifestValue(),
-		KubectlOutput:            filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
-		KubectlDiagnostics:       kubectlDiagnosticPaths(result.RunDir),
-		EtcdReport:               filepath.Join(result.RunDir, "etcd-report.json"),
-		Transcripts:              transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts:          transcriptPaths(etcdTranscriptDir, nodes),
-		OperationEvidence:        operationEvidencePaths(filepath.Join(result.RunDir, "operation-evidence"), nodes),
-		SerialLogs:               serialLogPaths(nodes),
-		NetworkLeases:            inputs.WorldProvenance.NetworkLeaseFile,
-		Diagnostics:              diagnosticSummaryPaths(nodes),
+		VMTestRun:                 inputs.WorldProvenance.VMTestRun,
+		WorldManifest:             inputs.WorldProvenance.WorldManifest,
+		HostCapabilities:          inputs.WorldProvenance.HostCapabilities,
+		MkosiArtifactIndex:        inputs.WorldProvenance.MkosiArtifactIndex,
+		NodeRunDirs:               nodeRunDirs(nodes),
+		NodeScenarios:             nodeScenarioPaths(nodes),
+		NodeResults:               nodeResultPaths(nodes),
+		LaunchCommands:            launchCommandPaths(nodes),
+		DomainXMLs:                domainXMLPaths(nodes),
+		InstalledRuntimeInputs:    installedRuntimeInputPaths(nodes),
+		VSockTranscripts:          vsockTranscriptPaths(nodes),
+		LibvirtLeases:             libvirtLeasePaths(nodes),
+		NodeDomains:               nodeDomainNames(nodes),
+		NodeMACs:                  nodeMACAddresses(nodes),
+		NodeIPs:                   nodeIPAddresses(nodes),
+		FixtureInputs:             threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
+		FixtureProducerScenarios:  inputs.WorldProvenance.FixtureProducerScenarios,
+		FixtureProducerResults:    inputs.WorldProvenance.FixtureProducerResults,
+		Inventory:                 filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
+		Kubeconfig:                filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
+		KubeconfigMetadata:        filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
+		BootstrapStdout:           filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
+		BootstrapStderr:           filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
+		BootstrapFixture:          bootstrapFixture.manifestValue(),
+		CNIFixtures:               cniFixtures,
+		KubernetesPayloadBundle:   bundle,
+		KubernetesVersionEvidence: kubernetesVersionEvidencePaths(filepath.Join(result.RunDir, "kubernetes-version-evidence"), nodes),
+		KubectlOutput:             filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
+		KubectlDiagnostics:        kubectlDiagnosticPaths(result.RunDir),
+		EtcdReport:                filepath.Join(result.RunDir, "etcd-report.json"),
+		Transcripts:               transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:           transcriptPaths(etcdTranscriptDir, nodes),
+		OperationEvidence:         operationEvidencePaths(filepath.Join(result.RunDir, "operation-evidence"), nodes),
+		SerialLogs:                serialLogPaths(nodes),
+		NetworkLeases:             inputs.WorldProvenance.NetworkLeaseFile,
+		Diagnostics:               diagnosticSummaryPaths(nodes),
 	})
+}
+
+func kubernetesVersionEvidencePaths(evidenceDir string, nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	paths := map[string]string{}
+	for _, node := range nodes {
+		paths[node.Name] = filepath.Join(evidenceDir, node.Name, "kubernetes-versions.json")
+	}
+	return paths
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -492,6 +805,82 @@ func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPl
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func collectKubernetesVersionEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, payloadVersion string) (string, error) {
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		return "", err
+	}
+	commands := map[string][]string{
+		"kubeadm": {"kubeadm", "version", "-o", "short"},
+		"kubelet": {"kubelet", "--version"},
+		"kubectl": {"kubectl", "version", "--client=true", "--output=yaml"},
+	}
+	evidence := nodeLocalStatusEvidence{
+		Node:    node.Name,
+		Results: make(map[string]nodeCommandEvidence, len(commands)),
+	}
+	for name, argv := range commands {
+		result, err := runNodeCommand(ctx, node, argv, 256<<10)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+		stdout := string(result.Stdout)
+		stderr := string(result.Stderr)
+		if result.ExitStatus != 0 {
+			return "", fmt.Errorf("%s exited %d: %s%s", name, result.ExitStatus, stdout, stderr)
+		}
+		if !strings.Contains(stdout, payloadVersion) && !strings.Contains(stderr, payloadVersion) {
+			return "", fmt.Errorf("%s output does not contain selected payload version %s: stdout=%q stderr=%q", name, payloadVersion, stdout, stderr)
+		}
+		evidence.Results[name] = nodeCommandEvidence{
+			Argv:       argv,
+			ExitStatus: result.ExitStatus,
+			Stdout:     stdout,
+			Stderr:     stderr,
+		}
+	}
+	hostPath := filepath.Join(evidenceDir, "kubernetes-versions.json")
+	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
+}
+
+func assertOperationKubernetesBundle(t *testing.T, record operation.OperationRecord, bundle threeControlPlaneKubernetesPayloadBundle) {
+	t.Helper()
+	if record.BootstrapRequest == nil {
+		t.Fatalf("operation %s missing bootstrap request", record.OperationID)
+	}
+	req := record.BootstrapRequest
+	if req.KubernetesPayloadVersion != bundle.PayloadVersion ||
+		req.KubernetesBundleSource != bundle.Source ||
+		req.KubernetesBundleRef != bundle.Ref ||
+		req.KubernetesBundleManifestDigest != bundle.BundleManifestDigest ||
+		req.KubernetesSysextPayloadDigest != bundle.SysextPayloadDigest {
+		t.Fatalf("operation %s Kubernetes bundle request = %#v, want %#v", record.OperationID, req, bundle)
+	}
+	if record.CandidateGenerationID == "" {
+		t.Fatalf("operation %s missing candidate generation ID", record.OperationID)
+	}
+}
+
+func assertGenerationKubernetesBundle(t *testing.T, ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, record operation.OperationRecord, bundle threeControlPlaneKubernetesPayloadBundle) {
+	t.Helper()
+	_, generationRecord, err := collectGenerationEvidence(ctx, node, evidenceDir, record.CandidateGenerationID)
+	if err != nil {
+		t.Fatalf("collect %s generation evidence: %v", node.Name, err)
+	}
+	var found bool
+	for _, ref := range generationRecord.Spec.Sysexts {
+		if ref.Name != sysextcatalog.KubernetesName {
+			continue
+		}
+		found = true
+		if ref.PayloadVersion != bundle.PayloadVersion || ref.SHA256 != strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:") || ref.ArtifactVersion == "" {
+			t.Fatalf("%s Kubernetes sysext ref = %#v, want bundle %#v", node.Name, ref, bundle)
+		}
+	}
+	if !found {
+		t.Fatalf("%s generation %s missing Kubernetes sysext ref: %#v", node.Name, record.CandidateGenerationID, generationRecord.Spec.Sysexts)
+	}
 }
 
 func threeControlPlaneFixtureInputs(cp1Disk, cp1Format, cp2Disk, cp2Format, cp3Disk, cp3Format, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
@@ -978,6 +1367,25 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		}[name]
 		nodes = append(nodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
 	}
+	bundleManifestDigest := "sha256:" + strings.Repeat("a", 64)
+	sysextPayloadDigest := "sha256:" + strings.Repeat("b", 64)
+	kubernetesBundle := threeControlPlaneKubernetesPayloadBundle{
+		Source:               "https://192.0.2.1:9443",
+		Ref:                  "v1.36.1@" + bundleManifestDigest,
+		PayloadVersion:       "v1.36.1",
+		BundleManifestDigest: bundleManifestDigest,
+		SysextPayloadDigest:  sysextPayloadDigest,
+		Root:                 filepath.Join(result.ManifestDir, "kubernetes-payload-bundles"),
+		IndexPath:            filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "index.json"),
+		CatalogPath:          filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "kubernetes-sysext-bundles-v1.36.json"),
+		BundlePaths: map[string]string{
+			"v1.36.0": filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "katl-kubernetes-v1.36.0.bundle.json"),
+			"v1.36.1": filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "katl-kubernetes-v1.36.1.bundle.json"),
+		},
+		CACertPath:      filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem"),
+		CACertGuestPath: "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem",
+		CACertPEM:       []byte("test-ca"),
+	}
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, threeControlPlaneSmokeInputs{
 		CP1Disk:     "cp1.raw",
 		CP1ESP:      "esp",
@@ -999,7 +1407,7 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 			FixtureProducerScenarios: map[string]string{"cp-2": "/tmp/fixture-cp-2/scenario.json"},
 			FixtureProducerResults:   map[string]string{"cp-3": "/tmp/fixture-cp-3/result.json"},
 		},
-	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
+	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}, kubernetesBundle, nil); err != nil {
 		t.Fatalf("writeThreeControlPlaneSmokeArtifactManifest() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"))
@@ -1033,6 +1441,17 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	}
 	if manifest.WorldManifest != "/tmp/world.json" || manifest.NetworkLeases != "/tmp/network-leases.json" || manifest.FixtureProducerResults["cp-3"] != "/tmp/fixture-cp-3/result.json" {
 		t.Fatalf("planned provenance = %#v", manifest)
+	}
+	if manifest.KubernetesPayloadBundle == nil ||
+		manifest.KubernetesPayloadBundle.Source != kubernetesBundle.Source ||
+		manifest.KubernetesPayloadBundle.Ref != kubernetesBundle.Ref ||
+		manifest.KubernetesPayloadBundle.BundleManifestDigest != bundleManifestDigest ||
+		manifest.KubernetesPayloadBundle.SysextPayloadDigest != sysextPayloadDigest ||
+		manifest.KubernetesPayloadBundle.CACertGuestPath != kubernetesBundle.CACertGuestPath {
+		t.Fatalf("Kubernetes payload bundle evidence = %#v, want %#v", manifest.KubernetesPayloadBundle, kubernetesBundle)
+	}
+	if len(manifest.KubernetesPayloadBundle.CACertPEM) != 0 {
+		t.Fatalf("Kubernetes payload bundle manifest leaked CA PEM bytes")
 	}
 }
 
@@ -1291,5 +1710,26 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	if manifest.KubectlDiagnostics["kubeSystemPods"] != "/tmp/run/kubectl-get-pods-kube-system.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
+	}
+}
+
+func TestThreeControlPlaneCNISpecs(t *testing.T) {
+	specs := threeControlPlaneCNISpecs(map[string]string{
+		"cp-1": "192.168.122.10",
+		"cp-2": "192.168.122.20",
+		"cp-3": "192.168.122.30",
+	})
+	if specs["cp-1"].PodSubnet != "10.244.0.0/24" || specs["cp-1"].PodGateway != "10.244.0.1" {
+		t.Fatalf("cp-1 CNI spec = %#v", specs["cp-1"])
+	}
+	wantRoutes := []cniPeerRoute{
+		{Subnet: "10.244.1.0/24", Address: "192.168.122.20"},
+		{Subnet: "10.244.2.0/24", Address: "192.168.122.30"},
+	}
+	if !reflect.DeepEqual(specs["cp-1"].PeerRoutes, wantRoutes) {
+		t.Fatalf("cp-1 peer routes = %#v, want %#v", specs["cp-1"].PeerRoutes, wantRoutes)
+	}
+	if specs["cp-2"].PodSubnet != "10.244.1.0/24" || specs["cp-3"].PodSubnet != "10.244.2.0/24" {
+		t.Fatalf("control-plane CNI pod subnets = %#v", specs)
 	}
 }
