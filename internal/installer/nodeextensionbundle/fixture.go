@@ -34,6 +34,13 @@ type FixtureRequest struct {
 	CreatedAt         string
 	RuntimeInterfaces []string
 	Capabilities      []Capability
+	DisplayName       string
+	Description       string
+	Compatibility     *Compatibility
+	Systemd           *Systemd
+	Configuration     *Configuration
+	Status            *Status
+	Rollback          *Rollback
 }
 
 type Fixture struct {
@@ -247,6 +254,66 @@ func WriteFixture(request FixtureRequest) (Fixture, error) {
 		return Fixture{}, err
 	}
 
+	compatibility := Compatibility{
+		SupportedRuntimeInterfaces: append([]string(nil), request.RuntimeInterfaces...),
+		RequiredKernelModules:      []string{},
+		RequiredUnits:              []string{"systemd-sysext.service"},
+		RequiredMounts:             []string{},
+		RequiredCapabilities:       []string{},
+		ActivationPhases:           []string{"maintenance"},
+	}
+	if request.Compatibility != nil {
+		compatibility = copyCompatibility(*request.Compatibility)
+	}
+	systemd := Systemd{
+		ExtensionID:          "katl-node-extension-" + request.AppID,
+		ExtensionVersion:     request.PayloadVersion,
+		SysextLevel:          request.RuntimeInterfaces[0],
+		ProvidedUnits:        []string{"katl-app-" + request.AppID + ".service"},
+		EntrypointUnits:      []string{"katl-app-" + request.AppID + ".service"},
+		ReadinessUnits:       []string{"katl-app-" + request.AppID + "-ready.service"},
+		OrderingRequirements: []string{"after=systemd-sysext.service"},
+	}
+	if request.Systemd != nil {
+		systemd = copySystemd(*request.Systemd)
+	}
+	configuration := Configuration{
+		ConfigHandoffPaths:       []string{"/etc/katl/apps/" + request.AppID + "/config.yaml"},
+		GeneratedDropInPaths:     []string{"/etc/systemd/system/katl-app-" + request.AppID + ".service.d/10-katl.conf"},
+		SupportedConfigSchemaIDs: configSchemaIDs(request.Capabilities),
+		SecretRefKinds:           []string{},
+	}
+	if request.Configuration != nil {
+		configuration = copyConfiguration(*request.Configuration)
+	}
+	status := Status{
+		LiveStatusPath:      "/run/katl/apps/" + request.AppID + "/status.json",
+		StatusSchemaID:      "katl.dev/node-extension-fixture-status.v1",
+		DurableSnapshotPath: "/var/lib/katl/operations/<operation-id>/apps/" + request.AppID + "/status.json",
+		RedactionVersion:    "v1",
+		HealthStates:        []string{"unknown", "healthy", "unhealthy", "deferred"},
+	}
+	if request.Status != nil {
+		status = copyStatus(*request.Status)
+	}
+	rollback := Rollback{
+		FailClosedActions:         []string{},
+		LiveRollbackSupported:     false,
+		RequiresRebootForRollback: true,
+		ExternalStateWarning:      "generic fixture has no external state",
+	}
+	if request.Rollback != nil {
+		rollback = copyRollback(*request.Rollback)
+	}
+	displayName := request.DisplayName
+	if displayName == "" {
+		displayName = "Generic node extension fixture"
+	}
+	description := request.Description
+	if description == "" {
+		description = "Minimal generic node extension bundle fixture for delivery tests."
+	}
+
 	bundle := Bundle{
 		APIVersion:      APIVersion,
 		Kind:            BundleKind,
@@ -255,45 +322,14 @@ func WriteFixture(request FixtureRequest) (Fixture, error) {
 		ArtifactVersion: request.ArtifactVersion,
 		PayloadVersion:  request.PayloadVersion,
 		Architecture:    request.Architecture,
-		DisplayName:     "Generic node extension fixture",
-		Description:     "Minimal generic node extension bundle fixture for delivery tests.",
+		DisplayName:     displayName,
+		Description:     description,
 		Capabilities:    copyCapabilities(request.Capabilities),
-		Compatibility: Compatibility{
-			SupportedRuntimeInterfaces: append([]string(nil), request.RuntimeInterfaces...),
-			RequiredKernelModules:      []string{},
-			RequiredUnits:              []string{"systemd-sysext.service"},
-			RequiredMounts:             []string{},
-			RequiredCapabilities:       []string{},
-			ActivationPhases:           []string{"maintenance"},
-		},
-		Systemd: Systemd{
-			ExtensionID:          "katl-node-extension-" + request.AppID,
-			ExtensionVersion:     request.PayloadVersion,
-			SysextLevel:          request.RuntimeInterfaces[0],
-			ProvidedUnits:        []string{"katl-app-" + request.AppID + ".service"},
-			EntrypointUnits:      []string{"katl-app-" + request.AppID + ".service"},
-			ReadinessUnits:       []string{"katl-app-" + request.AppID + "-ready.service"},
-			OrderingRequirements: []string{"after=systemd-sysext.service"},
-		},
-		Configuration: Configuration{
-			ConfigHandoffPaths:       []string{"/etc/katl/apps/" + request.AppID + "/config.yaml"},
-			GeneratedDropInPaths:     []string{"/etc/systemd/system/katl-app-" + request.AppID + ".service.d/10-katl.conf"},
-			SupportedConfigSchemaIDs: configSchemaIDs(request.Capabilities),
-			SecretRefKinds:           []string{},
-		},
-		Status: Status{
-			LiveStatusPath:      "/run/katl/apps/" + request.AppID + "/status.json",
-			StatusSchemaID:      "katl.dev/node-extension-fixture-status.v1",
-			DurableSnapshotPath: "/var/lib/katl/operations/<operation-id>/apps/" + request.AppID + "/status.json",
-			RedactionVersion:    "v1",
-			HealthStates:        []string{"unknown", "healthy", "unhealthy", "deferred"},
-		},
-		Rollback: Rollback{
-			FailClosedActions:         []string{},
-			LiveRollbackSupported:     false,
-			RequiresRebootForRollback: true,
-			ExternalStateWarning:      "generic fixture has no external state",
-		},
+		Compatibility:   compatibility,
+		Systemd:         systemd,
+		Configuration:   configuration,
+		Status:          status,
+		Rollback:        rollback,
 		Payloads: []Descriptor{{
 			Role:      "systemd-sysext",
 			MediaType: SysextRawMediaType,
@@ -554,6 +590,57 @@ func copyCapabilities(source []Capability) []Capability {
 		}
 	}
 	return out
+}
+
+func copyCompatibility(source Compatibility) Compatibility {
+	return Compatibility{
+		SupportedRuntimeInterfaces: append([]string(nil), source.SupportedRuntimeInterfaces...),
+		RequiredKernelModules:      append([]string(nil), source.RequiredKernelModules...),
+		RequiredUnits:              append([]string(nil), source.RequiredUnits...),
+		RequiredMounts:             append([]string(nil), source.RequiredMounts...),
+		RequiredCapabilities:       append([]string(nil), source.RequiredCapabilities...),
+		ActivationPhases:           append([]string(nil), source.ActivationPhases...),
+	}
+}
+
+func copySystemd(source Systemd) Systemd {
+	return Systemd{
+		ExtensionID:          source.ExtensionID,
+		ExtensionVersion:     source.ExtensionVersion,
+		SysextLevel:          source.SysextLevel,
+		ProvidedUnits:        append([]string(nil), source.ProvidedUnits...),
+		EntrypointUnits:      append([]string(nil), source.EntrypointUnits...),
+		ReadinessUnits:       append([]string(nil), source.ReadinessUnits...),
+		OrderingRequirements: append([]string(nil), source.OrderingRequirements...),
+	}
+}
+
+func copyConfiguration(source Configuration) Configuration {
+	return Configuration{
+		ConfigHandoffPaths:       append([]string(nil), source.ConfigHandoffPaths...),
+		GeneratedDropInPaths:     append([]string(nil), source.GeneratedDropInPaths...),
+		SupportedConfigSchemaIDs: append([]string(nil), source.SupportedConfigSchemaIDs...),
+		SecretRefKinds:           append([]string(nil), source.SecretRefKinds...),
+	}
+}
+
+func copyStatus(source Status) Status {
+	return Status{
+		LiveStatusPath:      source.LiveStatusPath,
+		StatusSchemaID:      source.StatusSchemaID,
+		DurableSnapshotPath: source.DurableSnapshotPath,
+		RedactionVersion:    source.RedactionVersion,
+		HealthStates:        append([]string(nil), source.HealthStates...),
+	}
+}
+
+func copyRollback(source Rollback) Rollback {
+	return Rollback{
+		FailClosedActions:         append([]string(nil), source.FailClosedActions...),
+		LiveRollbackSupported:     source.LiveRollbackSupported,
+		RequiresRebootForRollback: source.RequiresRebootForRollback,
+		ExternalStateWarning:      source.ExternalStateWarning,
+	}
 }
 
 func configSchemaIDs(capabilities []Capability) []string {
