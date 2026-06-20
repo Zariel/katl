@@ -103,7 +103,7 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts path KIND [INDEX]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
-       katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION
+       katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION --ethtool-version VERSION --socat-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext-from-log --artifact PATH --log PATH --repo-id ID --repo-base-url URL --repo-minor MINOR
        katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH
        katl-mkosi-artifacts write-katlos-artifact --artifact PATH
@@ -417,6 +417,8 @@ func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg confi
 	kubeletVersion := flags.String("kubelet-version", "", "resolved kubelet package version")
 	kubectlVersion := flags.String("kubectl-version", "", "resolved kubectl package version")
 	criToolsVersion := flags.String("cri-tools-version", "", "resolved cri-tools package version")
+	ethtoolVersion := flags.String("ethtool-version", "", "resolved ethtool package version")
+	socatVersion := flags.String("socat-version", "", "resolved socat package version")
 	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
 	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
 	runtimeSHA := flags.String("runtime-sha256", "", "compatible runtime root SHA-256 override")
@@ -435,6 +437,8 @@ func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg confi
 		"--kubelet-version":   *kubeletVersion,
 		"--kubectl-version":   *kubectlVersion,
 		"--cri-tools-version": *criToolsVersion,
+		"--ethtool-version":   *ethtoolVersion,
+		"--socat-version":     *socatVersion,
 		"--repo-id":           *repoID,
 		"--repo-base-url":     *repoBaseURL,
 		"--repo-minor":        *repoMinor,
@@ -462,6 +466,8 @@ func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg confi
 			"kubelet":   *kubeletVersion,
 			"kubectl":   *kubectlVersion,
 			"cri-tools": *criToolsVersion,
+			"ethtool":   *ethtoolVersion,
+			"socat":     *socatVersion,
 		},
 	}, cfg)
 	if err != nil {
@@ -486,6 +492,8 @@ func runWriteKubernetesSysextFromLog(args []string, stdout, stderr io.Writer, cf
 	expectedKubelet := flags.String("expected-kubelet-version", "", "optional expected kubelet package version")
 	expectedKubectl := flags.String("expected-kubectl-version", "", "optional expected kubectl package version")
 	expectedCriTools := flags.String("expected-cri-tools-version", "", "optional expected cri-tools package version")
+	expectedEthtool := flags.String("expected-ethtool-version", "", "optional expected ethtool package version")
+	expectedSocat := flags.String("expected-socat-version", "", "optional expected socat package version")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -512,6 +520,8 @@ func runWriteKubernetesSysextFromLog(args []string, stdout, stderr io.Writer, cf
 		"kubelet":   *expectedKubelet,
 		"kubectl":   *expectedKubectl,
 		"cri-tools": *expectedCriTools,
+		"ethtool":   *expectedEthtool,
+		"socat":     *expectedSocat,
 	}
 	for pkg, want := range expected {
 		if strings.TrimSpace(want) != "" && packages[pkg] != want {
@@ -608,6 +618,8 @@ func resolveKubernetesPackages(logPath, repoID string) (map[string]string, error
 		"kubelet":   "",
 		"kubectl":   "",
 		"cri-tools": "",
+		"ethtool":   "",
+		"socat":     "",
 	}
 	repos := map[string]string{}
 	scanner := bufio.NewScanner(file)
@@ -629,11 +641,20 @@ func resolveKubernetesPackages(logPath, repoID string) (map[string]string, error
 		if version == "" {
 			return nil, fmt.Errorf("could not determine resolved version for %s", pkg)
 		}
-		if repos[pkg] != repoID {
+		if isKubernetesRepoPackage(pkg) && repos[pkg] != repoID {
 			return nil, fmt.Errorf("%s resolved from %s, want %s", pkg, repos[pkg], repoID)
 		}
 	}
 	return wanted, nil
+}
+
+func isKubernetesRepoPackage(name string) bool {
+	switch name {
+	case "kubeadm", "kubelet", "kubectl", "cri-tools":
+		return true
+	default:
+		return false
+	}
 }
 
 func payloadVersionFromPackage(version string) (string, error) {

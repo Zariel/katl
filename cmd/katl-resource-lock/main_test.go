@@ -250,6 +250,13 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.0-150500.1.1.x86_64" {
 		t.Fatalf("Kubernetes package set = %#v", kubernetesSet)
 	}
+	if packageNEVRA(kubernetesSet.Packages, "ethtool") != "ethtool-2:7.0-1.fc44.x86_64" ||
+		packageNEVRA(kubernetesSet.Packages, "socat") != "socat-0:1.8.1.1-1.fc44.x86_64" {
+		t.Fatalf("Kubernetes helper packages = %#v", kubernetesSet.Packages)
+	}
+	if len(kubernetesSet.Repositories) != 2 || kubernetesSet.Repositories[1].ID != "fedora" {
+		t.Fatalf("Kubernetes repositories = %#v", kubernetesSet.Repositories)
+	}
 
 	stdout.Reset()
 	err = run([]string{
@@ -731,6 +738,8 @@ func writeKubernetesMetadata(t *testing.T, path, version string) {
 			"kubelet":   version,
 			"kubectl":   version,
 			"cri-tools": "0:1.36.0-150500.1.1",
+			"ethtool":   "2:7.0-1.fc44",
+			"socat":     "0:1.8.1.1-1.fc44",
 		},
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")

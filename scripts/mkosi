@@ -734,7 +734,9 @@ set +e
                 --expected-kubeadm-version "${KATL_KUBERNETES_KUBEADM_VERSION:-}" \
                 --expected-kubelet-version "${KATL_KUBERNETES_KUBELET_VERSION:-}" \
                 --expected-kubectl-version "${KATL_KUBERNETES_KUBECTL_VERSION:-}" \
-                --expected-cri-tools-version "${KATL_KUBERNETES_CRITOOLS_VERSION:-}" >/dev/null; then
+                --expected-cri-tools-version "${KATL_KUBERNETES_CRITOOLS_VERSION:-}" \
+                --expected-ethtool-version "${KATL_KUBERNETES_ETHTOOL_VERSION:-}" \
+                --expected-socat-version "${KATL_KUBERNETES_SOCAT_VERSION:-}" >/dev/null; then
                 status=1
             fi
         fi

@@ -126,6 +126,8 @@ func TestKubernetesSysextFromLog(t *testing.T) {
 		"kubelet x86_64 1.36.0-1 kubernetes installed",
 		"kubectl x86_64 1.36.0-1 kubernetes installed",
 		"cri-tools x86_64 1.36.0-1 kubernetes installed",
+		"ethtool x86_64 2:7.0-1.fc44 fedora installed",
+		"socat x86_64 0:1.8.1.1-1.fc44 updates installed",
 		"",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", logPath, err)
@@ -151,6 +153,9 @@ func TestKubernetesSysextFromLog(t *testing.T) {
 	readTestJSON(t, sysext+".json", &metadata)
 	if metadata.PayloadVersion != "v1.36.0" || metadata.PackageVersions["kubeadm"] != "1.36.0-1" {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+	if metadata.PackageVersions["ethtool"] != "2:7.0-1.fc44" || metadata.PackageVersions["socat"] != "0:1.8.1.1-1.fc44" {
+		t.Fatalf("helper packageVersions = %#v", metadata.PackageVersions)
 	}
 	if metadata.CompatibleRuntime == nil || metadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
 		t.Fatalf("compatibleRuntime = %#v", metadata.CompatibleRuntime)
@@ -213,6 +218,8 @@ func TestMetadataWriters(t *testing.T) {
 		"--kubelet-version", "1.36.0-1",
 		"--kubectl-version", "1.36.0-1",
 		"--cri-tools-version", "1.36.0-1",
+		"--ethtool-version", "2:7.0-1.fc44",
+		"--socat-version", "1.8.1.1-1.fc44",
 		"--runtime-artifact", runtimeRoot,
 		"--runtime-metadata", runtimeRoot + ".json",
 		"--repo-id", "kubernetes",
@@ -232,7 +239,9 @@ func TestMetadataWriters(t *testing.T) {
 	if sysextMetadata.SourceRepo == nil || sysextMetadata.SourceRepo.Minor != "v1.36" {
 		t.Fatalf("Kubernetes source repo = %#v", sysextMetadata.SourceRepo)
 	}
-	if sysextMetadata.PackageVersions["cri-tools"] != "1.36.0-1" {
+	if sysextMetadata.PackageVersions["cri-tools"] != "1.36.0-1" ||
+		sysextMetadata.PackageVersions["ethtool"] != "2:7.0-1.fc44" ||
+		sysextMetadata.PackageVersions["socat"] != "1.8.1.1-1.fc44" {
 		t.Fatalf("packageVersions = %#v", sysextMetadata.PackageVersions)
 	}
 

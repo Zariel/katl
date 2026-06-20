@@ -110,6 +110,8 @@ fi
 metadata_expect_or_nonempty '.packageVersions.kubelet' "${KATL_KUBERNETES_KUBELET_VERSION:-}"
 metadata_expect_or_nonempty '.packageVersions.kubectl' "${KATL_KUBERNETES_KUBECTL_VERSION:-}"
 metadata_expect_or_nonempty '.packageVersions["cri-tools"]' "${KATL_KUBERNETES_CRITOOLS_VERSION:-}"
+metadata_expect_or_nonempty '.packageVersions.ethtool' "${KATL_KUBERNETES_ETHTOOL_VERSION:-}"
+metadata_expect_or_nonempty '.packageVersions.socat' "${KATL_KUBERNETES_SOCAT_VERSION:-}"
 jq -e \
     --arg sha "$sha256" \
     --argjson size "$size" \
@@ -151,7 +153,9 @@ done
 
 for path in \
     /usr/bin/conntrack \
-    /usr/bin/iptables-nft
+    /usr/bin/iptables-nft \
+    /usr/bin/ipset \
+    /usr/bin/ipvsadm
 do
     runtime_has_path "$path"
 done
@@ -169,7 +173,11 @@ for path in \
     /usr/bin/flux \
     /usr/bin/cilium \
     /usr/bin/rook \
-    /usr/bin/coredns
+    /usr/bin/coredns \
+    /usr/bin/conntrack \
+    /usr/bin/iptables-nft \
+    /usr/bin/ipset \
+    /usr/bin/ipvsadm
 do
     misses_path "$path"
 done

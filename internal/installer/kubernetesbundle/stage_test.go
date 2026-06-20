@@ -277,9 +277,11 @@ func writeSysextArtifact(t *testing.T, dir string, payloadVersion string, payloa
 		},
 		PackageVersions: map[string]string{
 			"cri-tools": "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"ethtool":   "2:7.0-1.fc44",
 			"kubeadm":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
 			"kubectl":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
 			"kubelet":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"socat":     "0:1.8.1.1-1.fc44",
 		},
 		RuntimeInterface: "katl-runtime-1",
 		CompatibleRuntime: &artifact.Compat{

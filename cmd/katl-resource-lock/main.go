@@ -254,7 +254,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
 		return err
 	}
-	if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), ""); err != nil {
+	if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), repo, ""); err != nil {
 		return err
 	}
 	katlosImage, err := findKatlOSImage(*mkosiDir)
@@ -621,7 +621,7 @@ func readKatlOSIndexFromSquashFS(imagePath string) (katlosIndex, error) {
 	return index, nil
 }
 
-func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath string, lockDigest string) error {
+func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath string, fedoraRepo resourcetest.PackageRepository, lockDigest string) error {
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -641,9 +641,12 @@ func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath strin
 	if err != nil {
 		return err
 	}
-	repo := resourcetest.PackageRepository{
+	repositories := []resourcetest.PackageRepository{{
 		ID:      metadata.SourceRepo.ID,
 		BaseURL: metadata.SourceRepo.BaseURL,
+	}}
+	if kubernetesMetadataHasFedoraPackages(metadata) && strings.TrimSpace(fedoraRepo.ID) != "" {
+		repositories = append(repositories, fedoraRepo)
 	}
 	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
 		Name:         "kubernetes-sysext",
@@ -652,7 +655,7 @@ func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath strin
 		Distribution: "kubernetes",
 		Release:      metadata.SourceRepo.Minor,
 		Architecture: metadata.Architecture,
-		Repositories: []resourcetest.PackageRepository{repo},
+		Repositories: repositories,
 		Packages:     packages,
 	})
 	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
@@ -662,6 +665,18 @@ func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath strin
 		PackageSetRef: "kubernetes-sysext",
 	})
 	return nil
+}
+
+func kubernetesMetadataHasFedoraPackages(metadata kubernetesSysextMetadata) bool {
+	for name := range metadata.PackageVersions {
+		switch name {
+		case "kubeadm", "kubelet", "kubectl", "cri-tools":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func kubernetesPackages(metadata kubernetesSysextMetadata) ([]resourcetest.Package, error) {

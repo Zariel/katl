@@ -73,16 +73,16 @@ The Kubernetes sysext must provide the artifact set currently checked by
 /usr/bin/kubectl
 /usr/bin/kubelet
 /usr/bin/crictl
-/usr/bin/conntrack
 /usr/bin/ethtool
 /usr/bin/socat
-/usr/bin/iptables-nft
 ```
 
 The runtime root must not include Kubernetes binaries directly. The artifact
-split remains the one checked by `scripts/check-runtime-root`: containerd and
-basic runtime services live in the root, while Kubernetes components live in the
-selected sysext and are activated through generation spec.
+split remains the one checked by `scripts/check-runtime-root` and
+`scripts/check-kubernetes-sysext`: containerd, kube-proxy host prerequisites
+such as `conntrack`, `iptables-nft`, `ipset`, and `ipvsadm`, and basic runtime
+services live in the root, while Kubernetes components live in the selected
+sysext and are activated through generation spec.
 
 ## Generated Configuration Boundary
 
