@@ -53,8 +53,8 @@ katlctl
 
 KatlOS runtime
   Boots installed nodes into a small, systemd-native Linux environment with the
-  host plumbing needed for containerd, kubelet, kubeadm, updates, health
-  checks, and rollback.
+  host plumbing needed for the selected Kubernetes payload, containerd,
+  updates, health checks, and rollback.
 ```
 
 The KatlOS runtime is intentionally narrow. It carries the kernel, systemd,
@@ -68,12 +68,12 @@ node-level capability.
 
 Katl treats Kubernetes as the first-class host workload.
 
-The base system should make kubeadm, kubelet, containerd, host networking,
-kernel/network prerequisites needed by user-installed CNI, persistent Kubernetes
-state, and cluster bootstrap predictable. The node is successful when generation
-0 reaches installed-runtime health and an explicit bootstrap operation can reach
-a clear kubeadm-ready point with enough status for an operator or test harness to
-continue safely.
+The base system should make the selected Kubernetes payload, containerd, host
+networking, kernel/network prerequisites needed by user-installed CNI,
+persistent Kubernetes state, and cluster bootstrap predictable. The node is
+successful when generation 0 reaches installed-runtime health and an explicit
+bootstrap operation can reach a clear kubeadm-ready point with enough status for
+an operator or test harness to continue safely.
 
 Katl uses systemd-native mechanisms directly.
 

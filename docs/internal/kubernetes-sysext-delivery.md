@@ -49,7 +49,7 @@ Publishing prebuilt user-specific confext is outside the default path.
 
 `katlos-install` does not bundle or activate a Kubernetes sysext. The install
 image creates generation 0, installs the KatlOS runtime, and records bootstrap
-intent such as the requested Kubernetes version or catalog reference.
+intent as an exact Kubernetes bundle source/ref.
 
 A user who wants Kubernetes `v1.36.0` installs a compatible KatlOS image and
 supplies `katlc` with an HTTPS source for the Kubernetes payload bundle, such as

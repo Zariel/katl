@@ -170,8 +170,9 @@ extra non-root data disk requests
 
 The current install manifest should stay minimal: hostname, `katl` SSH
 authorized keys, target root disk, destructive install guard, one KatlOS image
-reference, exact Kubernetes payload version, and extra non-root data disks. Extra
-disks remain in scope because they exercise real install/runtime disk handling.
+reference, exact Kubernetes payload bundle source/ref, and extra non-root data
+disks. Extra disks remain in scope because they exercise real install/runtime
+disk handling.
 
 Users do not supply:
 
@@ -264,8 +265,9 @@ runc or crun
 Katl-owned units and agents when they exist
 ```
 
-Kubernetes binaries should initially be delivered as a sysext unless boot tests
-show that kubelet ordering is simpler with them in the base root. Kubernetes
+Kubernetes binaries are delivered through the selected Kubernetes sysext for
+v0.1. The base root keeps the container runtime and host prerequisites needed to
+run that payload, but not kubeadm, kubelet, kubectl, or crictl. Kubernetes
 add-ons, Helm, Flux, Cilium, CoreDNS, Rook, and application workloads are outside
 the runtime base. The Kubernetes sysext is versioned independently from the
 KatlOS runtime root. KatlOS upgrades should be able to keep the current

@@ -353,10 +353,11 @@ katlosImage
   architecture, and role metadata
 ```
 
-Kubernetes payload versions are selected from the verified KatlOS image metadata
-and recorded with generated bootstrap state. Manifest bootstrap intent may carry
-a catalog reference and kubeadm config reference, but it is not a loose package
-resolver or compatibility policy.
+Kubernetes payloads are selected from manifest bootstrap intent and recorded
+with generated bootstrap state. Manifest bootstrap intent carries an exact
+Kubernetes bundle source/ref and optional kubeadm config reference, but it is
+not a loose package resolver, floating catalog selector, or compatibility
+policy.
 
 The current manifest deliberately does not expose a separate manifest name,
 metadata labels, user-chosen generation IDs, node matching selectors, SSH
@@ -413,9 +414,9 @@ katlosImage
   and external trust-root policy are deferred
 
 Kubernetes payload metadata
-  not bundled in the KatlOS image; bootstrap records only the requested payload
-  version or catalog reference, and `katlc` later fetches a matching payload
-  bundle from a user-supplied HTTPS source before generation 1 activation
+  not bundled in the KatlOS image; bootstrap records the exact requested bundle
+  source/ref, and `katlc` later fetches the matching payload bundle from that
+  user-supplied HTTPS source before generation 1 activation
 
 SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
@@ -758,8 +759,8 @@ cluster bootstrap. The first Kubernetes-capable generation flow is:
 
 ```text
 katlctl cluster bootstrap asks katlc to validate stored install intent
-katlc fetches the user-supplied HTTPS Kubernetes payload bundle whose payload
-  version exactly matches the selected bootstrap catalog entry
+katlc fetches the user-supplied HTTPS Kubernetes payload bundle whose manifest
+  digest and payload version exactly match the selected bootstrap source/ref
 katlc verifies the bundle manifest and stages the sysext under Katl-owned
   storage
 katlc renders known configuration domains into generation 1 confext
@@ -904,9 +905,10 @@ large debug tools
 application workloads
 ```
 
-Kubernetes binaries should initially be delivered as a sysext unless boot tests
-show that kubelet ordering or operational simplicity is better with them in the
-base root artifact.
+Kubernetes binaries are delivered through the selected Kubernetes sysext for
+v0.1. The base root artifact owns host prerequisites, container runtime
+plumbing, and Katl-controlled service ordering, not kubeadm, kubelet, kubectl,
+or crictl.
 
 ## Kubeadm-Ready Runtime
 
@@ -1000,7 +1002,7 @@ Kubernetes tooling
   kubeadmVersion
   kubeletVersion
   kubectlVersion
-  criToolsVersion, when bundled
+  criToolsVersion
   supportedKubeadmConfigAPIFamilies[]
 
 upgrade constraints
@@ -1434,17 +1436,13 @@ Kubernetes API availability, add-ons, workload scheduling, or GitOps convergence
 
 ## Open Questions
 
-1. Should Kubernetes binaries start in the base image or in a sysext?
-
-   Initial recommendation: sysext, unless kubelet ordering makes this painful.
-
-2. Should `systemd-repart` be the only partitioning backend?
+1. Should `systemd-repart` be the only partitioning backend?
 
    Initial recommendation: compile to repart definitions where possible, but let
    `katlos-install` fall back to explicit partitioning commands for cases where
    repart is not expressive enough.
 
-3. Should `etcd` always get a separate partition on control-plane nodes?
+2. Should `etcd` always get a separate partition on control-plane nodes?
 
    Current decision: no. The default stacked-etcd data path is `/var/lib/etcd`
    on the writable state partition. A dedicated Katl-owned `KATL_ETCD`
