@@ -125,6 +125,111 @@ rebuild, Katl returns nodes to clean generation 0 and then performs normal
 bootstrap. It does not try to reinterpret stale cluster PKI, stale etcd data, or
 old operation records as a recoverable cluster.
 
+## v0.1 Wipe/Reinstall Contract
+
+The v0.1 wipe/reinstall path creates a new clean cluster identity. It does not
+preserve or reattach the previous Kubernetes cluster, stacked-etcd cluster,
+cluster CA, service account keys, bootstrap tokens, kubeconfigs, node object
+identity, CNI state, or Katl operation history from the selected nodes.
+
+The user-facing acknowledgement must be explicit and specific. A request is not
+accepted unless the operator supplies an affirmative destructive flag and a
+human-readable acknowledgement equivalent to:
+
+```text
+I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation,
+and generation state on the selected nodes and bootstrap a new cluster identity.
+```
+
+Short flags such as `--force`, `--yes`, or a repeated failed bootstrap attempt
+are not enough. The operation record must persist that destructive intent was
+accepted, but diagnostics must not record secrets from the discarded cluster.
+
+For v0.1, wipe/reinstall owns only selected KatlOS target disks and Katl-owned
+state on those disks:
+
+```text
+wiped and recreated
+  Katl GPT partitions on the selected target disk, including ESP/XBOOTLDR when
+  present, root slots, writable state, optional Katl-owned etcd partition, boot
+  entries, generation specs/status, selected sysext/confext links, cached
+  Kubernetes and app payloads, operation records, /etc/kubernetes backing
+  state, /var/lib/kubelet, /var/lib/containerd, /var/lib/etcd, CNI state, node
+  identity, machine-id, SSH host keys, and generated confext output
+
+preserved
+  operator-managed backups, off-node artifact repositories, external cluster
+  backups, and non-target disks unless the install manifest explicitly selects
+  a Katl-owned extra data disk with its own destructive wipe authorization
+
+refused
+  ambiguous target disk identity, mismatch with the accepted request digest
+  after mutation starts, existing non-Katl partitions that are not selected by
+  the destructive install plan, or any attempt to keep stale kubeadm/etcd state
+  while also claiming clean generation 0
+```
+
+Stale Kubernetes state is handled by deleting the local state through this
+declared destructive path, not by running an implicit `kubeadm reset` or by
+editing individual files. After wipe/reinstall, the node must satisfy the same
+generation 0 invariants as a fresh install:
+
+```text
+generation 0 is the selected and booted generation
+no Kubernetes sysext or app extension is selected
+no kubeadm output exists under the projected /etc/kubernetes backing store
+/var/lib/kubelet and /var/lib/etcd are empty or absent before bootstrap
+operation records contain only the new install/reinstall operation history
+machine identity and SSH host keys are regenerated for the clean node
+stored bootstrap intent names the requested Kubernetes bundle source/ref
+katl-kubeadm-ready.target is not reached until a later bootstrap operation
+  creates a Kubernetes-capable generation
+```
+
+The operation is idempotent only around the same accepted destructive request.
+Before destructive mutation starts, a rejected or failed request can be retried
+after fixing validation errors. After mutation starts, re-running the same
+request may continue or repeat the wipe/reinstall against the same stable target
+disk until clean generation 0 is reached. A changed request digest, changed
+target disk identity, partial state that cannot be matched to the accepted
+request, or a request that asks to preserve old Kubernetes state must stop in a
+repair-required state and require a new explicit destructive request.
+
+Failure recovery is conservative:
+
+```text
+failure before mutation
+  no disk state is changed; the operator may resubmit after fixing input
+
+failure after disk wipe or repartition
+  the old cluster is already discarded; recovery is to rerun the same accepted
+  destructive reinstall or start a new destructive request after inspecting the
+  checkpoint
+
+failure after generation 0 boots but before re-bootstrap
+  treat the node as a clean installed node if generation 0 invariants pass;
+  otherwise rerun destructive reinstall, not kubeadm repair
+
+failure during subsequent bootstrap
+  follows the bootstrap mutation-boundary rules; host rollback does not restore
+  the discarded cluster
+```
+
+Before this is user-facing, the VM proof must run a repeatable multi-node flow:
+
+```text
+scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
+  -run TestWipeReinstallThreeControlPlane -count=1
+```
+
+The test must install and bootstrap three control-plane nodes, prove Kubernetes
+state existed, submit explicit destructive wipe/reinstall intent, verify clean
+generation 0 invariants on every node, then bootstrap again and prove the new
+cluster is usable. The test must also prove stale generation records,
+`/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, CNI state, selected
+extension links, and cached payload selections from the old cluster are gone or
+recreated only as part of the new bootstrap.
+
 ## Certificate And Key Recovery
 
 Katl distinguishes renewal from replacement:
