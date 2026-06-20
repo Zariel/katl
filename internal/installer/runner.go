@@ -19,6 +19,7 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/kubernetesbundle"
 	"github.com/zariel/katl/internal/installer/manifest"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
@@ -579,23 +580,6 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to install extensions")
 	}
-	var target string
-	for _, ref := range install.LoaderRecord.Sysexts {
-		if ref.Name == "kubernetes" {
-			target = ref.Path
-			break
-		}
-	}
-	if target == "" {
-		target = cachedKubernetesSysextPath()
-	}
-	path, err := targetPathForAbsolute(install.TargetRoot, target)
-	if err != nil {
-		return err
-	}
-	if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.Kubernetes), path, install.KatlosImage.Kubernetes); err != nil {
-		return err
-	}
 	return recordStep(ctx, install, InstallExtensions)
 }
 
@@ -760,7 +744,6 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		Manifest:           install.Manifest,
 		KubeadmConfigs:     install.KubeadmConfigs,
 		KubernetesVersion:  installedKubernetesPayloadVersion(install),
-		KubernetesSysext:   installedKubernetesSysext(install),
 		GenerationID:       result.Record.GenerationID,
 		RequestDigest:      install.RequestDigest,
 		InstalledAt:        result.Record.CreatedAt,
@@ -1038,26 +1021,34 @@ func timeNow() time.Time {
 }
 
 func installedKubernetesPayloadVersion(install *Context) string {
-	if install != nil && install.KatlosImage != nil {
-		return strings.TrimSpace(install.KatlosImage.Kubernetes.PayloadVersion)
+	if install == nil || install.Manifest.Node.Bootstrap == nil {
+		return installedKubernetesVersionFromKubeadm(install)
+	}
+	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(install.Manifest.Node.Bootstrap.KubernetesBundleRef)
+	if err != nil {
+		return installedKubernetesVersionFromKubeadm(install)
+	}
+	return payloadVersion
+}
+
+func installedKubernetesVersionFromKubeadm(install *Context) string {
+	if install == nil {
+		return ""
+	}
+	ref := strings.TrimSpace(install.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
+	if ref == "" {
+		return ""
+	}
+	plan, ok := install.KubeadmConfigs[ref]
+	if !ok {
+		return ""
+	}
+	for _, document := range plan.Documents {
+		if version := strings.TrimSpace(document.KubernetesVersion); version != "" {
+			return version
+		}
 	}
 	return ""
-}
-
-func installedKubernetesSysext(install *Context) *ClusterIntentKubernetesSysext {
-	if install == nil || install.KatlosImage == nil {
-		return nil
-	}
-	component := install.KatlosImage.Kubernetes
-	return &ClusterIntentKubernetesSysext{
-		Path:      cachedKubernetesSysextPath(),
-		SHA256:    component.SHA256,
-		SizeBytes: uint64(component.SizeBytes),
-	}
-}
-
-func cachedKubernetesSysextPath() string {
-	return "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"
 }
 
 func bootRelativePath(bootRoot string, path string) (string, error) {

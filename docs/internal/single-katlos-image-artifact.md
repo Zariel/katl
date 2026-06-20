@@ -68,7 +68,6 @@ Required top-level layout:
 /katlos/image.json
 /components/runtime/root.squashfs
 /components/boot/katl.efi
-/components/sysext/katl-kube-<version>.sysext
 /components/metadata/
 ```
 

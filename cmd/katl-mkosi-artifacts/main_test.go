@@ -250,14 +250,12 @@ func TestMetadataWriters(t *testing.T) {
 		"--runtime-root-metadata", runtimeRoot + ".json",
 		"--runtime-uki", runtimeUKI,
 		"--runtime-uki-metadata", runtimeUKI + ".json",
-		"--kubernetes-sysext", sysext,
-		"--kubernetes-sysext-metadata", sysext + ".json",
 	}, &stdout, &bytes.Buffer{}, env); err != nil {
 		t.Fatalf("write-katlos-index error = %v", err)
 	}
 	var index katlosIndex
 	readTestJSON(t, indexPath, &index)
-	if index.Kind != "KatlOSImage" || len(index.Components) != 3 {
+	if index.Kind != "KatlOSImage" || len(index.Components) != 2 {
 		t.Fatalf("KatlOS index = %#v", index)
 	}
 	if index.Components[0].Compatibility.Boot == nil || index.Components[1].Compatibility.RuntimeRoot == nil {
@@ -279,14 +277,12 @@ func TestMetadataWriters(t *testing.T) {
 		"--runtime-root-metadata", runtimeRoot + ".json",
 		"--runtime-uki", runtimeUKI,
 		"--runtime-uki-metadata", runtimeUKI + ".json",
-		"--kubernetes-sysext", sysext,
-		"--kubernetes-sysext-metadata", sysext + ".json",
 	}, &stdout, &bytes.Buffer{}, env); err != nil {
 		t.Fatalf("write-katlos-index upgrade error = %v", err)
 	}
 	var upgradeIndex katlosIndex
 	readTestJSON(t, upgradeIndexPath, &upgradeIndex)
-	if upgradeIndex.ImageRole != "upgrade" || len(upgradeIndex.Components) != 3 {
+	if upgradeIndex.ImageRole != "upgrade" || len(upgradeIndex.Components) != 2 {
 		t.Fatalf("KatlOS upgrade index = %#v", upgradeIndex)
 	}
 

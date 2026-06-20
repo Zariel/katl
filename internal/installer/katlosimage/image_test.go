@@ -27,7 +27,7 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 		t.Fatalf("ResolveDirectory() error = %v", err)
 	}
 
-	if payload.Runtime.Role != ComponentRuntimeRoot || payload.Boot.Role != ComponentRuntimeUKI || payload.Kubernetes.Role != ComponentKubernetes {
+	if payload.Runtime.Role != ComponentRuntimeRoot || payload.Boot.Role != ComponentRuntimeUKI || payload.Kubernetes.Name != "" {
 		t.Fatalf("resolved components = %#v %#v %#v", payload.Runtime, payload.Boot, payload.Kubernetes)
 	}
 
@@ -103,13 +103,6 @@ func TestResolveDirectoryRejectsInvalidInstallImage(t *testing.T) {
 			want: `missing required component role "runtime-uki"`,
 		},
 		{
-			name: "missing Kubernetes sysext",
-			edit: func(index *Index) {
-				index.Components = index.Components[:2]
-			},
-			want: `missing required component role "kubernetes-sysext"`,
-		},
-		{
 			name: "architecture mismatch",
 			edit: func(index *Index) {
 				index.Architecture = "aarch64"
@@ -117,11 +110,11 @@ func TestResolveDirectoryRejectsInvalidInstallImage(t *testing.T) {
 			want: "architecture",
 		},
 		{
-			name: "runtime compatibility mismatch",
+			name: "embedded Kubernetes sysext",
 			edit: func(index *Index) {
-				index.Components[2].Compatibility.RuntimeRoot.ArtifactSHA256 = strings.Repeat("c", sha256.Size*2)
+				index.Components = append(index.Components, validKubernetesComponent(index))
 			},
-			want: "Kubernetes sysext root digest",
+			want: "must not include Kubernetes sysext component",
 		},
 		{
 			name: "node scoped field",
@@ -167,10 +160,8 @@ func TestResolveDirectoryRejectsInvalidInstallImage(t *testing.T) {
 
 func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	root := t.TempDir()
-	payload := upgradePayload(t, func(index *Index) {
-		index.Components[2].PayloadVersion = "v1.35.0"
-	})
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, payload.Kubernetes.PayloadVersion)
+	payload := upgradePayload(t, nil)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", sha256Bytes([]byte("kubernetes sysext")), "v1.35.0")
 	previousSpec, previousStatus = writePreservedGenerationAssets(t, root, previousSpec)
 	previousKubernetes := previousSpec.Sysexts[0]
 
@@ -247,7 +238,7 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 func TestHostUpgradePlanRejectsIncompatibleImage(t *testing.T) {
 	payload := upgradePayload(t, nil)
 	payload.Index.Architecture = "aarch64"
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, payload.Kubernetes.PayloadVersion)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
 
 	_, err := payload.HostUpgradePlan(validHostUpgradeRequest(previousSpec, previousStatus))
 	if err == nil || !strings.Contains(err.Error(), "architecture") {
@@ -255,24 +246,25 @@ func TestHostUpgradePlanRejectsIncompatibleImage(t *testing.T) {
 	}
 }
 
-func TestHostUpgradePlanRejectsKubernetesChangeOnBootstrappedNode(t *testing.T) {
-	payload := upgradePayload(t, func(index *Index) {
-		index.Components[2].PayloadVersion = "v1.36.0"
-	})
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, "v1.35.0")
+func TestHostUpgradePlanPreservesKubernetesOnBootstrappedNode(t *testing.T) {
+	payload := upgradePayload(t, nil)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
 	request := validHostUpgradeRequest(previousSpec, previousStatus)
 	request.Bootstrapped = true
 
-	_, err := payload.HostUpgradePlan(request)
-	if err == nil || !strings.Contains(err.Error(), "kubeadm-upgrade gate") {
-		t.Fatalf("HostUpgradePlan() error = %v, want Kubernetes gate refusal", err)
+	plan, err := payload.HostUpgradePlan(request)
+	if err != nil {
+		t.Fatalf("HostUpgradePlan() error = %v", err)
+	}
+	if len(plan.Spec.Sysexts) != 1 || plan.Spec.Sysexts[0].PayloadVersion != "v1.35.0" {
+		t.Fatalf("candidate sysexts = %#v, want preserved Kubernetes sysext", plan.Spec.Sysexts)
 	}
 }
 
 func TestHostUpgradePlanRejectsNonUpgradePayload(t *testing.T) {
 	payload := upgradePayload(t, nil)
 	payload.Index.ImageRole = RoleInstall
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, payload.Kubernetes.PayloadVersion)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
 
 	_, err := payload.HostUpgradePlan(validHostUpgradeRequest(previousSpec, previousStatus))
 	if err == nil || !strings.Contains(err.Error(), "role must be upgrade") {
@@ -282,7 +274,7 @@ func TestHostUpgradePlanRejectsNonUpgradePayload(t *testing.T) {
 
 func TestHostUpgradePlanRequiresKnownGoodPreviousGeneration(t *testing.T) {
 	payload := upgradePayload(t, nil)
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, payload.Kubernetes.PayloadVersion)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
 	previousStatus.BootState = generation.BootStatePending
 	request := validHostUpgradeRequest(previousSpec, previousStatus)
 
@@ -294,10 +286,8 @@ func TestHostUpgradePlanRequiresKnownGoodPreviousGeneration(t *testing.T) {
 
 func TestHostUpgradeRollbackMetadataRestoresPreviousKnownGood(t *testing.T) {
 	root := t.TempDir()
-	payload := upgradePayload(t, func(index *Index) {
-		index.Components[2].PayloadVersion = "v1.35.0"
-	})
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", payload.Kubernetes.SHA256, payload.Kubernetes.PayloadVersion)
+	payload := upgradePayload(t, nil)
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", sha256Bytes([]byte("kubernetes sysext")), "v1.35.0")
 	previousSpec, previousStatus = writePreservedGenerationAssets(t, root, previousSpec)
 	plan, err := payload.HostUpgradePlan(HostUpgradeRequest{
 		GenerationID:      "gen1",
@@ -604,29 +594,6 @@ func writeImagePayloadAt(t *testing.T, root string, edit func(*Index)) Index {
 					Filename: "katl.efi",
 				},
 			},
-			{
-				Name:           "kubernetes",
-				Role:           ComponentKubernetes,
-				Path:           "components/sysext/kubernetes.raw",
-				Format:         "raw",
-				SizeBytes:      sizes["components/sysext/kubernetes.raw"],
-				SHA256:         digests["components/sysext/kubernetes.raw"],
-				Version:        "v1.34.8",
-				PayloadVersion: "v1.34.8",
-				Architecture:   "x86_64",
-				Compatibility: Compatibility{
-					RuntimeInterface: "katl-runtime-1",
-					RuntimeRoot: RuntimeRoot{
-						Interface:      "katl-runtime-1",
-						ArtifactPath:   "components/runtime/root.squashfs",
-						ArtifactSHA256: digests["components/runtime/root.squashfs"],
-					},
-				},
-				InstallTarget: InstallTarget{
-					Kind: "systemd-sysext",
-					Name: "kubernetes.raw",
-				},
-			},
 		},
 	}
 	if edit != nil {
@@ -643,6 +610,33 @@ func writeImagePayloadAt(t *testing.T, root string, edit func(*Index)) Index {
 		t.Fatalf("write index: %v", err)
 	}
 	return index
+}
+
+func validKubernetesComponent(index *Index) Component {
+	sum := sha256.Sum256([]byte("kubernetes sysext"))
+	return Component{
+		Name:           "kubernetes",
+		Role:           ComponentKubernetes,
+		Path:           "components/sysext/kubernetes.raw",
+		Format:         "raw",
+		SizeBytes:      int64(len("kubernetes sysext")),
+		SHA256:         hex.EncodeToString(sum[:]),
+		Version:        "v1.34.8",
+		PayloadVersion: "v1.34.8",
+		Architecture:   index.Architecture,
+		Compatibility: Compatibility{
+			RuntimeInterface: index.RuntimeInterface,
+			RuntimeRoot: RuntimeRoot{
+				Interface:      index.RuntimeInterface,
+				ArtifactPath:   index.Components[0].Path,
+				ArtifactSHA256: index.Components[0].SHA256,
+			},
+		},
+		InstallTarget: InstallTarget{
+			Kind: "systemd-sysext",
+			Name: "kubernetes.raw",
+		},
+	}
 }
 
 func expectedImage() manifest.KatlosImage {

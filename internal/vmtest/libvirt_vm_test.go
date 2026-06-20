@@ -805,6 +805,7 @@ func TestVMPreseedImage(t *testing.T) {
 }
 
 func TestVMVSock(t *testing.T) {
+	clearCIDReservationsForTest(t)
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true
 	config.VSock.GuestCID = 2048
@@ -846,6 +847,7 @@ func TestVMVSock(t *testing.T) {
 }
 
 func TestCID(t *testing.T) {
+	clearCIDReservationsForTest(t)
 	first := cidForRun("run-a")
 	second := cidForRun("run-a")
 	other := cidForRun("run-b")
@@ -863,6 +865,75 @@ func TestCID(t *testing.T) {
 	}
 	if _, err := reserveExactCID("owner-b", 55000); err == nil {
 		t.Fatal("reserve owner-b succeeded")
+	}
+}
+
+func TestVSockReservationReleasedAfterPassedRun(t *testing.T) {
+	clearCIDReservationsForTest(t)
+	result, config := vmFixture(t)
+	config.VSock.Enabled = true
+	config.VSock.GuestCID = 4096
+	runner := VMRunner{
+		Executor: vmExec{write: "serial ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if _, err := reserveExactCID("next-run", result.VSock.GuestCID); err != nil {
+		t.Fatalf("reserve released CID: %v", err)
+	}
+}
+
+func TestVSockReservationReleasedAfterFailedUnpreservedRun(t *testing.T) {
+	clearCIDReservationsForTest(t)
+	result, config := vmFixture(t)
+	config.VSock.Enabled = true
+	config.VSock.GuestCID = 4097
+	runner := VMRunner{
+		Executor: vmExec{err: errors.New("boot failed")},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q, want failed", result.Status)
+	}
+	if _, err := reserveExactCID("next-run", result.VSock.GuestCID); err != nil {
+		t.Fatalf("reserve released CID: %v", err)
+	}
+}
+
+func TestVSockReservationKeptForPreservedDomain(t *testing.T) {
+	clearCIDReservationsForTest(t)
+	if _, err := reserveExactCID("preserved-run", 4098); err != nil {
+		t.Fatalf("reserve preserved CID: %v", err)
+	}
+
+	releaseVSock(
+		Result{RunID: "preserved-run"},
+		VMPlan{VSock: VSockPlan{Enabled: true, GuestCID: 4098}},
+		&DomainPreservation{Preserved: true},
+	)
+
+	if _, err := reserveExactCID("next-run", 4098); err == nil {
+		t.Fatal("preserved CID was released")
 	}
 }
 
@@ -1103,6 +1174,18 @@ func hasArgPrefix(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func clearCIDReservationsForTest(t *testing.T) {
+	t.Helper()
+	clearCIDReservations()
+	t.Cleanup(clearCIDReservations)
+}
+
+func clearCIDReservations() {
+	cidReservations.Lock()
+	defer cidReservations.Unlock()
+	cidReservations.used = map[uint32]string{}
 }
 
 func readDomainXML(t *testing.T, result Result) string {

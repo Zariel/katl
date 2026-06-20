@@ -23,23 +23,20 @@ import (
 func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
 	now := time.Date(2026, 6, 16, 18, 0, 0, 0, time.UTC)
+	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "bootstrap init kubernetes sysext payload")
+	req := controlPlaneRequest()
+	req.KubernetesBundleSource = source
+	req.KubernetesBundleRef = ref
 
 	plan, err := Create(Request{
-		Root:        root,
-		OperationID: "bootstrap-init-cp-1",
-		Kind:        OperationKindInit,
-		Actor:       "katlctl",
-		ClientID:    "client-1",
-		Now:         now,
-		Bootstrap: operation.BootstrapRequest{
-			InventoryNodeName:        "cp-1",
-			SystemRole:               "control-plane",
-			KubernetesPayloadVersion: "v1.36.1",
-			BootstrapProfileRef:      "control-plane",
-			ControlPlaneEndpoint:     "api.katl.test:6443",
-			CandidateGenerationID:    " 1 ",
-			KubeadmInputDigest:       strings.Repeat("d", 64),
-		},
+		Root:         root,
+		OperationID:  "bootstrap-init-cp-1",
+		Kind:         OperationKindInit,
+		Actor:        "katlctl",
+		ClientID:     "client-1",
+		Now:          now,
+		Bootstrap:    req,
+		BundleClient: client,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -71,17 +68,10 @@ func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 	if plan.RuntimeInputs.KubernetesProjection.What != generation.KubernetesSource || plan.RuntimeInputs.KubernetesProjection.Where != generation.KubernetesTarget {
 		t.Fatalf("projection = %#v", plan.RuntimeInputs.KubernetesProjection)
 	}
-	gotGolden, err := json.MarshalIndent(plan.RuntimeInputs, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal runtime inputs: %v", err)
-	}
-	gotGolden = append(gotGolden, '\n')
-	wantGolden, err := os.ReadFile(filepath.Join("testdata", "bootstrap-init-runtime-inputs.golden.json"))
-	if err != nil {
-		t.Fatalf("read golden runtime inputs: %v", err)
-	}
-	if string(gotGolden) != string(wantGolden) {
-		t.Fatalf("runtime inputs golden mismatch\ngot:\n%s\nwant:\n%s", gotGolden, wantGolden)
+	if plan.RuntimeInputs.SelectedKubernetesSysext.BundleSource != source ||
+		plan.RuntimeInputs.SelectedKubernetesSysext.BundleRef != ref ||
+		plan.RuntimeInputs.SelectedKubernetesSysext.BundleManifestDigest == "" {
+		t.Fatalf("selected bundle = %#v", plan.RuntimeInputs.SelectedKubernetesSysext)
 	}
 
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
@@ -101,22 +91,27 @@ func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 
 func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "worker")
+	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "worker join kubernetes sysext payload")
+	req := operation.BootstrapRequest{
+		InventoryNodeName:        "worker-1",
+		SystemRole:               "worker",
+		KubernetesPayloadVersion: "v1.36.1",
+		KubernetesBundleSource:   source,
+		KubernetesBundleRef:      ref,
+		BootstrapProfileRef:      "worker",
+		CandidateGenerationID:    "1",
+		KubeadmInputDigest:       strings.Repeat("d", 64),
+		JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-worker",
+		JoinMaterialDigest:       strings.Repeat("e", 64),
+		JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
+		TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-worker-1/config.yaml",
+	}
 	plan, err := Create(Request{
-		Root:        root,
-		OperationID: "bootstrap-join-worker-1",
-		Kind:        OperationKindJoinWorker,
-		Bootstrap: operation.BootstrapRequest{
-			InventoryNodeName:        "worker-1",
-			SystemRole:               "worker",
-			KubernetesPayloadVersion: "v1.36.1",
-			BootstrapProfileRef:      "worker",
-			CandidateGenerationID:    "1",
-			KubeadmInputDigest:       strings.Repeat("d", 64),
-			JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-worker",
-			JoinMaterialDigest:       strings.Repeat("e", 64),
-			JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
-			TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-worker-1/config.yaml",
-		},
+		Root:         root,
+		OperationID:  "bootstrap-join-worker-1",
+		Kind:         OperationKindJoinWorker,
+		Bootstrap:    req,
+		BundleClient: client,
 	})
 	if err != nil {
 		t.Fatalf("Create(worker join) error = %v", err)
@@ -133,22 +128,27 @@ func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 
 func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
+	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "control-plane join kubernetes sysext payload")
+	req := operation.BootstrapRequest{
+		InventoryNodeName:        "cp-1",
+		SystemRole:               "control-plane",
+		KubernetesPayloadVersion: "v1.36.1",
+		KubernetesBundleSource:   source,
+		KubernetesBundleRef:      ref,
+		BootstrapProfileRef:      "control-plane",
+		CandidateGenerationID:    "1",
+		KubeadmInputDigest:       strings.Repeat("d", 64),
+		JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-control-plane",
+		JoinMaterialDigest:       strings.Repeat("e", 64),
+		JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
+		TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-cp-2/config.yaml",
+	}
 	plan, err := Create(Request{
-		Root:        root,
-		OperationID: "bootstrap-join-cp-2",
-		Kind:        OperationKindJoinControlPlane,
-		Bootstrap: operation.BootstrapRequest{
-			InventoryNodeName:        "cp-1",
-			SystemRole:               "control-plane",
-			KubernetesPayloadVersion: "v1.36.1",
-			BootstrapProfileRef:      "control-plane",
-			CandidateGenerationID:    "1",
-			KubeadmInputDigest:       strings.Repeat("d", 64),
-			JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-control-plane",
-			JoinMaterialDigest:       strings.Repeat("e", 64),
-			JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
-			TemporaryJoinConfigPath:  "/run/katl/bootstrap-join/bootstrap-join-cp-2/config.yaml",
-		},
+		Root:         root,
+		OperationID:  "bootstrap-join-cp-2",
+		Kind:         OperationKindJoinControlPlane,
+		Bootstrap:    req,
+		BundleClient: client,
 	})
 	if err != nil {
 		t.Fatalf("Create(control-plane join) error = %v", err)
@@ -186,9 +186,6 @@ func TestCreateFetchesKubernetesBundleFromStoredIntent(t *testing.T) {
 		intent.Kubernetes.SysextSHA256 = ""
 		intent.Kubernetes.SysextSize = 0
 	})
-	if err := os.Remove(filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")); err != nil {
-		t.Fatalf("remove bundled sysext: %v", err)
-	}
 	req := controlPlaneRequest()
 	req.KubernetesBundleSource = server.URL
 	req.KubernetesBundleRef = fixture.ref
@@ -233,9 +230,6 @@ func TestCreateFetchesKubernetesBundleFromOperationWhenStoredIntentUnpinned(t *t
 	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "operation selected kubernetes sysext payload")
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
 	t.Cleanup(server.Close)
-	if err := os.Remove(filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")); err != nil {
-		t.Fatalf("remove bundled sysext: %v", err)
-	}
 	req := controlPlaneRequest()
 	req.KubernetesBundleSource = server.URL
 	req.KubernetesBundleRef = fixture.ref
@@ -284,32 +278,9 @@ func TestCreateRefusalsLeaveNoPartialPersistentState(t *testing.T) {
 			want: "kubernetesPayloadVersion",
 		},
 		{
-			name: "missing sysext",
-			mutate: func(root string) {
-				if err := os.Remove(filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")); err != nil {
-					t.Fatalf("remove sysext: %v", err)
-				}
-			},
+			name: "missing bundle source and ref",
 			req:  controlPlaneRequest(),
-			want: "bundled Kubernetes sysext",
-		},
-		{
-			name: "sysext digest mismatch",
-			mutate: func(root string) {
-				writeFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), strings.Repeat("x", len("kubernetes-sysext-payload")))
-			},
-			req:  controlPlaneRequest(),
-			want: "SHA-256",
-		},
-		{
-			name: "sysext path escape",
-			mutate: func(root string) {
-				editIntent(t, root, func(intent *installer.ClusterIntent) {
-					intent.Kubernetes.SysextPath = "../../outside.raw"
-				})
-			},
-			req:  controlPlaneRequest(),
-			want: "absolute",
+			want: "kubernetesBundleSource and kubernetesBundleRef are required",
 		},
 		{
 			name: "kubeadm path outside etc katl",
@@ -414,7 +385,6 @@ func cleanRoot(t *testing.T, role string) string {
 	}); err != nil {
 		t.Fatalf("WriteBootSelection() error = %v", err)
 	}
-	writeSysext(t, root, "kubernetes-sysext-payload")
 	writeIntent(t, root, role)
 	return root
 }
@@ -429,7 +399,6 @@ func writeIntent(t *testing.T, root string, role string) {
 		profile = "worker"
 		intentValue = "worker"
 	}
-	payload := []byte("kubernetes-sysext-payload")
 	intent := installer.ClusterIntent{
 		APIVersion:   installer.ClusterIntentAPIVersion,
 		Kind:         installer.ClusterIntentKind,
@@ -450,9 +419,6 @@ func writeIntent(t *testing.T, root string, role string) {
 		Kubernetes: installer.ClusterIntentKubernetes{
 			PayloadVersion: "v1.36.1",
 			CatalogRef:     "default",
-			SysextPath:     "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
-			SysextSHA256:   digest(payload),
-			SysextSize:     uint64(len(payload)),
 		},
 		Kubeadm: &installer.ClusterIntentKubeadm{
 			ConfigRef:   profile,
@@ -503,11 +469,6 @@ func editIntent(t *testing.T, root string, edit func(*installer.ClusterIntent)) 
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("write intent: %v", err)
 	}
-}
-
-func writeSysext(t *testing.T, root string, content string) {
-	t.Helper()
-	writeFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), content)
 }
 
 type kubernetesBundleFixture struct {
@@ -572,6 +533,14 @@ func writeKubernetesBundleFixture(t *testing.T, payloadVersion string, payload s
 		ref:          payloadVersion + "@" + staged.BundleManifestDigest,
 		bundleDigest: staged.BundleManifestDigest,
 	}
+}
+
+func serveKubernetesBundleFixture(t *testing.T, payloadVersion string, payload string) (string, string, *http.Client) {
+	t.Helper()
+	fixture := writeKubernetesBundleFixture(t, payloadVersion, payload)
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
+	t.Cleanup(server.Close)
+	return server.URL, fixture.ref, server.Client()
 }
 
 func controlPlaneRequest() operation.BootstrapRequest {

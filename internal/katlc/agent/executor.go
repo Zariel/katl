@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +59,7 @@ type Executor struct {
 	SetBootOneshot       BootEntrySetter
 	ConfigApplyRunner    configapply.CommandRunner
 	ConfigApplyActivator configapply.ConfextActivator
+	BundleClient         *http.Client
 	Async                bool
 }
 
@@ -309,7 +311,7 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 	if !requiresBootstrapRuntime(record) {
 		return record, nil
 	}
-	plan, err := bootstrapplan.FromOperation(e.Root, record)
+	plan, err := bootstrapplan.FromOperationWithBundleClient(e.Root, record, e.BundleClient)
 	if err != nil {
 		updated, markErr := e.failRecordPhase(record.OperationID, "bootstrap-runtime-plan-refused", "prepare-bootstrap-runtime", "prepare-bootstrap-runtime", "bootstrap runtime planning failed before kubeadm mutation", err)
 		return updated, errors.Join(err, markErr)

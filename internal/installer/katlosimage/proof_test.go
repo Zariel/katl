@@ -30,7 +30,7 @@ func TestSingleImageProofReportsInstallComponents(t *testing.T) {
 	if report.Kind != "KatlOSSingleImageProof" || report.EmbeddedIndex.ImageRole != RoleInstall {
 		t.Fatalf("report = %#v", report)
 	}
-	if !hasComponentProof(report, ComponentRuntimeRoot) || !hasComponentProof(report, ComponentRuntimeUKI) || !hasComponentProof(report, ComponentKubernetes) {
+	if !hasComponentProof(report, ComponentRuntimeRoot) || !hasComponentProof(report, ComponentRuntimeUKI) || hasComponentProof(report, ComponentKubernetes) {
 		t.Fatalf("component proofs = %#v", report.Components)
 	}
 	if report.ImageSHA256 != sha256Bytes([]byte("install image")) || report.ImageSizeBytes != uint64(len("install image")) {
@@ -52,7 +52,7 @@ func TestSingleImageProofReportsInstallComponents(t *testing.T) {
 	if err := json.Unmarshal(data, &roundTrip); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, data)
 	}
-	if roundTrip.ImagePath != report.ImagePath || len(roundTrip.Components) != 3 {
+	if roundTrip.ImagePath != report.ImagePath || len(roundTrip.Components) != 2 {
 		t.Fatalf("roundTrip = %#v", roundTrip)
 	}
 }
@@ -93,24 +93,23 @@ func TestSingleImageProofReportsUpgradeSysupdateMetadata(t *testing.T) {
 	}
 }
 
-func TestSingleImageProofFailsWhenRequiredRoleOnlyLooseExternal(t *testing.T) {
+func TestSingleImageProofFailsWhenRuntimeRoleOnlyLooseExternal(t *testing.T) {
 	root, _ := writeImagePayload(t, func(index *Index) {
-		index.Components = index.Components[:2]
+		index.Components = index.Components[1:]
 	})
 	index, err := readIndex(filepath.Join(root, "katlos", "image.json"))
 	if err != nil {
 		t.Fatalf("readIndex() error = %v", err)
 	}
 	payload := Payload{
-		Root:    root,
-		Index:   index,
-		Runtime: index.Components[0],
-		Boot:    index.Components[1],
+		Root:  root,
+		Index: index,
+		Boot:  index.Components[0],
 	}
 	_, err = payload.SingleImageProof(SingleImageProofRequest{
-		ImagePath: writeProofImage(t, []byte("missing kubernetes image")),
+		ImagePath: writeProofImage(t, []byte("missing runtime image")),
 	})
-	if err == nil || !strings.Contains(err.Error(), `missing component role "kubernetes-sysext"`) || !strings.Contains(err.Error(), "image index") {
+	if err == nil || !strings.Contains(err.Error(), `missing component role "runtime-root"`) || !strings.Contains(err.Error(), "image index") {
 		t.Fatalf("SingleImageProof() error = %v, want missing image-index component role", err)
 	}
 }

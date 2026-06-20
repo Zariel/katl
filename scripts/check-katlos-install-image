@@ -100,7 +100,7 @@ jq -e \
       and .imageRole == "install"
       and .format == "squashfs"
       and .runtimeInterface == "katl-runtime-1"
-      and ([.components[].role] | sort) == ["kubernetes-sysext","runtime-root","runtime-uki"]' "$index" >/dev/null ||
+      and ([.components[].role] | sort) == ["runtime-root","runtime-uki"]' "$index" >/dev/null ||
     fail "embedded KatlOS image index is invalid"
 
 while read -r path; do
@@ -111,9 +111,7 @@ for path in \
     components/metadata/runtime-root.json \
     components/metadata/runtime-root.sha256 \
     components/metadata/runtime-uki.json \
-    components/metadata/runtime-uki.sha256 \
-    components/metadata/kubernetes-sysext.json \
-    components/metadata/kubernetes-sysext.sha256
+    components/metadata/runtime-uki.sha256
 do
     normal_path "$path" || fail "metadata path is not normal: $path"
     unsquashfs -cat "$artifact" "$path" >/dev/null
@@ -121,8 +119,7 @@ done
 
 for path in \
     components/metadata/runtime-root.json \
-    components/metadata/runtime-uki.json \
-    components/metadata/kubernetes-sysext.json
+    components/metadata/runtime-uki.json
 do
     metadata_file="$tmpdir/$(basename "$path")"
     unsquashfs -cat "$artifact" "$path" >"$metadata_file"
@@ -144,7 +141,6 @@ done < <(jq -c '.components[]' "$index")
 
 checksum_content_matches components/metadata/runtime-root.sha256 ../runtime/root.squashfs "$(component_sha runtime-root)"
 checksum_content_matches components/metadata/runtime-uki.sha256 ../boot/katl.efi "$(component_sha runtime-uki)"
-checksum_content_matches components/metadata/kubernetes-sysext.sha256 ../sysext/kubernetes.raw "$(component_sha kubernetes-sysext)"
 
 jq -e '
   .components[] | select(.role == "runtime-root") |
@@ -158,13 +154,4 @@ jq -e '
   .compatibility.kernelCommandLine == ["rootfstype=squashfs","ro"] and
   .installTarget.kind == "esp-or-xbootldr"' "$index" >/dev/null ||
     fail "runtime UKI component metadata is incomplete"
-jq -e '
-  .components[] | select(.role == "kubernetes-sysext") |
-  .payloadVersion != null and
-  .compatibility.runtimeInterface == "katl-runtime-1" and
-  .sourceRepo.id != null and
-  .packageVersions.kubeadm != null and
-  .installTarget.kind == "systemd-sysext"' "$index" >/dev/null ||
-    fail "Kubernetes sysext component metadata is incomplete"
-
 echo "ok: $artifact"

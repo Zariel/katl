@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -173,6 +172,14 @@ func Create(request Request) (Plan, error) {
 }
 
 func FromOperation(root string, record operation.OperationRecord) (Plan, error) {
+	return fromOperation(root, record, nil)
+}
+
+func FromOperationWithBundleClient(root string, record operation.OperationRecord, client *http.Client) (Plan, error) {
+	return fromOperation(root, record, client)
+}
+
+func fromOperation(root string, record operation.OperationRecord, client *http.Client) (Plan, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return Plan{}, fmt.Errorf("runtime root is required")
@@ -204,7 +211,7 @@ func FromOperation(root string, record operation.OperationRecord) (Plan, error) 
 	if err != nil {
 		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
 	}
-	inputs, err := runtimeInputs(root, previous, intent, bootstrap, nil)
+	inputs, err := runtimeInputs(root, previous, intent, bootstrap, client)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -365,9 +372,9 @@ func runtimeInputs(root string, previous generation.GenerationSpec, intent insta
 	}, nil
 }
 
-func selectKubernetesSysext(root string, previous generation.GenerationSpec, kubernetes installer.ClusterIntentKubernetes, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
+func selectKubernetesSysext(root string, previous generation.GenerationSpec, _ installer.ClusterIntentKubernetes, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
 	if strings.TrimSpace(request.KubernetesBundleSource) == "" && strings.TrimSpace(request.KubernetesBundleRef) == "" {
-		return selectBundledSysext(root, previous, kubernetes)
+		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleSource and kubernetesBundleRef are required")
 	}
 	return selectFetchedBundleSysext(root, previous, request, client)
 }
@@ -434,85 +441,6 @@ func runtimeRootPath(root string, path string) (string, error) {
 		return "", fmt.Errorf("staged Kubernetes sysext path %q is outside runtime root", path)
 	}
 	return "/" + filepath.ToSlash(rel), nil
-}
-
-func selectBundledSysext(root string, previous generation.GenerationSpec, kubernetes installer.ClusterIntentKubernetes) (SelectedKubernetesSysext, error) {
-	if strings.TrimSpace(kubernetes.SysextPath) == "" {
-		return SelectedKubernetesSysext{}, fmt.Errorf("cluster intent Kubernetes sysextPath is required")
-	}
-	if strings.TrimSpace(kubernetes.SysextSHA256) == "" {
-		return SelectedKubernetesSysext{}, fmt.Errorf("cluster intent Kubernetes sysextSHA256 is required")
-	}
-	root = filepath.Clean(root)
-	intentPath, err := cleanBundledSysextPath(kubernetes.SysextPath)
-	if err != nil {
-		return SelectedKubernetesSysext{}, err
-	}
-	path := filepath.Join(root, strings.TrimPrefix(intentPath, string(filepath.Separator)))
-	info, err := os.Stat(path)
-	if err != nil {
-		return SelectedKubernetesSysext{}, fmt.Errorf("inspect bundled Kubernetes sysext: %w", err)
-	}
-	if info.IsDir() {
-		return SelectedKubernetesSysext{}, fmt.Errorf("bundled Kubernetes sysext is a directory")
-	}
-	if kubernetes.SysextSize > 0 && uint64(info.Size()) != kubernetes.SysextSize {
-		return SelectedKubernetesSysext{}, fmt.Errorf("bundled Kubernetes sysext size %d does not match intent %d", info.Size(), kubernetes.SysextSize)
-	}
-	got, err := fileSHA256(path)
-	if err != nil {
-		return SelectedKubernetesSysext{}, err
-	}
-	if got != strings.ToLower(kubernetes.SysextSHA256) {
-		return SelectedKubernetesSysext{}, fmt.Errorf("bundled Kubernetes sysext SHA-256 does not match intent")
-	}
-	return SelectedKubernetesSysext{
-		Path:             intentPath,
-		SHA256:           strings.ToLower(kubernetes.SysextSHA256),
-		SizeBytes:        uint64(info.Size()),
-		PayloadVersion:   kubernetes.PayloadVersion,
-		ActivationPath:   "/run/extensions/katl-kubernetes.raw",
-		Architecture:     previous.Root.Architecture,
-		RuntimeInterface: previous.Root.RuntimeInterface,
-	}, nil
-}
-
-func cleanBundledSysextPath(value string) (string, error) {
-	value = filepath.ToSlash(strings.TrimSpace(value))
-	if value == "" {
-		return "", fmt.Errorf("cluster intent Kubernetes sysextPath is required")
-	}
-	if !strings.HasPrefix(value, "/") {
-		return "", fmt.Errorf("cluster intent Kubernetes sysextPath must be absolute")
-	}
-	cleaned := pathClean(value)
-	if cleaned != value || strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") {
-		return "", fmt.Errorf("cluster intent Kubernetes sysextPath must be clean")
-	}
-	if !strings.HasPrefix(cleaned, "/var/lib/katl/artifacts/katlos-image/") {
-		return "", fmt.Errorf("cluster intent Kubernetes sysextPath must be under /var/lib/katl/artifacts/katlos-image")
-	}
-	if filepath.Base(cleaned) != "katl-kubernetes.raw" {
-		return "", fmt.Errorf("cluster intent Kubernetes sysextPath must name katl-kubernetes.raw")
-	}
-	return cleaned, nil
-}
-
-func pathClean(value string) string {
-	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(value)))
-}
-
-func fileSHA256(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open bundled Kubernetes sysext: %w", err)
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", fmt.Errorf("hash bundled Kubernetes sysext: %w", err)
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func requestDigest(kind string, request operation.BootstrapRequest) string {

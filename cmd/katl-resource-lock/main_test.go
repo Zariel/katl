@@ -243,6 +243,9 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	if packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root") != "runtime-root-component.x86_64" {
 		t.Fatalf("KatlOS component NEVRA = %q", packageNEVRA(katlosSet.Packages, "katlos-component-runtime-root"))
 	}
+	if packageNEVRA(katlosSet.Packages, "katlos-component-kubernetes-sysext") != "" {
+		t.Fatalf("KatlOS package set includes Kubernetes sysext component: %#v", katlosSet)
+	}
 	kubernetesSet := packageSet(manifest.PackageSets, "kubernetes-sysext")
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.0-150500.1.1.x86_64" {
 		t.Fatalf("Kubernetes package set = %#v", kubernetesSet)
@@ -569,7 +572,7 @@ func TestRunPrepareMkosiStrictRejectsKatlOSPackageVersionDrift(t *testing.T) {
 	}
 	readKatlOSIndex = func(path string) (katlosIndex, error) {
 		index := katlosTestIndex(strings.Repeat("d", 64))
-		index.Components[1].PackageVersions["kubeadm"] = "0:1.36.0-150500.1.1"
+		index.Components[0].Architecture = "aarch64"
 		return index, nil
 	}
 	err := run([]string{
@@ -780,21 +783,6 @@ func katlosTestIndex(runtimeSHA string) katlosIndex {
 			SHA256:       runtimeSHA,
 			Version:      "test",
 			Architecture: "x86_64",
-		}, {
-			Name:           "kubernetes",
-			Role:           "kubernetes-sysext",
-			SHA256:         strings.Repeat("f", 64),
-			Version:        "test",
-			PayloadVersion: "v1.36.1",
-			Architecture:   "x86_64",
-			SourceRepo: &kubernetesRepo{
-				ID:      "kubernetes",
-				BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
-				Minor:   "v1.36",
-			},
-			PackageVersions: map[string]string{
-				"kubeadm": "0:1.36.1-150500.1.1",
-			},
 		}},
 	}
 }

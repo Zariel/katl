@@ -478,6 +478,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
+		releaseVSock(result, plan, nil)
 		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
 	var timeoutCancel context.CancelFunc
@@ -491,6 +492,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 		if timeoutCancel != nil {
 			timeoutCancel()
 		}
+		releaseVSock(result, plan, nil)
 		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
 	executor := r.Executor
@@ -566,10 +568,13 @@ func (h *VMHandle) CheckAgent() error {
 
 func (h *VMHandle) Fail(failure string) Result {
 	result := finishVM(h.Result, phaseName(h.Config), StatusFailed, failure, h.Started, time.Now().UTC())
-	return h.DebugResult(result)
+	result = h.DebugResult(result)
+	releaseVSock(h.Result, h.Plan, h.preservation)
+	return result
 }
 
 func (h *VMHandle) Pass() Result {
+	releaseVSock(h.Result, h.Plan, h.preservation)
 	return finishVM(h.Result, phaseName(h.Config), StatusPassed, "", h.Started, time.Now().UTC())
 }
 
@@ -1537,6 +1542,24 @@ func reserveExactCID(runID string, cid uint32) (uint32, error) {
 	}
 	cidReservations.used[cid] = runID
 	return cid, nil
+}
+
+func releaseVSock(result Result, plan VMPlan, preservation *DomainPreservation) {
+	if !plan.VSock.Enabled {
+		return
+	}
+	if preservation != nil && preservation.Preserved {
+		return
+	}
+	releaseCID(result.RunID, plan.VSock.GuestCID)
+}
+
+func releaseCID(runID string, cid uint32) {
+	cidReservations.Lock()
+	defer cidReservations.Unlock()
+	if owner, ok := cidReservations.used[cid]; ok && owner == runID {
+		delete(cidReservations.used, cid)
+	}
 }
 
 func cidForRun(runID string) uint32 {

@@ -105,7 +105,7 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext-from-log --artifact PATH --log PATH --repo-id ID --repo-base-url URL --repo-minor MINOR
-       katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH --kubernetes-sysext PATH --kubernetes-sysext-metadata PATH
+       katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH
        katl-mkosi-artifacts write-katlos-artifact --artifact PATH
        katl-mkosi-artifacts bind-install-manifest-image --template PATH --output PATH
 
@@ -674,11 +674,8 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	runtimeRootMetadata := flags.String("runtime-root-metadata", cfg.RuntimeMetadata, "runtime root metadata")
 	runtimeUKI := flags.String("runtime-uki", cfg.RuntimeUKI, "runtime UKI artifact")
 	runtimeUKIMetadata := flags.String("runtime-uki-metadata", cfg.RuntimeUKIMetadata, "runtime UKI metadata")
-	kubernetesSysext := flags.String("kubernetes-sysext", filepath.Join("_build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
-	kubernetesSysextMetadata := flags.String("kubernetes-sysext-metadata", filepath.Join("_build", "mkosi", "katl-kubernetes.raw.json"), "Kubernetes sysext metadata")
 	rootPath := flags.String("root-path", "components/runtime/root.squashfs", "embedded runtime root component path")
 	ukiPath := flags.String("uki-path", "components/boot/katl.efi", "embedded runtime UKI component path")
-	sysextPath := flags.String("sysext-path", "components/sysext/kubernetes.raw", "embedded Kubernetes sysext component path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -694,7 +691,6 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 
 	rootArtifact := absPath(cfg.RepoRoot, *runtimeRoot)
 	ukiArtifact := absPath(cfg.RepoRoot, *runtimeUKI)
-	sysextArtifact := absPath(cfg.RepoRoot, *kubernetesSysext)
 	rootMeta, err := readAndValidateLocalMetadata("runtime root", absPath(cfg.RepoRoot, *runtimeRootMetadata), rootArtifact)
 	if err != nil {
 		return err
@@ -703,11 +699,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if err != nil {
 		return err
 	}
-	sysextMeta, err := readAndValidateLocalMetadata("Kubernetes sysext", absPath(cfg.RepoRoot, *kubernetesSysextMetadata), sysextArtifact)
-	if err != nil {
-		return err
-	}
-	if err := validateKatlOSComponents(rootMeta, ukiMeta, sysextMeta, *architecture, *runtimeInterface); err != nil {
+	if err := validateKatlOSComponents(rootMeta, ukiMeta, *architecture, *runtimeInterface); err != nil {
 		return err
 	}
 
@@ -715,9 +707,6 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 		return err
 	}
 	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "runtime-uki.sha256"), ukiMeta.SHA256, "../boot/katl.efi"); err != nil {
-		return err
-	}
-	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "kubernetes-sysext.sha256"), sysextMeta.SHA256, "../sysext/kubernetes.raw"); err != nil {
 		return err
 	}
 
@@ -768,27 +757,6 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 				InstallTarget: installTarget{
 					Kind:     "esp-or-xbootldr",
 					Filename: "katl.efi",
-				},
-			},
-			{
-				Name:            "kubernetes",
-				Role:            "kubernetes-sysext",
-				Path:            *sysextPath,
-				Format:          sysextMeta.Format,
-				SizeBytes:       sysextMeta.SizeBytes,
-				SHA256:          sysextMeta.SHA256,
-				Version:         sysextMeta.Version,
-				PayloadVersion:  sysextMeta.PayloadVersion,
-				Architecture:    sysextMeta.Architecture,
-				SourceRepo:      sysextMeta.SourceRepo,
-				PackageVersions: sysextMeta.PackageVersions,
-				Compatibility: katlosCompatibility{
-					RuntimeInterface: sysextMeta.RuntimeInterface,
-					RuntimeRoot:      sysextMeta.CompatibleRuntime,
-				},
-				InstallTarget: installTarget{
-					Kind: "systemd-sysext",
-					Name: "kubernetes.raw",
 				},
 			},
 		},
@@ -1249,15 +1217,12 @@ func validateLocalRef(value string) error {
 	return nil
 }
 
-func validateKatlOSComponents(root, uki, sysext localMetadata, architecture, runtimeInterface string) error {
+func validateKatlOSComponents(root, uki localMetadata, architecture, runtimeInterface string) error {
 	if root.Architecture != architecture {
 		return fmt.Errorf("runtime root architecture %s does not match image architecture %s", root.Architecture, architecture)
 	}
 	if uki.Architecture != architecture {
 		return fmt.Errorf("runtime UKI architecture %s does not match image architecture %s", uki.Architecture, architecture)
-	}
-	if sysext.Architecture != architecture {
-		return fmt.Errorf("Kubernetes sysext architecture %s does not match image architecture %s", sysext.Architecture, architecture)
 	}
 	if root.RuntimeInterface != runtimeInterface {
 		return fmt.Errorf("runtime root interface %s does not match image interface %s", root.RuntimeInterface, runtimeInterface)
@@ -1265,20 +1230,11 @@ func validateKatlOSComponents(root, uki, sysext localMetadata, architecture, run
 	if uki.RuntimeInterface != runtimeInterface {
 		return fmt.Errorf("runtime UKI interface %s does not match image interface %s", uki.RuntimeInterface, runtimeInterface)
 	}
-	if sysext.RuntimeInterface != runtimeInterface {
-		return fmt.Errorf("Kubernetes sysext interface %s does not match image interface %s", sysext.RuntimeInterface, runtimeInterface)
-	}
 	if uki.CompatibleRuntime == nil {
 		return fmt.Errorf("runtime UKI metadata missing compatibleRuntime")
 	}
 	if uki.CompatibleRuntime.ArtifactSHA256 != root.SHA256 {
 		return fmt.Errorf("runtime UKI was built for root %s, want %s", uki.CompatibleRuntime.ArtifactSHA256, root.SHA256)
-	}
-	if sysext.CompatibleRuntime == nil {
-		return fmt.Errorf("Kubernetes sysext metadata missing compatibleRuntime")
-	}
-	if sysext.CompatibleRuntime.ArtifactSHA256 != root.SHA256 {
-		return fmt.Errorf("Kubernetes sysext was built for root %s, want %s", sysext.CompatibleRuntime.ArtifactSHA256, root.SHA256)
 	}
 	return nil
 }

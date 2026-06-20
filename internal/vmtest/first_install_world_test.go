@@ -535,7 +535,6 @@ func writeFixtureKatlOSInstallImageRoot(t *testing.T, mkosiDir, version string) 
 	components := map[string][]byte{
 		"components/runtime/root.squashfs": []byte("runtime root"),
 		"components/boot/katl.efi":         []byte("runtime uki"),
-		"components/sysext/kubernetes.raw": []byte("kubernetes sysext"),
 	}
 	digests := make(map[string]string, len(components))
 	sizes := make(map[string]int64, len(components))
@@ -588,26 +587,6 @@ func writeFixtureKatlOSInstallImageRoot(t *testing.T, mkosiDir, version string) 
 					"kernelCommandLine": []string{"quiet"},
 				},
 				"installTarget": map[string]any{"kind": "esp-or-xbootldr", "filename": "katl.efi"},
-			},
-			{
-				"name":           "kubernetes",
-				"role":           "kubernetes-sysext",
-				"path":           "components/sysext/kubernetes.raw",
-				"format":         "raw",
-				"sizeBytes":      sizes["components/sysext/kubernetes.raw"],
-				"sha256":         digests["components/sysext/kubernetes.raw"],
-				"version":        "v1.36.1",
-				"payloadVersion": "v1.36.1",
-				"architecture":   "x86_64",
-				"compatibility": map[string]any{
-					"runtimeInterface": "katl-runtime-1",
-					"runtimeRoot": map[string]any{
-						"interface":      "katl-runtime-1",
-						"artifactPath":   "components/runtime/root.squashfs",
-						"artifactSHA256": digests["components/runtime/root.squashfs"],
-					},
-				},
-				"installTarget": map[string]any{"kind": "systemd-sysext", "name": "kubernetes.raw"},
 			},
 		},
 	}

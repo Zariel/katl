@@ -94,13 +94,14 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 				Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
-				ClusterName:          "lab",
-				InventoryNodeName:    "cp-1",
-				NodeAddress:          "10.0.0.11",
-				ControlPlaneEndpoint: "api.katl.test:6443",
-				BootstrapProfileRef:  "control-plane",
-				ProfileResolvedID:    "kubeadm:control-plane",
-				KubernetesCatalogRef: "default",
+				ClusterName:            "lab",
+				InventoryNodeName:      "cp-1",
+				NodeAddress:            "10.0.0.11",
+				ControlPlaneEndpoint:   "api.katl.test:6443",
+				BootstrapProfileRef:    "control-plane",
+				ProfileResolvedID:      "kubeadm:control-plane",
+				KubernetesBundleSource: "https://artifacts.example.test/kubernetes",
+				KubernetesBundleRef:    "v1.36.1@sha256:" + strings.Repeat("1", 64),
 				Access: manifest.BootstrapAccess{
 					Method:        "agent",
 					CredentialRef: "vsock:1234:10240",
@@ -124,14 +125,9 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 		},
 	}
 	intent, err := BuildClusterIntent(ClusterIntentRequest{
-		Manifest:          manifestDoc,
-		KubeadmConfigs:    kubeadmPlans(),
-		KubernetesVersion: "v1.36.1",
-		KubernetesSysext: &ClusterIntentKubernetesSysext{
-			Path:      "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
-			SHA256:    strings.Repeat("c", 64),
-			SizeBytes: 123,
-		},
+		Manifest:           manifestDoc,
+		KubeadmConfigs:     kubeadmPlans(),
+		KubernetesVersion:  "v1.36.1",
 		GenerationID:       "0",
 		RequestDigest:      strings.Repeat("d", 64),
 		InstalledAt:        installedAt,
@@ -149,7 +145,11 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	if intent.Inventory.Labels["katl.dev/zone"] != "rack-a" || len(intent.Inventory.Taints) != 1 {
 		t.Fatalf("labels/taints = %#v %#v", intent.Inventory.Labels, intent.Inventory.Taints)
 	}
-	if intent.Kubernetes.PayloadVersion != "v1.36.1" || intent.Kubernetes.CatalogRef != "default" || intent.Kubernetes.SysextSHA256 != strings.Repeat("c", 64) {
+	if intent.Kubernetes.PayloadVersion != "v1.36.1" ||
+		intent.Kubernetes.BundleSource != "https://artifacts.example.test/kubernetes" ||
+		intent.Kubernetes.BundleRef != "v1.36.1@sha256:"+strings.Repeat("1", 64) ||
+		intent.Kubernetes.SysextPath != "" ||
+		intent.Kubernetes.SysextSHA256 != "" {
 		t.Fatalf("kubernetes intent = %#v", intent.Kubernetes)
 	}
 	if intent.Kubeadm == nil || intent.Kubeadm.ConfigRef != "control-plane" || intent.Kubeadm.ConfigPath != "/etc/katl/kubeadm/control-plane/config.yaml" {
@@ -525,7 +525,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		appliedLayoutFacts(targetRoot),
 	}}
 	install := &Context{
-		ManifestPath:   writeManifestWithNode(t, `, "kubernetes": {"kubeadm": {"configRef": "control-plane"}}`),
+		ManifestPath:   writeManifestWithNode(t, `, "kubernetes": {"kubeadm": {"configRef": "control-plane"}}, "bootstrap": {"kubernetesBundleSource": "https://artifacts.example.test/kubernetes", "kubernetesBundleRef": "v1.34.8@sha256:`+strings.Repeat("1", 64)+`"}`),
 		TargetRoot:     targetRoot,
 		Commands:       commands,
 		Store:          store,
@@ -565,7 +565,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	}
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-0.efi"), string(contents.boot))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/sysext/katl-kubernetes.raw"))
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(contents.kubernetes))
+	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"))
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/confext/etc/katl/node.json"), `"configRef": "control-plane"`)
@@ -581,8 +581,8 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"bootedGenerationID": "0"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"defaultBootEntry": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextPath": "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextSHA256": "`+payload.Kubernetes.SHA256+`"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleSource": "https://artifacts.example.test/kubernetes"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleRef": "v1.34.8@sha256:`+strings.Repeat("1", 64)+`"`)
 	installedManifestFile, err := os.Open(filepath.Join(targetRoot, "var/lib/katl/install/manifest.json"))
 	if err != nil {
 		t.Fatalf("open installed manifest: %v", err)
@@ -698,10 +698,6 @@ func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 			Boot: generation.BootSelection{
 				UKIPath: "/efi/EFI/Linux/katl-2026.06.06-001.efi",
 			},
-			Sysexts: []generation.ExtensionRef{{
-				Name: "kubernetes",
-				Path: "/var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw",
-			}},
 		},
 	}
 
@@ -717,7 +713,7 @@ func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 		t.Fatal("root slot target was not synced")
 	}
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"), string(contents.kubernetes))
+	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"))
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallRootSlot, InstallBootArtifacts, InstallExtensions}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
@@ -1208,7 +1204,6 @@ func kubeadmPlans() map[string]kubeadmconfig.Plan {
 func planningPayload() katlosimage.Payload {
 	runtimeSHA := strings.Repeat("a", 64)
 	bootSHA := strings.Repeat("b", 64)
-	kubernetesSHA := strings.Repeat("c", 64)
 	return katlosimage.Payload{
 		Root: "/payload",
 		Index: katlosimage.Index{
@@ -1237,19 +1232,6 @@ func planningPayload() katlosimage.Payload {
 			Compatibility: katlosimage.Compatibility{
 				RuntimeInterface:  "katl-runtime-1",
 				KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
-			},
-		},
-		Kubernetes: katlosimage.Component{
-			Name:           "kubernetes",
-			Role:           katlosimage.ComponentKubernetes,
-			Path:           "components/sysext/kubernetes.raw",
-			SizeBytes:      8192,
-			SHA256:         kubernetesSHA,
-			Version:        "k8s-v1.34.8",
-			PayloadVersion: "v1.34.8",
-			Architecture:   "x86_64",
-			Compatibility: katlosimage.Compatibility{
-				RuntimeInterface: "katl-runtime-1",
 			},
 		},
 	}
@@ -1313,22 +1295,19 @@ func (s *sequenceDiscoverySource) Discover(ctx context.Context) (discovery.Hardw
 }
 
 type installPayloadContents struct {
-	runtime    []byte
-	boot       []byte
-	kubernetes []byte
+	runtime []byte
+	boot    []byte
 }
 
 func writeInstallPayload(t *testing.T) (katlosimage.Payload, installPayloadContents) {
 	t.Helper()
 	root := t.TempDir()
 	contents := installPayloadContents{
-		runtime:    []byte("runtime-root-payload"),
-		boot:       []byte("runtime-uki-payload"),
-		kubernetes: []byte("kubernetes-sysext-payload"),
+		runtime: []byte("runtime-root-payload"),
+		boot:    []byte("runtime-uki-payload"),
 	}
 	writePayloadComponent(t, root, "components/runtime/root.squashfs", contents.runtime)
 	writePayloadComponent(t, root, "components/boot/katl.efi", contents.boot)
-	writePayloadComponent(t, root, "components/sysext/kubernetes.raw", contents.kubernetes)
 	payload := katlosimage.Payload{
 		Root: root,
 		Index: katlosimage.Index{
@@ -1338,12 +1317,6 @@ func writeInstallPayload(t *testing.T) (katlosimage.Payload, installPayloadConte
 		},
 		Runtime: payloadComponent("runtime-root", katlosimage.ComponentRuntimeRoot, "components/runtime/root.squashfs", contents.runtime),
 		Boot:    payloadComponent("runtime-uki", katlosimage.ComponentRuntimeUKI, "components/boot/katl.efi", contents.boot),
-		Kubernetes: func() katlosimage.Component {
-			component := payloadComponent("kubernetes", katlosimage.ComponentKubernetes, "components/sysext/kubernetes.raw", contents.kubernetes)
-			component.Version = "k8s-v1.34.8"
-			component.PayloadVersion = "v1.34.8"
-			return component
-		}(),
 	}
 	return payload, contents
 }

@@ -413,25 +413,20 @@ func validate(ctx context.Context, root string, index Index, expected manifest.K
 	if err != nil {
 		return Payload{}, err
 	}
-	kubernetes, err := required(byRole, ComponentKubernetes)
-	if err != nil {
-		return Payload{}, err
-	}
 	if boot.Compatibility.RuntimeRoot.ArtifactSHA256 != runtime.SHA256 {
 		return Payload{}, fmt.Errorf("runtime UKI root digest %q does not match runtime root %q", boot.Compatibility.RuntimeRoot.ArtifactSHA256, runtime.SHA256)
 	}
-	if kubernetes.Compatibility.RuntimeRoot.ArtifactSHA256 != runtime.SHA256 {
-		return Payload{}, fmt.Errorf("Kubernetes sysext root digest %q does not match runtime root %q", kubernetes.Compatibility.RuntimeRoot.ArtifactSHA256, runtime.SHA256)
+	if kubernetes := byRole[ComponentKubernetes]; kubernetes.Name != "" {
+		return Payload{}, fmt.Errorf("KatlOS image must not include Kubernetes sysext component %q", kubernetes.Name)
 	}
 	if len(boot.Compatibility.KernelCommandLine) == 0 {
 		return Payload{}, fmt.Errorf("runtime UKI kernel command line is required")
 	}
 	return Payload{
-		Root:       root,
-		Index:      index,
-		Runtime:    runtime,
-		Boot:       boot,
-		Kubernetes: kubernetes,
+		Root:    root,
+		Index:   index,
+		Runtime: runtime,
+		Boot:    boot,
 	}, nil
 }
 
@@ -518,15 +513,7 @@ func validateComponentRole(component Component, index Index) error {
 			return fmt.Errorf("runtime UKI compatible runtime digest is required")
 		}
 	case ComponentKubernetes:
-		if component.InstallTarget.Kind != "systemd-sysext" {
-			return fmt.Errorf("Kubernetes sysext install target must be systemd-sysext")
-		}
-		if strings.TrimSpace(component.PayloadVersion) == "" {
-			return fmt.Errorf("Kubernetes sysext payload version is required")
-		}
-		if component.Compatibility.RuntimeRoot.ArtifactSHA256 == "" {
-			return fmt.Errorf("Kubernetes sysext compatible runtime digest is required")
-		}
+		return fmt.Errorf("KatlOS image must not include Kubernetes sysext component %q", component.Name)
 	default:
 		return fmt.Errorf("KatlOS image component %q role %q is unsupported", component.Name, component.Role)
 	}

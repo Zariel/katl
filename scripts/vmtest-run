@@ -322,6 +322,7 @@ build_default_artifacts() {
             fi
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
+                targets+=("build-kubernetes-sysext")
             elif ! has_explicit_runtime_artifact; then
                 targets+=("build-runtime")
             fi
@@ -374,6 +375,9 @@ mkosi_cache_label_for_target() {
         build-katlos-install-image)
             printf 'katlos-install-image\n'
             ;;
+        build-kubernetes-sysext)
+            printf 'kubernetes-sysext\n'
+            ;;
         *)
             printf '%s\n' "$1"
             ;;
@@ -385,10 +389,12 @@ artifact_build_actions_json() {
         --arg buildInstaller "${artifact_build_actions[build-installer]:-}" \
         --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
         --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
+        --arg buildKubernetesSysext "${artifact_build_actions[build-kubernetes-sysext]:-}" \
         '{
           "build-installer": $buildInstaller,
           "build-runtime": $buildRuntime,
-          "build-katlos-install-image": $buildInstallImage
+          "build-katlos-install-image": $buildInstallImage,
+          "build-kubernetes-sysext": $buildKubernetesSysext
         } | with_entries(select(.value != ""))'
 }
 
@@ -436,7 +442,8 @@ prepare_resource_manifest() {
             if (.path | startswith("/")) then .path else ($repo + "/" + .path) end;
           def action_for($actions):
             if (.name | startswith("installer-")) then ($actions["build-installer"] // "validated")
-            elif (.name == "runtime-uki" or .name == "runtime-root" or .name == "kubernetes-sysext" or .name == "katlos-install-image") then ($actions["build-katlos-install-image"] // $actions["build-runtime"] // "validated")
+            elif (.name == "kubernetes-sysext") then ($actions["build-kubernetes-sysext"] // "validated")
+            elif (.name == "runtime-uki" or .name == "runtime-root" or .name == "katlos-install-image") then ($actions["build-katlos-install-image"] // $actions["build-runtime"] // "validated")
             else "validated"
             end;
           .artifacts

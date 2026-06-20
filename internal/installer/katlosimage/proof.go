@@ -125,7 +125,7 @@ func (p Payload) SingleImageProof(request SingleImageProofRequest) (SingleImageP
 			Verified:       true,
 		})
 	}
-	for _, role := range []string{ComponentRuntimeRoot, ComponentRuntimeUKI, ComponentKubernetes} {
+	for _, role := range []string{ComponentRuntimeRoot, ComponentRuntimeUKI} {
 		if !report.hasRole(role) {
 			return SingleImageProofReport{}, fmt.Errorf("single-image proof missing component role %q in image index %s", role, report.EmbeddedIndex.Path)
 		}

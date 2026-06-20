@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,10 +15,12 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/artifact"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 )
 
@@ -25,6 +30,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "executor init kubernetes sysext")
 	var bootOneshot []string
 	executor.SetBootOneshot = func(ctx context.Context, root string, bootEntry string) error {
 		bootOneshot = append(bootOneshot, root+" "+bootEntry)
@@ -63,6 +69,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	server.Dispatcher = executor
 
 	req := submitRequest("req-execute")
+	setSubmitRequestBundle(req, source, ref)
 	req.OperationTimeout = "7s"
 	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
@@ -150,6 +157,7 @@ func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 	done := make(chan struct{})
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "executor cancellation kubernetes sysext")
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{ExitStatus: 0}
 	}
@@ -164,7 +172,9 @@ func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 	server.Dispatcher = executor
 
 	ctx, cancel := context.WithCancel(context.Background())
-	accepted, err := server.SubmitOperation(ctx, submitRequest("req-disconnect"))
+	req := submitRequest("req-disconnect")
+	setSubmitRequestBundle(req, source, ref)
+	accepted, err := server.SubmitOperation(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,15 +286,16 @@ func TestExecutorRejectsMissingPlanBeforeBootstrapRuntimePrep(t *testing.T) {
 func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
-	record := createAcceptedBootstrapOperation(t, server.Store, "op-ready-fail", "candidate-ready-fail", &operation.ExecutorPlan{
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "readiness failure kubernetes sysext")
+	record := createAcceptedBootstrapOperation(t, server.Store, "op-ready-fail", "candidate-ready-fail", source, ref, &operation.ExecutorPlan{
 		Phase:          "kubeadm-init",
 		MarkerID:       "kubeadm-init",
 		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
 		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
 	})
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
-	executor.Async = false
-	executor.Now = server.Now
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{
 			Stderr:     []byte("containerd.service failed\n"),
@@ -319,15 +330,16 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
-	record := createAcceptedBootstrapOperation(t, server.Store, "op-health-fail", "candidate-health-fail", &operation.ExecutorPlan{
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "post health failure kubernetes sysext")
+	record := createAcceptedBootstrapOperation(t, server.Store, "op-health-fail", "candidate-health-fail", source, ref, &operation.ExecutorPlan{
 		Phase:          "kubeadm-init",
 		MarkerID:       "kubeadm-init",
 		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
 		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
 	})
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
-	executor.Async = false
-	executor.Now = server.Now
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{ExitStatus: 0}
 	}
@@ -397,6 +409,7 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "worker join kubernetes sysext")
 	ready := false
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		assertBootstrapRuntimePreparedForRole(t, server.Root, "bootstrap-join-worker-01-candidate", "worker")
@@ -436,6 +449,7 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	server.Dispatcher = executor
 
 	req := submitRequest("req-worker-join")
+	setSubmitRequestBundle(req, source, ref)
 	req.OperationKind = "bootstrap-join-worker"
 	req.Bootstrap.SystemRole = "worker"
 	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
@@ -471,6 +485,7 @@ func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testin
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "expired worker join kubernetes sysext")
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{ExitStatus: 0}
 	}
@@ -481,6 +496,7 @@ func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testin
 	server.Dispatcher = executor
 
 	req := submitRequest("req-worker-join-expired-after-ready")
+	setSubmitRequestBundle(req, source, ref)
 	req.OperationKind = "bootstrap-join-worker"
 	req.Bootstrap.SystemRole = "worker"
 	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
@@ -507,6 +523,7 @@ func TestSubmitOperationAcceptsAlreadyJoinedWorkerWhenHealthPasses(t *testing.T)
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "already joined worker kubernetes sysext")
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{ExitStatus: 0}
 	}
@@ -527,6 +544,7 @@ func TestSubmitOperationAcceptsAlreadyJoinedWorkerWhenHealthPasses(t *testing.T)
 	server.Dispatcher = executor
 
 	req := submitRequest("req-worker-already-joined")
+	setSubmitRequestBundle(req, source, ref)
 	req.OperationKind = "bootstrap-join-worker"
 	req.Bootstrap.SystemRole = "worker"
 	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
@@ -674,10 +692,10 @@ func createAgentOperation(t *testing.T, store operation.Store, id string) operat
 
 func createBootstrapOperationWithoutPlan(t *testing.T, store operation.Store, id string) operation.OperationRecord {
 	t.Helper()
-	return createAcceptedBootstrapOperation(t, store, id, "candidate-missing-plan", nil)
+	return createAcceptedBootstrapOperation(t, store, id, "candidate-missing-plan", "", "", nil)
 }
 
-func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id string, candidate string, plan *operation.ExecutorPlan) operation.OperationRecord {
+func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id string, candidate string, bundleSource string, bundleRef string, plan *operation.ExecutorPlan) operation.OperationRecord {
 	t.Helper()
 	record, err := store.Create(operation.OperationRecord{
 		OperationID:                 id,
@@ -696,6 +714,8 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 			InventoryNodeName:        "node-a",
 			SystemRole:               "control-plane",
 			KubernetesPayloadVersion: "v1.35.0",
+			KubernetesBundleSource:   bundleSource,
+			KubernetesBundleRef:      bundleRef,
 			BootstrapProfileRef:      "default",
 			CandidateGenerationID:    candidate,
 		},
@@ -705,6 +725,82 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 		t.Fatal(err)
 	}
 	return record
+}
+
+func configureExecutorBundle(t *testing.T, executor *Executor, payloadVersion string, payload string) (string, string) {
+	t.Helper()
+	fixture := writeExecutorKubernetesBundleFixture(t, payloadVersion, payload)
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
+	t.Cleanup(server.Close)
+	executor.BundleClient = server.Client()
+	return server.URL, fixture.ref
+}
+
+func setSubmitRequestBundle(req *agentapi.SubmitOperationRequest, source string, ref string) {
+	req.Bootstrap.KubernetesBundleSource = source
+	req.Bootstrap.KubernetesBundleRef = ref
+}
+
+type executorKubernetesBundleFixture struct {
+	root string
+	ref  string
+}
+
+func writeExecutorKubernetesBundleFixture(t *testing.T, payloadVersion string, payload string) executorKubernetesBundleFixture {
+	t.Helper()
+	sourceDir := t.TempDir()
+	outputDir := t.TempDir()
+	rawPath := filepath.Join(sourceDir, "katl-kubernetes-"+payloadVersion+".raw")
+	if err := os.WriteFile(rawPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := artifact.LocalMeta{
+		Name:           sysextcatalog.KubernetesName,
+		Kind:           artifact.ArtifactSysext,
+		Format:         "sysext",
+		Path:           filepath.Base(rawPath),
+		SizeBytes:      int64(len(payload)),
+		SHA256:         digestBytes([]byte(payload)),
+		Version:        payloadVersion + "-build.1",
+		PayloadVersion: payloadVersion,
+		Architecture:   "x86_64",
+		SourceRepo: &artifact.SourceRepo{
+			ID:      "kubernetes",
+			BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.35/rpm/",
+			Minor:   "v1.35",
+		},
+		PackageVersions: map[string]string{
+			"cri-tools": "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubeadm":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubectl":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+			"kubelet":   "0:" + strings.TrimPrefix(payloadVersion, "v") + "-150500.1.1",
+		},
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &artifact.Compat{
+			Interface:    "katl-runtime-1",
+			ArtifactPath: filepath.Join(sourceDir, "katl-runtime-root.squashfs"),
+		},
+		Created: "2026-06-15T12:00:00Z",
+	}
+	metadataPath := rawPath + ".json"
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := sysextcatalog.StageKubernetesSysext(sysextcatalog.StageRequest{
+		MetadataPath: metadataPath,
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("StageKubernetesSysext() error = %v", err)
+	}
+	return executorKubernetesBundleFixture{
+		root: outputDir,
+		ref:  payloadVersion + "@" + staged.BundleManifestDigest,
+	}
 }
 
 func readFirstArtifact(t *testing.T, store operation.Store, record operation.OperationRecord) string {
@@ -792,18 +888,11 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 	}
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), "0123456789abcdef0123456789abcdef\n")
 	writeBootSelection(t, root, "0")
-	sysext := []byte("kubernetes-sysext-payload")
-	writeTestFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(sysext))
 	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{
-		TargetRoot:        root,
-		Manifest:          bootstrapRuntimeManifest(role),
-		KubeadmConfigs:    bootstrapRuntimeKubeadmConfigs(role),
-		KubernetesVersion: "v1.35.0",
-		KubernetesSysext: &installer.ClusterIntentKubernetesSysext{
-			Path:      "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
-			SHA256:    digestBytes(sysext),
-			SizeBytes: uint64(len(sysext)),
-		},
+		TargetRoot:         root,
+		Manifest:           bootstrapRuntimeManifest(role),
+		KubeadmConfigs:     bootstrapRuntimeKubeadmConfigs(role),
+		KubernetesVersion:  "v1.35.0",
 		GenerationID:       "0",
 		RequestDigest:      strings.Repeat("c", 64),
 		InstalledAt:        time.Date(2026, 6, 15, 11, 5, 0, 0, time.UTC),
@@ -890,7 +979,7 @@ func assertBootstrapRuntimePreparedForRole(t *testing.T, root string, candidate 
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/kubeadm/default/config.yaml"), kind)
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/bootstrap-runtime.json"), `"systemRole": "`+role+`"`)
 	assertFileContains(t, filepath.Join(root, "run/systemd/system/katl-generation-activate.service.d/10-katl-live-generation.conf"), "--generation "+candidate)
-	assertSymlinkTarget(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/katl-kubernetes.raw")
+	assertSymlinkTargetPrefix(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/katl-kubernetes-")
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
 		t.Fatal(err)
@@ -953,6 +1042,17 @@ func assertSymlinkTarget(t *testing.T, path string, want string) {
 	}
 	if got != want {
 		t.Fatalf("symlink %s -> %s, want %s", path, got, want)
+	}
+}
+
+func assertSymlinkTargetPrefix(t *testing.T, path string, wantPrefix string) {
+	t.Helper()
+	got, err := os.Readlink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("symlink %s -> %s, want prefix %s", path, got, wantPrefix)
 	}
 }
 

@@ -53,36 +53,6 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		"kernelCommandLine": []string{"rootfstype=squashfs", "ro"},
 	})
 
-	sysext := writeArtifact(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
-	writeJSONFile(t, sysext+".json", map[string]any{
-		"name":           "kubernetes",
-		"kind":           "sysext",
-		"format":         "sysext",
-		"path":           filepath.Base(sysext),
-		"sizeBytes":      int64(len("kubernetes sysext")),
-		"sha256":         fileSHA256(t, sysext),
-		"version":        "test-build",
-		"payloadVersion": "v1.36.0",
-		"architecture":   "x86_64",
-		"sourceRepo": map[string]any{
-			"id":      "kubernetes",
-			"baseURL": "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
-			"minor":   "v1.36",
-		},
-		"packageVersions": map[string]any{
-			"kubeadm":   "1.36.0-1",
-			"kubelet":   "1.36.0-1",
-			"kubectl":   "1.36.0-1",
-			"cri-tools": "1.36.0-1",
-		},
-		"runtimeInterface": "katl-runtime-1",
-		"compatibleRuntime": map[string]any{
-			"interface":      "katl-runtime-1",
-			"artifactPath":   filepath.Base(runtimeRoot),
-			"artifactSHA256": runtimeRootSHA,
-		},
-	})
-
 	fakeBin := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", fakeBin, err)
@@ -106,8 +76,6 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		"KATL_RUNTIME_METADATA="+runtimeRoot+".json",
 		"KATL_RUNTIME_UKI="+runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA="+runtimeUKI+".json",
-		"KATL_KUBERNETES_SYSEXT="+sysext,
-		"KATL_KUBERNETES_SYSEXT_METADATA="+sysext+".json",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build-katlos-install-image failed: %v\n%s", err, out)
@@ -121,7 +89,7 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		} `json:"components"`
 	}
 	readJSONFile(t, filepath.Join(root, "katlos", "image.json"), &imageIndex)
-	if imageIndex.Kind != "KatlOSImage" || len(imageIndex.Components) != 3 {
+	if imageIndex.Kind != "KatlOSImage" || len(imageIndex.Components) != 2 {
 		t.Fatalf("image index = %#v", imageIndex)
 	}
 	assertFileEquals(t, filepath.Join(root, "components", "metadata", "runtime-root.sha256"), runtimeRootSHA+"  ../runtime/root.squashfs\n")

@@ -282,7 +282,6 @@ func writeSysupdateUpgradeImagePayload(t *testing.T, runDir string, version stri
 	components := map[string][]byte{
 		"components/runtime/root.squashfs": rootBytes,
 		"components/boot/katl.efi":         ukiBytes,
-		"components/sysext/kubernetes.raw": []byte("preserved Kubernetes sysext placeholder\n"),
 	}
 	digests := make(map[string]string, len(components))
 	sizes := make(map[string]int64, len(components))
@@ -347,26 +346,6 @@ func writeSysupdateUpgradeImagePayload(t *testing.T, runDir string, version stri
 					Kind:     "esp-or-xbootldr",
 					Filename: "katl.efi",
 				},
-			},
-			{
-				Name:           "kubernetes",
-				Role:           katlosimage.ComponentKubernetes,
-				Path:           "components/sysext/kubernetes.raw",
-				Format:         "raw",
-				SizeBytes:      sizes["components/sysext/kubernetes.raw"],
-				SHA256:         digests["components/sysext/kubernetes.raw"],
-				Version:        "v1.36.1",
-				PayloadVersion: "v1.36.1",
-				Architecture:   "x86_64",
-				Compatibility: katlosimage.Compatibility{
-					RuntimeInterface: "katl-runtime-1",
-					RuntimeRoot: katlosimage.RuntimeRoot{
-						Interface:      "katl-runtime-1",
-						ArtifactPath:   "components/runtime/root.squashfs",
-						ArtifactSHA256: digests["components/runtime/root.squashfs"],
-					},
-				},
-				InstallTarget: katlosimage.InstallTarget{Kind: "systemd-sysext", Name: "kubernetes.raw"},
 			},
 		},
 	}

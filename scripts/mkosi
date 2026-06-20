@@ -119,7 +119,7 @@ cache_input_matches_target() {
             ;;
         katlos-install-image)
             case "$path" in
-                scripts/build-katlos-install-image | cmd/katlos-install/* | cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/* | mkosi.profiles/kubernetes-sysext/*)
+                scripts/build-katlos-install-image | cmd/katlos-install/* | cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
                     return 0
                     ;;
             esac
@@ -170,7 +170,7 @@ cache_fingerprint() {
                 fi
             done < <(list_cache_inputs "$target")
             case "$target" in
-                kubernetes-sysext | katlos-install-image)
+                kubernetes-sysext)
                     path="$build_dir/katl-runtime-root.squashfs.json"
                     if [[ -f "$path" ]]; then
                         read -r file_digest _ < <(sha256sum "$path")
@@ -232,7 +232,6 @@ target_outputs() {
             local image_output
             image_output="$(katlos_image_output)"
             target_outputs runtime
-            target_outputs kubernetes-sysext
             printf '%s\n' \
                 "$image_output" \
                 "$image_output.json" \
@@ -393,7 +392,6 @@ else
                 exit 0
             fi
             "$repo_root/scripts/mkosi" build-runtime
-            "$repo_root/scripts/mkosi" build-kubernetes-sysext
             "$repo_root/scripts/build-katlos-install-image" "$@"
             status=$?
             if [[ "$status" -eq 0 && $# -eq 0 ]]; then
