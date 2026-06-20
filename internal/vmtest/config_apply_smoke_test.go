@@ -113,7 +113,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	endpoint := katlcEndpoint(t, node, plannedAddress)
 	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
 	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, tokenFile, token, currentGeneration)
-	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint, token)
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -323,6 +322,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
+	assertGuestNonLoopbackLink(t, ctx, guest)
 	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged-networkd", "next-boot", stagedGeneration, "vmtest-config-apply-staged-networkd", configApplyFixture(t, "next-boot-networkd.yaml"))
 	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, stagedAccepted.OperationId)
 	if stagedStatus.Result != operation.ResultSucceeded || stagedStatus.ConfigApplyPhase != "next-boot" {
@@ -357,7 +357,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if bootedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("booted networkd katlctl generation status = %+v, want next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
-	return guest, client
+	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint, token)
+	powerOffGuestForCleanSuccess(t, ctx, node, guest, client)
+	return guest, nil
 }
 
 func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, clientRequestID, fixture string) agentapi.OperationAccepted {
@@ -410,60 +412,10 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 		t.Fatal("vmtest agent health returned empty boot ID before staged generation restart")
 	}
 
-	previous := node.handle
-	bootImage, bootFormat := bootDisk(t, previous.Plan)
-	restartConfig := previous.Config
-	restartConfig.Boot = VMBoot{
-		EFIImage:    previous.Plan.EFIImage,
-		Image:       bootImage,
-		ImageFormat: bootFormat,
-	}
-	restartConfig.OVMFVars = previous.Plan.OVMFVars
-	restartConfig.PreserveNVRAM = true
-	restartConfig.VSock.Enabled = true
-	restartConfig.VSock.GuestCID = previous.Plan.VSock.GuestCID
-	restartConfig.VSock.Port = previous.Plan.VSock.Port
-	restartConfig.Agent.RequireHealth = true
-	if restartConfig.Agent.Timeout == 0 {
-		restartConfig.Agent.Timeout = 30 * time.Second
-	}
-	if restartConfig.Boot.EFIImage == "" {
-		t.Fatal("VM plan has no EFI image for staged generation restart")
-	}
-	if restartConfig.OVMFVars == "" {
-		t.Fatal("VM plan has no OVMF vars image for staged generation restart")
-	}
-
-	if _, err := guest.RunCommand(ctx, GuestCommandRequest{
-		Name:    "poweroff-for-staged-generation",
-		Argv:    []string{"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-poweroff-for-staged-generation", "--on-active=1s", "/usr/bin/systemctl", "poweroff", "--no-block"},
-		Timeout: 10 * time.Second,
-	}); err != nil {
-		t.Fatalf("request guest poweroff before staged generation restart: %v", err)
+	if err := requestGuestReboot(ctx, guest); err != nil {
+		t.Fatalf("request guest reboot for staged generation restart: %v", err)
 	}
 	_ = client.Close()
-	if err := waitGuestPoweredOff(previous, 45*time.Second); err != nil {
-		t.Fatalf("wait for guest poweroff before staged generation restart: %v", err)
-	}
-
-	handle, setupResult, ok := previous.runner.startVM(ctx, node.Result, restartConfig)
-	if !ok {
-		node.Result = setupResult
-		t.Fatalf("restart runtime VM for staged config apply: %s", setupResult.FailureSummary)
-	}
-	node.handle = handle
-	node.Result = handle.Result
-	node.VSock = handle.Plan.VSock
-	if handle.Plan.MACAddress != "" {
-		lease, err := WaitLibvirtLease(handle.ctx, handle.Plan.VirshPath, handle.Plan.LibvirtURI, handle.Plan.LibvirtNetwork, handle.Plan.MACAddress, 30*time.Second)
-		if err != nil {
-			t.Fatalf("wait libvirt lease after staged generation restart: %v", err)
-		}
-		node.Result.IPAddress = lease.IPAddress
-		if err := writeJSON(node.Result.Artifacts.LibvirtLease, lease); err != nil {
-			t.Fatalf("write libvirt lease after staged generation restart: %v", err)
-		}
-	}
 
 	deadline := time.Now().Add(3 * time.Minute)
 	var lastErr error
@@ -474,7 +426,7 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 		if err != nil {
 			lastErr = err
 			time.Sleep(time.Second)
-			failIfRestartExited(t, handle)
+			failIfRestartExited(t, node.handle)
 			continue
 		}
 		healthCtx, healthCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -484,7 +436,7 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 			lastErr = err
 			_ = next.Close()
 			time.Sleep(time.Second)
-			failIfRestartExited(t, handle)
+			failIfRestartExited(t, node.handle)
 			continue
 		}
 		if bootID := strings.TrimSpace(health.GetBootId()); bootID != "" && bootID != previousBootID {
@@ -498,10 +450,50 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 		lastErr = errors.New("vmtest agent still reports previous boot ID")
 		_ = next.Close()
 		time.Sleep(time.Second)
-		failIfRestartExited(t, handle)
+		failIfRestartExited(t, node.handle)
 	}
 	t.Fatalf("vmtest agent did not reconnect with a new boot ID after staged generation restart: %v", lastErr)
 	return nil, nil
+}
+
+func powerOffGuestForCleanSuccess(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient) {
+	t.Helper()
+	if node == nil || node.handle == nil {
+		t.Fatal("running installed runtime node handle is required")
+	}
+	if err := requestGuestPoweroff(ctx, guest); err != nil {
+		t.Fatalf("request guest poweroff after config apply smoke success: %v", err)
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+	if err := waitGuestPoweredOff(node.handle, 45*time.Second); err != nil {
+		t.Fatalf("wait for guest poweroff after config apply smoke success: %v", err)
+	}
+}
+
+func requestGuestPoweroff(ctx context.Context, guest *GuestControl) error {
+	if guest == nil {
+		return errors.New("guest control is required")
+	}
+	_, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name:    "poweroff-for-staged-generation",
+		Argv:    []string{"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-poweroff-for-staged-generation", "--on-active=1s", "/usr/bin/systemctl", "poweroff", "--no-block"},
+		Timeout: 10 * time.Second,
+	})
+	return err
+}
+
+func requestGuestReboot(ctx context.Context, guest *GuestControl) error {
+	if guest == nil {
+		return errors.New("guest control is required")
+	}
+	_, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name:    "reboot-for-staged-generation",
+		Argv:    []string{"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-reboot-for-staged-generation", "--on-active=1s", "/usr/bin/systemctl", "reboot", "--no-block"},
+		Timeout: 10 * time.Second,
+	})
+	return err
 }
 
 func waitGuestPoweredOff(handle *VMHandle, timeout time.Duration) error {
@@ -529,17 +521,6 @@ func failIfRestartExited(t *testing.T, handle *VMHandle) {
 		t.Fatalf("runtime VM exited before vmtest agent reconnected after staged generation restart: %v", err)
 	default:
 	}
-}
-
-func bootDisk(t *testing.T, plan VMPlan) (string, DiskFormat) {
-	t.Helper()
-	for _, disk := range plan.DomainDisks {
-		if disk.Serial == "katl-boot" {
-			return disk.Path, disk.Format
-		}
-	}
-	t.Fatalf("VM plan has no katl-boot disk: %+v", plan.DomainDisks)
-	return "", ""
 }
 
 func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) []byte {
@@ -808,20 +789,46 @@ func assertGuestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, k
 	}
 }
 
+func assertGuestNonLoopbackLink(t *testing.T, ctx context.Context, guest *GuestControl) {
+	t.Helper()
+	output := guestCommandOutput(t, ctx, guest, "ip-links-before-networkd-stage", "ip", "-o", "link", "show")
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, ": lo:") {
+			continue
+		}
+		return
+	}
+	t.Fatalf("guest has no non-loopback links before networkd staged apply:\n%s", output)
+}
+
 func assertGuestAddress(t *testing.T, ctx context.Context, guest *GuestControl, address string, prefix int) {
 	t.Helper()
 	want := address + "/" + strconv.Itoa(prefix)
-	record, err := guest.RunCommand(ctx, GuestCommandRequest{
-		Name: "ip-addresses",
-		Argv: []string{"ip", "-o", "-4", "address", "show"},
-	})
-	if err != nil {
-		t.Fatalf("read guest IPv4 addresses: %v", err)
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	var lastErr error
+	for time.Now().Before(deadline) {
+		record, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name: "ip-addresses",
+			Argv: []string{"ip", "-o", "-4", "address", "show"},
+		})
+		if err != nil {
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		last = readFile(t, record.Stdout)
+		if strings.Contains(last, want) {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	output := readFile(t, record.Stdout)
-	if !strings.Contains(output, want) {
-		t.Fatalf("guest IPv4 addresses missing %s:\n%s", want, output)
+	if lastErr != nil {
+		t.Fatalf("read guest IPv4 addresses while waiting for %s: %v", want, lastErr)
 	}
+	links := guestCommandOutput(t, ctx, guest, "ip-links-after-address-timeout", "ip", "-o", "link", "show")
+	t.Fatalf("guest IPv4 addresses missing %s before timeout:\naddresses:\n%s\nlinks:\n%s", want, last, links)
 }
 
 func waitGuestFileContains(t *testing.T, ctx context.Context, guest *GuestControl, path string, wants ...string) {

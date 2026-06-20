@@ -575,6 +575,32 @@ esac
 	}
 }
 
+func TestPlanVMRejectsSelfBackingSnapshot(t *testing.T) {
+	result, config := vmFixture(t)
+	efiImage := filepath.Join(result.VMDir, "efi.img")
+	bootImage := filepath.Join(result.VMDir, "vdb.snapshot.qcow2")
+	if err := os.MkdirAll(result.VMDir, 0o755); err != nil {
+		t.Fatalf("create VM dir: %v", err)
+	}
+	if err := os.WriteFile(efiImage, []byte("efi"), 0o644); err != nil {
+		t.Fatalf("write EFI image: %v", err)
+	}
+	config.Boot = VMBoot{
+		EFIImage:      efiImage,
+		Image:         bootImage,
+		ImageFormat:   DiskQCOW2,
+		ImageSnapshot: true,
+	}
+	_, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "would use itself as backing file") {
+		t.Fatalf("planVM() error = %v, want self-backing snapshot rejection", err)
+	}
+}
+
 func TestVMDiskBoot(t *testing.T) {
 	result, config := vmFixture(t)
 	config.Boot.UKI = ""

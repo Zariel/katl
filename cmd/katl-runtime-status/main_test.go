@@ -46,6 +46,43 @@ func TestRuntimeStatusUpdatesExistingInstallStatus(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusIsIdempotentAfterFinalHandoff(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZero(t, root)
+	record := installStatusRecord("0")
+	record.State = installstatus.StateWaitingForClusterBootstrap
+	record.FinalHandoff = installstatus.StateWaitingForClusterBootstrap
+	if err := installstatus.WriteFile(filepath.Join(root, "var/lib/katl/install/status.json"), record); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:          "generation-apply-001",
+		OperationKind:        "generation-apply",
+		Scope:                "host-config",
+		RequestDigest:        "sha256:" + strings.Repeat("1", 64),
+		MutatingToolRan:      true,
+		PreviousGenerationID: "0",
+	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := run(t.Context(), []string{"--root", root}, nil); err != nil {
+		t.Fatalf("run() error = %v, want idempotent handoff despite later generation 0 mutation evidence", err)
+	}
+	decoded, err := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+	if err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if decoded.State != installstatus.StateWaitingForClusterBootstrap || decoded.FinalHandoff != installstatus.StateWaitingForClusterBootstrap {
+		t.Fatalf("runtime status = %#v, want prior final handoff preserved", decoded)
+	}
+}
+
 func TestRuntimeStatusRefusesDirtyGenerationZero(t *testing.T) {
 	root := t.TempDir()
 	record := installStatusRecord("0")

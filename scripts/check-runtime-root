@@ -277,6 +277,7 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/config-requests 07
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
+file_has /usr/lib/systemd/system/katl-vmtest-agent.service "TimeoutStopSec=5s"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
 file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ConditionKernelCommandLine=katl.vmtest_debug_shell=1"
 file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ExecStart=-/usr/sbin/agetty --autologin root --noclear ttyS0 115200"

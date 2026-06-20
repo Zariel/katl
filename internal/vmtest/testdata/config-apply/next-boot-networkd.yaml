@@ -12,7 +12,7 @@ spec:
         - name: 20-katl-vmtest-extra-address.network
           content: |
             [Match]
-            Name=en*
+            Name=e*
 
             [Network]
             DHCP=yes

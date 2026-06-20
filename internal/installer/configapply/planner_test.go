@@ -296,7 +296,7 @@ func currentRecord() generation.Record {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("c", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "fedora",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -315,7 +315,7 @@ func candidateConfext(id string) generation.GeneratedConfext {
 		ActivationPath: "/run/confexts/katl-node",
 		SHA256:         strings.Repeat("d", 64),
 		Compatibility: generation.ConfextCompatibility{
-			ID:           "katl",
+			ID:           "fedora",
 			VersionID:    "0.1.0",
 			ConfextLevel: 1,
 		},

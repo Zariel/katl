@@ -331,6 +331,7 @@ func TestKubernetesSysextUpdateGenerationZeroIntentMatchStillRefuses(t *testing.
 func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
+	writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=generation-0 katl.root-slot=root-a console=ttyS0,115200n8 systemd.log_target=console loglevel=6 katl.vmtest_agent=1 katl.vmtest_debug_shell=1")
 	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
@@ -374,12 +375,54 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 		t.Fatalf("generation read model = %+v", gen)
 	}
 	assertConfigApplyGenerationCommitted(t, server.Root, "generation-1", accepted.OperationId)
+	assertConfigApplyGenerationKernelOptions(t, server.Root, "generation-1",
+		"console=ttyS0,115200n8",
+		"systemd.log_target=console",
+		"loglevel=6",
+		"katl.vmtest_agent=1",
+		"katl.vmtest_debug_shell=1",
+	)
 	list, err := server.ListGenerations(context.Background(), &agentapi.ListGenerationsRequest{IncludeConfigApply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(list.Generations) != 2 || list.Generations[1].GenerationId != "generation-1" {
 		t.Fatalf("generation list = %+v", list.Generations)
+	}
+}
+
+func TestMergeKernelCommandLinePreservesOnlyUncontrolledCurrentOptions(t *testing.T) {
+	base := []string{
+		"root=PARTUUID=22222222-2222-2222-2222-222222222222",
+		"katl.generation=generation-1",
+		"console=ttyS0,115200n8",
+	}
+	current := []string{
+		"root=PARTUUID=11111111-1111-1111-1111-111111111111",
+		"rootfstype=squashfs",
+		"ro",
+		"rw",
+		"systemd.machine_id=0123456789abcdef0123456789abcdef",
+		"katl.generation=generation-0",
+		"katl.root-slot=root-a",
+		"console=ttyS0,115200n8",
+		"systemd.log_target=console",
+		"loglevel=6",
+		"katl.vmtest_agent=1",
+		"katl.vmtest_agent=1",
+		"katl.vmtest_debug_shell=1",
+	}
+	want := []string{
+		"root=PARTUUID=22222222-2222-2222-2222-222222222222",
+		"katl.generation=generation-1",
+		"console=ttyS0,115200n8",
+		"systemd.log_target=console",
+		"loglevel=6",
+		"katl.vmtest_agent=1",
+		"katl.vmtest_debug_shell=1",
+	}
+	if got := mergeKernelCommandLine(base, current); !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeKernelCommandLine() = %#v, want %#v", got, want)
 	}
 }
 
@@ -1946,6 +1989,43 @@ func assertConfigApplyGenerationCommitted(t *testing.T, root string, candidate s
 	}
 	if selection.TargetBootEntry != spec.Boot.LoaderEntryPath || selection.TrialBootEntry != spec.Boot.LoaderEntryPath || selection.DefaultBootEntry != "loader/entries/katl-generation-0.conf" {
 		t.Fatalf("boot entries = %#v, want staged target and unchanged default", selection)
+	}
+}
+
+func assertConfigApplyGenerationKernelOptions(t *testing.T, root string, candidate string, options ...string) {
+	t.Helper()
+	spec, _, err := generation.ReadGeneration(root, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotOptions := strings.Join(spec.KernelCommandLine, " ")
+	entryPath := filepath.Join(root, "efi", spec.Boot.LoaderEntryPath)
+	data, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read candidate loader entry: %v", err)
+	}
+	entry := string(data)
+	for _, option := range options {
+		if !strings.Contains(gotOptions, option) {
+			t.Fatalf("candidate kernelCommandLine = %q, want %q", gotOptions, option)
+		}
+		if !strings.Contains(entry, option) {
+			t.Fatalf("candidate loader entry:\n%s\nwant option %q", entry, option)
+		}
+	}
+	if strings.Contains(entry, "katl.generation=generation-0") {
+		t.Fatalf("candidate loader entry inherited previous generation option:\n%s", entry)
+	}
+}
+
+func writeProcCmdline(t *testing.T, root string, cmdline string) {
+	t.Helper()
+	path := filepath.Join(root, "proc/cmdline")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(cmdline+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

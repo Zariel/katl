@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -360,6 +361,7 @@ func (e LibvirtVMExecutor) consoleCommand(ctx context.Context) *exec.Cmd {
 	if e.TempDir != "" {
 		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
 	}
+	configureProcessGroupCancel(cmd)
 	return cmd
 }
 
@@ -369,7 +371,19 @@ func (e LibvirtVMExecutor) virshCommand(ctx context.Context, args ...string) *ex
 	if e.TempDir != "" {
 		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
 	}
+	configureProcessGroupCancel(cmd)
 	return cmd
+}
+
+func configureProcessGroupCancel(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 100 * time.Millisecond
 }
 
 func (e LibvirtVMExecutor) virshInvocation(args ...string) (string, []string) {
@@ -1303,7 +1317,11 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 	preseedImage := ""
 	preseedDir := ""
 	nextTarget := byte('a')
+	var diskErr error
 	add := func(path string, format DiskFormat, serial string, snapshot bool) {
+		if diskErr != nil {
+			return
+		}
 		target := "vd" + string(nextTarget)
 		disk := libvirtDisk{
 			Path:   path,
@@ -1312,10 +1330,15 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			Serial: serial,
 		}
 		if snapshot {
+			snapshotPath := filepath.Join(result.VMDir, target+".snapshot.qcow2")
+			if sameFilePath(path, snapshotPath) {
+				diskErr = fmt.Errorf("VM disk snapshot %s would use itself as backing file", snapshotPath)
+				return
+			}
 			disk.BackingPath = path
 			disk.BackingFormat = format
 			disk.Format = DiskQCOW2
-			disk.Path = filepath.Join(result.VMDir, target+".snapshot.qcow2")
+			disk.Path = snapshotPath
 		}
 		disks = append(disks, libvirtDisk{
 			Path:          disk.Path,
@@ -1376,6 +1399,9 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		preseedDir = config.PreseedDir
 		preseedImage = filepath.Join(result.VMDir, "preseed.img")
 		add(preseedImage, DiskRaw, "katl-seed", false)
+	}
+	if diskErr != nil {
+		return nil, "", "", "", "", diskErr
 	}
 	return disks, efiTree, efiImage, preseedImage, preseedDir, nil
 }

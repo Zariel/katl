@@ -442,6 +442,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
 	completedAt := e.clock()
 	if result.Plan.GenerationRecord.GenerationID != "" {
+		result.Plan.GenerationRecord = inheritCurrentKernelCommandLine(e.Root, result.Plan.GenerationRecord)
 		if splitErr := writeSplitGeneration(e.Root, result.Plan.GenerationRecord); splitErr != nil {
 			err = errorsJoin(err, splitErr)
 		}
@@ -784,6 +785,65 @@ func writeSplitGeneration(root string, record generation.Record) error {
 	}
 	status := generation.StatusFromRecord(record, digest)
 	return generation.WriteGeneration(root, spec, status)
+}
+
+func inheritCurrentKernelCommandLine(root string, record generation.Record) generation.Record {
+	options, err := readCurrentKernelCommandLine(root)
+	if err != nil {
+		return record
+	}
+	record.KernelCommandLine = mergeKernelCommandLine(record.KernelCommandLine, options)
+	return record
+}
+
+func readCurrentKernelCommandLine(root string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(runtimeRoot(root), "proc/cmdline"))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(data)), nil
+}
+
+func mergeKernelCommandLine(base []string, current []string) []string {
+	out := append([]string(nil), base...)
+	seen := make(map[string]struct{}, len(out)+len(current))
+	for _, option := range out {
+		option = strings.TrimSpace(option)
+		if option != "" {
+			seen[option] = struct{}{}
+		}
+	}
+	for _, option := range current {
+		option = strings.TrimSpace(option)
+		if option == "" || controlledKernelCommandLineOption(option) {
+			continue
+		}
+		if _, ok := seen[option]; ok {
+			continue
+		}
+		out = append(out, option)
+		seen[option] = struct{}{}
+	}
+	return out
+}
+
+func controlledKernelCommandLineOption(option string) bool {
+	switch {
+	case option == "ro", option == "rw":
+		return true
+	case strings.HasPrefix(option, "root="):
+		return true
+	case strings.HasPrefix(option, "rootfstype="):
+		return true
+	case strings.HasPrefix(option, "systemd.machine_id="):
+		return true
+	case strings.HasPrefix(option, "katl.generation="):
+		return true
+	case strings.HasPrefix(option, "katl.root-slot="):
+		return true
+	default:
+		return false
+	}
 }
 
 type commandRunnerFunc func(context.Context, configapply.Command) (configapply.CommandResult, error)

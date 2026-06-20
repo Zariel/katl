@@ -166,17 +166,20 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	if err != nil {
 		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit}, err
 	}
+	release, err := confextReleaseFromCurrent(request.CurrentRecord)
+	if err != nil {
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{
 		GenerationsRoot: filepath.Join(filepath.Clean(request.Root), strings.TrimPrefix(generation.GenerationRecordsDir, "/")),
 		GenerationID:    request.GenerationID,
 		Files:           files,
-		Extension: confext.ExtensionRelease{
-			Name:         "katl-node",
-			ID:           "katl",
-			VersionID:    request.CurrentRecord.RuntimeVersion,
-			ConfextLevel: 1,
-		},
-		Chown: request.Chown,
+		Extension:       release,
+		Chown:           request.Chown,
 	})
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -210,14 +213,14 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		Changes:      changes,
 		Sysexts:      sysexts,
 		GeneratedConfext: generation.GeneratedConfext{
-			Name:           "katl-node",
+			Name:           release.Name,
 			Path:           filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, request.GenerationID, "confext")),
-			ActivationPath: "/run/confexts/katl-node",
+			ActivationPath: "/run/confexts/" + release.Name,
 			SHA256:         digest,
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
-				VersionID:    request.CurrentRecord.RuntimeVersion,
-				ConfextLevel: 1,
+				ID:           release.ID,
+				VersionID:    release.VersionID,
+				ConfextLevel: release.ConfextLevel,
 			},
 		},
 		Kubeadm:     kubeadmActionRequired(changes),
@@ -285,6 +288,25 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		StatusPath:   statusPath,
 		AuditPath:    auditPath,
 	}, nil
+}
+
+func confextReleaseFromCurrent(record generation.Record) (confext.ExtensionRelease, error) {
+	for _, ref := range record.Confexts {
+		if strings.TrimSpace(ref.Name) != "katl-node" {
+			continue
+		}
+		release := confext.ExtensionRelease{
+			Name:         ref.Name,
+			ID:           ref.Compatibility.ID,
+			VersionID:    ref.Compatibility.VersionID,
+			ConfextLevel: ref.Compatibility.ConfextLevel,
+		}
+		if strings.TrimSpace(release.ID) == "" || strings.TrimSpace(release.VersionID) == "" || release.ConfextLevel < 1 {
+			return confext.ExtensionRelease{}, fmt.Errorf("current katl-node confext compatibility metadata is incomplete")
+		}
+		return release, nil
+	}
+	return confext.ExtensionRelease{}, fmt.Errorf("current katl-node confext compatibility metadata is required")
 }
 
 func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error) {

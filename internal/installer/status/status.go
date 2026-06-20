@@ -190,6 +190,9 @@ func WriteRuntimeHandoff(root string, record Record) error {
 	if err := ValidateRuntimeHandoff(record); err != nil {
 		return err
 	}
+	if record.FinalHandoff == StateWaitingForClusterBootstrap {
+		return nil
+	}
 	if err := ValidateCleanGenerationZero(root, record.InstalledGeneration); err != nil {
 		return err
 	}
@@ -281,8 +284,6 @@ func validateCleanGenerationZero(root string, generationID string, allowedOperat
 		{path: "/var/lib/kubelet/bootstrap-kubeconfig", message: "kubelet bootstrap kubeconfig exists"},
 		{path: "/var/lib/kubelet/kubeconfig", message: "kubelet kubeconfig exists"},
 		{path: "/var/lib/kubelet/config.yaml", message: "kubelet config exists"},
-		{path: "/etc/katl/kubeadm", nonEmpty: true, message: "rendered kubeadm input exists"},
-		{path: "/var/lib/katl/generations/0/confext/etc/katl/kubeadm", nonEmpty: true, message: "generation 0 rendered kubeadm input exists"},
 		{path: "/etc/systemd/system/multi-user.target.wants/kubelet.service", message: "kubelet is enabled"},
 	}
 	for _, check := range checks {

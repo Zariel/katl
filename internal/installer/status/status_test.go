@@ -131,20 +131,14 @@ func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T)
 	}
 }
 
-func TestValidateCleanGenerationZeroRejectsRenderedKubeadmInput(t *testing.T) {
+func TestValidateCleanGenerationZeroAllowsRenderedKubeadmInput(t *testing.T) {
 	root := t.TempDir()
 	writeCleanGenerationZero(t, root)
-	path := filepath.Join(root, "var/lib/katl/generations/0/confext/etc/katl/kubeadm/control-plane/config.yaml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("apiVersion: kubeadm.k8s.io/v1beta4\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, root, "etc/katl/kubeadm/control-plane/config.yaml", "apiVersion: kubeadm.k8s.io/v1beta4\n")
+	writeFile(t, root, "var/lib/katl/generations/0/confext/etc/katl/kubeadm/control-plane/config.yaml", "apiVersion: kubeadm.k8s.io/v1beta4\n")
 
-	err := ValidateCleanGenerationZero(root, "0")
-	if err == nil || !strings.Contains(err.Error(), "generation 0 rendered kubeadm input exists") {
-		t.Fatalf("ValidateCleanGenerationZero() error = %v, want kubeadm input refusal", err)
+	if err := ValidateCleanGenerationZero(root, "0"); err != nil {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want rendered kubeadm input allowed", err)
 	}
 }
 
@@ -175,5 +169,16 @@ func writeCleanGenerationZero(t *testing.T, root string) {
 	}
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		t.Fatalf("WriteGeneration() error = %v", err)
+	}
+}
+
+func writeFile(t *testing.T, root string, path string, data string) {
+	t.Helper()
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

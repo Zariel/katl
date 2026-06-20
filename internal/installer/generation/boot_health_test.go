@@ -75,6 +75,54 @@ func TestRecordBootHealthPromotesArmedSelection(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthInfersBootedTrialFromCommandLine(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 10, 30, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen0",
+		TargetBootGenerationID:        "gen1",
+		TrialGenerationID:             "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen0",
+		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
+		TargetBootEntry:               "loader/entries/katl-gen1.conf",
+		TrialBootEntry:                "loader/entries/katl-gen1.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:               "loader/entries/katl-gen0.conf",
+		PendingTransactionID:          "txn-gen1",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    DefaultPromotionPending,
+		UpdatedAt:                     now.Add(-30 * time.Minute),
+	})
+
+	result, err := RecordBootHealth(BootHealthRequest{
+		Root:           root,
+		GenerationID:   "gen1",
+		CommandLine:    bootHealthCommandLine("gen1"),
+		Result:         BootHealthSuccess,
+		Reason:         "trial booted",
+		Now:            now,
+		SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen1.conf"),
+	})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(success) error = %v", err)
+	}
+	if !result.Promoted || result.DefaultGeneration != "gen1" {
+		t.Fatalf("result = %#v, want promoted gen1", result)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatalf("ReadBootSelection() error = %v", err)
+	}
+	if selection.BootedGenerationID != "gen1" || selection.BootedBootEntry != "loader/entries/katl-gen1.conf" {
+		t.Fatalf("selection boot evidence = %#v, want inferred gen1 trial", selection)
+	}
+}
+
 func TestRecordBootHealthPromotesFirstBootPendingGeneration(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)

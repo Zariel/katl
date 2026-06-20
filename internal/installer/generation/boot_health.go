@@ -76,6 +76,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	if err != nil {
 		return BootHealthResult{}, err
 	}
+	selection = inferBootedSelection(selection, spec, generationID, request.CommandLine)
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
 	}
@@ -160,6 +161,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err != nil {
 		return BootHealthResult{}, err
 	}
+	selection = inferBootedSelection(selection, spec, generationID, request.CommandLine)
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
 	}
@@ -236,6 +238,31 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		DefaultGeneration: selection.DefaultGenerationID,
 		BootDefaultEntry:  selection.DefaultBootEntry,
 	}, nil
+}
+
+func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {
+	if !selection.PendingHealthValidation {
+		return selection
+	}
+	cmdlineGeneration, err := SelectedGenerationFromCommandLine(commandLine)
+	if err != nil || cmdlineGeneration != generationID {
+		return selection
+	}
+	trialID := strings.TrimSpace(selection.TrialGenerationID)
+	targetID := strings.TrimSpace(selection.TargetBootGenerationID)
+	if generationID != trialID && generationID != targetID {
+		return selection
+	}
+	selection.BootedGenerationID = generationID
+	switch {
+	case generationID == trialID && strings.TrimSpace(selection.TrialBootEntry) != "":
+		selection.BootedBootEntry = strings.TrimSpace(selection.TrialBootEntry)
+	case generationID == targetID && strings.TrimSpace(selection.TargetBootEntry) != "":
+		selection.BootedBootEntry = strings.TrimSpace(selection.TargetBootEntry)
+	default:
+		selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
+	}
+	return selection
 }
 
 func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {

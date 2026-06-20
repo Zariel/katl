@@ -468,6 +468,7 @@ func defaultAgentCommands() map[string]bool {
 		"sha256sum":         true,
 		"sysctl":            true,
 		"systemctl":         true,
+		"systemd-run":       true,
 		"systemd-sysupdate": true,
 		"test":              true,
 		"true":              true,
