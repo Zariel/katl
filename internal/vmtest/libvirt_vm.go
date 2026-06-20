@@ -1096,6 +1096,7 @@ func normalizeVM(config VMConfig) VMConfig {
 		config.KVM = KVMAuto
 	}
 	if config.RAMMiB == 0 {
+		// Keep vmtest guests small; if kubeadm or boot tests fail, check guest OOM logs before raising this.
 		config.RAMMiB = 2048
 	}
 	if config.CPUs == 0 {

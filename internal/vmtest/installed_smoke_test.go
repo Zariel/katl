@@ -33,7 +33,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		RequireVMTestAgent: true,
 		VM: VMConfig{
 			KVM:     runner.options().KVM,
-			RAMMiB:  4096,
+			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 8 * time.Minute,
 			VSock: VSockConfig{
@@ -74,7 +74,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		Expect:             waitingForBootstrapSignal,
 		VM: VMConfig{
 			KVM:     runner.options().KVM,
-			RAMMiB:  4096,
+			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 8 * time.Minute,
 			VSock: VSockConfig{
@@ -180,7 +180,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 
 	vm := VMConfig{
 		KVM:     runner.options().KVM,
-		RAMMiB:  4096,
+		RAMMiB:  2048,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 	}
@@ -268,7 +268,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 
 	vm := VMConfig{
 		KVM:     runner.options().KVM,
-		RAMMiB:  4096,
+		RAMMiB:  2048,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 	}
@@ -391,7 +391,7 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 		config := worldRun.Config
 		config.VM = VMConfig{
 			KVM:     worldRun.Runner.options().KVM,
-			RAMMiB:  4096,
+			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 5 * time.Minute,
 			VSock: VSockConfig{
@@ -436,7 +436,7 @@ func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 		config := worldRun.Config
 		config.VM = VMConfig{
 			KVM:     worldRun.Runner.options().KVM,
-			RAMMiB:  4096,
+			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 18 * time.Minute,
 			VSock: VSockConfig{

@@ -235,7 +235,7 @@ func runThreeNodeGeneration0Install(t *testing.T, run threeNodeGeneration0Instal
 				RequireVMTestAgent: true,
 				VM: vmtest.VMConfig{
 					KVM:    run.Runner.Options.KVM,
-					RAMMiB: 4096,
+					RAMMiB: 2048,
 					CPUs:   2,
 					Network: vmtest.VMNetworkConfig{
 						MAC: input.MACAddress,
@@ -351,7 +351,7 @@ func runThreeNodeGeneration0RerunProof(ctx context.Context, runner vmtest.Runner
 			RuntimeArtifact: input.RuntimeArtifact,
 			VM: vmtest.VMConfig{
 				KVM:     runner.Options.KVM,
-				RAMMiB:  4096,
+				RAMMiB:  2048,
 				CPUs:    2,
 				Timeout: 8 * time.Minute,
 			},
@@ -361,7 +361,7 @@ func runThreeNodeGeneration0RerunProof(ctx context.Context, runner vmtest.Runner
 			RequireVMTestAgent: true,
 			VM: vmtest.VMConfig{
 				KVM:     runner.Options.KVM,
-				RAMMiB:  4096,
+				RAMMiB:  2048,
 				CPUs:    2,
 				Timeout: 8 * time.Minute,
 				Agent: vmtest.AgentControlConfig{

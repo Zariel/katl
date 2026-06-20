@@ -51,7 +51,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	defer cancel()
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
-	vm.RAMMiB = 4096
+	vm.RAMMiB = 2048
 	vm.CPUs = 2
 	vm.Timeout = 8 * time.Minute
 	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)

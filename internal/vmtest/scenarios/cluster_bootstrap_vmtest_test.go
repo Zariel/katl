@@ -754,7 +754,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 	return vmtest.VMConfig{
 		KVM:     kvm,
-		RAMMiB:  4096,
+		RAMMiB:  2048,
 		CPUs:    2,
 		Timeout: 25 * time.Minute,
 		VSock: vmtest.VSockConfig{

@@ -299,7 +299,7 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 
 	vm := VMConfig{
 		KVM:     runner.options().KVM,
-		RAMMiB:  4096,
+		RAMMiB:  2048,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 		VSock: VSockConfig{

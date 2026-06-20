@@ -9,7 +9,7 @@ import (
 func TestFirstInstallFixtureVMConfigsKeepAgentRuntimeOnly(t *testing.T) {
 	base := VMConfig{
 		KVM:     KVMAuto,
-		RAMMiB:  4096,
+		RAMMiB:  2048,
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 		VSock: VSockConfig{
