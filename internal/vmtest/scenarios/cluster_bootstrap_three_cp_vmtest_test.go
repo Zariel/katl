@@ -209,7 +209,11 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	kubernetesBundle.CACertPEM = bundleServer.CACertPEM
 	kubernetesBundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
 	kubernetesBundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
+	kubernetesBundle.LogPath = filepath.Join(result.RunDir, "kubernetes-payload-bundle.log")
 	if err := os.WriteFile(kubernetesBundle.CACertPath, kubernetesBundle.CACertPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKubernetesBundleSourceLog(kubernetesBundle.LogPath, kubernetesBundle); err != nil {
 		t.Fatal(err)
 	}
 	plannedNodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
@@ -433,6 +437,7 @@ type threeControlPlaneKubernetesPayloadBundle struct {
 	BundlePaths          map[string]string `json:"bundlePaths,omitempty"`
 	CACertPath           string            `json:"caCertPath,omitempty"`
 	CACertGuestPath      string            `json:"caCertGuestPath,omitempty"`
+	LogPath              string            `json:"logPath,omitempty"`
 	CACertPEM            []byte            `json:"-"`
 }
 
@@ -607,6 +612,26 @@ func installKubernetesBundleCA(ctx context.Context, node vmtest.RunningInstalled
 		}
 	}
 	return nil
+}
+
+func writeKubernetesBundleSourceLog(path string, bundle threeControlPlaneKubernetesPayloadBundle) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("Kubernetes bundle source log path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	lines := []string{
+		"source=" + bundle.Source,
+		"ref=" + bundle.Ref,
+		"payloadVersion=" + bundle.PayloadVersion,
+		"bundleManifestDigest=" + bundle.BundleManifestDigest,
+		"sysextPayloadDigest=" + bundle.SysextPayloadDigest,
+		"root=" + bundle.Root,
+		"indexPath=" + bundle.IndexPath,
+		"catalogPath=" + bundle.CatalogPath,
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func writeThreeControlPlaneInventory(path string, kubernetesVersion string, nodes []vmtest.RunningInstalledRuntimeNode) error {
@@ -1637,6 +1662,7 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		Root:                 filepath.Join(result.ManifestDir, "kubernetes-payload-bundles"),
 		IndexPath:            filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "index.json"),
 		CatalogPath:          filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "kubernetes-sysext-bundles-v1.36.json"),
+		LogPath:              filepath.Join(result.RunDir, "kubernetes-payload-bundle.log"),
 		BundlePaths: map[string]string{
 			"v1.36.0": filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "katl-kubernetes-v1.36.0.bundle.json"),
 			"v1.36.1": filepath.Join(result.ManifestDir, "kubernetes-payload-bundles", "katl-kubernetes-v1.36.1.bundle.json"),
@@ -1727,6 +1753,7 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		manifest.KubernetesPayloadBundle.Ref != kubernetesBundle.Ref ||
 		manifest.KubernetesPayloadBundle.BundleManifestDigest != bundleManifestDigest ||
 		manifest.KubernetesPayloadBundle.SysextPayloadDigest != sysextPayloadDigest ||
+		manifest.KubernetesPayloadBundle.LogPath != kubernetesBundle.LogPath ||
 		manifest.KubernetesPayloadBundle.CACertGuestPath != kubernetesBundle.CACertGuestPath {
 		t.Fatalf("Kubernetes payload bundle evidence = %#v, want %#v", manifest.KubernetesPayloadBundle, kubernetesBundle)
 	}
@@ -1742,6 +1769,79 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 		manifest.ReleaseWorkloadStack.GatewayURL != workloadStack.GatewayURL ||
 		manifest.ReleaseWorkloadStack.GatewayResponse != workloadStack.GatewayResponse {
 		t.Fatalf("release workload stack evidence = %#v, want %#v", manifest.ReleaseWorkloadStack, workloadStack)
+	}
+}
+
+func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *testing.T) {
+	nodes := []vmtest.RunningInstalledRuntimeNode{
+		{Name: "cp-1"},
+		{Name: "cp-2"},
+		{Name: "cp-3"},
+	}
+	addresses := map[string]string{
+		"cp-1": "192.0.2.21",
+		"cp-2": "192.0.2.22",
+		"cp-3": "192.0.2.23",
+	}
+	tokenFiles := map[string]string{
+		"cp-1": filepath.Join(t.TempDir(), "cp-1.token"),
+		"cp-2": filepath.Join(t.TempDir(), "cp-2.token"),
+		"cp-3": filepath.Join(t.TempDir(), "cp-3.token"),
+	}
+	bundle := threeControlPlaneKubernetesPayloadBundle{
+		Source: "https://192.0.2.1:9443",
+		Ref:    "v1.36.1@sha256:" + strings.Repeat("a", 64),
+	}
+	path := filepath.Join(t.TempDir(), "inventory.yaml")
+	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses, tokenFiles); err != nil {
+		t.Fatalf("writeThreeControlPlaneOperationBackedInventory() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read inventory: %v", err)
+	}
+	for _, want := range []string{
+		`kubernetesBundleSource: "https://192.0.2.1:9443"`,
+		`kubernetesBundleRef: "v1.36.1@sha256:` + strings.Repeat("a", 64) + `"`,
+		"name: cp-1",
+		"address: 192.0.2.23",
+		"intent: control-plane",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("inventory missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestWriteKubernetesBundleSourceLogRecordsServedRefAndDigests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kubernetes-payload-bundle.log")
+	bundle := threeControlPlaneKubernetesPayloadBundle{
+		Source:               "https://192.0.2.1:9443",
+		Ref:                  "v1.36.1@sha256:" + strings.Repeat("a", 64),
+		PayloadVersion:       "v1.36.1",
+		BundleManifestDigest: "sha256:" + strings.Repeat("a", 64),
+		SysextPayloadDigest:  "sha256:" + strings.Repeat("b", 64),
+		Root:                 "/tmp/run/manifests/kubernetes-payload-bundles",
+		IndexPath:            "/tmp/run/manifests/kubernetes-payload-bundles/index.json",
+		CatalogPath:          "/tmp/run/manifests/kubernetes-payload-bundles/kubernetes-sysext-bundles-v1.36.json",
+	}
+	if err := writeKubernetesBundleSourceLog(path, bundle); err != nil {
+		t.Fatalf("writeKubernetesBundleSourceLog() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	for _, want := range []string{
+		"source=" + bundle.Source,
+		"ref=" + bundle.Ref,
+		"bundleManifestDigest=" + bundle.BundleManifestDigest,
+		"sysextPayloadDigest=" + bundle.SysextPayloadDigest,
+		"indexPath=" + bundle.IndexPath,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("source log missing %q:\n%s", want, data)
+		}
 	}
 }
 
