@@ -166,6 +166,62 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	}
 }
 
+func TestInstalledKubernetesPayloadVersionFallsBackToGenerationRecord(t *testing.T) {
+	install := &Context{
+		Manifest: manifest.Manifest{
+			Node: manifest.NodeConfig{
+				Kubernetes: manifest.KubernetesConfig{
+					Kubeadm: manifest.KubeadmReference{ConfigRef: "worker"},
+				},
+			},
+		},
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"worker": {
+				Name: "worker",
+				Config: kubeadmconfig.File{
+					RenderPath: "/etc/katl/kubeadm/worker/config.yaml",
+					Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n"),
+					Mode:       0o644,
+				},
+				Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "JoinConfiguration"}},
+			},
+		},
+		LoaderRecord: &generation.Record{
+			Sysexts: []generation.ExtensionRef{{
+				Name:           "kubernetes",
+				PayloadVersion: "v1.36.1",
+			}},
+		},
+	}
+
+	if got := installedKubernetesPayloadVersion(install); got != "v1.36.1" {
+		t.Fatalf("installedKubernetesPayloadVersion() = %q, want generation sysext payload", got)
+	}
+}
+
+func TestInstalledKubernetesPayloadVersionUsesExactBootstrapCatalogRef(t *testing.T) {
+	install := &Context{
+		Manifest: manifest.Manifest{
+			Node: manifest.NodeConfig{
+				Bootstrap: &manifest.BootstrapIntent{KubernetesCatalogRef: "v1.36.0"},
+				Kubernetes: manifest.KubernetesConfig{
+					Kubeadm: manifest.KubeadmReference{ConfigRef: "worker"},
+				},
+			},
+		},
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"worker": {
+				Name:      "worker",
+				Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "JoinConfiguration"}},
+			},
+		},
+	}
+
+	if got := installedKubernetesPayloadVersion(install); got != "v1.36.0" {
+		t.Fatalf("installedKubernetesPayloadVersion() = %q, want bootstrap catalog payload", got)
+	}
+}
+
 func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	store := &MemoryStateStore{}
 	commands := &NoopCommandRunner{}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -368,6 +369,37 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "next: katlc agent accepted bootstrap-init") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestClusterBootstrapReturnsAgentBootstrapError(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	old := runAgentBootstrap
+	runAgentBootstrap = func(_ context.Context, _ cluster.Request, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		return cluster.Result{
+			Plan: inventory.Plan{
+				InitNode: "cp-1",
+				Nodes:    []inventory.PlannedNode{{Name: "cp-1"}},
+			},
+			Phases: []cluster.Phase{
+				{Name: "plan", Status: "passed"},
+				{Name: "readiness", Status: "failed"},
+			},
+		}, errors.New("cp-1 katlc-agent: operation lock is held")
+	}
+	t.Cleanup(func() { runAgentBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--init-node", "cp-1",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "operation lock is held") {
+		t.Fatalf("run() error = %v, want agent bootstrap error", err)
+	}
+	if !strings.Contains(stdout.String(), "phase=readiness status=failed") {
+		t.Fatalf("stdout = %q, want failed readiness phase", stdout.String())
 	}
 }
 

@@ -1022,14 +1022,29 @@ func timeNow() time.Time {
 }
 
 func installedKubernetesPayloadVersion(install *Context) string {
+	return firstNonEmpty(installedKubernetesVersionFromBootstrapBundle(install), installedKubernetesVersionFromBootstrapCatalog(install), installedKubernetesVersionFromKubeadm(install), installedKubernetesVersionFromRecord(install))
+}
+
+func installedKubernetesVersionFromBootstrapBundle(install *Context) string {
 	if install == nil || install.Manifest.Node.Bootstrap == nil {
-		return installedKubernetesVersionFromKubeadm(install)
+		return ""
 	}
 	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(install.Manifest.Node.Bootstrap.KubernetesBundleRef)
 	if err != nil {
-		return installedKubernetesVersionFromKubeadm(install)
+		return ""
 	}
 	return payloadVersion
+}
+
+func installedKubernetesVersionFromBootstrapCatalog(install *Context) string {
+	if install == nil || install.Manifest.Node.Bootstrap == nil {
+		return ""
+	}
+	version := strings.TrimSpace(install.Manifest.Node.Bootstrap.KubernetesCatalogRef)
+	if strings.HasPrefix(version, "v") && strings.Count(version, ".") == 2 {
+		return version
+	}
+	return ""
 }
 
 func installedKubernetesVersionFromKubeadm(install *Context) string {
@@ -1050,6 +1065,13 @@ func installedKubernetesVersionFromKubeadm(install *Context) string {
 		}
 	}
 	return ""
+}
+
+func installedKubernetesVersionFromRecord(install *Context) string {
+	if install == nil || install.LoaderRecord == nil {
+		return ""
+	}
+	return selectedKubernetesPayloadVersion(*install.LoaderRecord)
 }
 
 func bootRelativePath(bootRoot string, path string) (string, error) {

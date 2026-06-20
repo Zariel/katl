@@ -969,12 +969,17 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 			},
 		}
 	}
+	if kubernetesVersion != "" {
+		node["bootstrap"] = map[string]any{
+			"kubernetesCatalogRef": kubernetesVersion,
+		}
+	}
 	manifest := map[string]any{
 		"apiVersion": "install.katl.dev/v1alpha1",
 		"kind":       "InstallManifest",
 		"node":       node,
 		"install": map[string]any{
-			"allowDestructiveInstall": true,
+			"allowDestructiveInstall":           true,
 			"destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
 			"targetDisk": map[string]any{
 				"byID":       "/dev/disk/by-id/virtio-katl-root",

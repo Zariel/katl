@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +55,7 @@ type operationBackedSmokeInputs struct {
 	ControlPlaneMetadata   string
 	ControlPlaneAddress    string
 	ControlPlaneMAC        string
+	ControlPlaneInstall    firstInstallProvenance
 	WorkerDisk             string
 	WorkerDiskFormat       string
 	WorkerESP              string
@@ -61,8 +63,19 @@ type operationBackedSmokeInputs struct {
 	WorkerMetadata         string
 	WorkerAddress          string
 	WorkerMAC              string
+	WorkerInstall          firstInstallProvenance
 	KubernetesVersion      string
 	WorldProvenance        multiNodeWorldProvenancePaths
+}
+
+type firstInstallProvenance struct {
+	InstallerUKI         string
+	InstallerKernel      string
+	InstallerInitrd      string
+	InstallerCommandLine []string
+	RuntimeArtifact      string
+	InstallManifest      string
+	FirstInstallMode     string
 }
 
 func operationBackedWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
@@ -123,12 +136,26 @@ func operationBackedKubernetesVersion(t *testing.T, repo string) string {
 }
 
 func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (operationBackedSmokeRun, error) {
-	scenario, err := world.PlanScenario("installed-runtime-two-node-operation-backed-bootstrap")
+	return planOperationBackedWorldSmokeRunNamed(world, repo, kubernetesVersion, kvm, "installed-runtime-two-node-operation-backed-bootstrap")
+}
+
+func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy, scenarioName string) (operationBackedSmokeRun, error) {
+	scenario, err := world.PlanScenario(scenarioName)
 	if err != nil {
 		return operationBackedSmokeRun{}, err
 	}
 	run := operationBackedSmokeRun{WorldScenario: scenario}
 	buildRoots := publishedRuntimeBuildRoots(world, repo)
+	cpPublished, err := vmtest.FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	workerPublished, err := vmtest.FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, vmtest.NodeSpec{Name: "worker-1", Role: vmtest.Worker})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
 	cp, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -147,7 +174,7 @@ func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersio
 		Missing:   vmtest.MissingFails,
 	}
 	runner := vmtest.NewRunner(options)
-	vmScenario := vmtest.Scenario{Name: "installed-runtime-two-node-operation-backed-bootstrap"}
+	vmScenario := vmtest.Scenario{Name: scenarioName}
 	result, err := runner.Plan(vmScenario)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -158,7 +185,7 @@ func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersio
 		WorldScenario: scenario,
 		Options:       options,
 		Runner:        runner,
-		Scenario:      vmScenario,
+		Scenario:      vmtest.Scenario{Name: scenarioName},
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
 		Network:       world.Libvirt.Network,
@@ -170,6 +197,7 @@ func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersio
 			ControlPlaneMetadata:   cp.Config.NodeMetadata,
 			ControlPlaneAddress:    cp.Node.Address,
 			ControlPlaneMAC:        cp.Node.MACAddress,
+			ControlPlaneInstall:    firstInstallProvenanceFromPublished(cpPublished),
 			WorkerDisk:             worker.Config.Disk,
 			WorkerDiskFormat:       string(worker.Config.DiskFormat),
 			WorkerESP:              worker.Config.ESPArtifacts,
@@ -177,10 +205,23 @@ func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersio
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
 			WorkerMAC:              worker.Node.MACAddress,
+			WorkerInstall:          firstInstallProvenanceFromPublished(workerPublished),
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:        multiNodeWorldProvenanceForSpecs(world, repo, twoNodeWorldRuntimeSpecs()),
 		},
 	}, nil
+}
+
+func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallRuntimeFixture) firstInstallProvenance {
+	return firstInstallProvenance{
+		InstallerUKI:         published.InstallerUKI,
+		InstallerKernel:      published.InstallerKernel,
+		InstallerInitrd:      published.InstallerInitrd,
+		InstallerCommandLine: append([]string(nil), published.InstallerCommandLine...),
+		RuntimeArtifact:      published.RuntimeArtifact,
+		InstallManifest:      published.InstallManifest,
+		FirstInstallMode:     published.FirstInstallMode,
+	}
 }
 
 func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun) {
@@ -209,6 +250,12 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err != nil {
 		t.Fatal(err)
 	}
+	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage Kubernetes payload bundle: %v", err)
+	}
+	defer bundleServer.Close()
 	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +276,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		BootstrapStderr:    stderrPath,
 		KubectlOutput:      kubectlOut,
 		BootstrapFixture:   bootstrapFixture,
+		KubernetesBundle:   kubernetesBundle,
 		EvidenceDir:        evidenceDir,
 	}); err != nil {
 		t.Fatal(err)
@@ -272,8 +320,25 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	defer stopNode(t, workerNode)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
-	cpAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
-	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
+	for _, node := range nodes {
+		if err := installKubernetesBundleCA(ctx, node, kubernetesBundle); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("install Kubernetes bundle CA on %s: %v", node.Name, err)
+		}
+	}
+	cpAddress, err := liveNodeIPv4Address(ctx, cpNode, firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress))
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("read control-plane IP address: %v", err)
+	}
+	workerAddress, err := liveNodeIPv4Address(ctx, workerNode, firstString(workerNode.Result.IPAddress, inputs.WorkerAddress))
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("read worker IP address: %v", err)
+	}
 	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
@@ -320,8 +385,21 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatal(err)
 		}
 	}
-	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, cpAddress, workerAddress, tokenFiles); err != nil {
+	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, tokenFiles); err != nil {
 		t.Fatal(err)
+	}
+	for _, endpoint := range []struct {
+		name    string
+		address string
+	}{
+		{name: "cp-1", address: cpAddress},
+		{name: "worker-1", address: workerAddress},
+	} {
+		if err := waitForKatlcAgentTCP(ctx, endpoint.name, endpoint.address, 2*time.Minute); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("wait for %s katlc agent TCP endpoint: %v", endpoint.name, err)
+		}
 	}
 	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, operationBackedArtifacts{
 		Inventory:            inventoryPath,
@@ -333,6 +411,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		EvidenceDir:          evidenceDir,
 		CNIFixtures:          cniFixtures,
 		ImageFixtures:        imageFixtures,
+		KubernetesBundle:     kubernetesBundle,
 		BootSelectionsBefore: bootSelectionsBefore,
 	}); err != nil {
 		t.Fatal(err)
@@ -344,6 +423,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
 		"--control-plane-endpoint", cpAddress + ":6443",
+		"--kubernetes-bundle-source", kubernetesBundle.Source,
+		"--kubernetes-bundle-ref", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cpAddress,
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
@@ -371,6 +452,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			EvidenceDir:          evidenceDir,
 			CNIFixtures:          cniFixtures,
 			ImageFixtures:        imageFixtures,
+			KubernetesBundle:     kubernetesBundle,
 			BootSelectionsBefore: bootSelectionsBefore,
 			NodeStatus:           nodeStatus,
 		})
@@ -447,6 +529,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		EvidenceDir:          evidenceDir,
 		CNIFixtures:          cniFixtures,
 		ImageFixtures:        imageFixtures,
+		KubernetesBundle:     kubernetesBundle,
 		BootSelectionsBefore: bootSelectionsBefore,
 		BootSelectionsAfter:  map[string]string{"cp-1": cpSelectionPath, "worker-1": workerSelectionPath},
 		OperationRecords:     map[string]string{"cp-1": cpRecordPath, "worker-1": workerRecordPath},
@@ -481,6 +564,31 @@ func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid 
 	config.LibvirtNetwork = run.Network
 	config.Network.MAC = mac
 	return config
+}
+
+func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Result, gateway, kubernetesVersion string) (threeControlPlaneKubernetesPayloadBundle, guestReachableBundleServer, error) {
+	bundle, err := stageThreeControlPlaneKubernetesPayloadBundles(repo, result, kubernetesVersion)
+	if err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+	}
+	server, err := startGuestReachableKubernetesBundleServer(gateway, bundle.Root)
+	if err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+	}
+	bundle.Source = server.Source
+	bundle.CACertPEM = server.CACertPEM
+	bundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
+	bundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
+	bundle.LogPath = filepath.Join(result.RunDir, "kubernetes-payload-bundle.log")
+	if err := os.WriteFile(bundle.CACertPath, bundle.CACertPEM, 0o644); err != nil {
+		server.Close()
+		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+	}
+	if err := writeKubernetesBundleSourceLog(bundle.LogPath, bundle); err != nil {
+		server.Close()
+		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+	}
+	return bundle, server, nil
 }
 
 func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
@@ -957,12 +1065,14 @@ nodes:
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
-func writeOperationBackedInventory(path, kubernetesVersion, cpAddress, workerAddress string, tokenFiles map[string]string) error {
+func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, tokenFiles map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data := `controlPlaneEndpoint: ""
 kubernetesVersion: ` + kubernetesVersion + `
+kubernetesBundleSource: ` + strconv.Quote(kubernetesBundle.Source) + `
+kubernetesBundleRef: ` + strconv.Quote(kubernetesBundle.Ref) + `
 nodes:
 - name: cp-1
   address: ` + cpAddress + `
@@ -1000,6 +1110,7 @@ type operationBackedArtifacts struct {
 	BootstrapFixture     bootstrapFixtureInputs
 	CNIFixtures          map[string]nodeCNIFixture
 	ImageFixtures        map[string][]nodeImageFixture
+	KubernetesBundle     threeControlPlaneKubernetesPayloadBundle
 	EvidenceDir          string            `json:"evidenceDir"`
 	BootSelectionsBefore map[string]string `json:"bootSelectionsBefore,omitempty"`
 	BootSelectionsAfter  map[string]string `json:"bootSelectionsAfter,omitempty"`
@@ -1010,49 +1121,50 @@ type operationBackedArtifacts struct {
 }
 
 type operationBackedArtifactManifest struct {
-	VMTestRun                string                        `json:"vmtestRun,omitempty"`
-	WorldManifest            string                        `json:"worldManifest,omitempty"`
-	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
-	ResourceManifest         string                        `json:"resourceManifest,omitempty"`
-	ResourceManifestSHA256   string                        `json:"resourceManifestSHA256,omitempty"`
-	PackageLock              string                        `json:"packageLock,omitempty"`
-	PackageLockSHA256        string                        `json:"packageLockSHA256,omitempty"`
-	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
-	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
-	WorkerRunDir             string                        `json:"workerRunDir,omitempty"`
-	NodeScenarios            map[string]string             `json:"nodeScenarios,omitempty"`
-	NodeResults              map[string]string             `json:"nodeResults,omitempty"`
-	LaunchCommands           map[string]string             `json:"launchCommands,omitempty"`
-	DomainXMLs               map[string]string             `json:"domainXMLs,omitempty"`
-	InstalledRuntimeInputs   map[string]string             `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts         map[string]string             `json:"vsockTranscripts,omitempty"`
-	LibvirtLeases            map[string]string             `json:"libvirtLeases,omitempty"`
-	NodeDomains              map[string]string             `json:"nodeDomains,omitempty"`
-	NodeMACs                 map[string]string             `json:"nodeMACs,omitempty"`
-	NodeIPs                  map[string]string             `json:"nodeIPs,omitempty"`
-	FixtureInputs            map[string]nodeFixtureInput   `json:"fixtureInputs,omitempty"`
-	FixtureProducerScenarios map[string]string             `json:"fixtureProducerScenarios,omitempty"`
-	FixtureProducerResults   map[string]string             `json:"fixtureProducerResults,omitempty"`
-	Inventory                string                        `json:"inventory"`
-	Kubeconfig               string                        `json:"kubeconfig"`
-	KubeconfigMetadata       string                        `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout          string                        `json:"bootstrapStdout"`
-	BootstrapStderr          string                        `json:"bootstrapStderr"`
-	KubectlOutput            string                        `json:"kubectlOutput"`
-	BootstrapFixture         *bootstrapFixtureInputs       `json:"bootstrapFixture,omitempty"`
-	CNIFixtures              map[string]nodeCNIFixture     `json:"cniFixtures,omitempty"`
-	ImageFixtures            map[string][]nodeImageFixture `json:"imageFixtures,omitempty"`
-	EvidenceDir              string                        `json:"evidenceDir"`
-	BootSelectionsBefore     map[string]string             `json:"bootSelectionsBefore,omitempty"`
-	BootSelectionsAfter      map[string]string             `json:"bootSelectionsAfter,omitempty"`
-	OperationRecords         map[string]string             `json:"operationRecords,omitempty"`
-	OperationJournals        map[string]string             `json:"operationJournals,omitempty"`
-	GenerationMetadata       map[string]string             `json:"generationMetadata,omitempty"`
-	NodeStatus               map[string]string             `json:"nodeStatus,omitempty"`
-	KubectlDiagnostics       map[string]string             `json:"kubectlDiagnostics,omitempty"`
-	SerialLogs               map[string]string             `json:"serialLogs,omitempty"`
-	NetworkLeases            string                        `json:"networkLeases,omitempty"`
-	Diagnostics              map[string]string             `json:"diagnostics,omitempty"`
+	VMTestRun                string                                    `json:"vmtestRun,omitempty"`
+	WorldManifest            string                                    `json:"worldManifest,omitempty"`
+	HostCapabilities         string                                    `json:"hostCapabilities,omitempty"`
+	ResourceManifest         string                                    `json:"resourceManifest,omitempty"`
+	ResourceManifestSHA256   string                                    `json:"resourceManifestSHA256,omitempty"`
+	PackageLock              string                                    `json:"packageLock,omitempty"`
+	PackageLockSHA256        string                                    `json:"packageLockSHA256,omitempty"`
+	MkosiArtifactIndex       string                                    `json:"mkosiArtifactIndex,omitempty"`
+	ControlPlaneRunDir       string                                    `json:"controlPlaneRunDir"`
+	WorkerRunDir             string                                    `json:"workerRunDir,omitempty"`
+	NodeScenarios            map[string]string                         `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string                         `json:"nodeResults,omitempty"`
+	LaunchCommands           map[string]string                         `json:"launchCommands,omitempty"`
+	DomainXMLs               map[string]string                         `json:"domainXMLs,omitempty"`
+	InstalledRuntimeInputs   map[string]string                         `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string                         `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string                         `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string                         `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string                         `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string                         `json:"nodeIPs,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput               `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string                         `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string                         `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                                    `json:"inventory"`
+	Kubeconfig               string                                    `json:"kubeconfig"`
+	KubeconfigMetadata       string                                    `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                                    `json:"bootstrapStdout"`
+	BootstrapStderr          string                                    `json:"bootstrapStderr"`
+	KubectlOutput            string                                    `json:"kubectlOutput"`
+	BootstrapFixture         *bootstrapFixtureInputs                   `json:"bootstrapFixture,omitempty"`
+	KubernetesPayloadBundle  *threeControlPlaneKubernetesPayloadBundle `json:"kubernetesPayloadBundle,omitempty"`
+	CNIFixtures              map[string]nodeCNIFixture                 `json:"cniFixtures,omitempty"`
+	ImageFixtures            map[string][]nodeImageFixture             `json:"imageFixtures,omitempty"`
+	EvidenceDir              string                                    `json:"evidenceDir"`
+	BootSelectionsBefore     map[string]string                         `json:"bootSelectionsBefore,omitempty"`
+	BootSelectionsAfter      map[string]string                         `json:"bootSelectionsAfter,omitempty"`
+	OperationRecords         map[string]string                         `json:"operationRecords,omitempty"`
+	OperationJournals        map[string]string                         `json:"operationJournals,omitempty"`
+	GenerationMetadata       map[string]string                         `json:"generationMetadata,omitempty"`
+	NodeStatus               map[string]string                         `json:"nodeStatus,omitempty"`
+	KubectlDiagnostics       map[string]string                         `json:"kubectlDiagnostics,omitempty"`
+	SerialLogs               map[string]string                         `json:"serialLogs,omitempty"`
+	NetworkLeases            string                                    `json:"networkLeases,omitempty"`
+	Diagnostics              map[string]string                         `json:"diagnostics,omitempty"`
 }
 
 func operationBackedFixtureInputs(inputs operationBackedSmokeInputs) map[string]nodeFixtureInput {
@@ -1072,6 +1184,11 @@ func nodeRunDir(nodes []vmtest.RunningInstalledRuntimeNode, name string) string 
 }
 
 func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inputs operationBackedSmokeInputs, nodes []vmtest.RunningInstalledRuntimeNode, artifacts operationBackedArtifacts) error {
+	var bundle *threeControlPlaneKubernetesPayloadBundle
+	if strings.TrimSpace(artifacts.KubernetesBundle.Source) != "" || strings.TrimSpace(artifacts.KubernetesBundle.Ref) != "" {
+		value := artifacts.KubernetesBundle
+		bundle = &value
+	}
 	return writeTwoNodeDiagnosticJSON(path, operationBackedArtifactManifest{
 		VMTestRun:                inputs.WorldProvenance.VMTestRun,
 		WorldManifest:            inputs.WorldProvenance.WorldManifest,
@@ -1103,6 +1220,7 @@ func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inp
 		BootstrapStderr:          artifacts.BootstrapStderr,
 		KubectlOutput:            artifacts.KubectlOutput,
 		BootstrapFixture:         artifacts.BootstrapFixture.manifestValue(),
+		KubernetesPayloadBundle:  bundle,
 		CNIFixtures:              artifacts.CNIFixtures,
 		ImageFixtures:            artifacts.ImageFixtures,
 		EvidenceDir:              artifacts.EvidenceDir,
@@ -1402,7 +1520,7 @@ func stageTwoNodeImageFixtures(ctx context.Context, repo, workDir string, nodes 
 			if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
 				return nil, fmt.Errorf("stage %s image fixture on %s: %w", fixture.Image, node.Name, err)
 			}
-			if result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
+			if result, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
 				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, err)
 			} else if result.ExitStatus != 0 {
 				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, commandErrorDetail(result))
@@ -1735,17 +1853,12 @@ func readNodeFileWithRetry(ctx context.Context, node vmtest.RunningInstalledRunt
 }
 
 func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32) ([]byte, error) {
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-	result, err := client.ReadFile(opCtx, &vmtestpb.ReadFileRequest{
-		Path:      path,
-		MaxBytes:  maxBytes,
-		Sensitive: true,
+	result, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.FileResult, error) {
+		return client.ReadFile(opCtx, &vmtestpb.ReadFileRequest{
+			Path:      path,
+			MaxBytes:  maxBytes,
+			Sensitive: true,
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -1757,30 +1870,55 @@ func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, 
 }
 
 func writeNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32, sensitive bool) error {
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	_, err = client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
-		Path:      path,
-		Content:   content,
-		Mode:      mode,
-		Sensitive: sensitive,
+	_, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
+		return client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
+			Path:      path,
+			Content:   content,
+			Mode:      mode,
+			Sensitive: sensitive,
+		})
 	})
 	return err
 }
 
+func retryDirectAgentOp[T any](ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration, op func(context.Context, *vmtest.AgentClient) (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		opCtx, cancel := context.WithTimeout(ctx, timeout)
+		client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+		if err != nil {
+			cancel()
+			lastErr = err
+		} else {
+			result, err := op(opCtx, client)
+			_ = client.Close()
+			cancel()
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		if attempt == 2 || !transientAgentTransportError(lastErr) {
+			return zero, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return zero, lastErr
+}
+
 func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32) error {
 	const chunkSize = 512 << 10
-	if result, err := runNodeCommand(ctx, node, []string{"install", "-d", "-m", "0755", filepath.Dir(path)}, 16<<10); err != nil {
+	if result, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-d", "-m", "0755", filepath.Dir(path)}, 16<<10); err != nil {
 		return fmt.Errorf("create parent: %w", err)
 	} else if result.ExitStatus != 0 {
 		return fmt.Errorf("create parent: %w", commandErrorDetail(result))
 	}
-	if result, err := runNodeCommand(ctx, node, []string{"dd", "if=/dev/null", "of=" + path, "bs=1", "count=0"}, 16<<10); err != nil {
+	if result, err := runNodeCommandWithRetry(ctx, node, []string{"dd", "if=/dev/null", "of=" + path, "bs=1", "count=0"}, 16<<10); err != nil {
 		return fmt.Errorf("create target: %w", err)
 	} else if result.ExitStatus != 0 {
 		return fmt.Errorf("create target: %w", commandErrorDetail(result))
@@ -1795,18 +1933,28 @@ func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRunti
 			return fmt.Errorf("write part %d: %w", offset/chunkSize, err)
 		}
 		argv := []string{"dd", "if=" + part, "of=" + path, fmt.Sprintf("bs=%d", chunkSize), "seek=" + strconv.Itoa(offset/chunkSize), "conv=notrunc"}
-		if result, err := runNodeCommand(ctx, node, argv, 16<<10); err != nil {
+		if result, err := runNodeCommandWithRetry(ctx, node, argv, 16<<10); err != nil {
 			return fmt.Errorf("append part %d: %w", offset/chunkSize, err)
 		} else if result.ExitStatus != 0 {
 			return fmt.Errorf("append part %d: %w", offset/chunkSize, commandErrorDetail(result))
 		}
 	}
-	if result, err := runNodeCommand(ctx, node, []string{"chmod", fmt.Sprintf("%04o", mode), path}, 16<<10); err != nil {
+	if result, err := runNodeCommandWithRetry(ctx, node, []string{"chmod", fmt.Sprintf("%04o", mode), path}, 16<<10); err != nil {
 		return fmt.Errorf("chmod target: %w", err)
 	} else if result.ExitStatus != 0 {
 		return fmt.Errorf("chmod target: %w", commandErrorDetail(result))
 	}
 	return nil
+}
+
+func runNodeCommandWithRetry(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
+	return retryDirectAgentOp(ctx, node, 30*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
+		return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
+			Argv:        argv,
+			StdoutLimit: stdoutLimit,
+			StderrLimit: 32 << 10,
+		})
+	})
 }
 
 func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
@@ -1822,6 +1970,70 @@ func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode
 		StdoutLimit: stdoutLimit,
 		StderrLimit: 32 << 10,
 	})
+}
+
+func waitForKatlcAgentTCP(ctx context.Context, nodeName, address string, timeout time.Duration) error {
+	if strings.TrimSpace(address) == "" {
+		return fmt.Errorf("%s has no node address", nodeName)
+	}
+	deadline := time.Now().Add(timeout)
+	target := net.JoinHostPort(address, "9443")
+	var lastErr error
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", target)
+		cancel()
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not accept TCP connections on %s: %w", nodeName, target, lastErr)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func liveNodeIPv4Address(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fallback string) (string, error) {
+	result, err := runNodeCommand(ctx, node, []string{"ip", "-4", "-o", "addr", "show", "scope", "global"}, 16<<10)
+	if err != nil {
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback), nil
+		}
+		return "", err
+	}
+	if result.ExitStatus != 0 {
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback), nil
+		}
+		return "", commandErrorDetail(result)
+	}
+	address, err := parseIPAddrShowIPv4(result.Stdout)
+	if err != nil {
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback), nil
+		}
+		return "", err
+	}
+	return address, nil
+}
+
+func parseIPAddrShowIPv4(output []byte) (string, error) {
+	for _, field := range strings.Fields(string(output)) {
+		if !strings.Contains(field, "/") {
+			continue
+		}
+		address, _, ok := strings.Cut(field, "/")
+		if !ok || net.ParseIP(address).To4() == nil {
+			continue
+		}
+		return address, nil
+	}
+	return "", fmt.Errorf("no global IPv4 address found")
 }
 
 func commandErrorDetail(result *vmtestpb.CommandResult) error {

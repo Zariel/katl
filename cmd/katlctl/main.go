@@ -529,7 +529,8 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	if strings.TrimSpace(*vmtestTranscriptDir) != "" {
 		result, err = runBootstrap(ctx, request, bootstrapDependencies(*vmtestTranscriptDir))
 	} else {
-		token, err := readAgentToken(*agentTokenFile)
+		var token string
+		token, err = readAgentToken(*agentTokenFile)
 		if err != nil {
 			return err
 		}
