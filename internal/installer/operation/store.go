@@ -84,6 +84,7 @@ type OperationRecord struct {
 	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
 	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
 	KubernetesSysextUpdate      *KubernetesSysextUpdate `json:"kubernetesSysextUpdate,omitempty"`
+	DestructiveResetRequest     *DestructiveReset       `json:"destructiveResetRequest,omitempty"`
 	ActivationMode              string                  `json:"activationMode,omitempty"`
 	ActivationState             string                  `json:"activationState,omitempty"`
 	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
@@ -156,6 +157,14 @@ type KubernetesSysextUpdate struct {
 	TargetSysextSHA256   string `json:"targetSysextSHA256"`
 	TargetSysextSize     uint64 `json:"targetSysextSizeBytes,omitempty"`
 	TargetActivationPath string `json:"targetActivationPath,omitempty"`
+}
+
+type DestructiveReset struct {
+	InventoryNodeName      string   `json:"inventoryNodeName"`
+	ResetScope             string   `json:"resetScope"`
+	TargetGenerationID     string   `json:"targetGenerationID,omitempty"`
+	DiscardClusterIdentity bool     `json:"discardClusterIdentity"`
+	WipeSurfaces           []string `json:"wipeSurfaces,omitempty"`
 }
 
 type InvocationRecord struct {
@@ -680,6 +689,11 @@ func ValidateRecord(record OperationRecord) error {
 			return err
 		}
 	}
+	if record.DestructiveResetRequest != nil {
+		if err := ValidateDestructiveReset(*record.DestructiveResetRequest); err != nil {
+			return err
+		}
+	}
 	if err := validateRequestBodyConsistency(record); err != nil {
 		return err
 	}
@@ -733,6 +747,9 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if record.KubernetesSysextUpdate != nil {
 		bodyCount++
 	}
+	if record.DestructiveResetRequest != nil {
+		bodyCount++
+	}
 	if bodyCount > 1 {
 		return fmt.Errorf("operation record has multiple request bodies")
 	}
@@ -741,6 +758,12 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	}
 	if record.OperationKind == "kubeadm-upgrade" && record.KubernetesSysextUpdate == nil {
 		return fmt.Errorf("kubeadm-upgrade operation requires kubernetesSysextUpdate")
+	}
+	if record.DestructiveResetRequest != nil && record.OperationKind != "destructive-reset" {
+		return fmt.Errorf("operation kind %q cannot include destructiveResetRequest", record.OperationKind)
+	}
+	if record.OperationKind == "destructive-reset" && record.DestructiveResetRequest == nil {
+		return fmt.Errorf("destructive-reset operation requires destructiveResetRequest")
 	}
 	return nil
 }
@@ -799,6 +822,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	}
 	if !reflect.DeepEqual(next.KubernetesSysextUpdate, previous.KubernetesSysextUpdate) {
 		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
+	}
+	if !reflect.DeepEqual(next.DestructiveResetRequest, previous.DestructiveResetRequest) {
+		return fmt.Errorf("operation destructiveResetRequest is immutable")
 	}
 	return nil
 }
@@ -883,6 +909,11 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.KubernetesSysextUpdate != nil {
 		request := *record.KubernetesSysextUpdate
 		record.KubernetesSysextUpdate = &request
+	}
+	if record.DestructiveResetRequest != nil {
+		request := *record.DestructiveResetRequest
+		request.WipeSurfaces = cloneStrings(request.WipeSurfaces)
+		record.DestructiveResetRequest = &request
 	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
@@ -1409,6 +1440,31 @@ func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
 	return nil
 }
 
+func ValidateDestructiveReset(request DestructiveReset) error {
+	if strings.TrimSpace(request.InventoryNodeName) == "" {
+		return fmt.Errorf("destructiveResetRequest inventoryNodeName is required")
+	}
+	switch strings.TrimSpace(request.ResetScope) {
+	case "cluster":
+	default:
+		return fmt.Errorf("destructiveResetRequest resetScope must be cluster")
+	}
+	if strings.TrimSpace(request.TargetGenerationID) != "" {
+		if _, err := cleanSegment("destructiveResetRequest targetGenerationID", request.TargetGenerationID); err != nil {
+			return err
+		}
+	}
+	if !request.DiscardClusterIdentity {
+		return fmt.Errorf("destructiveResetRequest discardClusterIdentity must be true")
+	}
+	for i, surface := range request.WipeSurfaces {
+		if strings.TrimSpace(surface) == "" {
+			return fmt.Errorf("destructiveResetRequest wipeSurfaces[%d] is empty", i)
+		}
+	}
+	return nil
+}
+
 func validateOptionalEnum(name string, value string, allowed ...string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1450,5 +1506,5 @@ func mutatingPhase(phase string) bool {
 
 func mutatingOperationKind(kind string) bool {
 	kind = strings.ToLower(strings.TrimSpace(kind))
-	return strings.Contains(kind, "bootstrap") || strings.Contains(kind, "join") || strings.Contains(kind, "kubeadm") || strings.Contains(kind, "etcd")
+	return strings.Contains(kind, "bootstrap") || strings.Contains(kind, "join") || strings.Contains(kind, "kubeadm") || strings.Contains(kind, "etcd") || strings.Contains(kind, "destructive-reset")
 }

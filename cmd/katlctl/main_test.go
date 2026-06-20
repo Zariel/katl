@@ -18,6 +18,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"github.com/zariel/katl/internal/katlctl/workstation"
 	"github.com/zariel/katl/internal/vmtest"
@@ -499,6 +500,151 @@ nodes:
 	}
 }
 
+func TestWipeClusterRequiresExactAcknowledgement(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "cluster",
+		"--inventory", inventoryPath,
+		"--all",
+		"--confirm-destructive-wipe",
+		"--acknowledge", "I know this is destructive",
+		"--client-request-id", "wipe-req",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--acknowledge must exactly match") {
+		t.Fatalf("run() error = %v, want acknowledgement validation", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %s, want empty", stdout.String())
+	}
+}
+
+func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "cluster",
+		"--inventory", inventoryPath,
+		"--node", "cp-1",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-req",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "partial cluster wipe requires --allow-partial-cluster") {
+		t.Fatalf("run() error = %v, want partial target refusal", err)
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if !report.PartialCluster || len(report.Targets) != 1 || report.Targets[0].Name != "cp-1" {
+		t.Fatalf("report targets = %#v", report)
+	}
+	if len(report.Refusals) != 1 || !strings.Contains(report.Refusals[0], "partial cluster wipe") {
+		t.Fatalf("report refusals = %#v", report.Refusals)
+	}
+}
+
+func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1":     readyWipeClusterClient("cp-machine"),
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	old := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		if token != "" {
+			t.Fatalf("token = %q, want empty", token)
+		}
+		return connector
+	}
+	t.Cleanup(func() { newWipeClusterConnector = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "cluster",
+		"--inventory", inventoryPath,
+		"--all",
+		"--plan",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-req",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if !report.Plan || !report.AcknowledgementAccepted || report.PartialCluster {
+		t.Fatalf("report flags = %#v", report)
+	}
+	if len(report.Targets) != 2 || len(report.NodeLocalOperations) != 2 {
+		t.Fatalf("report targets/operations = %#v", report)
+	}
+	if report.NodeLocalOperations[0].OperationKind != wipeClusterOperationKind || !report.NodeLocalOperations[0].DiscardClusterIdentity {
+		t.Fatalf("node-local operation = %#v", report.NodeLocalOperations[0])
+	}
+	for name, client := range connector.clients {
+		if client.submitRequest != nil {
+			t.Fatalf("%s submit request = %+v, want nil for plan", name, client.submitRequest)
+		}
+	}
+}
+
+func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1":     readyWipeClusterClient("cp-machine"),
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	old := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	t.Cleanup(func() { newWipeClusterConnector = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "cluster",
+		"--inventory", inventoryPath,
+		"--all",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-req",
+		"--timeout", "10m",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if len(report.Nodes) != 2 {
+		t.Fatalf("report nodes = %#v", report.Nodes)
+	}
+	for name, client := range connector.clients {
+		if client.submitRequest == nil {
+			t.Fatalf("%s submit request = nil", name)
+		}
+		req := client.submitRequest
+		if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-req" || req.OperationTimeout != "10m" {
+			t.Fatalf("%s submit request = %+v", name, req)
+		}
+		reset := req.GetDestructiveReset()
+		if reset == nil || reset.InventoryNodeName != name || reset.ResetScope != "cluster" || reset.TargetGenerationId != "0" || !reset.DiscardClusterIdentity {
+			t.Fatalf("%s destructive reset = %+v", name, reset)
+		}
+	}
+	for _, node := range report.Nodes {
+		if !node.Accepted || node.OperationKind != wipeClusterOperationKind || node.OperationID == "" {
+			t.Fatalf("node result = %#v", node)
+		}
+	}
+}
+
 func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyFixture(t, root, configApplyFixture{
@@ -810,12 +956,51 @@ type fakeKatlcAgentClient struct {
 	validateResult    *agentapi.ConfigValidationResult
 	validateRequest   *agentapi.ValidateConfigRequest
 	submitRequest     *agentapi.SubmitOperationRequest
+	submitAccepted    *agentapi.OperationAccepted
+	nodeStatus        *agentapi.NodeStatus
+	nodeStatusErr     error
 	generation        *agentapi.Generation
 	generationRequest *agentapi.GetGenerationRequest
 }
 
+type fakeWipeClusterConnector struct {
+	clients map[string]*fakeKatlcAgentClient
+}
+
+func newFakeWipeClusterConnector(clients map[string]*fakeKatlcAgentClient) *fakeWipeClusterConnector {
+	return &fakeWipeClusterConnector{clients: clients}
+}
+
+func (c *fakeWipeClusterConnector) Connect(_ context.Context, node inventory.PlannedNode) (cluster.AgentConnection, error) {
+	client := c.clients[node.Name]
+	if client == nil {
+		return cluster.AgentConnection{}, errors.New("missing fake katlc agent for " + node.Name)
+	}
+	return cluster.AgentConnection{
+		Endpoint: node.Address + ":9443",
+		Client:   client,
+		Close:    func() error { return nil },
+	}, nil
+}
+
+func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
+	return &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			ApiVersion:              operation.APIVersion,
+			MachineId:               machineID,
+			SupportedOperationKinds: []string{wipeClusterOperationKind},
+		},
+		submitAccepted: &agentapi.OperationAccepted{
+			OperationId:   "wipe-" + machineID,
+			OperationKind: wipeClusterOperationKind,
+			RequestDigest: strings.Repeat("a", 64),
+			InitialStatus: &agentapi.OperationStatus{Phase: "accepted"},
+		},
+	}
+}
+
 func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
-	return nil, nil
+	return c.nodeStatus, c.nodeStatusErr
 }
 
 func (c *fakeKatlcAgentClient) ValidateConfig(_ context.Context, req *agentapi.ValidateConfigRequest, _ ...grpc.CallOption) (*agentapi.ConfigValidationResult, error) {
@@ -835,6 +1020,9 @@ func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.
 
 func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
 	c.submitRequest = req
+	if c.submitAccepted != nil {
+		return c.submitAccepted, nil
+	}
 	return c.stageAccepted, nil
 }
 

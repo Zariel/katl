@@ -71,6 +71,42 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
+	server := newTestServer(t)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	accepted, err := server.SubmitOperation(context.Background(), destructiveResetRequest("req-wipe-cluster"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", dispatched.Load())
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.OperationKind != OperationKindDestructiveReset || record.Scope != "destructive-reset" {
+		t.Fatalf("record identity = %+v", record)
+	}
+	if record.DestructiveResetRequest == nil {
+		t.Fatalf("destructive reset request = nil")
+	}
+	if record.DestructiveResetRequest.InventoryNodeName != "node-a" || record.DestructiveResetRequest.ResetScope != "cluster" || record.DestructiveResetRequest.TargetGenerationID != "0" || !record.DestructiveResetRequest.DiscardClusterIdentity {
+		t.Fatalf("destructive reset request = %+v", record.DestructiveResetRequest)
+	}
+	if !reflect.DeepEqual(record.ResourceLocks, []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}) {
+		t.Fatalf("resource locks = %#v", record.ResourceLocks)
+	}
+	if !reflect.DeepEqual(record.PhasePlan, []string{"accepted", "preflight-destructive-reset", "destructive-reset", operation.HostBookkeepingCompletionPhase}) {
+		t.Fatalf("phase plan = %#v", record.PhasePlan)
+	}
+}
+
 func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
@@ -1924,6 +1960,23 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 			KubernetesPayloadVersion: "v1.35.0",
 			BootstrapProfileRef:      "default",
 			ControlPlaneEndpoint:     "node-a.example.test:6443",
+		},
+	}
+}
+
+func destructiveResetRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
+	return &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: clientRequestID,
+		OperationKind:   OperationKindDestructiveReset,
+		Actor:           "test-actor",
+		DestructiveReset: &agentapi.DestructiveResetOperationRequest{
+			InventoryNodeName:      "node-a",
+			ResetScope:             "cluster",
+			TargetGenerationId:     "0",
+			DiscardClusterIdentity: true,
+			WipeSurfaces:           []string{"kubernetes", "kubelet", "etcd"},
 		},
 	}
 }

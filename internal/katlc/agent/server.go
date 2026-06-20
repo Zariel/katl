@@ -47,6 +47,7 @@ var bootstrapOperationKinds = []string{
 	"generation-apply",
 	"generation-stage",
 	"kubeadm-upgrade",
+	OperationKindDestructiveReset,
 }
 
 type Dispatcher interface {
@@ -304,6 +305,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if req.GetKubernetesSysextUpdate() != nil {
 		return s.acceptKubernetesSysextUpdateOperation(req, digest, id, locks, now)
 	}
+	if req.GetDestructiveReset() != nil {
+		return s.acceptDestructiveResetOperation(req, digest, id, locks, now)
+	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
 	if candidateID == "" {
@@ -374,6 +378,31 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 			cleanupTemporaryJoinConfig(s.Root, operation.OperationRecord{BootstrapRequest: &operation.BootstrapRequest{TemporaryJoinConfigPath: metadata.configPath}})
 			return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "record join material: %v", err)
 		}
+	}
+	return created, nil, nil
+}
+
+func (s *Server) acceptDestructiveResetOperation(req *agentapi.SubmitOperationRequest, digest, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+	resetRequest := destructiveResetFromProto(req.GetDestructiveReset())
+	record := operation.OperationRecord{
+		OperationID:                 id,
+		OperationKind:               req.OperationKind,
+		Scope:                       operationScope(req.OperationKind),
+		ClientRequestID:             req.ClientRequestId,
+		Actor:                       req.Actor,
+		ExpectedMachineID:           req.ExpectedMachineId,
+		ExpectedCurrentGenerationID: req.ExpectedCurrentGenerationId,
+		ExpectedClusterIntentDigest: req.ExpectedClusterIntentDigest,
+		RequestDigest:               digest,
+		Phase:                       "accepted",
+		PhasePlan:                   []string{"accepted", "preflight-destructive-reset", "destructive-reset", operation.HostBookkeepingCompletionPhase},
+		DestructiveResetRequest:     &resetRequest,
+		ResourceLocks:               locks,
+		NextAction:                  "queued for katlc agent executor",
+	}
+	created, err := s.Store.Create(record, "accepted", now)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
 	}
 	return created, nil, nil
 }
@@ -489,6 +518,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.GetKubernetesSysextUpdate() != nil {
 		bodyCount++
 	}
+	if req.GetDestructiveReset() != nil {
+		bodyCount++
+	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
 	}
@@ -499,6 +531,10 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	} else if req.GetKubernetesSysextUpdate() != nil {
 		if err := validateKubernetesSysextUpdateRequest(req.OperationKind, req.GetKubernetesSysextUpdate()); err != nil {
 			return status.Errorf(codes.InvalidArgument, "kubernetes sysext update request: %v", err)
+		}
+	} else if req.GetDestructiveReset() != nil {
+		if err := validateDestructiveResetRequest(req.OperationKind, req.GetDestructiveReset()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "destructive reset request: %v", err)
 		}
 	} else {
 		if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
@@ -896,6 +932,8 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case "generation-apply", "generation-stage":
 		return []string{"generation-state.lock", "config-apply.lock"}
+	case OperationKindDestructiveReset:
+		return []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}
 	default:
 		return nil
 	}
@@ -909,6 +947,8 @@ func operationScope(kind string) string {
 		return "kubeadm-state"
 	case "generation-apply", "generation-stage":
 		return "host-generation"
+	case OperationKindDestructiveReset:
+		return "destructive-reset"
 	default:
 		return "host-generation"
 	}

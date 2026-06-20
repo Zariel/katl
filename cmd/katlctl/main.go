@@ -37,6 +37,14 @@ var runBootstrap = cluster.Run
 var runAgentBootstrap = cluster.RunAgentBootstrap
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
+var newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	return cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode}
+}
+
+const (
+	wipeClusterOperationKind = "destructive-reset"
+	wipeAcknowledgementText  = "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity."
+)
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -56,6 +64,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 2 && args[0] == "cluster" && args[1] == "bootstrap" {
 		return runClusterBootstrap(ctx, args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "wipe" && args[1] == "cluster" {
+		return runWipeCluster(ctx, args[2:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
 		return runConfigPath(args[2:], stdout, stderr)
 	}
@@ -72,6 +83,386 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runConfigApplyStatus(ctx, args[3:], stdout, stderr)
 	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
+}
+
+func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl wipe cluster", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	var selectedNodes stringList
+	inventoryPath := flags.String("inventory", "", "path to cluster inventory")
+	all := flags.Bool("all", false, "select every node in the inventory")
+	allowPartial := flags.Bool("allow-partial-cluster", false, "allow a partial cluster target set")
+	confirm := flags.Bool("confirm-destructive-wipe", false, "confirm destructive wipe")
+	acknowledgement := flags.String("acknowledge", "", "required destructive acknowledgement text")
+	clientRequestID := flags.String("client-request-id", "", "idempotency key")
+	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
+	planOnly := flags.Bool("plan", false, "print the destructive wipe plan without accepting node-local operations")
+	timeout := flags.String("timeout", "", "operation timeout duration")
+	output := flags.String("output", "json", "output format: json")
+	flags.Var(&selectedNodes, "node", "inventory node name to wipe; may be repeated")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *output != "json" {
+		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	if strings.TrimSpace(*inventoryPath) == "" {
+		return fmt.Errorf("--inventory is required")
+	}
+	if !*confirm {
+		return fmt.Errorf("--confirm-destructive-wipe is required")
+	}
+	if *acknowledgement != wipeAcknowledgementText {
+		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+	}
+	if strings.TrimSpace(*clientRequestID) == "" {
+		return fmt.Errorf("--client-request-id is required")
+	}
+	if *all && len(selectedNodes.values) > 0 {
+		return fmt.Errorf("--all and --node cannot be combined")
+	}
+
+	inv, err := loadInventory(*inventoryPath)
+	if err != nil {
+		return err
+	}
+	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	if err != nil {
+		return err
+	}
+	targets, partial, err := wipeClusterTargets(plan, *all, selectedNodes.values)
+	if err != nil {
+		return err
+	}
+	report := newWipeClusterReport(*planOnly, partial, targets)
+	if partial && !*allowPartial {
+		report.Refusals = append(report.Refusals, "partial cluster wipe requires --allow-partial-cluster")
+		if printErr := printWipeClusterReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return fmt.Errorf("partial cluster wipe requires --allow-partial-cluster")
+	}
+
+	token, err := readAgentToken(*agentTokenFile)
+	if err != nil {
+		return err
+	}
+	connector := newWipeClusterConnector(token)
+	if connector == nil {
+		return fmt.Errorf("katlc agent connector is required")
+	}
+	if err := preflightWipeCluster(ctx, connector, &report, targets); err != nil {
+		if printErr := printWipeClusterReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return err
+	}
+	if *planOnly {
+		report.NodeLocalOperations = plannedWipeClusterOperations(targets)
+		return printWipeClusterReport(stdout, report)
+	}
+	submitErr := submitWipeCluster(ctx, connector, &report, targets, strings.TrimSpace(*clientRequestID), strings.TrimSpace(*timeout))
+	if printErr := printWipeClusterReport(stdout, report); printErr != nil {
+		return printErr
+	}
+	return submitErr
+}
+
+type wipeClusterReport struct {
+	APIVersion              string                          `json:"apiVersion"`
+	Kind                    string                          `json:"kind"`
+	Command                 string                          `json:"command"`
+	Plan                    bool                            `json:"plan"`
+	PartialCluster          bool                            `json:"partialCluster"`
+	AcknowledgementAccepted bool                            `json:"acknowledgementAccepted"`
+	Targets                 []wipeClusterTarget             `json:"targets"`
+	KubernetesCleanup       string                          `json:"kubernetesCleanup"`
+	NodeLocalOperations     []wipeClusterNodeLocalOperation `json:"nodeLocalOperations"`
+	WipedState              []string                        `json:"wipedState"`
+	PreservedState          []string                        `json:"preservedState"`
+	Refusals                []string                        `json:"refusals,omitempty"`
+	Nodes                   []wipeClusterNodeResult         `json:"nodes,omitempty"`
+}
+
+type wipeClusterTarget struct {
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	SystemRole string `json:"systemRole"`
+}
+
+type wipeClusterNodeLocalOperation struct {
+	Node                   string   `json:"node"`
+	OperationKind          string   `json:"operationKind"`
+	ResetScope             string   `json:"resetScope"`
+	TargetGenerationID     string   `json:"targetGenerationID"`
+	DiscardClusterIdentity bool     `json:"discardClusterIdentity"`
+	WipeSurfaces           []string `json:"wipeSurfaces"`
+}
+
+type wipeClusterNodeResult struct {
+	Node          string   `json:"node"`
+	Endpoint      string   `json:"endpoint,omitempty"`
+	Accepted      bool     `json:"accepted"`
+	OperationID   string   `json:"operationID,omitempty"`
+	OperationKind string   `json:"operationKind,omitempty"`
+	RequestDigest string   `json:"requestDigest,omitempty"`
+	Phase         string   `json:"phase,omitempty"`
+	Terminal      bool     `json:"terminal,omitempty"`
+	Result        string   `json:"result,omitempty"`
+	Diagnostics   []string `json:"diagnostics,omitempty"`
+}
+
+func newWipeClusterReport(planOnly bool, partial bool, nodes []inventory.PlannedNode) wipeClusterReport {
+	report := wipeClusterReport{
+		APIVersion:              operation.APIVersion,
+		Kind:                    "WipeClusterReport",
+		Command:                 "katlctl wipe cluster",
+		Plan:                    planOnly,
+		PartialCluster:          partial,
+		AcknowledgementAccepted: true,
+		KubernetesCleanup:       "not-attempted",
+		WipedState: []string{
+			"katlos-target-partitions",
+			"kubernetes",
+			"kubelet",
+			"etcd",
+			"cni",
+			"operation-history",
+			"generation-state",
+			"node-identity",
+		},
+		PreservedState: []string{
+			"off-node-artifacts",
+			"operator-workstations",
+			"external-backups",
+			"external-load-balancers",
+			"non-target-disks",
+		},
+	}
+	for _, node := range nodes {
+		report.Targets = append(report.Targets, wipeClusterTarget{
+			Name:       node.Name,
+			Address:    node.Address,
+			SystemRole: string(node.SystemRole),
+		})
+	}
+	return report
+}
+
+func wipeClusterTargets(plan inventory.Plan, all bool, selected []string) ([]inventory.PlannedNode, bool, error) {
+	if !all && len(selected) == 0 {
+		return nil, false, fmt.Errorf("--all or at least one --node is required")
+	}
+	byName := make(map[string]inventory.PlannedNode, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		byName[node.Name] = node
+	}
+	if all {
+		return append([]inventory.PlannedNode(nil), plan.Nodes...), false, nil
+	}
+	targets := make([]inventory.PlannedNode, 0, len(selected))
+	seen := make(map[string]struct{}, len(selected))
+	for _, name := range selected {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, false, fmt.Errorf("--node value is required")
+		}
+		if _, ok := seen[name]; ok {
+			return nil, false, fmt.Errorf("duplicate --node %q", name)
+		}
+		seen[name] = struct{}{}
+		node, ok := byName[name]
+		if !ok {
+			return nil, false, fmt.Errorf("--node %q is not in the inventory", name)
+		}
+		targets = append(targets, node)
+	}
+	return targets, len(targets) != len(plan.Nodes), nil
+}
+
+func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode) error {
+	var failures []string
+	for _, node := range targets {
+		result := wipeClusterNodeResult{Node: node.Name}
+		if strings.TrimSpace(node.Address) == "" {
+			result.Diagnostics = append(result.Diagnostics, "inventory node address is required")
+			report.Nodes = append(report.Nodes, result)
+			failures = append(failures, node.Name)
+			continue
+		}
+		if node.Access.Method != "agent" {
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("inventory access method %q is not supported", node.Access.Method))
+			report.Nodes = append(report.Nodes, result)
+			failures = append(failures, node.Name)
+			continue
+		}
+		conn, err := connector.Connect(ctx, node)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
+			report.Nodes = append(report.Nodes, result)
+			failures = append(failures, node.Name)
+			continue
+		}
+		result.Endpoint = conn.Endpoint
+		status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+		closeErr := closeAgentConnection(conn)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
+		} else {
+			result.Diagnostics = append(result.Diagnostics, wipeClusterStatusDiagnostics(status)...)
+		}
+		if closeErr != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(closeErr.Error()))
+		}
+		if len(result.Diagnostics) > 0 {
+			failures = append(failures, node.Name)
+		}
+		report.Nodes = append(report.Nodes, result)
+	}
+	if len(failures) > 0 {
+		report.Refusals = append(report.Refusals, "node-local preflight failed for: "+strings.Join(failures, ","))
+		return fmt.Errorf("node-local preflight failed for: %s", strings.Join(failures, ","))
+	}
+	report.Nodes = nil
+	return nil
+}
+
+func wipeClusterStatusDiagnostics(status *agentapi.NodeStatus) []string {
+	if status == nil {
+		return []string{"node status is missing"}
+	}
+	var diagnostics []string
+	if status.GetApiVersion() != operation.APIVersion {
+		diagnostics = append(diagnostics, fmt.Sprintf("node reports API version %q", status.GetApiVersion()))
+	}
+	if !containsString(status.GetSupportedOperationKinds(), wipeClusterOperationKind) {
+		diagnostics = append(diagnostics, wipeClusterOperationKind+" operation is not supported")
+	}
+	if status.GetOperationLockHeld() {
+		diagnostics = append(diagnostics, "operation lock is held by "+strings.Join(status.GetActiveOperationIds(), ","))
+	}
+	if strings.TrimSpace(status.GetMachineId()) == "" {
+		diagnostics = append(diagnostics, "node did not report a machine identity")
+	}
+	return diagnostics
+}
+
+func plannedWipeClusterOperations(targets []inventory.PlannedNode) []wipeClusterNodeLocalOperation {
+	operations := make([]wipeClusterNodeLocalOperation, 0, len(targets))
+	for _, node := range targets {
+		operations = append(operations, wipeClusterOperation(node))
+	}
+	return operations
+}
+
+func wipeClusterOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperation {
+	return wipeClusterNodeLocalOperation{
+		Node:                   node.Name,
+		OperationKind:          wipeClusterOperationKind,
+		ResetScope:             "cluster",
+		TargetGenerationID:     "0",
+		DiscardClusterIdentity: true,
+		WipeSurfaces: []string{
+			"katlos-target-partitions",
+			"kubernetes",
+			"kubelet",
+			"etcd",
+			"cni",
+			"operation-history",
+			"generation-state",
+			"node-identity",
+		},
+	}
+}
+
+func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, clientRequestID string, timeout string) error {
+	var failures []string
+	for _, node := range targets {
+		result := wipeClusterNodeResult{Node: node.Name}
+		conn, err := connector.Connect(ctx, node)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
+			report.Nodes = append(report.Nodes, result)
+			failures = append(failures, node.Name)
+			continue
+		}
+		result.Endpoint = conn.Endpoint
+		operationSpec := wipeClusterOperation(node)
+		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+			ApiVersion:       operation.APIVersion,
+			Kind:             "SubmitOperationRequest",
+			ClientRequestId:  clientRequestID,
+			OperationKind:    operationSpec.OperationKind,
+			Actor:            "katlctl wipe cluster",
+			OperationTimeout: timeout,
+			DestructiveReset: &agentapi.DestructiveResetOperationRequest{
+				InventoryNodeName:      operationSpec.Node,
+				ResetScope:             operationSpec.ResetScope,
+				TargetGenerationId:     operationSpec.TargetGenerationID,
+				DiscardClusterIdentity: operationSpec.DiscardClusterIdentity,
+				WipeSurfaces:           operationSpec.WipeSurfaces,
+			},
+		})
+		closeErr := closeAgentConnection(conn)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
+			failures = append(failures, node.Name)
+		} else if accepted == nil {
+			result.Diagnostics = append(result.Diagnostics, "agent did not return operation acceptance")
+			failures = append(failures, node.Name)
+		} else {
+			result.Accepted = true
+			result.OperationID = accepted.GetOperationId()
+			result.OperationKind = accepted.GetOperationKind()
+			result.RequestDigest = accepted.GetRequestDigest()
+			if status := accepted.GetInitialStatus(); status != nil {
+				result.Phase = status.GetPhase()
+				result.Terminal = status.GetTerminal()
+				result.Result = status.GetResult()
+				if strings.TrimSpace(status.GetFailureReason()) != "" {
+					result.Diagnostics = append(result.Diagnostics, inventory.Redact(status.GetFailureReason()))
+				}
+			}
+		}
+		if closeErr != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(closeErr.Error()))
+			failures = append(failures, node.Name)
+		}
+		report.Nodes = append(report.Nodes, result)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("destructive reset submission failed for: %s", strings.Join(failures, ","))
+	}
+	return nil
+}
+
+func closeAgentConnection(conn cluster.AgentConnection) error {
+	if conn.Close == nil {
+		return nil
+	}
+	return conn.Close()
+}
+
+func printWipeClusterReport(stdout io.Writer, report wipeClusterReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal wipe cluster report: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func runConfigPath(args []string, stdout, stderr io.Writer) error {
