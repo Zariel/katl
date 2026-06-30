@@ -1,0 +1,8 @@
+{
+  "recordType": "katl.generation.spec",
+  "recordVersion": 1,
+  "payload": {
+    "generationID": "gen-other",
+    "runtimeVersion": "0.1.0"
+  }
+}

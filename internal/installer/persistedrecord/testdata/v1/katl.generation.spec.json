@@ -1,0 +1,13 @@
+{
+  "recordType": "katl.generation.spec",
+  "recordVersion": 1,
+  "writtenBy": {
+    "katlVersion": "0.1.0",
+    "runtimeInterface": "katlos.runtime.v1"
+  },
+  "writtenAt": "2026-06-21T10:00:00Z",
+  "payload": {
+    "generationID": "gen-0",
+    "runtimeVersion": "0.1.0"
+  }
+}
