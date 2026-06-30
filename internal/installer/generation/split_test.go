@@ -26,8 +26,12 @@ func TestSplitGenerationRecordsWriteReadKnownGood(t *testing.T) {
 		t.Fatalf("GenerationDir() error = %v", err)
 	}
 	for _, name := range []string{"spec.json", "status.json"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
+		}
+		if !strings.Contains(string(data), `"recordType": "katl.generation.`) || !strings.Contains(string(data), `"payload": {`) {
+			t.Fatalf("%s is not an enveloped generation record:\n%s", name, data)
 		}
 	}
 
@@ -71,9 +75,50 @@ func TestSplitGenerationReadsLegacyMetadata(t *testing.T) {
 	}
 }
 
+func TestSplitGenerationRejectsPathMismatch(t *testing.T) {
+	root := t.TempDir()
+	record := abRecord(t, "gen-a", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC))
+	spec := SpecFromRecord(record)
+	data, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
+	if err != nil {
+		t.Fatalf("marshalRecordEnvelope() error = %v", err)
+	}
+	dir, err := GenerationDir(root, "gen-b")
+	if err != nil {
+		t.Fatalf("GenerationDir() error = %v", err)
+	}
+	mustWrite(t, filepath.Join(dir, "spec.json"), string(data), 0o644)
+
+	_, _, err = ReadSplitRecords(dir)
+	if err == nil || !strings.Contains(err.Error(), "path id") {
+		t.Fatalf("ReadSplitRecords() error = %v, want path id mismatch", err)
+	}
+}
+
+func TestSplitGenerationRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	root := t.TempDir()
+	record := abRecord(t, "gen-version", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC))
+	spec := SpecFromRecord(record)
+	data, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
+	if err != nil {
+		t.Fatalf("marshalRecordEnvelope() error = %v", err)
+	}
+	data = []byte(strings.Replace(string(data), `"recordVersion": 1`, `"recordVersion": 2`, 1))
+	dir, err := GenerationDir(root, spec.GenerationID)
+	if err != nil {
+		t.Fatalf("GenerationDir() error = %v", err)
+	}
+	mustWrite(t, filepath.Join(dir, "spec.json"), string(data), 0o644)
+
+	_, _, err = ReadSplitRecords(dir)
+	if err == nil || !strings.Contains(err.Error(), "unsupported persisted record") {
+		t.Fatalf("ReadSplitRecords() error = %v, want unsupported version", err)
+	}
+}
+
 func TestSplitGenerationReadsPartialMigrationStatusFromLegacy(t *testing.T) {
-	dir := t.TempDir()
 	record := markGood(abRecord(t, "2026.06.10-partial", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)))
+	dir := filepath.Join(t.TempDir(), record.GenerationID)
 	spec := SpecFromRecord(record)
 	specData, err := MarshalCanonicalJSON(spec)
 	if err != nil {
@@ -378,6 +423,17 @@ func TestBootSelectionReadWriteStates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := WriteBootSelection(root, tt.selection); err != nil {
 				t.Fatalf("WriteBootSelection() error = %v", err)
+			}
+			path, err := BootSelectionPath(root)
+			if err != nil {
+				t.Fatalf("BootSelectionPath() error = %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read boot selection: %v", err)
+			}
+			if !strings.Contains(string(data), `"recordType": "katl.boot.selection"`) || !strings.Contains(string(data), `"payload": {`) {
+				t.Fatalf("boot selection is not enveloped:\n%s", data)
 			}
 			got, err := ReadBootSelection(root)
 			if err != nil {

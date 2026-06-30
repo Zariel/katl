@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 
 func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
-	statusPath := filepath.Join(t.TempDir(), "config-apply-status.json")
+	statusPath := executorStatusPath(t, plan)
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
 
@@ -55,7 +54,7 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 
 func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
-	statusPath := filepath.Join(t.TempDir(), "config-apply-status.json")
+	statusPath := executorStatusPath(t, plan)
 	activator := &fakeActivator{}
 	secret := "abcdef.0123456789abcdef"
 	runner := &fakeCommandRunner{
@@ -95,6 +94,15 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	if strings.Contains(string(data), secret) {
 		t.Fatalf("persisted status leaked secret:\n%s", data)
 	}
+}
+
+func executorStatusPath(t *testing.T, plan Result) string {
+	t.Helper()
+	path, err := generation.ConfigApplyStatusPath(t.TempDir(), plan.GenerationRecord.GenerationID)
+	if err != nil {
+		t.Fatalf("ConfigApplyStatusPath() error = %v", err)
+	}
+	return path
 }
 
 func TestExecutorRecordsRollbackFailure(t *testing.T) {

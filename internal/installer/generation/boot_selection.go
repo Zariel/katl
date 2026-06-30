@@ -52,9 +52,9 @@ func ReadBootSelection(root string) (BootSelectionRecord, error) {
 	if err != nil {
 		return BootSelectionRecord{}, fmt.Errorf("read boot selection: %w", err)
 	}
-	var selection BootSelectionRecord
-	if err := json.Unmarshal(data, &selection); err != nil {
-		return BootSelectionRecord{}, fmt.Errorf("decode boot selection: %w", err)
+	selection, err := decodeBootSelection(data)
+	if err != nil {
+		return BootSelectionRecord{}, err
 	}
 	if err := ValidateBootSelection(selection); err != nil {
 		return BootSelectionRecord{}, err
@@ -70,7 +70,7 @@ func WriteBootSelection(root string, selection BootSelectionRecord) error {
 	if err != nil {
 		return err
 	}
-	data, err := MarshalCanonicalJSON(selection)
+	data, err := marshalRecordEnvelope(BootSelectionRecordType, selection)
 	if err != nil {
 		return fmt.Errorf("marshal boot selection: %w", err)
 	}
@@ -78,6 +78,20 @@ func WriteBootSelection(root string, selection BootSelectionRecord) error {
 		return fmt.Errorf("write boot selection: %w", err)
 	}
 	return nil
+}
+
+func decodeBootSelection(data []byte) (BootSelectionRecord, error) {
+	if selection, ok, err := decodeRecordEnvelope[BootSelectionRecord](data, BootSelectionRecordType); ok {
+		if err != nil {
+			return BootSelectionRecord{}, fmt.Errorf("decode boot selection envelope: %w", err)
+		}
+		return selection, nil
+	}
+	var selection BootSelectionRecord
+	if err := json.Unmarshal(data, &selection); err != nil {
+		return BootSelectionRecord{}, fmt.Errorf("decode boot selection: %w", err)
+	}
+	return selection, nil
 }
 
 func ValidateBootSelection(selection BootSelectionRecord) error {

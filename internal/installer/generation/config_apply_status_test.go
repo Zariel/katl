@@ -1,7 +1,6 @@
 package generation
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -42,36 +41,40 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
 		t.Fatalf("MarshalConfigApplyStatus() error = %v", err)
 	}
 	want := `{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "ConfigApplyStatus",
-  "generationID": "2026.06.05-002",
-  "previousGenerationID": "2026.06.05-001",
-  "requestedApplyMode": "live",
-  "acceptedApplyMode": "live",
-  "changedDomains": [
-    "networkd",
-    "tmpfiles"
-  ],
-  "phase": "planned",
-  "healthState": "unknown",
-  "domainActions": [
-    {
-      "domain": "networkd",
-      "action": "networkctl-reload",
-      "status": "planned"
-    }
-  ],
-  "diagnosticArtifacts": [
-    {
-      "name": "planner",
-      "path": "/var/lib/katl/generations/2026.06.05-002/config-apply-plan.json"
-    }
-  ],
-  "kubeadm": {
-    "required": true,
-    "reason": "rendered kubeadm input differs; join token [REDACTED BOOTSTRAP TOKEN] requires explicit action"
-  },
-  "updatedAt": "2026-06-05T15:30:00Z"
+  "recordType": "katl.generation.config-apply-status",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "ConfigApplyStatus",
+    "generationID": "2026.06.05-002",
+    "previousGenerationID": "2026.06.05-001",
+    "requestedApplyMode": "live",
+    "acceptedApplyMode": "live",
+    "changedDomains": [
+      "networkd",
+      "tmpfiles"
+    ],
+    "phase": "planned",
+    "healthState": "unknown",
+    "domainActions": [
+      {
+        "domain": "networkd",
+        "action": "networkctl-reload",
+        "status": "planned"
+      }
+    ],
+    "diagnosticArtifacts": [
+      {
+        "name": "planner",
+        "path": "/var/lib/katl/generations/2026.06.05-002/config-apply-plan.json"
+      }
+    ],
+    "kubeadm": {
+      "required": true,
+      "reason": "rendered kubeadm input differs; join token [REDACTED BOOTSTRAP TOKEN] requires explicit action"
+    },
+    "updatedAt": "2026-06-05T15:30:00Z"
+  }
 }
 `
 	if string(data) != want {
@@ -257,9 +260,9 @@ func TestConfigApplyStatusRoundTripJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalConfigApplyStatus() error = %v", err)
 	}
-	var decoded ConfigApplyStatus
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
+	decoded, err := decodeConfigApplyStatus(data)
+	if err != nil {
+		t.Fatalf("decodeConfigApplyStatus() error = %v", err)
 	}
 	if err := ValidateConfigApplyStatus(decoded); err != nil {
 		t.Fatalf("ValidateConfigApplyStatus(decoded) error = %v", err)

@@ -150,11 +150,11 @@ func MarshalConfigApplyStatus(status ConfigApplyStatus) ([]byte, error) {
 	if err := ValidateConfigApplyStatus(status); err != nil {
 		return nil, err
 	}
-	data, err := json.MarshalIndent(status, "", "  ")
+	data, err := marshalRecordEnvelope(ConfigApplyStatusRecordType, status)
 	if err != nil {
 		return nil, fmt.Errorf("marshal config apply status: %w", err)
 	}
-	return append(data, '\n'), nil
+	return data, nil
 }
 
 func WriteConfigApplyStatus(path string, status ConfigApplyStatus) error {
@@ -165,10 +165,7 @@ func WriteConfigApplyStatus(path string, status ConfigApplyStatus) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create config apply status directory: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write config apply status: %w", err)
 	}
 	return nil
@@ -182,14 +179,41 @@ func ReadConfigApplyStatus(path string) (ConfigApplyStatus, error) {
 	if err != nil {
 		return ConfigApplyStatus{}, fmt.Errorf("read config apply status: %w", err)
 	}
-	var status ConfigApplyStatus
-	if err := json.Unmarshal(data, &status); err != nil {
-		return ConfigApplyStatus{}, fmt.Errorf("decode config apply status: %w", err)
+	status, err := decodeConfigApplyStatus(data)
+	if err != nil {
+		return ConfigApplyStatus{}, err
 	}
 	if err := ValidateConfigApplyStatus(status); err != nil {
 		return ConfigApplyStatus{}, err
 	}
+	if err := validateConfigApplyStatusPath(path, status.GenerationID); err != nil {
+		return ConfigApplyStatus{}, err
+	}
 	return status, nil
+}
+
+func decodeConfigApplyStatus(data []byte) (ConfigApplyStatus, error) {
+	if status, ok, err := decodeRecordEnvelope[ConfigApplyStatus](data, ConfigApplyStatusRecordType); ok {
+		if err != nil {
+			return ConfigApplyStatus{}, fmt.Errorf("decode config apply status envelope: %w", err)
+		}
+		return status, nil
+	}
+	var status ConfigApplyStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		return ConfigApplyStatus{}, fmt.Errorf("decode config apply status: %w", err)
+	}
+	return status, nil
+}
+
+func validateConfigApplyStatusPath(path string, generationID string) error {
+	if filepath.Base(path) != "config-apply-status.json" {
+		return nil
+	}
+	if filepath.Base(filepath.Dir(path)) != generationID {
+		return fmt.Errorf("config apply status path id %q does not match payload id %q", filepath.Base(filepath.Dir(path)), generationID)
+	}
+	return nil
 }
 
 func MarkConfigApplyPhase(status ConfigApplyStatus, phase string, now time.Time) (ConfigApplyStatus, error) {

@@ -189,7 +189,7 @@ func WriteGeneration(root string, spec GenerationSpec, status GenerationStatus) 
 func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 	specPath := filepath.Join(dir, "spec.json")
 	statusPath := filepath.Join(dir, "status.json")
-	specData, err := os.ReadFile(specPath)
+	spec, err := readGenerationSpecFile(specPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			legacy, legacyErr := readRecordFile(filepath.Join(dir, "metadata.json"))
@@ -209,11 +209,10 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 		}
 		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation spec: %w", err)
 	}
-	var spec GenerationSpec
-	if err := json.Unmarshal(specData, &spec); err != nil {
-		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("decode generation spec: %w", err)
+	if err := validateGenerationDirID(dir, spec.GenerationID); err != nil {
+		return GenerationSpec{}, GenerationStatus{}, err
 	}
-	statusData, err := os.ReadFile(statusPath)
+	status, err := readGenerationStatusFile(statusPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			legacy, legacyErr := readRecordFile(filepath.Join(dir, "metadata.json"))
@@ -230,10 +229,6 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 			}
 		}
 		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation status: %w", err)
-	}
-	var status GenerationStatus
-	if err := json.Unmarshal(statusData, &status); err != nil {
-		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("decode generation status: %w", err)
 	}
 	if err := ValidateGenerationStatus(spec, status); err != nil {
 		return GenerationSpec{}, GenerationStatus{}, err
@@ -261,11 +256,11 @@ func WriteSplitRecords(dir string, spec GenerationSpec, status GenerationStatus)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read existing generation spec: %w", err)
 	}
-	specData, err := MarshalCanonicalJSON(spec)
+	specData, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
 	if err != nil {
 		return fmt.Errorf("marshal generation spec: %w", err)
 	}
-	statusData, err := MarshalCanonicalJSON(status)
+	statusData, err := marshalRecordEnvelope(GenerationStatusRecordType, status)
 	if err != nil {
 		return fmt.Errorf("marshal generation status: %w", err)
 	}
@@ -308,7 +303,7 @@ func WriteStatusRecord(dir string, spec GenerationSpec, status GenerationStatus)
 	if err := ValidateStatusTransition(existingStatus, status); err != nil {
 		return err
 	}
-	statusData, err := MarshalCanonicalJSON(status)
+	statusData, err := marshalRecordEnvelope(GenerationStatusRecordType, status)
 	if err != nil {
 		return fmt.Errorf("marshal generation status: %w", err)
 	}
@@ -324,6 +319,55 @@ func MarshalCanonicalJSON(value any) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func readGenerationSpecFile(path string) (GenerationSpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return GenerationSpec{}, err
+	}
+	if spec, ok, err := decodeRecordEnvelope[GenerationSpec](data, GenerationSpecRecordType); ok {
+		if err != nil {
+			return GenerationSpec{}, fmt.Errorf("decode generation spec envelope: %w", err)
+		}
+		if err := ValidateGenerationSpec(spec); err != nil {
+			return GenerationSpec{}, err
+		}
+		return spec, nil
+	}
+	var spec GenerationSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return GenerationSpec{}, fmt.Errorf("decode generation spec: %w", err)
+	}
+	if err := ValidateGenerationSpec(spec); err != nil {
+		return GenerationSpec{}, err
+	}
+	return spec, nil
+}
+
+func readGenerationStatusFile(path string) (GenerationStatus, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return GenerationStatus{}, err
+	}
+	if status, ok, err := decodeRecordEnvelope[GenerationStatus](data, GenerationStatusRecordType); ok {
+		if err != nil {
+			return GenerationStatus{}, fmt.Errorf("decode generation status envelope: %w", err)
+		}
+		return status, nil
+	}
+	var status GenerationStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		return GenerationStatus{}, fmt.Errorf("decode generation status: %w", err)
+	}
+	return status, nil
+}
+
+func validateGenerationDirID(dir string, generationID string) error {
+	if filepath.Base(filepath.Clean(dir)) != generationID {
+		return fmt.Errorf("generation record path id %q does not match payload id %q", filepath.Base(filepath.Clean(dir)), generationID)
+	}
+	return nil
 }
 
 func CanonicalSpecDigest(spec GenerationSpec) (string, error) {
