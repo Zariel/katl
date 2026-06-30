@@ -135,6 +135,10 @@ func (e *Executor) cleanDestructiveResetState(operationID string, targetGenerati
 		func() error { return cleanGenerationHistory(e.Root, targetGeneration) },
 		func() error { return cleanOperationHistory(e.Store, operationID) },
 		func() error { return removeRooted(e.Root, "/var/lib/katl/identity") },
+		func() error {
+			_, err := generation.WriteMachineID(e.Root, nil)
+			return err
+		},
 	}
 	var joined error
 	for _, clean := range cleaners {

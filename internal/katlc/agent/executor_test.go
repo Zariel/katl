@@ -208,13 +208,19 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 		"var/lib/etcd",
 		"var/lib/cni",
 		"var/lib/containerd",
-		"var/lib/katl/identity",
 		"var/lib/katl/operations/old-bootstrap",
 		"run/extensions/katl-kubernetes.raw",
 	} {
 		if _, err := os.Lstat(filepath.Join(server.Root, path)); !os.IsNotExist(err) {
 			t.Fatalf("%s exists after destructive reset: %v", path, err)
 		}
+	}
+	machineID, err := os.ReadFile(filepath.Join(server.Root, "var/lib/katl/identity/machine-id"))
+	if err != nil {
+		t.Fatalf("read regenerated machine id: %v", err)
+	}
+	if got := strings.TrimSpace(string(machineID)); got == "" || got == "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("regenerated machine id = %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(server.Root, "var/lib/katl/operations", accepted.OperationId, "record.json")); err != nil {
 		t.Fatalf("current reset operation record missing: %v", err)
