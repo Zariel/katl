@@ -14,11 +14,14 @@ import (
 	"github.com/zariel/katl/internal/installer/configdomain"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 const (
 	ClusterIntentAPIVersion = "katl.dev/v1alpha1"
 	ClusterIntentKind       = "ClusterIntent"
+	ClusterIntentRecordType = "katl.cluster.intent"
+	clusterIntentVersion    = 1
 )
 
 type ClusterIntent struct {
@@ -110,16 +113,12 @@ func WriteClusterIntent(request ClusterIntentRequest) (string, error) {
 	if err := writeClusterKubeadmInput(request.TargetRoot, intent, request.KubeadmConfigs); err != nil {
 		return "", err
 	}
-	data, err := json.MarshalIndent(intent, "", "  ")
+	data, err := marshalClusterIntent(intent)
 	if err != nil {
 		return "", fmt.Errorf("marshal cluster intent: %w", err)
 	}
-	data = append(data, '\n')
 	path := filepath.Join(filepath.Clean(request.TargetRoot), "var/lib/katl/cluster/intent.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return "", fmt.Errorf("create cluster intent directory: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write cluster intent: %w", err)
 	}
 	return path, nil
@@ -135,8 +134,8 @@ func ReadClusterIntent(root string) (ClusterIntent, string, error) {
 	if err != nil {
 		return ClusterIntent{}, "", fmt.Errorf("read cluster intent: %w", err)
 	}
-	var intent ClusterIntent
-	if err := json.Unmarshal(data, &intent); err != nil {
+	intent, err := decodeClusterIntent(data)
+	if err != nil {
 		return ClusterIntent{}, "", fmt.Errorf("decode cluster intent: %w", err)
 	}
 	if intent.APIVersion != ClusterIntentAPIVersion {
@@ -146,6 +145,45 @@ func ReadClusterIntent(root string) (ClusterIntent, string, error) {
 		return ClusterIntent{}, "", fmt.Errorf("cluster intent kind must be %q", ClusterIntentKind)
 	}
 	return intent, digestBytes(data), nil
+}
+
+func marshalClusterIntent(intent ClusterIntent) ([]byte, error) {
+	payload, err := json.MarshalIndent(intent, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    ClusterIntentRecordType,
+		RecordVersion: clusterIntentVersion,
+		Payload:       append(payload, '\n'),
+	})
+}
+
+func decodeClusterIntent(data []byte) (ClusterIntent, error) {
+	if looksLikeClusterIntentEnvelope(data) {
+		envelope, err := persistedrecord.DecodeEnvelope(data)
+		if err != nil {
+			return ClusterIntent{}, err
+		}
+		if envelope.RecordType != ClusterIntentRecordType || envelope.RecordVersion != clusterIntentVersion {
+			return ClusterIntent{}, fmt.Errorf("%w: %s/v%d", persistedrecord.ErrUnsupportedRecord, envelope.RecordType, envelope.RecordVersion)
+		}
+		return persistedrecord.DecodePayload[ClusterIntent](envelope)
+	}
+	var intent ClusterIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return ClusterIntent{}, err
+	}
+	return intent, nil
+}
+
+func looksLikeClusterIntentEnvelope(data []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	_, ok := fields["recordType"]
+	return ok
 }
 
 func StoredKubeadmInputDir(root string, ref string) (string, error) {

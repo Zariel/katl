@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,9 +30,12 @@ func TestRuntimeStatusUpdatesExistingInstallStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read status: %v", err)
 	}
-	var decoded installstatus.Record
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode status: %v", err)
+	if !strings.Contains(string(data), `"recordType": "katl.install.status"`) {
+		t.Fatalf("status is not enveloped:\n%s", data)
+	}
+	decoded, err := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
 	}
 	if decoded.State != installstatus.StateWaitingForClusterBootstrap || decoded.FinalHandoff != installstatus.StateWaitingForClusterBootstrap {
 		t.Fatalf("runtime state = %#v", decoded)
@@ -325,13 +327,9 @@ func TestRuntimeStatusMissingInstallStatusWritesRepairState(t *testing.T) {
 		t.Fatal("run() error = nil, want missing status failure")
 	}
 
-	data, readErr := os.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+	decoded, readErr := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
 	if readErr != nil {
 		t.Fatalf("read status: %v", readErr)
-	}
-	var decoded installstatus.Record
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode status: %v", err)
 	}
 	if decoded.State != installstatus.StateRuntimeFailedNeedsRepair || decoded.FinalHandoff != "" {
 		t.Fatalf("repair status = %#v", decoded)
@@ -370,13 +368,9 @@ func TestRuntimeStatusIncompleteInstallStatusWritesRepairState(t *testing.T) {
 		t.Fatal("run() error = nil, want incomplete status failure")
 	}
 
-	data, readErr := os.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+	decoded, readErr := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
 	if readErr != nil {
 		t.Fatalf("read status: %v", readErr)
-	}
-	var decoded installstatus.Record
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode status: %v", err)
 	}
 	if decoded.State != installstatus.StateRuntimeFailedNeedsRepair || decoded.FinalHandoff != "" {
 		t.Fatalf("repair status = %#v", decoded)

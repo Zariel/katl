@@ -21,6 +21,7 @@ import (
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
@@ -80,6 +81,7 @@ func TestPreseededManifestPlanSkipsLocalConfigWait(t *testing.T) {
 }
 
 func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
+	root := t.TempDir()
 	installedAt := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
 	manifestDoc := manifest.Manifest{
 		APIVersion: manifest.APIVersion,
@@ -163,6 +165,49 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	}
 	if intent.Source.RequestDigest != strings.Repeat("d", 64) || intent.Source.KatlosImageSHA256 != strings.Repeat("a", 64) {
 		t.Fatalf("source intent = %#v", intent.Source)
+	}
+
+	path, err := WriteClusterIntent(ClusterIntentRequest{
+		TargetRoot:         root,
+		Manifest:           manifestDoc,
+		KubeadmConfigs:     kubeadmPlans(),
+		KubernetesVersion:  "v1.36.1",
+		GenerationID:       "0",
+		RequestDigest:      strings.Repeat("d", 64),
+		InstalledAt:        installedAt,
+		TargetDiskStableID: "/dev/disk/by-id/ata-root",
+	})
+	if err != nil {
+		t.Fatalf("WriteClusterIntent() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cluster intent: %v", err)
+	}
+	if !strings.Contains(string(data), `"recordType": "katl.cluster.intent"`) || !strings.Contains(string(data), `"payload": {`) {
+		t.Fatalf("cluster intent is not enveloped:\n%s", data)
+	}
+	stored, digest, err := ReadClusterIntent(root)
+	if err != nil {
+		t.Fatalf("ReadClusterIntent() error = %v", err)
+	}
+	if stored.Source.RequestDigest != intent.Source.RequestDigest || digest == "" {
+		t.Fatalf("stored intent = %#v digest %q, want request digest %q", stored.Source, digest, intent.Source.RequestDigest)
+	}
+}
+
+func TestReadClusterIntentRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    ClusterIntentRecordType,
+		RecordVersion: 2,
+		Payload:       []byte("{}\n"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	_, err = decodeClusterIntent(data)
+	if err == nil || !strings.Contains(err.Error(), "unsupported persisted record") {
+		t.Fatalf("decodeClusterIntent() error = %v, want unsupported persisted record", err)
 	}
 }
 

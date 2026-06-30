@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 const (
@@ -23,6 +25,10 @@ const (
 	EventKind  = "OperationJournalEvent"
 
 	SchemaVersion = 1
+
+	recordEnvelopeVersion = 1
+	RecordTypeOperation   = "katl.operation.record"
+	RecordTypeJournal     = "katl.operation.journal-event"
 
 	ResultTimedOut          = "timed-out"
 	ResultFailedNeedsRepair = "failed-needs-repair"
@@ -551,7 +557,7 @@ func (s Store) writeEventAndSnapshot(dir string, event JournalEvent) error {
 	}
 	journalDir := filepath.Join(dir, "journal")
 	name := fmt.Sprintf("%020d.%s.json", event.Sequence, event.EventID)
-	data, err := marshalJSON(event)
+	data, err := marshalEnvelope(RecordTypeJournal, event)
 	if err != nil {
 		return err
 	}
@@ -583,7 +589,7 @@ func (s Store) writeSnapshot(dir string, events []JournalEvent) error {
 		Record:        record,
 		UpdatedAt:     time.Now().UTC(),
 	}
-	data, err := marshalJSON(snapshot)
+	data, err := marshalEnvelope(RecordTypeOperation, snapshot)
 	if err != nil {
 		return err
 	}
@@ -992,8 +998,8 @@ func readSnapshot(path string, events []JournalEvent) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	var snapshot Snapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
+	snapshot, err := decodeSnapshot(data)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	if len(events) == 0 {
@@ -1043,8 +1049,8 @@ func readJournal(dir string) ([]JournalEvent, error) {
 		if err != nil {
 			continue
 		}
-		var event JournalEvent
-		if err := json.Unmarshal(data, &event); err != nil {
+		event, err := decodeJournalEvent(data)
+		if err != nil {
 			continue
 		}
 		if event.Sequence != seq {
@@ -1103,6 +1109,76 @@ func marshalJSON(value any) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func marshalEnvelope(recordType string, payload any) ([]byte, error) {
+	payloadData, err := marshalJSON(payload)
+	if err != nil {
+		return nil, err
+	}
+	return persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    recordType,
+		RecordVersion: recordEnvelopeVersion,
+		Payload:       payloadData,
+	})
+}
+
+func decodeSnapshot(data []byte) (Snapshot, error) {
+	if snapshot, ok, err := decodeEnvelope[Snapshot](data, RecordTypeOperation); ok {
+		return snapshot, err
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func decodeJournalEvent(data []byte) (JournalEvent, error) {
+	if event, ok, err := decodeEnvelope[JournalEvent](data, RecordTypeJournal); ok {
+		return event, err
+	}
+	var event JournalEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return JournalEvent{}, err
+	}
+	return event, nil
+}
+
+func decodeEnvelope[T any](data []byte, recordType string) (T, bool, error) {
+	var zero T
+	if !looksLikeEnvelope(data) {
+		return zero, false, nil
+	}
+	envelope, err := persistedrecord.DecodeEnvelope(data)
+	if err != nil {
+		return zero, true, err
+	}
+	if envelope.RecordType != recordType {
+		return zero, true, fmt.Errorf("%w: got %s/v%d, want %s/v%d", persistedrecord.ErrUnsupportedRecord, envelope.RecordType, envelope.RecordVersion, recordType, recordEnvelopeVersion)
+	}
+	if envelope.RecordVersion != recordEnvelopeVersion {
+		return zero, true, fmt.Errorf("%w: %s/v%d", persistedrecord.ErrUnsupportedRecord, envelope.RecordType, envelope.RecordVersion)
+	}
+	payload, err := persistedrecord.DecodePayload[T](envelope)
+	return payload, true, err
+}
+
+func looksLikeEnvelope(data []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	if _, ok := fields["recordType"]; ok {
+		return true
+	}
+	if _, ok := fields["recordVersion"]; ok {
+		return true
+	}
+	if _, ok := fields["payload"]; ok {
+		return true
+	}
+	return false
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {

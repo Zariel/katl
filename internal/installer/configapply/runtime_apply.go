@@ -18,11 +18,14 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 const (
 	NodeConfigurationChangeAPIVersion = "katl.dev/v1alpha1"
 	ConfigRequestAuditKind            = "ConfigRequestAudit"
+	ConfigRequestDecisionRecordType   = "katl.config-request.decision"
+	configRequestDecisionVersion      = 1
 )
 
 type TrustedBundleRequest struct {
@@ -612,14 +615,11 @@ func (request TrustedBundleRequest) audit(sourceID, desiredVersion, decision str
 
 func writeAudit(root, sourceID, desiredVersion string, audit ConfigRequestAudit) (string, error) {
 	path := auditPath(root, sourceID, desiredVersion)
-	data, err := json.MarshalIndent(audit, "", "  ")
+	data, err := marshalAudit(audit)
 	if err != nil {
 		return "", fmt.Errorf("marshal config request audit: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create config request audit directory: %w", err)
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write config request audit: %w", err)
 	}
 	return path, nil
@@ -679,11 +679,50 @@ func readAudit(path string) (ConfigRequestAudit, error) {
 	if err != nil {
 		return ConfigRequestAudit{}, err
 	}
-	var audit ConfigRequestAudit
-	if err := json.Unmarshal(data, &audit); err != nil {
+	audit, err := decodeAudit(data)
+	if err != nil {
 		return ConfigRequestAudit{}, fmt.Errorf("decode config request audit: %w", err)
 	}
 	return audit, nil
+}
+
+func marshalAudit(audit ConfigRequestAudit) ([]byte, error) {
+	payload, err := json.MarshalIndent(audit, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    ConfigRequestDecisionRecordType,
+		RecordVersion: configRequestDecisionVersion,
+		Payload:       append(payload, '\n'),
+	})
+}
+
+func decodeAudit(data []byte) (ConfigRequestAudit, error) {
+	if looksLikeAuditEnvelope(data) {
+		envelope, err := persistedrecord.DecodeEnvelope(data)
+		if err != nil {
+			return ConfigRequestAudit{}, err
+		}
+		if envelope.RecordType != ConfigRequestDecisionRecordType || envelope.RecordVersion != configRequestDecisionVersion {
+			return ConfigRequestAudit{}, fmt.Errorf("%w: %s/v%d", persistedrecord.ErrUnsupportedRecord, envelope.RecordType, envelope.RecordVersion)
+		}
+		return persistedrecord.DecodePayload[ConfigRequestAudit](envelope)
+	}
+	var audit ConfigRequestAudit
+	if err := json.Unmarshal(data, &audit); err != nil {
+		return ConfigRequestAudit{}, err
+	}
+	return audit, nil
+}
+
+func looksLikeAuditEnvelope(data []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	_, ok := fields["recordType"]
+	return ok
 }
 
 func replayResult(root string, audit ConfigRequestAudit, auditPath string) TrustedBundleResult {

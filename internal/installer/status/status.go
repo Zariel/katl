@@ -15,11 +15,15 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 const (
 	APIVersion = "katl.dev/v1alpha1"
 	Kind       = "InstallToBootstrapStatus"
+
+	RecordType    = "katl.install.status"
+	recordVersion = 1
 )
 
 const (
@@ -146,15 +150,19 @@ func WriteFile(path string, record Record) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("status path is required")
 	}
-	data, err := json.MarshalIndent(record, "", "  ")
+	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal install status: %w", err)
 	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create status directory: %w", err)
+	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    RecordType,
+		RecordVersion: recordVersion,
+		Payload:       append(payload, '\n'),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal install status envelope: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write install status: %w", err)
 	}
 	return nil
@@ -168,11 +176,38 @@ func ReadFile(path string) (Record, error) {
 	if err != nil {
 		return Record{}, fmt.Errorf("read install status: %w", err)
 	}
-	var record Record
-	if err := json.Unmarshal(data, &record); err != nil {
+	record, err := decodeRecord(data)
+	if err != nil {
 		return Record{}, fmt.Errorf("decode install status: %w", err)
 	}
 	return record, nil
+}
+
+func decodeRecord(data []byte) (Record, error) {
+	if looksLikeEnvelope(data) {
+		envelope, err := persistedrecord.DecodeEnvelope(data)
+		if err != nil {
+			return Record{}, err
+		}
+		if envelope.RecordType != RecordType || envelope.RecordVersion != recordVersion {
+			return Record{}, fmt.Errorf("%w: %s/v%d", persistedrecord.ErrUnsupportedRecord, envelope.RecordType, envelope.RecordVersion)
+		}
+		return persistedrecord.DecodePayload[Record](envelope)
+	}
+	var record Record
+	if err := json.Unmarshal(data, &record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func looksLikeEnvelope(data []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	_, ok := fields["recordType"]
+	return ok
 }
 
 func RuntimeStatusPath(root string) (string, error) {

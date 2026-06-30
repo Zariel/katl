@@ -1,7 +1,6 @@
 package status
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 func TestRedactSourceRemovesCredentialsAndQuery(t *testing.T) {
@@ -56,15 +56,37 @@ func TestWriteRuntimeHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runtime status: %v", err)
 	}
-	var decoded Record
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode status: %v", err)
+	if !strings.Contains(string(data), `"recordType": "katl.install.status"`) || !strings.Contains(string(data), `"payload": {`) {
+		t.Fatalf("status is not enveloped:\n%s", data)
+	}
+	decoded, err := ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
 	}
 	if decoded.State != StateWaitingForClusterBootstrap || decoded.FinalHandoff != StateWaitingForClusterBootstrap {
 		t.Fatalf("handoff state = %#v", decoded)
 	}
 	if decoded.RequestDigest != strings.Repeat("a", 64) || decoded.InstalledGeneration != "0" {
 		t.Fatalf("status did not preserve identity fields: %#v", decoded)
+	}
+}
+
+func TestReadFileRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "status.json")
+	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    RecordType,
+		RecordVersion: 2,
+		Payload:       []byte("{}\n"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	_, err = ReadFile(path)
+	if err == nil || !strings.Contains(err.Error(), "unsupported persisted record") {
+		t.Fatalf("ReadFile() error = %v, want unsupported persisted record", err)
 	}
 }
 

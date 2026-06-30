@@ -11,6 +11,7 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {
@@ -259,6 +260,13 @@ func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T)
 	if err != nil {
 		t.Fatalf("first ApplyTrustedBundle() error = %v", err)
 	}
+	data, err := os.ReadFile(first.AuditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if !strings.Contains(string(data), `"recordType": "katl.config-request.decision"`) || !strings.Contains(string(data), `"payload": {`) {
+		t.Fatalf("audit is not enveloped:\n%s", data)
+	}
 	replay, err := ApplyTrustedBundle(context.Background(), request)
 	if err != nil {
 		t.Fatalf("replay ApplyTrustedBundle() error = %v", err)
@@ -274,6 +282,21 @@ func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T)
 	}
 	if replay.Tree.ConfextDir != "" {
 		t.Fatalf("replay rendered a new tree: %#v", replay.Tree)
+	}
+}
+
+func TestReadAuditRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    ConfigRequestDecisionRecordType,
+		RecordVersion: 2,
+		Payload:       []byte("{}\n"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	_, err = decodeAudit(data)
+	if err == nil || !strings.Contains(err.Error(), "unsupported persisted record") {
+		t.Fatalf("decodeAudit() error = %v, want unsupported persisted record", err)
 	}
 }
 

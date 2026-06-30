@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 )
 
 func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
@@ -118,12 +120,38 @@ func TestStoreWritesGoldenAcceptedJournalEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read accepted event: %v", err)
 	}
-	want, err := os.ReadFile(filepath.Join("testdata", "golden", "accepted-event.json"))
+	if !strings.Contains(string(got), `"recordType": "katl.operation.journal-event"`) || !strings.Contains(string(got), `"payload": {`) {
+		t.Fatalf("accepted event is not enveloped:\n%s", got)
+	}
+	gotEvent, err := decodeJournalEvent(got)
+	if err != nil {
+		t.Fatalf("decode accepted event: %v", err)
+	}
+	wantData, err := os.ReadFile(filepath.Join("testdata", "golden", "accepted-event.json"))
 	if err != nil {
 		t.Fatalf("read golden event: %v", err)
 	}
-	if string(got) != string(want) {
-		t.Fatalf("accepted event mismatch\ngot:\n%s\nwant:\n%s", got, want)
+	var wantEvent JournalEvent
+	if err := json.Unmarshal(wantData, &wantEvent); err != nil {
+		t.Fatalf("decode golden event: %v", err)
+	}
+	if gotEvent.EventID != wantEvent.EventID || gotEvent.Record.OperationID != wantEvent.Record.OperationID || gotEvent.Record.Phase != wantEvent.Record.Phase {
+		t.Fatalf("accepted event = %#v, want %#v", gotEvent, wantEvent)
+	}
+}
+
+func TestStoreRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+		RecordType:    RecordTypeOperation,
+		RecordVersion: 2,
+		Payload:       []byte("{}\n"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	_, err = decodeSnapshot(data)
+	if err == nil || !strings.Contains(err.Error(), "unsupported persisted record") {
+		t.Fatalf("decodeSnapshot() error = %v, want unsupported persisted record", err)
 	}
 }
 
@@ -153,12 +181,12 @@ func TestStoreRebuildsMissingStaleAndDigestInvalidSnapshots(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read snapshot: %v", err)
 				}
-				var snap Snapshot
-				if err := json.Unmarshal(data, &snap); err != nil {
+				snap, err := decodeSnapshot(data)
+				if err != nil {
 					t.Fatalf("decode snapshot: %v", err)
 				}
 				snap.LatestSeq = 1
-				data, err = marshalJSON(snap)
+				data, err = marshalEnvelope(RecordTypeOperation, snap)
 				if err != nil {
 					t.Fatalf("marshal snapshot: %v", err)
 				}
@@ -172,12 +200,12 @@ func TestStoreRebuildsMissingStaleAndDigestInvalidSnapshots(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read snapshot: %v", err)
 				}
-				var snap Snapshot
-				if err := json.Unmarshal(data, &snap); err != nil {
+				snap, err := decodeSnapshot(data)
+				if err != nil {
 					t.Fatalf("decode snapshot: %v", err)
 				}
 				snap.JournalDigest = "sha256:" + strings.Repeat("0", 64)
-				data, err = marshalJSON(snap)
+				data, err = marshalEnvelope(RecordTypeOperation, snap)
 				if err != nil {
 					t.Fatalf("marshal snapshot: %v", err)
 				}
@@ -191,12 +219,12 @@ func TestStoreRebuildsMissingStaleAndDigestInvalidSnapshots(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read snapshot: %v", err)
 				}
-				var snap Snapshot
-				if err := json.Unmarshal(data, &snap); err != nil {
+				snap, err := decodeSnapshot(data)
+				if err != nil {
 					t.Fatalf("decode snapshot: %v", err)
 				}
 				snap.Record.Phase = "tampered"
-				data, err = marshalJSON(snap)
+				data, err = marshalEnvelope(RecordTypeOperation, snap)
 				if err != nil {
 					t.Fatalf("marshal snapshot: %v", err)
 				}
@@ -225,12 +253,12 @@ func TestStoreRebuildsMissingStaleAndDigestInvalidSnapshots(t *testing.T) {
 			if read.LatestJournalSeq != updated.LatestJournalSeq || read.Phase != "prepare" {
 				t.Fatalf("rebuilt record = %#v, want %#v", read, updated)
 			}
-			var rebuilt Snapshot
 			data, err := os.ReadFile(filepath.Join(dir, "record.json"))
 			if err != nil {
 				t.Fatalf("read rebuilt snapshot: %v", err)
 			}
-			if err := json.Unmarshal(data, &rebuilt); err != nil {
+			rebuilt, err := decodeSnapshot(data)
+			if err != nil {
 				t.Fatalf("decode rebuilt snapshot: %v", err)
 			}
 			if rebuilt.LatestSeq != updated.LatestJournalSeq || rebuilt.JournalDigest == "" {
