@@ -10,6 +10,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/artifact"
 	"github.com/zariel/katl/internal/installer/bgpapivip"
+	"github.com/zariel/katl/internal/installer/confext"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/platformendpoint"
@@ -74,6 +75,37 @@ func TestCompileClusterPlan(t *testing.T) {
 	}
 	if string(data) != string(want) {
 		t.Fatalf("compiled plan mismatch\nwant:\n%s\ngot:\n%s", want, data)
+	}
+}
+
+func TestCompileNodeClassGoldenScenarios(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		golden string
+	}{
+		{
+			name:   "all same hardware defaults",
+			config: allSameHardwareConfig(),
+			golden: "all-same-hardware.golden.json",
+		},
+		{
+			name:   "mixed node classes",
+			config: mixedNodeClassesConfig(),
+			golden: "mixed-node-classes.golden.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := Compile(CompileRequest{
+				Config:         tt.config,
+				KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
+			})
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			assertNodeClassGolden(t, plan, filepath.Join("testdata", tt.golden))
+		})
 	}
 }
 
@@ -563,6 +595,56 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			},
 			want: "spec.defaults.install.targetDisk is not allowed",
 		},
+		{
+			name: "node class networkd conflict",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].NodeClass = "ms01"
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+						Name:    "10-common.network",
+						Content: "[Match]\nName=enp99s0\n",
+					}}}},
+				}
+			},
+			want: "networkd file",
+		},
+		{
+			name: "node class label conflict",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].NodeClass = "ms01"
+				config.Spec.Defaults.Kubernetes.NodeLabels = map[string]string{"katl.dev/hardware-class": "default"}
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Kubernetes: KubernetesLayer{NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"}}},
+				}
+			},
+			want: "node label",
+		},
+		{
+			name: "node class taint conflict",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].NodeClass = "ms01"
+				config.Spec.Defaults.Kubernetes.NodeTaints = []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "default", Effect: "NoSchedule"}}
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Kubernetes: KubernetesLayer{NodeTaints: []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "ms01", Effect: "NoSchedule"}}}},
+				}
+			},
+			want: "node taint",
+		},
+		{
+			name: "node class extra disk conflict",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].NodeClass = "ms01"
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Install: InstallLayer{ExtraDisks: []manifest.ExtraDisk{{
+						Name:       "data",
+						Selector:   manifest.DiskSelector{Serial: "different"},
+						Filesystem: "xfs",
+						Mount:      manifest.ExtraMount{Path: "/srv/data"},
+					}}}},
+				}
+			},
+			want: "extra disk",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -575,6 +657,78 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			_, err := Compile(request)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Compile() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsTemplateRangeAndMultipleClassShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "multiple classes",
+			yaml: `apiVersion: cluster.katl.dev/v1alpha1
+kind: ClusterPlan
+metadata:
+  name: lab
+spec:
+  nodes:
+    - name: cp-1
+      systemRole: control-plane
+      nodeClass:
+        - ms01
+        - gpu
+`,
+			want: "cannot unmarshal",
+		},
+		{
+			name: "node template",
+			yaml: `apiVersion: cluster.katl.dev/v1alpha1
+kind: ClusterPlan
+metadata:
+  name: lab
+spec:
+  nodeTemplate:
+    count: 3
+`,
+			want: "field nodeTemplate not found",
+		},
+		{
+			name: "node range",
+			yaml: `apiVersion: cluster.katl.dev/v1alpha1
+kind: ClusterPlan
+metadata:
+  name: lab
+spec:
+  nodeRange:
+    prefix: worker
+`,
+			want: "field nodeRange not found",
+		},
+		{
+			name: "auto detection",
+			yaml: `apiVersion: cluster.katl.dev/v1alpha1
+kind: ClusterPlan
+metadata:
+  name: lab
+spec:
+  nodeClasses:
+    ms01:
+      install:
+        targetDiskDefaults:
+          autoDetect: true
+`,
+			want: "field autoDetect not found",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.yaml))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
 			}
 		})
 	}
@@ -599,6 +753,49 @@ func assertNodeNoNativeFile(t *testing.T, node NodeMaterial, path string) {
 		if file.Path == path {
 			t.Fatalf("node %s unexpectedly rendered native file %s", node.Name, path)
 		}
+	}
+}
+
+type nodeClassGolden struct {
+	Nodes              []nodeClassGoldenNode `json:"nodes"`
+	BootstrapInventory inventory.Inventory   `json:"bootstrapInventory"`
+}
+
+type nodeClassGoldenNode struct {
+	Name            string                  `json:"name"`
+	SystemRole      inventory.SystemRole    `json:"systemRole"`
+	Bootstrap       string                  `json:"bootstrapAddress,omitempty"`
+	InstallManifest manifest.Manifest       `json:"installManifest"`
+	NativeEtcFiles  []confext.NativeEtcFile `json:"nativeEtcFiles,omitempty"`
+	NodeLabels      map[string]string       `json:"nodeLabels,omitempty"`
+	NodeTaints      []manifest.NodeTaint    `json:"nodeTaints,omitempty"`
+}
+
+func assertNodeClassGolden(t *testing.T, plan Plan, golden string) {
+	t.Helper()
+	got := nodeClassGolden{BootstrapInventory: plan.BootstrapInventory}
+	for _, node := range plan.Nodes {
+		got.Nodes = append(got.Nodes, nodeClassGoldenNode{
+			Name:            node.Name,
+			SystemRole:      node.SystemRole,
+			Bootstrap:       node.BootstrapAddress,
+			InstallManifest: node.InstallManifest,
+			NativeEtcFiles:  node.NativeEtcFiles,
+			NodeLabels:      node.NodeLabels,
+			NodeTaints:      node.NodeTaints,
+		})
+	}
+	data, err := json.MarshalIndent(got, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden: %v\nnew golden:\n%s", err, data)
+	}
+	if string(data) != string(want) {
+		t.Fatalf("node class golden mismatch for %s\nwant:\n%s\ngot:\n%s", golden, want, data)
 	}
 }
 
@@ -657,6 +854,59 @@ func TestCompileRejectsKubeadmIntentAndVersionMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not match selected Kubernetes payload version") {
 		t.Fatalf("Compile() error = %v, want version mismatch", err)
 	}
+}
+
+func allSameHardwareConfig() Config {
+	config := validConfig()
+	config.Spec.Defaults.Install.TargetDiskDefaults = &manifest.DiskSelector{MinSizeMiB: 32768}
+	config.Spec.Defaults.Kubernetes.NodeLabels = map[string]string{"katl.dev/hardware-class": "homelab"}
+	config.Spec.Nodes[0].Overrides.Hostname = ""
+	config.Spec.Nodes[0].Overrides.SSH = manifest.SSHIdentity{}
+	config.Spec.Nodes[0].Overrides.Networkd = manifest.NetworkdConfig{}
+	config.Spec.Nodes[0].Overrides.Kubernetes = KubernetesLayer{}
+	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
+	targetWorker := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-worker-root"}
+	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
+	config.Spec.Nodes[1].Overrides.Install.TargetDisk = &targetWorker
+	return config
+}
+
+func mixedNodeClassesConfig() Config {
+	config := validConfig()
+	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
+	targetWorker := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-worker-root"}
+	config.Spec.Nodes[0].NodeClass = "ms01"
+	config.Spec.Nodes[0].Overrides.Hostname = ""
+	config.Spec.Nodes[0].Overrides.SSH = manifest.SSHIdentity{}
+	config.Spec.Nodes[0].Overrides.Networkd = manifest.NetworkdConfig{}
+	config.Spec.Nodes[0].Overrides.Kubernetes = KubernetesLayer{}
+	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
+	config.Spec.Nodes[1].NodeClass = "msa2"
+	config.Spec.Nodes[1].Overrides.Install.TargetDisk = &targetWorker
+	config.Spec.NodeClasses = map[string]NodeLayer{
+		"ms01": {
+			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "15-ms01.network",
+				Content: "[Match]\nName=enp3s0\n",
+			}}},
+			Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 65536}},
+			Kubernetes: KubernetesLayer{
+				NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"},
+				NodeTaints: []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "ms01", Effect: "NoSchedule"}},
+			},
+		},
+		"msa2": {
+			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "15-msa2.network",
+				Content: "[Match]\nName=enp4s0\n",
+			}}},
+			Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 49152}},
+			Kubernetes: KubernetesLayer{
+				NodeLabels: map[string]string{"katl.dev/hardware-class": "msa2"},
+			},
+		},
+	}
+	return config
 }
 
 func validConfig() Config {
