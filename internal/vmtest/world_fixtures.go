@@ -26,6 +26,7 @@ const (
 	FixtureESPArtifacts          = "esp-artifacts"
 	FixtureNodeMetadata          = "node-metadata"
 	FixtureInstallManifest       = "install-manifest"
+	FixtureConfigBundle          = "config-bundle"
 	FixturePublishedFirstInstall = "published-first-install-runtime"
 )
 
@@ -172,6 +173,10 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 		}
 	}
 	return record, nil
+}
+
+func (factory NodeFixtureFactory) ConfigBundle(source string) (FixtureRecord, error) {
+	return factory.stageFileFixture(FixtureConfigBundle, "config.katlcfg", source)
 }
 
 func (factory NodeFixtureFactory) writeInstallSingleImageProof(sourceManifest, stagedManifest string) error {

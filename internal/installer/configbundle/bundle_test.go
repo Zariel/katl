@@ -116,6 +116,57 @@ spec:
 	}
 }
 
+func TestReadSelectedNodeVerifiesBundleAndSelectsNodeMaterial(t *testing.T) {
+	archive, result, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{
+		ExpectedDigest: result.Digest,
+		NodeName:       "cp-1",
+	})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	if selected.BundleDigest != result.Digest || selected.SourceDigest == "" || selected.NodeMaterialDigest == "" || selected.InstallMaterialDigest == "" {
+		t.Fatalf("selected digests = %#v", selected)
+	}
+	if selected.Node.Name != "cp-1" || selected.InstallManifest.Node.Identity.Hostname != "cp-1" {
+		t.Fatalf("selected node/install material = %#v / %#v", selected.Node, selected.InstallManifest.Node.Identity)
+	}
+	if _, ok := selected.KubeadmConfigs["control-plane"]; !ok {
+		t.Fatalf("KubeadmConfigs = %#v, want control-plane", selected.KubeadmConfigs)
+	}
+}
+
+func TestReadSelectedNodeRejectsMissingNodeSelection(t *testing.T) {
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+
+	_, err = ReadSelectedNode(bytes.NewReader(archive), ReadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "selected node is required") {
+		t.Fatalf("ReadSelectedNode() error = %v, want selected node rejection", err)
+	}
+}
+
+func TestReadSelectedNodeRejectsBundleDigestMismatch(t *testing.T) {
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+
+	_, err = ReadSelectedNode(bytes.NewReader(archive), ReadOptions{
+		ExpectedDigest: "sha256:" + strings.Repeat("0", 64),
+		NodeName:       "cp-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "config bundle digest mismatch") {
+		t.Fatalf("ReadSelectedNode() error = %v, want digest mismatch", err)
+	}
+}
+
 func readTarFiles(t *testing.T, data []byte) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}

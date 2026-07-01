@@ -190,7 +190,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 			if url != "http://10.0.2.15:8080/v1/install" {
 				t.Fatalf("handoff post URL = %q", url)
 			}
-			status, body, err := postLocal(ctx, server.Handler(), url, token, manifest)
+			status, body, err := postLocal(ctx, server.Handler(), url, token, FirstInstallConfig{}, manifest)
 			if err == nil {
 				close(handoffPosted)
 			}

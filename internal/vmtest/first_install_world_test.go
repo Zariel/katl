@@ -462,6 +462,9 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if run.Config.ManifestPath == "" || strings.Contains(run.Config.ManifestPath, "install-manifest-source") {
 		t.Fatalf("install manifest was not staged: %q", run.Config.ManifestPath)
 	}
+	if run.Config.ConfigBundle == "" || !strings.HasSuffix(run.Config.ConfigBundle, "config.katlcfg") {
+		t.Fatalf("config bundle was not staged: %#v", run.Config)
+	}
 	stagedImage := filepath.Join(filepath.Dir(run.Config.ManifestPath), filepath.Base(image))
 	if data, err := os.ReadFile(stagedImage); err != nil || string(data) != "katlos-image" {
 		t.Fatalf("staged KatlOS image = %q, err = %v", data, err)
@@ -476,7 +479,6 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if !strings.Contains(string(manifestData), `"hostname": "cp-1"`) ||
 		!strings.Contains(string(manifestData), `"localRef": "katlos-install-0.0.0-dev-x86_64.squashfs"`) ||
 		!strings.Contains(string(manifestData), `"configRef": "control-plane"`) ||
-		!strings.Contains(string(manifestData), `"kubernetesCatalogRef": "v1.36.0"`) ||
 		!strings.Contains(string(manifestData), `"name": "80-katl-vmtest-dhcp.network"`) ||
 		!strings.Contains(string(manifestData), `Name=en*`) ||
 		!strings.Contains(string(manifestData), `DHCP=yes`) {
@@ -497,7 +499,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if !strings.Contains(string(metadataData), `"hostname": "cp-1"`) || !strings.Contains(string(metadataData), `"systemRole": "control-plane"`) {
 		t.Fatalf("generated node metadata = %s", metadataData)
 	}
-	for _, kind := range []string{FixtureInstallerUKI, FixtureNodeMetadata, FixtureInstallManifest, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
+	for _, kind := range []string{FixtureInstallerUKI, FixtureNodeMetadata, FixtureInstallManifest, FixtureConfigBundle, FixtureKatlOSInstallImage, FixtureFirstInstallDisk} {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}

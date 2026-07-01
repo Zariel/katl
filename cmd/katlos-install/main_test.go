@@ -131,6 +131,29 @@ katlosImage:
 	}
 }
 
+func TestBootInputDiscoversConfigBundle(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	etcDir := filepath.Join(root, "etc")
+	bundlePath := filepath.Join(runDir, "config.katlcfg")
+	writeTestFile(t, bundlePath, "bundle")
+	writeTestFile(t, filepath.Join(runDir, "install-input.json"), `{"nodeName":"cp-1","installMode":"auto"}`)
+
+	input, err := bootInput(runDir, etcDir)
+	if err != nil {
+		t.Fatalf("bootInput() error = %v", err)
+	}
+	if input.BundlePath != bundlePath {
+		t.Fatalf("bundle path = %q, want %q", input.BundlePath, bundlePath)
+	}
+	if input.NodeName != "cp-1" || input.Action != installer.InstallActionRun || !input.CanMutateDisks() {
+		t.Fatalf("input = %#v, want runnable bundle input", input)
+	}
+	if got := bootInputMode(input); got != installstatus.InputModeOfflineMedia {
+		t.Fatalf("boot input mode = %q, want offline media", got)
+	}
+}
+
 func TestBootInputMode(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -170,6 +193,18 @@ func TestBootInputMode(t *testing.T) {
 			input: installer.BootInput{ManifestURL: "https://example.invalid/install.json"},
 			want:  installstatus.InputModePXEPreseed,
 		},
+		{
+			name: "bundle run path",
+			input: installer.BootInput{SelectedSources: map[string]installer.InputSource{
+				"bundlePath": installer.InputSourceRunKatl,
+			}},
+			want: installstatus.InputModeOfflineMedia,
+		},
+		{
+			name:  "bundle URL",
+			input: installer.BootInput{BundleURL: "https://example.invalid/config.katlcfg"},
+			want:  installstatus.InputModePXEPreseed,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,6 +212,35 @@ func TestBootInputMode(t *testing.T) {
 				t.Fatalf("bootInputMode() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFetchBundleURL(t *testing.T) {
+	bundle := []byte("bundle archive")
+	digest := sha256.Sum256(bundle)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cluster.katlcfg" {
+			t.Fatalf("request path = %s", r.URL.Path)
+		}
+		_, _ = w.Write(bundle)
+	}))
+	t.Cleanup(server.Close)
+
+	runDir := t.TempDir()
+	path, err := fetchBundleURL(context.Background(), server.URL+"/cluster.katlcfg", hex.EncodeToString(digest[:]), runDir)
+	if err != nil {
+		t.Fatalf("fetchBundleURL() error = %v", err)
+	}
+	if path != filepath.Join(runDir, "config.katlcfg") {
+		t.Fatalf("bundle path = %q", path)
+	}
+	assertFile(t, path, "bundle archive")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("bundle mode = %o, want 0600", got)
 	}
 }
 

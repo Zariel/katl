@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/configbundle"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	installmanifest "github.com/zariel/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +35,7 @@ type FirstInstallWorldInput struct {
 	RuntimeESP      string
 	NodeMetadata    string
 	InstallManifest string
+	ConfigBundle    string
 	Mode            FirstInstallWorldMode
 	UseInstalledESP bool
 	TargetDiskSize  string
@@ -107,6 +110,14 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
+	configBundle := FixtureRecord{}
+	if strings.TrimSpace(input.ConfigBundle) != "" {
+		configBundle, err = factory.ConfigBundle(input.ConfigBundle)
+		if err != nil {
+			_ = scenario.WriteSetupFailure(err)
+			return run, err
+		}
+	}
 	nodeMetadata := ""
 	if strings.TrimSpace(input.NodeMetadata) != "" {
 		metadata, err := factory.NodeMetadata(input.NodeMetadata)
@@ -140,6 +151,8 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		},
 		UseInstalledESP: input.UseInstalledESP,
 		ManifestPath:    installManifest.Path,
+		ConfigBundle:    configBundle.Path,
+		SelectedNode:    spec.Name,
 		TargetDisk:      target,
 	}
 	if err := verifyGenericInstallerArtifactsOmitExternalConfig(run.Config.Installer, run.Config.ManifestPath, run.Config.Runtime.NodeMetadata); err != nil {
@@ -830,11 +843,20 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	}
 	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
-		manifestPath, err := writeFirstInstallWorldManifestSource(scenario, repo, spec, index)
-		if err != nil {
-			return input, err
+		if input.ConfigBundle == "" {
+			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index)
+			if err != nil {
+				return input, err
+			}
+			input.ConfigBundle = bundlePath
+			input.InstallManifest = manifestPath
+		} else {
+			manifestPath, err := writeSelectedInstallManifestFromBundle(scenario, input.ConfigBundle, spec.Name)
+			if err != nil {
+				return input, err
+			}
+			input.InstallManifest = manifestPath
 		}
-		input.InstallManifest = manifestPath
 	}
 	if strings.TrimSpace(input.NodeMetadata) == "" {
 		metadataPath, err := writeFirstInstallWorldNodeMetadataSource(scenario, spec)
@@ -844,6 +866,63 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 		input.NodeMetadata = metadataPath
 	}
 	return input, nil
+}
+
+func writeSelectedInstallManifestFromBundle(_ *WorldScenario, bundlePath, nodeName string) (string, error) {
+	selected, err := configbundle.ReadSelectedNodeFile(bundlePath, configbundle.ReadOptions{NodeName: nodeName})
+	if err != nil {
+		return "", err
+	}
+	out := filepath.Join(filepath.Dir(bundlePath), "install-manifest.json")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(selected.InstallManifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	if err := writeSelectedKubeadmSidecars(filepath.Dir(out), selected.KubeadmConfigs); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func writeSelectedKubeadmSidecars(dir string, configs map[string]kubeadmconfig.Plan) error {
+	for name, plan := range configs {
+		configRel := filepath.ToSlash(filepath.Join(installer.KubeadmConfigFilesDir, name+".yaml"))
+		objectDir := filepath.Join(dir, installer.KubeadmConfigObjectsDir)
+		if err := os.MkdirAll(objectDir, 0o755); err != nil {
+			return err
+		}
+		object := fmt.Sprintf("apiVersion: config.katl.dev/v1alpha1\nkind: KubeadmConfig\nmetadata:\n  name: %s\nspec:\n  configFile: %s\n", name, configRel)
+		if err := os.WriteFile(filepath.Join(objectDir, name+".yaml"), []byte(object), 0o644); err != nil {
+			return err
+		}
+		configPath := filepath.Join(dir, filepath.FromSlash(configRel))
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(configPath, plan.Config.Content, 0o644); err != nil {
+			return err
+		}
+		for _, patch := range plan.Patches {
+			rel := strings.TrimPrefix(filepath.ToSlash(patch.RenderPath), "/etc/katl/kubeadm/"+name+"/")
+			if rel == "" || strings.HasPrefix(rel, "../") {
+				return fmt.Errorf("kubeadm patch path %q is outside selected config %q", patch.RenderPath, name)
+			}
+			path := filepath.Join(dir, installer.KubeadmConfigFilesDir, name, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, patch.Content, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func explicitMkosiArtifactIndexPath() string {
@@ -891,6 +970,175 @@ func (index mkosiArtifactIndex) artifact(kind string) (mkosiArtifact, bool) {
 		}
 	}
 	return mkosiArtifact{}, false
+}
+
+func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex) (string, string, error) {
+	image, ok := index.artifact("katlos-install-image")
+	if !ok {
+		var err error
+		image, err = discoverKatlOSInstallImage(repo)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	metadata, err := readKatlOSImageMetadata(image)
+	if err != nil {
+		return "", "", err
+	}
+	if metadata.Role == "" {
+		metadata.Role = metadata.ImageRole
+	}
+	if metadata.Role == "" {
+		metadata.Role = "install"
+	}
+	if metadata.SHA256 == "" {
+		metadata.SHA256 = image.SHA256
+	}
+	if metadata.SizeBytes == 0 {
+		metadata.SizeBytes = image.SizeBytes
+	}
+	sourceDir := filepath.Join(scenario.Dir, "inputs", "config-bundle-source", spec.Name)
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		return "", "", err
+	}
+	localRef := filepath.Base(image.Path)
+	localImage := filepath.Join(sourceDir, localRef)
+	if _, err := os.Lstat(localImage); errors.Is(err, os.ErrNotExist) {
+		if err := os.Symlink(image.Path, localImage); err != nil {
+			return "", "", err
+		}
+	} else if err != nil {
+		return "", "", err
+	}
+	kubernetesVersion := metadata.KubernetesPayloadVersion()
+	if kubernetesVersion == "" {
+		if artifact, ok := index.artifact("kubernetes-sysext"); ok {
+			var err error
+			kubernetesVersion, err = readKubernetesSysextPayloadVersion(artifact)
+			if err != nil {
+				return "", "", err
+			}
+		}
+	}
+	if kubernetesVersion == "" {
+		kubernetesVersion = "v1.36.1"
+	}
+
+	kubeadmRef := ""
+	kubeadmConfigs := map[string]any{}
+	kubeadmConfigs["control-plane"] = map[string]any{"config": controlPlaneKubeadmConfig(firstControlPlaneName(spec), kubernetesVersion)}
+	switch spec.Role {
+	case ControlPlane:
+		kubeadmRef = "control-plane"
+	case Worker:
+		kubeadmRef = "worker"
+		kubeadmConfigs[kubeadmRef] = map[string]any{"config": workerKubeadmConfig(spec.Name)}
+	}
+	systemRoleDefaults := map[string]any{}
+	systemRoleDefaults[string(ControlPlane)] = map[string]any{
+		"kubernetes": map[string]any{
+			"kubeadm": map[string]any{"configRef": "control-plane"},
+		},
+	}
+	if kubeadmRef != "" && spec.Role != ControlPlane {
+		systemRoleDefaults[string(spec.Role)] = map[string]any{
+			"kubernetes": map[string]any{
+				"kubeadm": map[string]any{"configRef": kubeadmRef},
+			},
+		}
+	}
+	nodes := []map[string]any{}
+	if spec.Role != ControlPlane {
+		nodes = append(nodes, firstInstallWorldSourceNode(firstControlPlaneName(spec), ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"))
+	}
+	nodes = append(nodes, firstInstallWorldSourceNode(spec.Name, spec.Role, "/dev/disk/by-id/virtio-katl-root"))
+
+	source := map[string]any{
+		"apiVersion": configbundle.APIVersion,
+		"kind":       configbundle.Kind,
+		"metadata": map[string]any{
+			"name": "katl-smoke",
+		},
+		"spec": map[string]any{
+			"controlPlaneEndpoint": "api.katl.test:6443",
+			"kubernetes": map[string]any{
+				"version": kubernetesVersion,
+			},
+			"katlosImage": map[string]any{
+				"localRef":         localRef,
+				"sha256":           metadata.SHA256,
+				"sizeBytes":        metadata.SizeBytes,
+				"version":          metadata.Version,
+				"architecture":     metadata.Architecture,
+				"runtimeInterface": metadata.RuntimeInterface,
+				"role":             metadata.Role,
+			},
+			"defaults": map[string]any{
+				"install": map[string]any{
+					"wipeTarget": true,
+				},
+				"identity": map[string]any{
+					"ssh": map[string]any{
+						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
+					},
+				},
+				"networkd": map[string]any{
+					"files": []map[string]any{{
+						"name":    "80-katl-vmtest-dhcp.network",
+						"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+					}},
+				},
+				"bootstrap": map[string]any{
+					"access": map[string]any{
+						"method":        "agent",
+						"credentialRef": "vsock:1234:10240",
+					},
+				},
+			},
+			"systemRoleDefaults": systemRoleDefaults,
+			"kubeadmConfigs":     kubeadmConfigs,
+			"nodes":              nodes,
+		},
+	}
+	sourcePath := filepath.Join(sourceDir, "cluster.yaml")
+	sourceData, err := yaml.Marshal(source)
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(sourcePath, sourceData, 0o644); err != nil {
+		return "", "", err
+	}
+	bundlePath := filepath.Join(sourceDir, "config.katlcfg")
+	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest first-install"}); err != nil {
+		return "", "", err
+	}
+	manifestPath, err := writeSelectedInstallManifestFromBundle(scenario, bundlePath, spec.Name)
+	if err != nil {
+		return "", "", err
+	}
+	return bundlePath, manifestPath, nil
+}
+
+func firstControlPlaneName(spec NodeSpec) string {
+	if spec.Role == ControlPlane {
+		return spec.Name
+	}
+	return "cp-1"
+}
+
+func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) map[string]any {
+	return map[string]any{
+		"name":       name,
+		"systemRole": string(role),
+		"overrides": map[string]any{
+			"install": map[string]any{
+				"targetDisk": map[string]any{
+					"byID":       diskID,
+					"minSizeMiB": 32,
+				},
+			},
+		},
+	}
 }
 
 func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex) (string, error) {

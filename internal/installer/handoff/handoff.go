@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/configbundle"
 	"github.com/zariel/katl/internal/installer/manifest"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
@@ -30,13 +31,22 @@ type HandoffServer struct {
 	mu       sync.Mutex
 	state    HandoffState
 	manifest []byte
+	bundle   []byte
+	nodeName string
 	status   installstatus.Record
 }
 
 type HandoffStatus struct {
 	State            HandoffState         `json:"state"`
 	ManifestAccepted bool                 `json:"manifestAccepted"`
+	BundleAccepted   bool                 `json:"bundleAccepted,omitempty"`
+	SelectedNode     string               `json:"selectedNode,omitempty"`
 	InstallStatus    installstatus.Record `json:"installStatus"`
+}
+
+type BundlePayload struct {
+	Data     []byte
+	NodeName string
 }
 
 func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer, error) {
@@ -81,6 +91,16 @@ func (s *HandoffServer) Manifest() []byte {
 	return append([]byte(nil), s.manifest...)
 }
 
+func (s *HandoffServer) Bundle() BundlePayload {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return BundlePayload{
+		Data:     append([]byte(nil), s.bundle...),
+		NodeName: s.nodeName,
+	}
+}
+
 func (s *HandoffServer) Status() HandoffStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,6 +108,8 @@ func (s *HandoffServer) Status() HandoffStatus {
 	return HandoffStatus{
 		State:            s.state,
 		ManifestAccepted: len(s.manifest) > 0,
+		BundleAccepted:   len(s.bundle) > 0,
+		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
 	}
 }
@@ -101,6 +123,7 @@ func (s *HandoffServer) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/install", s.handleInstall)
+	mux.HandleFunc("POST /v1/config-bundle", s.handleConfigBundle)
 	return mux
 }
 
@@ -166,6 +189,66 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, response)
 }
 
+func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "missing or invalid token", http.StatusUnauthorized)
+		return
+	}
+	nodeName := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("node"), r.Header.Get("X-Katl-Node-Name")))
+	expectedDigest := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("digest"), r.Header.Get("X-Katl-Bundle-Digest")))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
+	if err != nil {
+		http.Error(w, "read config bundle", http.StatusBadRequest)
+		return
+	}
+	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(body), configbundle.ReadOptions{
+		ExpectedDigest: expectedDigest,
+		NodeName:       nodeName,
+	})
+	if err != nil {
+		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	digest, err := installstatus.DigestManifest(selected.InstallManifest)
+	if err != nil {
+		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	if s.state != HandoffWaiting {
+		s.mu.Unlock()
+		http.Error(w, "install already started", http.StatusConflict)
+		return
+	}
+
+	s.bundle = append([]byte(nil), body...)
+	s.nodeName = selected.Node.Name
+	s.state = HandoffAccepted
+	status := installstatus.New(installstatus.StateRunning, time.Now().UTC())
+	status.InputMode = installstatus.InputModeLocalHandoff
+	status.InputSource = installstatus.InputModeLocalHandoff
+	status.RequestDigest = digest
+	status.BundleDigest = selected.BundleDigest
+	status.SourceDigest = selected.SourceDigest
+	status.NodeMaterialDigest = selected.NodeMaterialDigest
+	status.InstallMaterialDigest = selected.InstallMaterialDigest
+	status.KatlosImage = installstatus.ImageFromManifest(selected.InstallManifest)
+	status.CurrentStep = "WaitForLocalConfig"
+	status.CompletedSteps = []string{"WaitForLocalConfig"}
+	s.status = status
+	response := HandoffStatus{
+		State:            s.state,
+		ManifestAccepted: false,
+		BundleAccepted:   true,
+		SelectedNode:     s.nodeName,
+		InstallStatus:    s.status,
+	}
+	s.mu.Unlock()
+
+	writeJSON(w, response)
+}
+
 func (s *HandoffServer) authorized(r *http.Request) bool {
 	if r.Header.Get("X-Katl-Install-Token") == s.token {
 		return true
@@ -184,4 +267,13 @@ func writeJSON(w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		http.Error(w, "encode response", http.StatusInternalServerError)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

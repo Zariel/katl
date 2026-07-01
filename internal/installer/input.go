@@ -44,6 +44,10 @@ type BootInput struct {
 	ManifestPath    string
 	ManifestURL     string
 	ManifestSHA256  string
+	BundlePath      string
+	BundleURL       string
+	BundleSHA256    string
+	BundleDigest    string
 	NodeName        string
 	InstallMode     string
 	HoldForDebug    bool
@@ -55,7 +59,7 @@ type BootInput struct {
 }
 
 func (i BootInput) CanMutateDisks() bool {
-	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || (i.ManifestURL != "" && i.ManifestSHA256 != ""))
+	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || (i.ManifestURL != "" && i.ManifestSHA256 != "") || i.BundlePath != "" || (i.BundleURL != "" && i.BundleSHA256 != ""))
 }
 
 func DiscoverBootInput(request BootInputRequest) (BootInput, error) {
@@ -84,7 +88,7 @@ func DiscoverBootInput(request BootInputRequest) (BootInput, error) {
 	switch {
 	case input.HoldForDebug:
 		input.Action = InstallActionHoldForDebug
-	case input.WaitForConfig || (input.ManifestPath == "" && input.ManifestURL == ""):
+	case input.WaitForConfig || (input.ManifestPath == "" && input.ManifestURL == "" && input.BundlePath == "" && input.BundleURL == ""):
 		input.Action = InstallActionWaitForConfig
 		input.WaitForConfig = true
 	default:
@@ -163,6 +167,10 @@ func (r *inputResolver) applyValues(source InputSource, rank int, values bootInp
 	r.setStringWithRank("manifestPath", source, rank, values.ManifestPath)
 	r.setStringWithRank("manifestURL", source, rank, values.ManifestURL)
 	r.setStringWithRank("manifestSHA256", source, rank, values.ManifestSHA256)
+	r.setStringWithRank("bundlePath", source, rank, values.BundlePath)
+	r.setStringWithRank("bundleURL", source, rank, values.BundleURL)
+	r.setStringWithRank("bundleSHA256", source, rank, values.BundleSHA256)
+	r.setStringWithRank("bundleDigest", source, rank, values.BundleDigest)
 	r.setStringWithRank("nodeName", source, rank, values.NodeName)
 	r.setStringWithRank("installMode", source, rank, values.InstallMode)
 	r.setStringWithRank("artifactBaseURL", source, rank, values.ArtifactBaseURL)
@@ -179,7 +187,7 @@ func (r *inputResolver) setStringWithRank(field string, source InputSource, rank
 	if value == "" || rank < r.rank[field] {
 		return
 	}
-	if field == "manifestPath" && rank == r.rank[field] {
+	if (field == "manifestPath" || field == "bundlePath") && rank == r.rank[field] {
 		return
 	}
 
@@ -190,6 +198,14 @@ func (r *inputResolver) setStringWithRank(field string, source InputSource, rank
 		r.input.ManifestURL = value
 	case "manifestSHA256":
 		r.input.ManifestSHA256 = value
+	case "bundlePath":
+		r.input.BundlePath = value
+	case "bundleURL":
+		r.input.BundleURL = value
+	case "bundleSHA256":
+		r.input.BundleSHA256 = value
+	case "bundleDigest":
+		r.input.BundleDigest = value
 	case "nodeName":
 		r.input.NodeName = value
 	case "installMode":
@@ -228,6 +244,10 @@ type bootInputValues struct {
 	ManifestPath    string `json:"manifestPath"`
 	ManifestURL     string `json:"manifestURL"`
 	ManifestSHA256  string `json:"manifestSHA256"`
+	BundlePath      string `json:"bundlePath"`
+	BundleURL       string `json:"bundleURL"`
+	BundleSHA256    string `json:"bundleSHA256"`
+	BundleDigest    string `json:"bundleDigest"`
 	NodeName        string `json:"nodeName"`
 	InstallMode     string `json:"installMode"`
 	ArtifactBaseURL string `json:"artifactBaseURL"`
@@ -260,6 +280,22 @@ func parseKernelCmdline(cmdline string) (bootInputValues, error) {
 		case "katl.manifest.sha256":
 			if hasValue {
 				values.ManifestSHA256 = value
+			}
+		case "katl.bundle":
+			if hasValue {
+				values.BundlePath = value
+			}
+		case "katl.bundle.url":
+			if hasValue {
+				values.BundleURL = value
+			}
+		case "katl.bundle.sha256":
+			if hasValue {
+				values.BundleSHA256 = value
+			}
+		case "katl.bundle.digest":
+			if hasValue {
+				values.BundleDigest = value
 			}
 		case "katl.node":
 			if hasValue {

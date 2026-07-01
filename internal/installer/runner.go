@@ -49,35 +49,39 @@ const (
 )
 
 type Context struct {
-	ManifestPath      string
-	StateDir          string
-	TargetRoot        string
-	BootRoot          string
-	Commands          CommandRunner
-	Store             StateStore
-	Manifest          manifest.Manifest
-	LoaderRecord      *generation.Record
-	KatlosImage       *katlosimage.Payload
-	KatlosResolver    KatlosImageResolver
-	Discovery         discovery.DiscoverySource
-	HardwareFacts     discovery.HardwareFacts
-	RootProfile       manifest.RootDiskProfile
-	DiskLayout        *disk.DiskLayoutPlan
-	RootSlotPlan      *disk.RootSlotWritePlan
-	RootSlotTarget    disk.RootSlotDevice
-	RootSlotOpener    disk.RootSlotDeviceOpener
-	RootSlotInstaller disk.RootSlotInstaller
-	CurrentRootSlot   disk.RootSlot
-	RootPartitionUUID string
-	GenerationID      string
-	KubeadmConfigs    map[string]kubeadmconfig.Plan
-	IdentityRandom    io.Reader
-	Completed         []StepID
-	Chown             func(path string, uid int, gid int) error
-	InputMode         string
-	InputSource       string
-	RequestDigest     string
-	PreviousStatus    *installstatus.Record
+	ManifestPath          string
+	StateDir              string
+	TargetRoot            string
+	BootRoot              string
+	Commands              CommandRunner
+	Store                 StateStore
+	Manifest              manifest.Manifest
+	LoaderRecord          *generation.Record
+	KatlosImage           *katlosimage.Payload
+	KatlosResolver        KatlosImageResolver
+	Discovery             discovery.DiscoverySource
+	HardwareFacts         discovery.HardwareFacts
+	RootProfile           manifest.RootDiskProfile
+	DiskLayout            *disk.DiskLayoutPlan
+	RootSlotPlan          *disk.RootSlotWritePlan
+	RootSlotTarget        disk.RootSlotDevice
+	RootSlotOpener        disk.RootSlotDeviceOpener
+	RootSlotInstaller     disk.RootSlotInstaller
+	CurrentRootSlot       disk.RootSlot
+	RootPartitionUUID     string
+	GenerationID          string
+	KubeadmConfigs        map[string]kubeadmconfig.Plan
+	IdentityRandom        io.Reader
+	Completed             []StepID
+	Chown                 func(path string, uid int, gid int) error
+	InputMode             string
+	InputSource           string
+	RequestDigest         string
+	BundleDigest          string
+	SourceDigest          string
+	NodeMaterialDigest    string
+	InstallMaterialDigest string
+	PreviousStatus        *installstatus.Record
 }
 
 type Step interface {
@@ -886,6 +890,10 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.InputMode = install.InputMode
 	record.InputSource = installstatus.RedactSource(install.InputSource)
 	record.RequestDigest = install.RequestDigest
+	record.BundleDigest = install.BundleDigest
+	record.SourceDigest = install.SourceDigest
+	record.NodeMaterialDigest = install.NodeMaterialDigest
+	record.InstallMaterialDigest = install.InstallMaterialDigest
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
 	record.WipeTargetAccepted = install.Manifest.Install.WipeTarget

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/configbundle"
 	"github.com/zariel/katl/internal/installer/discovery"
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
@@ -94,6 +96,85 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 	}, nil
 }
 
+func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource string, stdout io.Writer) error {
+	if strings.TrimSpace(bundlePath) == "" {
+		return fmt.Errorf("--bundle is required")
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if strings.TrimSpace(inputSource) == "" {
+		inputSource = bundlePath
+	}
+	selected, err := configbundle.ReadSelectedNodeFile(bundlePath, configbundle.ReadOptions{
+		ExpectedDigest: expectedDigest,
+		NodeName:       selectedNode,
+	})
+	if err != nil {
+		return err
+	}
+	manifestPath, err := writeBundleInstallManifest(stateDir, selected.InstallManifest)
+	if err != nil {
+		return err
+	}
+	install, err := bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource, selected)
+	if err != nil {
+		return err
+	}
+	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
+	if err := runner.Run(ctx); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "katlos-install completed bundle=%s node=%s\n", bundlePath, selected.Node.Name)
+	return nil
+}
+
+func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource string, selected configbundle.SelectedNodeMaterial) (*installer.Context, error) {
+	mediaRoot, err := manifestMediaRoot(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+	commands := installer.NewExecCommandRunner()
+	return &installer.Context{
+		ManifestPath: manifestPath,
+		StateDir:     stateDir,
+		TargetRoot:   "/mnt/target",
+		Commands:     commands,
+		Store:        installer.NewFileStateStore(stateDir),
+		KatlosResolver: katlosimage.Resolver{
+			MediaRoot: mediaRoot,
+			WorkDir:   filepath.Join(stateDir, "katlos-image"),
+			Commands:  commands,
+		},
+		Discovery:             discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener:        disk.FileRootSlotDeviceOpener{},
+		IdentityRandom:        rand.Reader,
+		Chown:                 os.Chown,
+		KubeadmConfigs:        selected.KubeadmConfigs,
+		InputMode:             inputMode,
+		InputSource:           inputSource,
+		BundleDigest:          selected.BundleDigest,
+		SourceDigest:          selected.SourceDigest,
+		NodeMaterialDigest:    selected.NodeMaterialDigest,
+		InstallMaterialDigest: selected.InstallMaterialDigest,
+	}, nil
+}
+
+func writeBundleInstallManifest(stateDir string, installManifest any) (string, error) {
+	path := filepath.Join(stateDir, "input", "install-manifest.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create bundle manifest dir: %w", err)
+	}
+	data, err := json.MarshalIndent(installManifest, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode bundle install material: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return "", fmt.Errorf("write bundle install material: %w", err)
+	}
+	return path, nil
+}
+
 func manifestMediaRoot(manifestPath string) (string, error) {
 	path, err := filepath.Abs(manifestPath)
 	if err != nil {
@@ -164,7 +245,8 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 	}
 	inputMode := bootInputMode(input)
 	manifestURL := redactURL(input.ManifestURL)
-	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s inputMode=%s\n", input.Action, input.InstallMode, input.ManifestPath, manifestURL, inputMode)
+	bundleURL := redactURL(input.BundleURL)
+	fmt.Fprintf(stdout, "katlos-install mode: action=%s installMode=%s manifestPath=%s manifestURL=%s bundlePath=%s bundleURL=%s node=%s inputMode=%s\n", input.Action, input.InstallMode, input.ManifestPath, manifestURL, input.BundlePath, bundleURL, input.NodeName, inputMode)
 
 	switch input.Action {
 	case installer.InstallActionHoldForDebug:
@@ -174,6 +256,17 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 	case installer.InstallActionWaitForConfig:
 		return handoffRunner(ctx, runDir, handoffAddr, stdout)
 	case installer.InstallActionRun:
+		if input.BundleURL != "" {
+			bundlePath, err := fetchBundleURL(ctx, input.BundleURL, input.BundleSHA256, runDir)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "katlos-install downloaded bundle url=%s path=%s\n", bundleURL, bundlePath)
+			return runBundle(ctx, bundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, bundleURL, stdout)
+		}
+		if input.BundlePath != "" {
+			return runBundle(ctx, input.BundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, input.BundlePath, stdout)
+		}
 		if input.ManifestURL != "" {
 			manifestPath, err := fetchManifestURL(ctx, input.ManifestURL, input.ManifestSHA256, runDir)
 			if err != nil {
@@ -188,52 +281,42 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 	}
 }
 
+func fetchBundleURL(ctx context.Context, bundleURL, wantSHA256, runDir string) (string, error) {
+	body, err := fetchURLWithSHA256(ctx, bundleURL, wantSHA256, "bundle", 64<<20)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return "", fmt.Errorf("create run dir: %w", err)
+	}
+	path := filepath.Join(runDir, "config.katlcfg")
+	tmp, err := os.CreateTemp(runDir, ".config-bundle-*.katlcfg")
+	if err != nil {
+		return "", fmt.Errorf("create bundle temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write bundle temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("chmod bundle temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close bundle temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("install fetched bundle: %w", err)
+	}
+	return path, nil
+}
+
 func fetchManifestURL(ctx context.Context, manifestURL, wantSHA256, runDir string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(manifestURL))
+	body, err := fetchURLWithSHA256(ctx, manifestURL, wantSHA256, "manifest", 1<<20)
 	if err != nil {
-		return "", errors.New("parse manifest URL: invalid URL")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", errors.New("manifest URL must use http or https")
-	}
-	if parsed.Host == "" {
-		return "", errors.New("manifest URL missing host")
-	}
-	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
-	if len(wantSHA256) != 64 {
-		return "", errors.New("manifest URL requires manifestSHA256")
-	}
-	if _, err := hex.DecodeString(wantSHA256); err != nil {
-		return "", fmt.Errorf("manifestSHA256 is not valid hex: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return "", fmt.Errorf("create manifest request for %s: invalid URL", redactURL(manifestURL))
-	}
-	client := http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch manifest URL %s: request failed", redactURL(manifestURL))
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch manifest URL: unexpected HTTP status %s", resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
-	if err != nil {
-		return "", fmt.Errorf("read manifest URL response: %w", err)
-	}
-	if len(body) > 1<<20 {
-		return "", errors.New("manifest URL response exceeds 1 MiB")
-	}
-	gotSHA256 := sha256.Sum256(body)
-	if got := hex.EncodeToString(gotSHA256[:]); got != wantSHA256 {
-		return "", fmt.Errorf("manifest URL digest mismatch: got %s want %s", got, wantSHA256)
+		return "", err
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return "", fmt.Errorf("create run dir: %w", err)
@@ -262,6 +345,56 @@ func fetchManifestURL(ctx context.Context, manifestURL, wantSHA256, runDir strin
 	return path, nil
 }
 
+func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, limit int64) ([]byte, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s URL: invalid URL", label)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("%s URL must use http or https", label)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("%s URL missing host", label)
+	}
+	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
+	if len(wantSHA256) != 64 {
+		return nil, fmt.Errorf("%s URL requires %sSHA256", label, label)
+	}
+	if _, err := hex.DecodeString(wantSHA256); err != nil {
+		return nil, fmt.Errorf("%sSHA256 is not valid hex: %w", label, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create %s request for %s: invalid URL", label, redactURL(rawURL))
+	}
+	client := http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s URL %s: request failed", label, redactURL(rawURL))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s URL: unexpected HTTP status %s", label, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s URL response: %w", label, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%s URL response exceeds %d bytes", label, limit)
+	}
+	gotSHA256 := sha256.Sum256(body)
+	if got := hex.EncodeToString(gotSHA256[:]); got != wantSHA256 {
+		return nil, fmt.Errorf("%s URL digest mismatch: got %s want %s", label, got, wantSHA256)
+	}
+	return body, nil
+}
+
 func redactURL(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
@@ -281,7 +414,11 @@ func redactURL(raw string) string {
 }
 
 func bootInputMode(input installer.BootInput) string {
-	switch input.SelectedSources["manifestPath"] {
+	source := input.SelectedSources["manifestPath"]
+	if input.SelectedSources["bundlePath"] != "" {
+		source = input.SelectedSources["bundlePath"]
+	}
+	switch source {
 	case installer.InputSourceRunKatl, installer.InputSourceEtcKatl, installer.InputSourceEmbeddedMedia, installer.InputSourceLocalFile:
 		return installstatus.InputModeOfflineMedia
 	default:
@@ -294,8 +431,10 @@ func bootInput(runDir, etcDir string) (installer.BootInput, error) {
 	request.KernelCmdline = readText("/proc/cmdline")
 	addInputFile(&request, installer.InputSourceEtcKatl, filepath.Join(etcDir, "install-input.json"))
 	addManifestFiles(&request, installer.InputSourceEtcKatl, etcDir)
+	addBundleFiles(&request, installer.InputSourceEtcKatl, etcDir)
 	addInputFile(&request, installer.InputSourceRunKatl, filepath.Join(runDir, "install-input.json"))
 	addManifestFiles(&request, installer.InputSourceRunKatl, runDir)
+	addBundleFiles(&request, installer.InputSourceRunKatl, runDir)
 	return installer.DiscoverBootInput(request)
 }
 
@@ -327,6 +466,23 @@ func addManifestFile(request *installer.BootInputRequest, source installer.Input
 func addManifestFiles(request *installer.BootInputRequest, source installer.InputSource, dir string) {
 	for _, name := range []string{"install-manifest.json", "install-manifest.yml", "install-manifest.yaml"} {
 		addManifestFile(request, source, filepath.Join(dir, name))
+	}
+}
+
+func addBundleFile(request *installer.BootInputRequest, source installer.InputSource, path string) {
+	if _, ok := readFile(path); !ok {
+		return
+	}
+	request.Files = append(request.Files, installer.BootInputFile{
+		Source:  source,
+		Path:    path + ".input",
+		Content: []byte(fmt.Sprintf(`{"bundlePath":%q}`, path)),
+	})
+}
+
+func addBundleFiles(request *installer.BootInputRequest, source installer.InputSource, dir string) {
+	for _, name := range []string{"config.katlcfg", "cluster.katlcfg"} {
+		addBundleFile(request, source, filepath.Join(dir, name))
 	}
 }
 
@@ -374,6 +530,17 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if bundle := server.Bundle(); len(bundle.Data) > 0 {
+			bundlePath := filepath.Join(runDir, "config.katlcfg")
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				return fmt.Errorf("create handoff dir: %w", err)
+			}
+			if err := os.WriteFile(bundlePath, bundle.Data, 0o600); err != nil {
+				return fmt.Errorf("write handoff config bundle: %w", err)
+			}
+			fmt.Fprintf(stdout, "katlos-install handoff accepted bundle=%s node=%s\n", bundlePath, bundle.NodeName)
+			return runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout)
+		}
 		if len(server.Manifest()) > 0 {
 			manifestPath := filepath.Join(runDir, "install-manifest.json")
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -512,6 +679,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 
 	manifestPath := flags.String("manifest", "", "path to install manifest")
+	bundlePath := flags.String("bundle", "", "path to Katl config bundle")
+	nodeName := flags.String("node", "", "selected node name for config bundle")
+	bundleDigest := flags.String("bundle-digest", "", "expected config bundle digest")
 	stateDir := flags.String("state-dir", "/var/lib/katl/install", "installer state directory")
 	listStates := flags.Bool("list-states", false, "print the installer state order and exit")
 	showVersion := flags.Bool("version", false, "print build metadata and exit")
@@ -562,5 +732,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	if strings.TrimSpace(*bundlePath) != "" {
+		return runBundle(ctx, strings.TrimSpace(*bundlePath), strings.TrimSpace(*nodeName), strings.TrimSpace(*bundleDigest), *stateDir, installstatus.InputModePXEPreseed, strings.TrimSpace(*bundlePath), stdout)
+	}
 	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir, installstatus.InputModePXEPreseed, strings.TrimSpace(*manifestPath), stdout)
 }

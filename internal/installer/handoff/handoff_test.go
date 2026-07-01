@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zariel/katl/internal/installer/configbundle"
 )
 
 func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
@@ -77,6 +81,58 @@ func TestHandoffServerRequiresTokenAndAcceptsOneManifest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("second POST status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestHandoffServerAcceptsConfigBundleWithSelectedNode(t *testing.T) {
+	server := newTestHandoffServer(t)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	bundle, result := validConfigBundle(t)
+
+	resp := postBundle(t, ts.URL, "", "cp-1", result.Digest, bundle)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("POST bundle without token status = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = postBundle(t, ts.URL, "test-token", "cp-1", result.Digest, bundle)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST valid bundle status = %d, want 200", resp.StatusCode)
+	}
+	payload := server.Bundle()
+	if !bytes.Equal(payload.Data, bundle) || payload.NodeName != "cp-1" {
+		t.Fatalf("stored bundle = %d bytes node=%q", len(payload.Data), payload.NodeName)
+	}
+	status := server.Status()
+	if !status.BundleAccepted || status.ManifestAccepted || status.SelectedNode != "cp-1" {
+		t.Fatalf("handoff status = %#v", status)
+	}
+	if status.InstallStatus.BundleDigest != result.Digest || status.InstallStatus.SourceDigest == "" || status.InstallStatus.NodeMaterialDigest == "" {
+		t.Fatalf("install status missing bundle digests: %#v", status.InstallStatus)
+	}
+
+	resp = postManifest(t, ts.URL, "test-token", validManifestJSON())
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("manifest after bundle status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestHandoffServerRejectsConfigBundleWithoutSelectedNode(t *testing.T) {
+	server := newTestHandoffServer(t)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	bundle, result := validConfigBundle(t)
+
+	resp := postBundle(t, ts.URL, "test-token", "", result.Digest, bundle)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST bundle without node status = %d, want 400", resp.StatusCode)
+	}
+	if server.Status().State != HandoffWaiting {
+		t.Fatalf("state = %s, want waiting after invalid bundle", server.Status().State)
 	}
 }
 
@@ -172,6 +228,36 @@ func postManifest(t *testing.T, baseURL, token string, manifest []byte) *http.Re
 	return resp
 }
 
+func postBundle(t *testing.T, baseURL, token, node, digest string, bundle []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/config-bundle?node="+node+"&digest="+digest, bytes.NewReader(bundle))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/config-bundle error = %v", err)
+	}
+	return resp
+}
+
+func validConfigBundle(t *testing.T) ([]byte, configbundle.Result) {
+	t.Helper()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	if err := os.WriteFile(sourcePath, []byte(validBundleSourceConfig()), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	return archive, result
+}
+
 func validManifestJSON() []byte {
 	return []byte(`{
 		"apiVersion": "install.katl.dev/v1alpha1",
@@ -201,4 +287,58 @@ func validManifestJSON() []byte {
 			"role": "install"
 		}
 	}`)
+}
+
+func validBundleSourceConfig() string {
+	return `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: lab
+spec:
+  controlPlaneEndpoint: api.katl.test:6443
+  kubernetes:
+    version: v1.36.1
+  katlosImage:
+    url: https://example.invalid/katlos-install.squashfs
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sizeBytes: 1073741824
+    version: 2026.06.04
+    architecture: x86_64
+    runtimeInterface: katl-runtime-1
+    role: install
+  defaults:
+    install:
+      wipeTarget: true
+    identity:
+      ssh:
+        authorizedKeys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+    bootstrap:
+      access:
+        method: agent
+        credentialRef: vsock:1234:10240
+  systemRoleDefaults:
+    control-plane:
+      kubernetes:
+        kubeadm:
+          configRef: control-plane
+  kubeadmConfigs:
+    control-plane:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: InitConfiguration
+        nodeRegistration:
+          criSocket: unix:///run/containerd/containerd.sock
+        ---
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.1
+  nodes:
+    - name: cp-1
+      systemRole: control-plane
+      overrides:
+        install:
+          targetDisk:
+            byID: /dev/disk/by-id/ata-root
+`
 }

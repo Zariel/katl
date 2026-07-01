@@ -27,6 +27,8 @@ type FirstInstallConfig struct {
 	ESPExtractor    InstalledESPExtractor
 	Manifest        []byte
 	ManifestPath    string
+	ConfigBundle    string
+	SelectedNode    string
 	GuestHandoff    bool
 	PreseedManifest bool
 	HandoffToken    string
@@ -45,6 +47,7 @@ const (
 	guestHandoffSignal         = "katlos-install waiting for config at "
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
 	installerCompletedSignal   = "katlos-install completed manifest="
+	bundleCompletedSignal      = "katlos-install completed bundle="
 )
 
 type handoffLog struct {
@@ -90,7 +93,7 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		config.Installer.VM.EFIDiskImage = true
 		config.Installer.VM.MediaRunner = config.PreseedRunner
 		if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
-			config.Installer.Expect = installerCompletedSignal
+			config.Installer.Expect = firstInstallCompletedSignal(config)
 		}
 	}
 	if config.GuestHandoff {
@@ -236,7 +239,7 @@ func loadManifest(config FirstInstallConfig) ([]byte, error) {
 
 func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []byte) (FirstInstallConfig, error) {
 	if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
-		config.Installer.Expect = installerCompletedSignal
+		config.Installer.Expect = firstInstallCompletedSignal(config)
 	}
 	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, SerialHook{
 		Name:   "installer-guest-handoff",
@@ -264,17 +267,29 @@ func requirePreseedInstallerEvidence(result Result) error {
 		return fmt.Errorf("read installer serial for preseed evidence: %w", err)
 	}
 	text := string(serial)
-	for _, signal := range []string{
+	signals := []string{
 		"katl input: mounted seed device",
 		"katl input: copied",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json",
 		"inputMode=offline-media",
-	} {
+	}
+	if strings.Contains(text, "bundlePath=/run/katl/preseed/config.katlcfg") {
+		signals = append(signals, "bundlePath=/run/katl/preseed/config.katlcfg")
+	} else {
+		signals = append(signals, "manifestPath=/run/katl/preseed/install-manifest.json")
+	}
+	for _, signal := range signals {
 		if !strings.Contains(text, signal) {
 			return fmt.Errorf("installer serial missing preseed signal %q", signal)
 		}
 	}
 	return nil
+}
+
+func firstInstallCompletedSignal(config FirstInstallConfig) string {
+	if strings.TrimSpace(config.ConfigBundle) != "" {
+		return bundleCompletedSignal
+	}
+	return installerCompletedSignal
 }
 
 func writeManifest(result Result, manifest []byte) error {
@@ -295,23 +310,38 @@ func writePreseedMedia(ctx context.Context, result Result, config FirstInstallCo
 		return preseedMedia{}, err
 	}
 	input := struct {
-		ManifestPath string `json:"manifestPath"`
+		ManifestPath string `json:"manifestPath,omitempty"`
+		BundlePath   string `json:"bundlePath,omitempty"`
+		NodeName     string `json:"nodeName,omitempty"`
 		InstallMode  string `json:"installMode"`
-	}{
-		ManifestPath: "/run/katl/preseed/install-manifest.json",
-		InstallMode:  "auto",
+	}{InstallMode: "auto"}
+	if strings.TrimSpace(config.ConfigBundle) != "" {
+		input.BundlePath = "/run/katl/preseed/config.katlcfg"
+		input.NodeName = strings.TrimSpace(config.SelectedNode)
+		if input.NodeName == "" {
+			return preseedMedia{}, errors.New("selected node is required for preseed config bundle")
+		}
+		if err := copyRequiredFile(config.ConfigBundle, filepath.Join(dir, "config.katlcfg"), 0o600); err != nil {
+			return preseedMedia{}, fmt.Errorf("copy preseed config bundle: %w", err)
+		}
+	} else {
+		input.ManifestPath = "/run/katl/preseed/install-manifest.json"
 	}
 	if err := writeJSON(filepath.Join(dir, "install-input.json"), input); err != nil {
 		return preseedMedia{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), manifest, 0o600); err != nil {
-		return preseedMedia{}, err
+	if input.ManifestPath != "" {
+		if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), manifest, 0o600); err != nil {
+			return preseedMedia{}, err
+		}
 	}
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
 		return preseedMedia{}, err
 	}
-	if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
-		return preseedMedia{}, err
+	if input.ManifestPath != "" {
+		if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
+			return preseedMedia{}, err
+		}
 	}
 	image := filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")
 	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
@@ -336,8 +366,10 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
 		return preseedMedia{}, err
 	}
-	if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
-		return preseedMedia{}, err
+	if strings.TrimSpace(config.ConfigBundle) == "" {
+		if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
+			return preseedMedia{}, err
+		}
 	}
 	image := filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed.img")
 	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
@@ -656,6 +688,7 @@ func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstall
 	if postURL == "" {
 		postURL = url
 	}
+	postURL = handoffPostURL(postURL, config)
 	request := handoffLog{
 		URL:          url,
 		PostURL:      postURL,
@@ -743,7 +776,7 @@ func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfi
 			return err
 		}
 		handler = server.Handler()
-		url = "http://vmtest.local/v1/install"
+		url = handoffPostURL("http://vmtest.local/v1/install", config)
 		token = server.Token()
 		announcement = server.Announcement("http://vmtest.local")
 	}
@@ -762,7 +795,7 @@ func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfi
 	}
 
 	if handler != nil {
-		status, body, err := postLocal(ctx, handler, url, token, manifest)
+		status, body, err := postLocal(ctx, handler, url, token, config, manifest)
 		if err != nil {
 			return err
 		}
@@ -776,18 +809,27 @@ func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfi
 }
 
 func postHandoff(ctx context.Context, config FirstInstallConfig, url, token string, manifest []byte) (int, string, error) {
-	if config.HandoffPoster != nil {
-		return config.HandoffPoster(ctx, url, token, manifest)
-	}
-	return postRemote(ctx, url, token, manifest)
-}
-
-func postLocal(ctx context.Context, handler http.Handler, url, token string, manifest []byte) (int, string, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(manifest))
+	payload, contentType, err := handoffPayload(config, manifest)
 	if err != nil {
 		return 0, "", err
 	}
-	httpRequest.Header.Set("Content-Type", "application/json")
+	url = handoffPostURL(url, config)
+	if config.HandoffPoster != nil {
+		return config.HandoffPoster(ctx, url, token, payload)
+	}
+	return postRemote(ctx, url, token, payload, contentType)
+}
+
+func postLocal(ctx context.Context, handler http.Handler, url, token string, config FirstInstallConfig, manifest []byte) (int, string, error) {
+	payload, contentType, err := handoffPayload(config, manifest)
+	if err != nil {
+		return 0, "", err
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, "", err
+	}
+	httpRequest.Header.Set("Content-Type", contentType)
 	httpRequest.Header.Set("X-Katl-Install-Token", token)
 	response := &responseCapture{header: http.Header{}}
 	handler.ServeHTTP(response, httpRequest)
@@ -797,12 +839,12 @@ func postLocal(ctx context.Context, handler http.Handler, url, token string, man
 	return response.status, response.body.String(), nil
 }
 
-func postRemote(ctx context.Context, url, token string, manifest []byte) (int, string, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(manifest))
+func postRemote(ctx context.Context, url, token string, payload []byte, contentType string) (int, string, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, "", err
 	}
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Content-Type", contentType)
 	httpRequest.Header.Set("X-Katl-Install-Token", token)
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(httpRequest)
@@ -815,6 +857,34 @@ func postRemote(ctx context.Context, url, token string, manifest []byte) (int, s
 		return 0, "", fmt.Errorf("read handoff response: %w", err)
 	}
 	return response.StatusCode, string(body), nil
+}
+
+func handoffPayload(config FirstInstallConfig, manifest []byte) ([]byte, string, error) {
+	if strings.TrimSpace(config.ConfigBundle) == "" {
+		return manifest, "application/json", nil
+	}
+	data, err := os.ReadFile(config.ConfigBundle)
+	if err != nil {
+		return nil, "", fmt.Errorf("read handoff config bundle: %w", err)
+	}
+	return data, "application/vnd.katl.config.bundle.v1", nil
+}
+
+func handoffPostURL(raw string, config FirstInstallConfig) string {
+	if strings.TrimSpace(config.ConfigBundle) == "" {
+		return raw
+	}
+	parsed, err := neturl.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	parsed.Path = strings.TrimRight(filepath.ToSlash(filepath.Dir(parsed.Path)), "/") + "/config-bundle"
+	query := parsed.Query()
+	if node := strings.TrimSpace(config.SelectedNode); node != "" {
+		query.Set("node", node)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func writeHandoff(result Result, url string, statusCode int, body string) error {

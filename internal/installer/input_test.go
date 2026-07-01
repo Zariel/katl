@@ -69,6 +69,43 @@ func TestDiscoverBootInputURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
 	}
 }
 
+func TestDiscoverBootInputBundleKernelArgs(t *testing.T) {
+	input, err := DiscoverBootInput(BootInputRequest{
+		KernelCmdline: "katl.bundle.url=https://kernel.example/cluster.katlcfg katl.bundle.sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa katl.bundle.digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb katl.node=cp-1 katl.install.mode=auto",
+	})
+	if err != nil {
+		t.Fatalf("DiscoverBootInput() error = %v", err)
+	}
+
+	if input.BundleURL != "https://kernel.example/cluster.katlcfg" || input.BundleSHA256 == "" || input.BundleDigest == "" {
+		t.Fatalf("bundle input = %#v", input)
+	}
+	if input.NodeName != "cp-1" {
+		t.Fatalf("node name = %q", input.NodeName)
+	}
+	if input.Action != InstallActionRun || !input.CanMutateDisks() {
+		t.Fatalf("action = %q, can mutate = %t; want runnable bundle autoinstall", input.Action, input.CanMutateDisks())
+	}
+	if input.SelectedSources["bundleURL"] != InputSourceKernelCmdline {
+		t.Fatalf("bundle URL source = %q", input.SelectedSources["bundleURL"])
+	}
+}
+
+func TestDiscoverBootInputBundleURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
+	input, err := DiscoverBootInput(BootInputRequest{
+		KernelCmdline: "katl.bundle.url=https://kernel.example/cluster.katlcfg katl.install.mode=auto katl.node=cp-1",
+	})
+	if err != nil {
+		t.Fatalf("DiscoverBootInput() error = %v", err)
+	}
+	if input.Action != InstallActionRun {
+		t.Fatalf("action = %q, want run", input.Action)
+	}
+	if input.CanMutateDisks() {
+		t.Fatalf("bundle URL without transport digest must not allow disk mutation")
+	}
+}
+
 func TestDiscoverBootInputDerivesDefaultsFromYAMLManifest(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
 		Manifest: []byte(`node:
