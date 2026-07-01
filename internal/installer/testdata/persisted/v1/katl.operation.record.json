@@ -1,0 +1,43 @@
+{
+  "recordType": "katl.operation.record",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "OperationRecordSnapshot",
+    "operationID": "op-fixture",
+    "latestJournalSeq": 1,
+    "journalDigest": "sha256:03b7f1b4ae32b685f01bd14b2055e6fe93fbd6a1d413c044d2399afa1ae37fed",
+    "record": {
+      "apiVersion": "katl.dev/v1alpha1",
+      "kind": "OperationRecord",
+      "schemaVersion": 1,
+      "operationID": "op-fixture",
+      "operationKind": "destructive-reset",
+      "scope": "destructive-reset",
+      "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "recordRevision": 1,
+      "latestJournalSeq": 1,
+      "phasePlan": [
+        "accepted",
+        "destructive-reset"
+      ],
+      "phase": "accepted",
+      "phaseIndex": 0,
+      "resourceLocks": [
+        "destructive-reset.lock"
+      ],
+      "destructiveResetRequest": {
+        "inventoryNodeName": "worker-1",
+        "resetScope": "node",
+        "discardClusterIdentity": true,
+        "wipeSurfaces": [
+          "katlos-boot-artifacts",
+          "disk-boot-path"
+        ]
+      },
+      "createdAt": "2026-06-21T10:07:00Z",
+      "updatedAt": "2026-06-21T10:07:00Z"
+    },
+    "updatedAt": "2026-06-21T10:07:00Z"
+  }
+}

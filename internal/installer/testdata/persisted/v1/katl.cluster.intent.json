@@ -1,0 +1,63 @@
+{
+  "recordType": "katl.cluster.intent",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "ClusterIntent",
+    "generationID": "gen-0",
+    "systemRole": "control-plane",
+    "identity": {
+      "hostname": "cp-1-host"
+    },
+    "inventory": {
+      "clusterName": "lab",
+      "nodeName": "cp-1",
+      "nodeAddress": "10.0.0.11",
+      "controlPlaneEndpoint": "api.katl.test:6443",
+      "access": {
+        "method": "agent",
+        "credentialRef": "agent/cp-1"
+      },
+      "labels": {
+        "katl.dev/zone": "rack-a"
+      },
+      "taints": [
+        {
+          "key": "node-role.kubernetes.io/control-plane",
+          "effect": "NoSchedule"
+        }
+      ]
+    },
+    "bootstrapProfile": {
+      "ref": "control-plane",
+      "resolvedID": "kubeadm:control-plane",
+      "kubeadmConfigRef": "control-plane",
+      "kubeadmInputDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "kubernetes": {
+      "payloadVersion": "v1.36.1",
+      "bundleSource": "https://artifacts.example.test/kubernetes",
+      "bundleRef": "v1.36.1@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "kubeadm": {
+      "configRef": "control-plane",
+      "configPath": "/etc/katl/kubeadm/control-plane/config.yaml",
+      "intent": "bootstrap",
+      "inputDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "katlosImage": {
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "version": "0.1.0",
+      "architecture": "x86_64",
+      "runtimeInterface": "katl-runtime-1",
+      "role": "node"
+    },
+    "source": {
+      "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "katlosImageSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "installedAt": "2026-06-21T10:05:00Z",
+    "targetDiskStableID": "/dev/disk/by-id/ata-root"
+  }
+}

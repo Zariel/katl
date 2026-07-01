@@ -1,0 +1,28 @@
+{
+  "recordType": "katl.generation.config-apply-status",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "ConfigApplyStatus",
+    "generationID": "gen-1",
+    "previousGenerationID": "gen-0",
+    "requestedApplyMode": "next-boot",
+    "acceptedApplyMode": "next-boot",
+    "changedDomains": [
+      "networkd"
+    ],
+    "phase": "next-boot",
+    "healthState": "unknown",
+    "domainActions": [
+      {
+        "domain": "networkd",
+        "action": "render",
+        "status": "passed"
+      }
+    ],
+    "kubeadm": {
+      "required": false
+    },
+    "updatedAt": "2026-06-21T10:03:00Z"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "recordType": "katl.boot.selection",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "BootSelection",
+    "defaultGenerationID": "gen-0",
+    "persistentDefaultPromotion": "wedged",
+    "updatedAt": "2026-06-21T10:02:00Z"
+  }
+}

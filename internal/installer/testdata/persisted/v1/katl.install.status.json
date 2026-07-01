@@ -1,0 +1,25 @@
+{
+  "recordType": "katl.install.status",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "InstallToBootstrapStatus",
+    "state": "waiting-for-cluster-bootstrap",
+    "inputMode": "pxe-preseed",
+    "inputSource": "https://example.invalid/install.json",
+    "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "katlosImage": {
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "version": "0.1.0",
+      "architecture": "x86_64",
+      "runtimeInterface": "katl-runtime-1",
+      "role": "node"
+    },
+    "targetDiskStableID": "/dev/disk/by-id/ata-root",
+    "selectedRootSlot": "root-a",
+    "installedGeneration": "gen-0",
+    "finalHandoff": "waiting-for-cluster-bootstrap",
+    "wipeTargetAccepted": true,
+    "updatedAt": "2026-06-21T10:04:00Z"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "recordType": "katl.config-request.decision",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "ConfigRequestAudit",
+    "sourceID": "operator",
+    "desiredVersion": "2",
+    "requestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requestedApplyMode": "next-boot",
+    "acceptedApplyMode": "next-boot",
+    "changedDomains": [
+      "networkd"
+    ],
+    "previousGenerationID": "gen-0",
+    "candidateGenerationID": "gen-1",
+    "decision": "accepted",
+    "kubeadm": {
+      "required": false
+    },
+    "updatedAt": "2026-06-21T10:06:00Z"
+  }
+}

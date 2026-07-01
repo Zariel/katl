@@ -1,0 +1,28 @@
+{
+  "recordType": "katl.generation.spec",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "GenerationSpec",
+    "generationID": "gen-0",
+    "runtimeVersion": "0.1.0",
+    "root": {
+      "slot": "root-a",
+      "partitionUUID": "11111111-2222-3333-4444-555555555555",
+      "runtimeVersion": "0.1.0",
+      "runtimeInterface": "katl-runtime-1",
+      "architecture": "x86_64",
+      "runtimeArtifactSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "boot": {
+      "ukiPath": "/efi/EFI/Linux/katl-gen-0.efi",
+      "loaderEntryPath": "loader/entries/katl-gen-0.conf"
+    },
+    "sysexts": [],
+    "confexts": [],
+    "kernelCommandLine": [
+      "quiet"
+    ],
+    "createdAt": "2026-06-21T10:00:00Z"
+  }
+}

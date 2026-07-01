@@ -1,0 +1,14 @@
+{
+  "recordType": "katl.generation.status",
+  "recordVersion": 1,
+  "payload": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "GenerationStatus",
+    "generationID": "gen-0",
+    "specDigest": "sha256:6238e2307447a58d705f59c5e809c1b199db7e4c7db516442923a024cedfd81d",
+    "commitState": "committed",
+    "bootState": "pending",
+    "healthState": "unknown",
+    "updatedAt": "2026-06-21T10:01:00Z"
+  }
+}
