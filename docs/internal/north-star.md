@@ -58,8 +58,11 @@ KatlOS runtime
 ```
 
 The KatlOS runtime is intentionally narrow. It carries the kernel, systemd,
-networking, storage, SSH access for operators, container runtime support,
-`katlc`, Katl-owned runtime services, generated configuration, and selected sysexts. Kubernetes add-ons,
+networking, storage, SSH access for operators, base CRI runtime support,
+`katlc`, Katl-owned runtime services, generated configuration, and selected
+sysexts. ADR-005 keeps containerd and the selected OCI runtime in the base
+runtime for v0.1 and ties their update policy to the latest supported KatlOS
+base/runtime validation gates. Kubernetes add-ons,
 workload policy, ingress, storage systems, GitOps controllers, and application
 workloads live in the cluster layer unless a future design adds a bounded
 node-level capability.
@@ -68,9 +71,12 @@ node-level capability.
 
 Katl treats Kubernetes as the first-class host workload.
 
-The base system should make the selected Kubernetes payload, containerd, host
-networking, kernel/network prerequisites needed by user-installed CNI,
-persistent Kubernetes state, and cluster bootstrap predictable. The node is
+The base system should make the selected Kubernetes payload, containerd, the
+selected OCI runtime, host networking, kernel/network prerequisites needed by
+user-installed CNI, persistent Kubernetes state, and cluster bootstrap
+predictable. It must not choose or manage the user's production CNI; Cilium,
+Calico, and similar add-ons remain user/bootstrap-managed after Katl reaches a
+clear handoff. The node is
 successful when generation 0 reaches installed-runtime health and an explicit
 bootstrap operation can reach a clear kubeadm-ready point with enough status for
 an operator or test harness to continue safely.

@@ -820,7 +820,7 @@ kmod
 nftables or other required packet filtering base
 openssh-server
 containerd
-runc or crun
+the selected OCI runtime, such as crun or runc
 katlc
 katl node/update services, when they exist
 optional katlctl client binary for local operator convenience; node state remains
@@ -831,6 +831,14 @@ This is the core of the runtime OS: kernel, systemd, SSH access, and enough host
 OS to run kubelet/kubeadm correctly and repeatably. It is not expected to look
 like a general-purpose Fedora Server install, but it should remain recognizable
 and debuggable as a normal Linux system.
+
+ADR-005 keeps containerd, the selected OCI runtime, Katl-owned containerd
+ordering/drop-ins, and `/var/lib/containerd` state in the base runtime for v0.1.
+KatlOS keeps that stack current with the latest supported KatlOS base/runtime
+validation gates. Users still install and operate their chosen production CNI
+after bootstrap; any generic CNI plugin binaries retained in the base runtime
+are prerequisites for tests, bootstrap fixtures, kube-proxy support, or host
+diagnostics, not a managed cluster CNI.
 
 SSH should be available on the installed runtime for this project audience. This
 is an intentional part of the operating model, not just a recovery escape hatch.
@@ -909,7 +917,8 @@ application workloads
 Kubernetes binaries are delivered through the selected Kubernetes sysext for
 v0.1. The base root artifact owns host prerequisites, container runtime
 plumbing, and Katl-controlled service ordering, not kubeadm, kubelet, kubectl,
-or crictl.
+or crictl. This preserves the ADR-005 base-runtime containerd boundary while
+leaving Kubernetes payload helpers in the sysext.
 
 ## Kubeadm-Ready Runtime
 
@@ -930,8 +939,9 @@ supervision when an explicit bootstrap or join operation reaches that phase.
 For the first implementation, kubeadm readiness means:
 
 ```text
-runtime root provides systemd, networking, time sync, SSH, containerd, OCI runtime,
-  sysctl/modules-load/tmpfiles scaffolding, and Katl-controlled units
+runtime root provides systemd, networking, time sync, SSH, containerd, the
+  selected OCI runtime, sysctl/modules-load/tmpfiles scaffolding, and
+  Katl-controlled units
 Kubernetes sysext provides kubeadm, kubelet, kubectl, and closely related CLI
   or helper binaries needed for preflight and node bootstrap
 selected generation spec records the Kubernetes sysext artifact, digest,

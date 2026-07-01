@@ -102,9 +102,12 @@ katlos-install
 
 KatlOS runtime
   Installed Fedora-derived node runtime. It is a pared down Linux system for
-  systemd, SSH, the container runtime, and Katl-owned wiring. Kubernetes tools
-  such as kubeadm and kubelet come from the selected Kubernetes sysext. It is not
-  a bespoke distribution or a Talos-style appliance.
+  systemd, SSH, the base CRI runtime stack, and Katl-owned wiring. ADR-005 keeps
+  containerd and the selected OCI runtime in this base runtime for v0.1 and
+  keeps them current with the latest supported KatlOS base/runtime validation
+  gates. Kubernetes tools such as kubeadm and kubelet come from the selected
+  Kubernetes sysext. It is not a bespoke distribution or a Talos-style
+  appliance.
 ```
 
 ## Installer Flow
@@ -266,13 +269,14 @@ Katl-owned units and agents when they exist
 ```
 
 Kubernetes binaries are delivered through the selected Kubernetes sysext for
-v0.1. The base root keeps the container runtime and host prerequisites needed to
-run that payload, but not kubeadm, kubelet, kubectl, or crictl. Kubernetes
-add-ons, Helm, Flux, Cilium, CoreDNS, Rook, and application workloads are outside
-the runtime base. The Kubernetes sysext is versioned independently from the
-KatlOS runtime root. KatlOS upgrades should be able to keep the current
-Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
-KatlOS root, when the selected artifacts are compatible. Day-one install records
+v0.1. Per ADR-005, the base root keeps containerd, the selected OCI runtime, and
+host prerequisites needed to run that payload, but not kubeadm, kubelet, kubectl,
+or crictl. Kubernetes add-ons, Helm, Flux, Cilium, CoreDNS, Rook, production CNI
+choice, and application workloads are outside the runtime base. The Kubernetes
+sysext is versioned independently from the KatlOS runtime root. KatlOS upgrades
+should be able to keep the current Kubernetes sysext, and Kubernetes upgrades
+should be able to keep the current KatlOS root, when the selected artifacts are
+compatible. Day-one install records
 an exact Kubernetes bundle source/ref such as
 `v1.36.0@sha256:<bundle-manifest-digest>` as cluster intent. Cluster bootstrap
 asks `katlc` to fetch the matching Kubernetes payload bundle from the

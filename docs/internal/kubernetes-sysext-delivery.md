@@ -670,10 +670,14 @@ Cilium CLI, or arbitrary app daemons as supported runtime userland.
 
 The v0.1 container-runtime boundary is intentionally conservative:
 `containerd`, `crun`, required CNI plugins, and the corresponding systemd
-wiring remain in the base runtime. They are OS prerequisites for kubeadm and
-kubelet activation, not a user-managed container platform. Moving them into a
-payload bundle requires a follow-up decision and proof that kubeadm operations,
-boot health, rollback, repair, and image-surface checks still work without a
+wiring remain in the base runtime under ADR-005. They are OS prerequisites for
+kubeadm and kubelet activation, not a user-managed container platform. KatlOS
+keeps them current with the latest supported KatlOS base/runtime validation
+gates. The bundled generic CNI plugin binaries are test/bootstrap prerequisites,
+not a managed production CNI; users still install Cilium, Calico, or another
+production CNI after bootstrap. Moving the CRI runtime stack into a payload
+bundle requires a follow-up decision and proof that kubeadm operations, boot
+health, rollback, repair, and image-surface checks still work without a
 preinstalled runtime. Until that proof lands, Kubernetes payload bundles may
 assume the base runtime provides the container runtime contract.
 
@@ -817,7 +821,7 @@ package-manager requests in install, runtime, or payload input
 user-provided raw BIRD configuration
 generic app marketplace behavior beyond the accepted node extension bundle
   contract and the BIRD/BGP API VIP implementations
-container-runtime-as-extension
+container-runtime-as-extension beyond the ADR-005 v0.1 base-runtime exception
 credentialed private bundle sources, client certificates, bearer tokens, or
   mutable latest selectors
 inline secrets in payload manifests or generated confext
