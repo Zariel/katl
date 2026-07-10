@@ -28,8 +28,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		"-timeout", "2m",
 	)
 	cmd.Dir = repo
-	baseEnv := removeEnv(removeEnv(os.Environ(), "CI"), "KATL_VMTEST_DEBUG_ON_FAILURE")
-	cmd.Env = appendHostEnv(baseEnv, host,
+	cmd.Env = appendHostEnv(removeEnv(removeEnv(os.Environ(), "CI"), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
