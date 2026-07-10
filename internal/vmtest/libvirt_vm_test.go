@@ -40,6 +40,8 @@ func TestVMPlan(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<domain type="kvm">`,
+		`<metadata>`,
+		`<vmtest xmlns="https://katlos.io/xmlns/vmtest/1">katl/vmtest</vmtest>`,
 		`<name>katl-run-1</name>`,
 		`<memory unit="MiB">2048</memory>`,
 		`<loader readonly="yes" type="pflash">` + config.OVMFCode + `</loader>`,

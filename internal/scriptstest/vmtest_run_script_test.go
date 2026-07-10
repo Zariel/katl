@@ -52,6 +52,16 @@ case "$1" in
   list)
     printf 'katl-old\nother-domain\nkatl-current\n'
     ;;
+  metadata)
+    case "$2" in
+      katl-old|katl-current)
+        printf '<vmtest>katl/vmtest</vmtest>\n'
+        ;;
+      *)
+        printf '\n'
+        ;;
+    esac
+    ;;
   domstate)
     printf 'running\n'
     ;;
@@ -90,16 +100,25 @@ esac
 	log := string(logData)
 	for _, want := range []string{
 		"virsh -c qemu:///system list --all --name",
+		"virsh -c qemu:///system metadata katl-old --uri https://katlos.io/xmlns/vmtest/1",
+		"virsh -c qemu:///system metadata other-domain --uri https://katlos.io/xmlns/vmtest/1",
+		"virsh -c qemu:///system metadata katl-current --uri https://katlos.io/xmlns/vmtest/1",
 		"virsh -c qemu:///system destroy katl-old",
 		"virsh -c qemu:///system undefine katl-old --nvram",
-		"virsh -c qemu:///system destroy other-domain",
-		"virsh -c qemu:///system undefine other-domain --nvram",
 		"virsh -c qemu:///system destroy katl-current",
 		"virsh -c qemu:///system undefine katl-current --nvram",
 		"go test -exec ",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("command log missing %q:\n%s", want, log)
+		}
+	}
+	for _, unwanted := range []string{
+		"virsh -c qemu:///system destroy other-domain",
+		"virsh -c qemu:///system undefine other-domain --nvram",
+	} {
+		if strings.Contains(log, unwanted) {
+			t.Fatalf("unowned domain command %q found in log:\n%s", unwanted, log)
 		}
 	}
 	if strings.Index(log, "virsh -c qemu:///system undefine katl-current --nvram") > strings.Index(log, "go test -exec ") {

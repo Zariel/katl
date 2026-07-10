@@ -1180,11 +1180,20 @@ type domainXML struct {
 	XMLName  xml.Name       `xml:"domain"`
 	Type     string         `xml:"type,attr"`
 	Name     string         `xml:"name"`
+	Metadata domainMetadata `xml:"metadata"`
 	Memory   domainMemory   `xml:"memory"`
 	VCPU     int            `xml:"vcpu"`
 	OS       domainOS       `xml:"os"`
 	Features domainFeatures `xml:"features"`
 	Devices  domainDevices  `xml:"devices"`
+}
+
+type domainMetadata struct {
+	VMTest domainVMTest `xml:"https://katlos.io/xmlns/vmtest/1 vmtest"`
+}
+
+type domainVMTest struct {
+	Value string `xml:",chardata"`
 }
 
 type domainMemory struct {
@@ -1414,10 +1423,11 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 
 func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	doc := domainXML{
-		Type:   domain.Accel,
-		Name:   domain.Name,
-		Memory: domainMemory{Unit: "MiB", Value: domain.RAMMiB},
-		VCPU:   domain.CPUs,
+		Type:     domain.Accel,
+		Name:     domain.Name,
+		Metadata: domainMetadata{VMTest: domainVMTest{Value: "katl/vmtest"}},
+		Memory:   domainMemory{Unit: "MiB", Value: domain.RAMMiB},
+		VCPU:     domain.CPUs,
 		OS: domainOS{
 			Type: domainOSType{Arch: "x86_64", Machine: "q35", Value: "hvm"},
 		},
