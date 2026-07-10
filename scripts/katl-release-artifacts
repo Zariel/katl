@@ -28,15 +28,18 @@ validate_version() {
 
 verify_artifact() {
     local name="$1"
+    local version="$2"
     local digest size
 
     (cd "$build_dir" && sha256sum -c "$name.sha256")
     digest="$(sha256sum "$build_dir/$name" | awk '{print $1}')"
     size="$(stat -c %s "$build_dir/$name")"
     jq -e --arg digest "$digest" --argjson size "$size" \
-        '.sha256 == $digest and .sizeBytes == $size' \
+        --arg version "$version" --arg architecture "$architecture" \
+        '.sha256 == $digest and .sizeBytes == $size and
+         .version == $version and .architecture == $architecture' \
         "$build_dir/$name.json" >/dev/null ||
-        fail "release metadata does not match artifact: $name.json"
+        fail "release metadata does not match artifact or release identity: $name.json"
 }
 
 version_for_ref() {
@@ -102,7 +105,7 @@ stage_artifacts() {
             path="$build_dir/$name$suffix"
             [[ -f "$path" ]] || fail "release artifact is missing: $path"
         done
-        verify_artifact "$name"
+        verify_artifact "$name" "$version"
     done
 
     mkdir -p "$output"

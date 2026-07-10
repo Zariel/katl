@@ -535,6 +535,7 @@ run_flags=(
     --env "HOST_UID=$(id -u)"
     --env "HOST_GID=$(id -g)"
     --env "KATL_BUILD_COMMIT=$build_commit"
+    --env "KATL_VERSION=${KATL_VERSION:-0.0.0-dev}"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"

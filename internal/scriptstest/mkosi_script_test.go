@@ -128,6 +128,7 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
+		"KATL_VERSION=2026.7.0-dev.0",
 		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
 		"GOCACHE="+filepath.Join(tmp, "go-cache"),
 		"TMPDIR="+tmp,
@@ -143,6 +144,9 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	}
 	if !containsString(args, "KATL_CHOWN_BUILD=0") {
 		t.Fatalf("podman args missing KATL_CHOWN_BUILD=0: %#v", args)
+	}
+	if !containsString(args, "KATL_VERSION=2026.7.0-dev.0") {
+		t.Fatalf("podman args missing release version: %#v", args)
 	}
 	if !containsString(args, "KATL_INSTALLER_PACKAGE_SET=/work/_build/mkosi/katl-installer.packages.tsv") {
 		t.Fatalf("podman args missing container installer package path: %#v", args)

@@ -180,6 +180,43 @@ func TestKatlReleaseArtifactStageRejectsMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactStageRejectsVersionMismatch(t *testing.T) {
+	repo := repoRoot(t)
+	buildDir := t.TempDir()
+	for _, name := range []string{
+		"katl-installer.efi",
+		"katl-installer.vmlinuz",
+		"katl-installer.initrd",
+		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
+	} {
+		writeReleaseArtifact(t, buildDir, name)
+	}
+	path := filepath.Join(buildDir, "katl-installer.efi.json")
+	var metadata map[string]any
+	if err := json.Unmarshal(mustReadFile(t, path), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata["version"] = "2026.7.0-dev.0"
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_MKOSI_BUILD_DIR="+buildDir,
+		"KATL_ARCHITECTURE=x86_64",
+	)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "release identity") {
+		t.Fatalf("error = %v, output = %q, want release identity failure", err, output)
+	}
+}
+
 func writeReleaseArtifact(t *testing.T, dir, name string) {
 	t.Helper()
 	data := []byte("artifact " + name + "\n")
@@ -189,11 +226,15 @@ func writeReleaseArtifact(t *testing.T, dir, name string) {
 		t.Fatal(err)
 	}
 	metadata, err := json.Marshal(struct {
-		SHA256    string `json:"sha256"`
-		SizeBytes int    `json:"sizeBytes"`
+		Version      string `json:"version"`
+		Architecture string `json:"architecture"`
+		SHA256       string `json:"sha256"`
+		SizeBytes    int    `json:"sizeBytes"`
 	}{
-		SHA256:    digestHex,
-		SizeBytes: len(data),
+		Version:      "2026.7.0-rc.0",
+		Architecture: "x86_64",
+		SHA256:       digestHex,
+		SizeBytes:    len(data),
 	})
 	if err != nil {
 		t.Fatal(err)
