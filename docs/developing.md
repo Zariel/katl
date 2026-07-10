@@ -205,6 +205,22 @@ It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Those host-specific gates belong to the capable-host vmtest workflow
 and release gates.
 
+## GitHub Release Artifacts
+
+`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to
+`release/**` branches and all pushed tags. It can also be dispatched manually
+with an explicit version for build verification. Release-branch and manual runs
+retain one GitHub Actions artifact; tag runs additionally publish those exact
+files as assets on the matching GitHub Release.
+
+The published set contains the KatlOS install SquashFS and the installer UKI,
+kernel, and initrd variants, each with adjacent JSON metadata and SHA-256 files.
+Loose runtime root/UKI intermediates and Kubernetes payload bundles are not
+published through this workflow. Kubernetes bundles have a separate producer
+contract. Katl release artifacts are currently unsigned, and each publication
+includes an `UNSIGNED.txt` marker stating that checksums provide integrity but
+not publisher authenticity.
+
 ## GitHub VM Tests
 
 The heavy pull-request workflow is `.github/workflows/vmtest.yml`. It runs for

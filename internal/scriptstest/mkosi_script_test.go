@@ -227,6 +227,24 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		t.Fatalf("fake podman ran for unrelated Go source edit: %v", err)
 	}
 
+	if err := os.WriteFile(filepath.Join(buildDir, "katl-runtime.efi"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatalf("corrupt runtime artifact: %v", err)
+	}
+	corrupt := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	corrupt.Dir = repo
+	corrupt.Env = env
+	output, err = corrupt.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/mkosi with corrupt cached artifact failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "mkosi cache hit: runtime") {
+		t.Fatalf("corrupt cached artifact unexpectedly hit cache:\n%s", output)
+	}
+	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
+		t.Fatal("corrupt cached artifact did not invoke fake podman")
+	}
+	seedRuntimeCacheOutputs(t, buildDir)
+
 	includedSource := filepath.Join(repo, "cmd", "katl-runtime-status", "cache_identity_probe.go")
 	writeTemporaryFile(t, includedSource, "package main\n\nvar cacheIdentityProbeRuntimeStatus = \"changed\"\n")
 	third := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
@@ -390,13 +408,7 @@ func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
 	paths := []string{
 		filepath.Join(buildDir, "artifacts.json"),
 		filepath.Join(buildDir, "katl-runtime-root"),
-		filepath.Join(buildDir, "katl-runtime-root.squashfs"),
-		filepath.Join(buildDir, "katl-runtime-root.squashfs.json"),
-		filepath.Join(buildDir, "katl-runtime-root.squashfs.sha256"),
 		filepath.Join(buildDir, "katl-runtime-root.vmlinuz"),
-		filepath.Join(buildDir, "katl-runtime.efi"),
-		filepath.Join(buildDir, "katl-runtime.efi.json"),
-		filepath.Join(buildDir, "katl-runtime.efi.sha256"),
 	}
 	for _, path := range paths {
 		if strings.HasSuffix(path, "katl-runtime-root") {
@@ -411,6 +423,9 @@ func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
 		if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", path, err)
 		}
+	}
+	for _, name := range []string{"katl-runtime-root.squashfs", "katl-runtime.efi"} {
+		writeReleaseArtifact(t, buildDir, name)
 	}
 }
 

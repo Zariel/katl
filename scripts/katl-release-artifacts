@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat >&2 <<'EOF'
+usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
+       scripts/katl-release-artifacts stage VERSION OUTPUT_DIR
+EOF
+    exit 2
+}
+
+validate_version() {
+    local version="$1"
+    [[ -n "$version" ]] || fail "release version is empty"
+    ((${#version} <= 80)) || fail "release version is longer than 80 characters"
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] ||
+        fail "release version contains unsafe characters: $version"
+}
+
+verify_artifact() {
+    local name="$1"
+    local digest size
+
+    (cd "$build_dir" && sha256sum -c "$name.sha256")
+    digest="$(sha256sum "$build_dir/$name" | awk '{print $1}')"
+    size="$(stat -c %s "$build_dir/$name")"
+    jq -e --arg digest "$digest" --argjson size "$size" \
+        '.sha256 == $digest and .sizeBytes == $size' \
+        "$build_dir/$name.json" >/dev/null ||
+        fail "release metadata does not match artifact: $name.json"
+}
+
+version_for_ref() {
+    local event="$1"
+    local ref_type="$2"
+    local ref_name="$3"
+    local manual_version="${4:-}"
+    local version
+
+    case "$event" in
+        workflow_dispatch)
+            version="$manual_version"
+            ;;
+        push)
+            case "$ref_type" in
+                tag)
+                    version="$ref_name"
+                    ;;
+                branch)
+                    [[ "$ref_name" == release/* ]] ||
+                        fail "release branch must start with release/: $ref_name"
+                    version="${ref_name#release/}"
+                    ;;
+                *)
+                    fail "unsupported push ref type: $ref_type"
+                    ;;
+            esac
+            ;;
+        *)
+            fail "unsupported release event: $event"
+            ;;
+    esac
+
+    if [[ "$version" == v[0-9]* ]]; then
+        version="${version#v}"
+    fi
+    validate_version "$version"
+    printf '%s\n' "$version"
+}
+
+stage_artifacts() {
+    local version="$1"
+    local output="$2"
+    local name suffix path
+    local -a names=(
+        "katl-installer.efi"
+        "katl-installer.vmlinuz"
+        "katl-installer.initrd"
+        "katlos-install-${version}-${architecture}.squashfs"
+    )
+
+    validate_version "$version"
+    [[ -n "$output" && "$output" != / && "$output" != . ]] ||
+        fail "unsafe release output directory: $output"
+    if [[ -e "$output" ]]; then
+        [[ -d "$output" ]] || fail "release output is not a directory: $output"
+        [[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+            fail "release output directory is not empty: $output"
+    fi
+
+    for name in "${names[@]}"; do
+        for suffix in "" .json .sha256; do
+            path="$build_dir/$name$suffix"
+            [[ -f "$path" ]] || fail "release artifact is missing: $path"
+        done
+        verify_artifact "$name"
+    done
+
+    mkdir -p "$output"
+    for name in "${names[@]}"; do
+        for suffix in "" .json .sha256; do
+            cp -- "$build_dir/$name$suffix" "$output/"
+        done
+    done
+    cat >"$output/UNSIGNED.txt" <<'EOF'
+These Katl artifacts are unsigned. The adjacent SHA-256 files provide integrity
+checks only and do not establish publisher authenticity.
+EOF
+}
+
+case "${1:-}" in
+    version)
+        [[ $# -ge 4 && $# -le 5 ]] || usage
+        version_for_ref "$2" "$3" "$4" "${5:-}"
+        ;;
+    stage)
+        [[ $# -eq 3 ]] || usage
+        stage_artifacts "$2" "$3"
+        ;;
+    *)
+        usage
+        ;;
+esac
