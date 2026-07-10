@@ -23,14 +23,20 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "tag", args: []string{"version", "push", "tag", "v0.1.0"}, want: "0.1.0"},
-		{name: "tag without v", args: []string{"version", "push", "tag", "nightly"}, want: "nightly"},
-		{name: "branch", args: []string{"version", "push", "branch", "release/0.1.0-rc.1"}, want: "0.1.0-rc.1"},
-		{name: "versioned branch", args: []string{"version", "push", "branch", "release/v0.1.0"}, want: "0.1.0"},
-		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "0.1.0-test.1"}, want: "0.1.0-test.1"},
+		{name: "stable tag", args: []string{"version", "push", "tag", "v2026.7.0"}, want: "2026.7.0"},
+		{name: "development tag", args: []string{"version", "push", "tag", "v2026.7.0-dev.0"}, want: "2026.7.0-dev.0"},
+		{name: "release candidate branch", args: []string{"version", "push", "branch", "release/2026.7.0-rc.1"}, want: "2026.7.0-rc.1"},
+		{name: "versioned branch", args: []string{"version", "push", "branch", "release/v2026.7.0"}, want: "2026.7.0"},
+		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
 		{name: "wrong branch", args: []string{"version", "push", "branch", "main"}, wantErr: "must start with release/"},
-		{name: "nested branch", args: []string{"version", "push", "branch", "release/team/0.1.0"}, wantErr: "unsafe characters"},
-		{name: "unsafe manual", args: []string{"version", "workflow_dispatch", "branch", "main", ".hidden"}, wantErr: "unsafe characters"},
+		{name: "nested branch", args: []string{"version", "push", "branch", "release/team/2026.7.0"}, wantErr: "not canonical"},
+		{name: "semantic version", args: []string{"version", "push", "tag", "v0.1.0"}, wantErr: "not canonical"},
+		{name: "nightly label", args: []string{"version", "push", "tag", "nightly"}, wantErr: "not canonical"},
+		{name: "zero-padded month", args: []string{"version", "push", "tag", "v2026.07.0"}, wantErr: "not canonical"},
+		{name: "invalid month", args: []string{"version", "push", "tag", "v2026.13.0"}, wantErr: "not canonical"},
+		{name: "leading-zero sequence", args: []string{"version", "push", "tag", "v2026.7.0-rc.01"}, wantErr: "not canonical"},
+		{name: "unsupported prerelease", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-test.1"}, wantErr: "not canonical"},
+		{name: "unsafe manual", args: []string{"version", "workflow_dispatch", "branch", "main", ".hidden"}, wantErr: "not canonical"},
 		{name: "empty manual", args: []string{"version", "workflow_dispatch", "branch", "main", ""}, wantErr: "version is empty"},
 	}
 
@@ -59,12 +65,12 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	repo := repoRoot(t)
 	buildDir := t.TempDir()
 	output := filepath.Join(t.TempDir(), "dist")
-	version := "0.1.0"
+	version := "2026.7.0-rc.0"
 	names := []string{
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
-		"katlos-install-0.1.0-x86_64.squashfs",
+		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 	}
 	for _, name := range names {
 		writeReleaseArtifact(t, buildDir, name)
@@ -117,7 +123,7 @@ func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
-		"katlos-install-0.1.0-x86_64.squashfs",
+		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 	} {
 		writeReleaseArtifact(t, buildDir, name)
 	}
@@ -125,7 +131,7 @@ func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "0.1.0", filepath.Join(t.TempDir(), "dist"))
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
@@ -144,7 +150,7 @@ func TestKatlReleaseArtifactStageRejectsMetadataMismatch(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
-		"katlos-install-0.1.0-x86_64.squashfs",
+		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 	} {
 		writeReleaseArtifact(t, buildDir, name)
 	}
@@ -162,7 +168,7 @@ func TestKatlReleaseArtifactStageRejectsMetadataMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "0.1.0", filepath.Join(t.TempDir(), "dist"))
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,

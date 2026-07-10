@@ -213,6 +213,14 @@ with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
+KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N` and
+`-rc.N` prereleases. The first development and release-candidate identities for
+the July 2026 line are `2026.7.0-dev.0` and `2026.7.0-rc.0`; the stable identity
+is `2026.7.0`. Use tags such as `v2026.7.0-rc.0` and release branches such as
+`release/2026.7.0-rc.0`. The workflow strips an optional `v` before embedding
+the version and rejects noncanonical versions. See
+`docs/internal/katlos-release-versioning.md` for the policy.
+
 The published set contains the KatlOS install SquashFS and the installer UKI,
 kernel, and initrd variants, each with adjacent JSON metadata and SHA-256 files.
 Loose runtime root/UKI intermediates and Kubernetes payload bundles are not

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version embedded in manually built artifacts
+        description: CalVer embedded in artifacts (for example 2026.7.0-dev.0)
         required: true
         type: string
 
