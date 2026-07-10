@@ -206,6 +206,8 @@ func TestLibvirtVMExecutorCapturesConsole(t *testing.T) {
 	tmp := t.TempDir()
 	virsh := filepath.Join(tmp, "virsh")
 	script := filepath.Join(tmp, "script")
+	consoleReady := filepath.Join(tmp, "console-ready")
+	t.Setenv("KATL_FAKE_CONSOLE_READY", consoleReady)
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-c" ]]; then
@@ -217,12 +219,19 @@ case "${1:-}" in
         ;;
     console)
         printf 'Katl installer ready\n'
+        : >"$KATL_FAKE_CONSOLE_READY"
         exit 0
         ;;
     domstate)
-        sleep 0.05
-        printf 'shut off\n'
-        exit 0
+        for ((attempt = 0; attempt < 200; attempt++)); do
+            if [[ -f "$KATL_FAKE_CONSOLE_READY" ]]; then
+                printf 'shut off\n'
+                exit 0
+            fi
+            sleep 0.01
+        done
+        echo 'fake console did not become ready' >&2
+        exit 41
         ;;
     *)
         echo "unexpected virsh args: $*" >&2
@@ -249,6 +258,8 @@ exit 42
 	}
 
 	var serial strings.Builder
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	err := LibvirtVMExecutor{
 		VirshPath:     virsh,
 		ScriptPath:    script,
@@ -256,7 +267,7 @@ exit 42
 		DomainName:    "katl-run-1",
 		DomainXMLFile: xmlPath,
 		PollInterval:  time.Millisecond,
-	}.Run(context.Background(), "", nil, &serial)
+	}.Run(ctx, "", nil, &serial)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
