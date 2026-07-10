@@ -1,0 +1,142 @@
+name: Katl Release Artifacts
+
+on:
+  push:
+    branches:
+      - "release/**"
+    tags:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version embedded in manually built artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build And Verify Katl Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      artifact-name: ${{ steps.release.outputs.artifact-name }}
+      version: ${{ steps.release.outputs.version }}
+
+    env:
+      GOTOOLCHAIN: auto
+      KATL_ARCHITECTURE: x86_64
+      KATL_BUILD_COMMIT: ${{ github.sha }}
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          version="$(scripts/katl-release-artifacts version \
+            "$GITHUB_EVENT_NAME" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$MANUAL_VERSION")"
+          short_sha="${GITHUB_SHA:0:12}"
+          artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
+          echo "KATL_VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Show build environment
+        shell: bash
+        run: |
+          go version
+          docker version
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Build documented release artifacts
+        shell: bash
+        run: |
+          scripts/mkosi build-runtime
+          scripts/mkosi build-installer
+          scripts/mkosi build-katlos-install-image
+
+      - name: Verify built artifacts
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            --env KATL_VERSION \
+            --env KATL_ARCHITECTURE \
+            "$KATL_MKOSI_IMAGE" \
+            bash -euo pipefail -c '
+              scripts/check-runtime-root
+              scripts/check-runtime-boot-asset
+              scripts/check-installer-image
+              scripts/check-katlos-install-image
+            '
+
+      - name: Stage supported publication artifacts
+        shell: bash
+        run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
+
+      - name: Upload GitHub Actions artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.release.outputs.artifact-name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish-tag:
+    name: Publish GitHub Release Assets
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist
+
+      - name: Publish tag release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          prerelease=()
+          if [[ "$KATL_VERSION" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "KatlOS $KATL_VERSION" \
+              --generate-notes \
+              --notes "These artifacts are currently unsigned; verify the adjacent SHA-256 files before use." \
+              "${prerelease[@]}" \
+              dist/*
+          fi

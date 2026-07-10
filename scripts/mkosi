@@ -341,12 +341,31 @@ target_outputs_exist() {
     done < <(target_outputs "$target")
 }
 
+target_sidecars_match() {
+    local target="$1"
+    local output artifact metadata digest size
+    while IFS= read -r output; do
+        [[ "$output" == *.sha256 ]] || continue
+        artifact="${output%.sha256}"
+        metadata="$artifact.json"
+        [[ -f "$artifact" && -f "$metadata" ]] || return 1
+        (cd "$(dirname "$artifact")" && sha256sum --status -c "$(basename "$output")") ||
+            return 1
+        digest="$(sha256sum "$artifact" | awk '{print $1}')"
+        size="$(stat -c %s "$artifact")"
+        jq -e --arg digest "$digest" --argjson size "$size" \
+            '.sha256 == $digest and .sizeBytes == $size' "$metadata" >/dev/null ||
+            return 1
+    done < <(target_outputs "$target")
+}
+
 target_cache_hit() {
     local target="$1"
     local stamp="$stamp_dir/$target.sha256"
     local current recorded
     [[ "$runtime" != direct ]] || return 1
     target_outputs_exist "$target" || return 1
+    target_sidecars_match "$target" || return 1
     [[ -f "$stamp" ]] || return 1
     current="$(cache_fingerprint "$target")" || return 1
     recorded="$(<"$stamp")"
@@ -739,6 +758,11 @@ set +e
                 --expected-socat-version "${KATL_KUBERNETES_SOCAT_VERSION:-}" >/dev/null; then
                 status=1
             fi
+        fi
+    fi
+    if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
+        if ! mkosi_artifacts write >/dev/null; then
+            status=1
         fi
     fi
     if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d _build ]]; then
