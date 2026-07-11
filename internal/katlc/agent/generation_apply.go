@@ -308,11 +308,14 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 		statusRecord, err := generation.ReadConfigApplyStatus(statusPath)
 		if err == nil {
 			out.ConfigApply = &agentapi.ConfigApplyStatus{
-				Phase:              statusRecord.Phase,
-				RequestedApplyMode: statusRecord.RequestedApplyMode,
-				AcceptedApplyMode:  statusRecord.AcceptedApplyMode,
-				ChangedDomains:     append([]string(nil), statusRecord.ChangedDomains...),
-				FailureReason:      generation.RedactConfigApplyMessage(statusRecord.FailureReason),
+				Phase:                     statusRecord.Phase,
+				RequestedApplyMode:        statusRecord.RequestedApplyMode,
+				AcceptedApplyMode:         statusRecord.AcceptedApplyMode,
+				ChangedDomains:            append([]string(nil), statusRecord.ChangedDomains...),
+				FailureReason:             generation.RedactConfigApplyMessage(statusRecord.FailureReason),
+				KubeadmActionRequired:     statusRecord.Kubeadm.Required,
+				PreviousKubeadmConfigName: statusRecord.Kubeadm.PreviousConfigName,
+				SelectedKubeadmConfigName: statusRecord.Kubeadm.SelectedConfigName,
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err

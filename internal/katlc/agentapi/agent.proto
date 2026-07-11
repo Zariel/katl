@@ -47,6 +47,7 @@ message SubmitOperationRequest {
   KubernetesSysextUpdateOperationRequest kubernetes_sysext_update = 14;
   DestructiveResetOperationRequest destructive_reset = 15;
   HostUpgradeOperationRequest host_upgrade = 16;
+  KubeadmControlPlaneConfigOperationRequest kubeadm_control_plane_config = 17;
 }
 
 message BootstrapOperationRequest {
@@ -115,6 +116,30 @@ message ConfigApplyOperationRequest {
   string apply_mode = 2;
   string node_name = 3;
   string config_yaml = 4;
+}
+
+message KubeadmControlPlaneConfigOperationRequest {
+  string rollout_id = 1;
+  uint32 node_position = 2;
+  uint32 node_count = 3;
+  string coordinator_node = 4;
+  bool coordinator_upload = 5;
+  string desired_generation_id = 6;
+  string config_name = 7;
+  string desired_config_sha256 = 8;
+  string expected_live_config_sha256 = 9;
+  string kubernetes_payload_version = 10;
+  string kubernetes_payload_sha256 = 11;
+  repeated string supported_field_delta = 12;
+  string snapshot_ref = 13;
+  string snapshot_digest = 14;
+  string snapshot_revision = 15;
+  string captured_member_list_digest = 16;
+  string source_etcd_version = 17;
+  string snapshot_created_at = 18;
+  string snapshot_storage_location = 19;
+  string snapshot_operator_identity = 20;
+  string node_name = 21;
 }
 
 message KubernetesSysextUpdateOperationRequest {
@@ -302,4 +327,7 @@ message ConfigApplyStatus {
   string accepted_apply_mode = 3;
   repeated string changed_domains = 4;
   string failure_reason = 5;
+  bool kubeadm_action_required = 6;
+  string previous_kubeadm_config_name = 7;
+  string selected_kubeadm_config_name = 8;
 }

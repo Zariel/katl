@@ -48,6 +48,7 @@ var bootstrapOperationKinds = []string{
 	"generation-apply",
 	"generation-stage",
 	"kubeadm-upgrade",
+	OperationKindKubeadmControlPlaneConfig,
 	OperationKindDestructiveReset,
 	OperationKindHostUpgrade,
 }
@@ -270,6 +271,12 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	}
 	now := s.clock()
 	if req.DryRun {
+		if req.GetKubeadmControlPlaneConfig() != nil {
+			if _, err := s.validateKubeadmControlPlaneConfigState(req); err != nil {
+				return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "kubeadm control-plane config preflight: %v", err)
+			}
+			return operation.OperationRecord{}, &agentapi.OperationAccepted{OperationKind: req.OperationKind, RequestDigest: digest, AcceptedAt: formatTime(now), InitialStatus: &agentapi.OperationStatus{OperationKind: req.OperationKind, RequestDigest: digest, Phase: "dry-run", UpdatedAt: formatTime(now), ResourceLocks: locks, NextAction: "all node dry-runs must pass before serial rollout execution"}}, nil
+		}
 		if req.GetKubernetesSysextUpdate() != nil {
 			accepted, err := s.dryRunKubernetesSysextUpdateOperation(req, digest, locks, now)
 			if err != nil {
@@ -303,6 +310,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	}
 	if req.GetConfigApply() != nil {
 		return s.acceptConfigApplyOperation(req, digest, id, locks, now)
+	}
+	if req.GetKubeadmControlPlaneConfig() != nil {
+		return s.acceptKubeadmControlPlaneConfigOperation(req, digest, id, locks, now)
 	}
 	if req.GetKubernetesSysextUpdate() != nil {
 		return s.acceptKubernetesSysextUpdateOperation(req, digest, id, locks, now)
@@ -529,12 +539,19 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.GetHostUpgrade() != nil {
 		bodyCount++
 	}
+	if req.GetKubeadmControlPlaneConfig() != nil {
+		bodyCount++
+	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
 	}
 	if req.GetConfigApply() != nil {
 		if err := validateConfigApplyRequest(req.OperationKind, req.GetConfigApply()); err != nil {
 			return status.Errorf(codes.InvalidArgument, "config apply request: %v", err)
+		}
+	} else if req.GetKubeadmControlPlaneConfig() != nil {
+		if err := validateKubeadmControlPlaneConfigRequest(req.OperationKind, req.GetKubeadmControlPlaneConfig()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "kubeadm control-plane config request: %v", err)
 		}
 	} else if req.GetKubernetesSysextUpdate() != nil {
 		if err := validateKubernetesSysextUpdateRequest(req.OperationKind, req.GetKubernetesSysextUpdate()); err != nil {
@@ -942,6 +959,8 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case "kubeadm-upgrade":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
+	case OperationKindKubeadmControlPlaneConfig:
+		return []string{"kubeadm-state.lock"}
 	case "generation-apply", "generation-stage":
 		return []string{"generation-state.lock", "config-apply.lock"}
 	case OperationKindDestructiveReset:
@@ -958,6 +977,8 @@ func operationScope(kind string) string {
 	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
 		return "kubeadm-state"
 	case "kubeadm-upgrade":
+		return "kubeadm-state"
+	case OperationKindKubeadmControlPlaneConfig:
 		return "kubeadm-state"
 	case "generation-apply", "generation-stage":
 		return "host-generation"

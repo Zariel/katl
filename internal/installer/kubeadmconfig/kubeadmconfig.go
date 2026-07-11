@@ -431,6 +431,9 @@ func validateYAMLPaths(node *yaml.Node, patchesRenderDir string) error {
 			}
 			return nil
 		}
+		if len(path) == 1 && path[0] == "certificatesDir" && value == "/etc/kubernetes/pki" {
+			return nil
+		}
 		if strings.HasPrefix(value, "/") && deniedHostPath(value) {
 			return fmt.Errorf("host path %s is denied", value)
 		}

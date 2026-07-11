@@ -927,6 +927,58 @@ func TestStoreRejectsKubernetesSysextUpdateBodyMismatch(t *testing.T) {
 	}
 }
 
+func TestStorePersistsControlPlaneConfigEvidenceWithoutMutatingRequest(t *testing.T) {
+	store := testStore(t)
+	record := baseRecord("op-control-plane-config")
+	record.OperationKind = "kubeadm-control-plane-config"
+	record.KubeadmControlPlaneConfig = validControlPlaneConfigBody()
+	created, err := store.Create(record, "accepted", time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	updated, err := store.Update(created.OperationID, "preflight-complete", "preflight-complete", func(record OperationRecord) (OperationRecord, error) {
+		record.KubeadmControlPlaneConfig.OriginalNodeUnschedulable = true
+		record.KubeadmControlPlaneConfig.BeforeManifestSHA256 = map[string]string{"kube-apiserver.yaml": strings.Repeat("f", 64)}
+		return record, nil
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !updated.KubeadmControlPlaneConfig.OriginalNodeUnschedulable || len(updated.KubeadmControlPlaneConfig.BeforeManifestSHA256) != 1 {
+		t.Fatalf("persisted evidence = %+v", updated.KubeadmControlPlaneConfig)
+	}
+	_, err = store.Update(created.OperationID, "mutate-request", "preflight-complete", func(record OperationRecord) (OperationRecord, error) {
+		record.KubeadmControlPlaneConfig.DesiredGenerationID = "other-generation"
+		return record, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "request fields are immutable") {
+		t.Fatalf("Update() error = %v, want immutable request refusal", err)
+	}
+}
+
+func TestStoreRejectsControlPlaneConfigBodyMismatch(t *testing.T) {
+	record := baseRecord("op-control-plane-config-mismatch")
+	record.OperationKind = "kubeadm-control-plane-config"
+	store := testStore(t)
+	_, err := store.Create(record, "accepted", time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "requires kubeadmControlPlaneConfig") {
+		t.Fatalf("Create() error = %v, want missing body refusal", err)
+	}
+}
+
+func validControlPlaneConfigBody() *KubeadmControlPlaneConfig {
+	return &KubeadmControlPlaneConfig{
+		RolloutID: "rollout-1", NodePosition: 1, NodeCount: 3, CoordinatorNode: "cp-3", NodeName: "cp-1",
+		DesiredGenerationID: "generation-1", ConfigName: "control-plane", ConfigPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		DesiredConfigSHA256: strings.Repeat("a", 64), ExpectedLiveConfigSHA256: strings.Repeat("b", 64),
+		KubernetesPayloadVersion: "v1.36.0", KubernetesPayloadSHA256: strings.Repeat("c", 64),
+		SupportedFieldDelta: []string{"ClusterConfiguration.apiServer.extraArgs.profiling=false"},
+		SnapshotRef:         "snapshot-1", SnapshotDigest: strings.Repeat("d", 64), SnapshotRevision: "42",
+		CapturedMemberListDigest: strings.Repeat("e", 64), SourceEtcdVersion: "3.6.5", SnapshotCreatedAt: "2026-07-11T12:00:00Z",
+		SnapshotStorageLocation: "/var/lib/katl/etcd-snapshots/snapshot-1.db", SnapshotOperatorIdentity: "operator-a",
+	}
+}
+
 func testStore(t *testing.T) Store {
 	t.Helper()
 	store, err := NewStore(filepath.Join(t.TempDir(), "var/lib/katl/operations"))

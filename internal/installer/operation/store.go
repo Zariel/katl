@@ -68,62 +68,63 @@ type Store struct {
 }
 
 type OperationRecord struct {
-	APIVersion                  string                  `json:"apiVersion"`
-	Kind                        string                  `json:"kind"`
-	SchemaVersion               int                     `json:"schemaVersion"`
-	OperationID                 string                  `json:"operationID"`
-	OperationKind               string                  `json:"operationKind"`
-	Scope                       string                  `json:"scope"`
-	ParentOperationID           string                  `json:"parentOperationID,omitempty"`
-	ClientRequestID             string                  `json:"clientRequestID,omitempty"`
-	Actor                       string                  `json:"actor,omitempty"`
-	ExpectedMachineID           string                  `json:"expectedMachineID,omitempty"`
-	ExpectedCurrentGenerationID string                  `json:"expectedCurrentGenerationID,omitempty"`
-	ExpectedClusterIntentDigest string                  `json:"expectedClusterIntentDigest,omitempty"`
-	RequestDigest               string                  `json:"requestDigest"`
-	RecordRevision              int                     `json:"recordRevision"`
-	LatestJournalSeq            int                     `json:"latestJournalSeq"`
-	PhasePlan                   []string                `json:"phasePlan,omitempty"`
-	PreviousGenerationID        string                  `json:"previousGenerationID,omitempty"`
-	CandidateGenerationID       string                  `json:"candidateGenerationID,omitempty"`
-	ConfigApplyPhase            string                  `json:"configApplyPhase,omitempty"`
-	ChangedDomains              []string                `json:"changedDomains,omitempty"`
-	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
-	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
-	KubernetesSysextUpdate      *KubernetesSysextUpdate `json:"kubernetesSysextUpdate,omitempty"`
-	KubeadmUpgradeEvidence      *KubeadmUpgradeEvidence `json:"kubeadmUpgradeEvidence,omitempty"`
-	DestructiveResetRequest     *DestructiveReset       `json:"destructiveResetRequest,omitempty"`
-	HostUpgradeRequest          *HostUpgrade            `json:"hostUpgradeRequest,omitempty"`
-	ActivationMode              string                  `json:"activationMode,omitempty"`
-	ActivationState             string                  `json:"activationState,omitempty"`
-	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
-	PostKubeadmHealthState      string                  `json:"postKubeadmHealthState,omitempty"`
-	BootHealthPending           bool                    `json:"bootHealthPending,omitempty"`
-	Phase                       string                  `json:"phase,omitempty"`
-	PhaseIndex                  int                     `json:"phaseIndex"`
-	CompletedPhases             []string                `json:"completedPhases,omitempty"`
-	Terminal                    bool                    `json:"terminal"`
-	ResourceLocks               []string                `json:"resourceLocks,omitempty"`
-	ExecutorPlan                *ExecutorPlan           `json:"executorPlan,omitempty"`
-	Invocations                 []InvocationRecord      `json:"invocations,omitempty"`
-	ExternalMutationStarted     bool                    `json:"externalMutationStarted"`
-	PreExecMutationMarkers      []PreExecMutationMarker `json:"preExecMutationMarkers,omitempty"`
-	MutationScopes              []string                `json:"mutationScopes,omitempty"`
-	MutatingToolRan             bool                    `json:"mutatingToolRan"`
-	MutatingToolInvocations     []string                `json:"mutatingToolInvocations,omitempty"`
-	DiagnosticArtifacts         []DiagnosticArtifact    `json:"diagnosticArtifacts,omitempty"`
-	HostRollback                string                  `json:"hostRollback,omitempty"`
-	PostMutationRollbackAllowed bool                    `json:"postMutationRollbackAllowed"`
-	RecoveryRequired            bool                    `json:"recoveryRequired"`
-	RetryHint                   string                  `json:"retryHint,omitempty"`
-	Interruption                string                  `json:"interruption,omitempty"`
-	Resume                      string                  `json:"resume,omitempty"`
-	NextAction                  string                  `json:"nextAction,omitempty"`
-	Result                      string                  `json:"result,omitempty"`
-	CreatedAt                   time.Time               `json:"createdAt"`
-	UpdatedAt                   time.Time               `json:"updatedAt"`
-	CompletedAt                 *time.Time              `json:"completedAt,omitempty"`
-	FailureReason               string                  `json:"failureReason,omitempty"`
+	APIVersion                  string                     `json:"apiVersion"`
+	Kind                        string                     `json:"kind"`
+	SchemaVersion               int                        `json:"schemaVersion"`
+	OperationID                 string                     `json:"operationID"`
+	OperationKind               string                     `json:"operationKind"`
+	Scope                       string                     `json:"scope"`
+	ParentOperationID           string                     `json:"parentOperationID,omitempty"`
+	ClientRequestID             string                     `json:"clientRequestID,omitempty"`
+	Actor                       string                     `json:"actor,omitempty"`
+	ExpectedMachineID           string                     `json:"expectedMachineID,omitempty"`
+	ExpectedCurrentGenerationID string                     `json:"expectedCurrentGenerationID,omitempty"`
+	ExpectedClusterIntentDigest string                     `json:"expectedClusterIntentDigest,omitempty"`
+	RequestDigest               string                     `json:"requestDigest"`
+	RecordRevision              int                        `json:"recordRevision"`
+	LatestJournalSeq            int                        `json:"latestJournalSeq"`
+	PhasePlan                   []string                   `json:"phasePlan,omitempty"`
+	PreviousGenerationID        string                     `json:"previousGenerationID,omitempty"`
+	CandidateGenerationID       string                     `json:"candidateGenerationID,omitempty"`
+	ConfigApplyPhase            string                     `json:"configApplyPhase,omitempty"`
+	ChangedDomains              []string                   `json:"changedDomains,omitempty"`
+	BootstrapRequest            *BootstrapRequest          `json:"bootstrapRequest,omitempty"`
+	ConfigApplyRequest          *ConfigApplyRequest        `json:"configApplyRequest,omitempty"`
+	KubeadmControlPlaneConfig   *KubeadmControlPlaneConfig `json:"kubeadmControlPlaneConfig,omitempty"`
+	KubernetesSysextUpdate      *KubernetesSysextUpdate    `json:"kubernetesSysextUpdate,omitempty"`
+	KubeadmUpgradeEvidence      *KubeadmUpgradeEvidence    `json:"kubeadmUpgradeEvidence,omitempty"`
+	DestructiveResetRequest     *DestructiveReset          `json:"destructiveResetRequest,omitempty"`
+	HostUpgradeRequest          *HostUpgrade               `json:"hostUpgradeRequest,omitempty"`
+	ActivationMode              string                     `json:"activationMode,omitempty"`
+	ActivationState             string                     `json:"activationState,omitempty"`
+	GenerationCommitState       string                     `json:"generationCommitState,omitempty"`
+	PostKubeadmHealthState      string                     `json:"postKubeadmHealthState,omitempty"`
+	BootHealthPending           bool                       `json:"bootHealthPending,omitempty"`
+	Phase                       string                     `json:"phase,omitempty"`
+	PhaseIndex                  int                        `json:"phaseIndex"`
+	CompletedPhases             []string                   `json:"completedPhases,omitempty"`
+	Terminal                    bool                       `json:"terminal"`
+	ResourceLocks               []string                   `json:"resourceLocks,omitempty"`
+	ExecutorPlan                *ExecutorPlan              `json:"executorPlan,omitempty"`
+	Invocations                 []InvocationRecord         `json:"invocations,omitempty"`
+	ExternalMutationStarted     bool                       `json:"externalMutationStarted"`
+	PreExecMutationMarkers      []PreExecMutationMarker    `json:"preExecMutationMarkers,omitempty"`
+	MutationScopes              []string                   `json:"mutationScopes,omitempty"`
+	MutatingToolRan             bool                       `json:"mutatingToolRan"`
+	MutatingToolInvocations     []string                   `json:"mutatingToolInvocations,omitempty"`
+	DiagnosticArtifacts         []DiagnosticArtifact       `json:"diagnosticArtifacts,omitempty"`
+	HostRollback                string                     `json:"hostRollback,omitempty"`
+	PostMutationRollbackAllowed bool                       `json:"postMutationRollbackAllowed"`
+	RecoveryRequired            bool                       `json:"recoveryRequired"`
+	RetryHint                   string                     `json:"retryHint,omitempty"`
+	Interruption                string                     `json:"interruption,omitempty"`
+	Resume                      string                     `json:"resume,omitempty"`
+	NextAction                  string                     `json:"nextAction,omitempty"`
+	Result                      string                     `json:"result,omitempty"`
+	CreatedAt                   time.Time                  `json:"createdAt"`
+	UpdatedAt                   time.Time                  `json:"updatedAt"`
+	CompletedAt                 *time.Time                 `json:"completedAt,omitempty"`
+	FailureReason               string                     `json:"failureReason,omitempty"`
 }
 
 type ExecutorPlan struct {
@@ -158,6 +159,35 @@ type ConfigApplyRequest struct {
 	NodeName              string `json:"nodeName,omitempty"`
 	CandidateGenerationID string `json:"candidateGenerationID,omitempty"`
 	ConfigYAML            string `json:"configYAML"`
+}
+
+type KubeadmControlPlaneConfig struct {
+	RolloutID                 string            `json:"rolloutID"`
+	NodePosition              uint32            `json:"nodePosition"`
+	NodeCount                 uint32            `json:"nodeCount"`
+	CoordinatorNode           string            `json:"coordinatorNode"`
+	NodeName                  string            `json:"nodeName"`
+	CoordinatorUpload         bool              `json:"coordinatorUpload"`
+	DesiredGenerationID       string            `json:"desiredGenerationID"`
+	ConfigName                string            `json:"configName"`
+	ConfigPath                string            `json:"configPath"`
+	DesiredConfigSHA256       string            `json:"desiredConfigSHA256"`
+	ExpectedLiveConfigSHA256  string            `json:"expectedLiveConfigSHA256"`
+	KubernetesPayloadVersion  string            `json:"kubernetesPayloadVersion"`
+	KubernetesPayloadSHA256   string            `json:"kubernetesPayloadSHA256"`
+	SupportedFieldDelta       []string          `json:"supportedFieldDelta"`
+	SnapshotRef               string            `json:"snapshotRef"`
+	SnapshotDigest            string            `json:"snapshotDigest"`
+	SnapshotRevision          string            `json:"snapshotRevision"`
+	CapturedMemberListDigest  string            `json:"capturedMemberListDigest"`
+	SourceEtcdVersion         string            `json:"sourceEtcdVersion"`
+	SnapshotCreatedAt         string            `json:"snapshotCreatedAt"`
+	SnapshotStorageLocation   string            `json:"snapshotStorageLocation"`
+	SnapshotOperatorIdentity  string            `json:"snapshotOperatorIdentity"`
+	ConfigUploadRan           bool              `json:"configUploadRan"`
+	BeforeManifestSHA256      map[string]string `json:"beforeManifestSHA256,omitempty"`
+	AfterManifestSHA256       map[string]string `json:"afterManifestSHA256,omitempty"`
+	OriginalNodeUnschedulable bool              `json:"originalNodeUnschedulable"`
 }
 
 type KubernetesSysextUpdate struct {
@@ -735,6 +765,11 @@ func ValidateRecord(record OperationRecord) error {
 			}
 		}
 	}
+	if record.KubeadmControlPlaneConfig != nil {
+		if err := validateKubeadmControlPlaneConfig(*record.KubeadmControlPlaneConfig); err != nil {
+			return err
+		}
+	}
 	if record.DestructiveResetRequest != nil {
 		if err := ValidateDestructiveReset(*record.DestructiveResetRequest); err != nil {
 			return err
@@ -798,6 +833,9 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if record.KubernetesSysextUpdate != nil {
 		bodyCount++
 	}
+	if record.KubeadmControlPlaneConfig != nil {
+		bodyCount++
+	}
 	if record.DestructiveResetRequest != nil {
 		bodyCount++
 	}
@@ -812,6 +850,12 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	}
 	if record.OperationKind == "kubeadm-upgrade" && record.KubernetesSysextUpdate == nil {
 		return fmt.Errorf("kubeadm-upgrade operation requires kubernetesSysextUpdate")
+	}
+	if record.KubeadmControlPlaneConfig != nil && record.OperationKind != "kubeadm-control-plane-config" {
+		return fmt.Errorf("operation kind %q cannot include kubeadmControlPlaneConfig", record.OperationKind)
+	}
+	if record.OperationKind == "kubeadm-control-plane-config" && record.KubeadmControlPlaneConfig == nil {
+		return fmt.Errorf("kubeadm-control-plane-config operation requires kubeadmControlPlaneConfig")
 	}
 	if record.DestructiveResetRequest != nil && record.OperationKind != "destructive-reset" {
 		return fmt.Errorf("operation kind %q cannot include destructiveResetRequest", record.OperationKind)
@@ -883,6 +927,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !reflect.DeepEqual(next.KubernetesSysextUpdate, previous.KubernetesSysextUpdate) {
 		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
 	}
+	if !kubeadmControlPlaneConfigTransitionAllowed(previous.KubeadmControlPlaneConfig, next.KubeadmControlPlaneConfig) {
+		return fmt.Errorf("operation kubeadmControlPlaneConfig request fields are immutable")
+	}
 	if previous.KubeadmUpgradeEvidence != nil {
 		if next.KubeadmUpgradeEvidence == nil || next.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != previous.KubeadmUpgradeEvidence.TargetKubeadmAccessMode || next.KubeadmUpgradeEvidence.KubeletActivationGate != previous.KubeadmUpgradeEvidence.KubeletActivationGate || next.KubeadmUpgradeEvidence.SourceKubeletPolicy != previous.KubeadmUpgradeEvidence.SourceKubeletPolicy || (previous.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm && !next.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm) {
 			return fmt.Errorf("operation kubeadmUpgradeEvidence safety policy is immutable")
@@ -912,6 +959,23 @@ func bootstrapRequestTransitionAllowed(previous *BootstrapRequest, next *Bootstr
 	}
 	return resolvedDigestTransitionAllowed(previous.KubernetesBundleManifestDigest, next.KubernetesBundleManifestDigest) &&
 		resolvedDigestTransitionAllowed(previous.KubernetesSysextPayloadDigest, next.KubernetesSysextPayloadDigest)
+}
+
+func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneConfig, next *KubeadmControlPlaneConfig) bool {
+	if previous == nil || next == nil {
+		return previous == nil && next == nil
+	}
+	previousComparable := *previous
+	nextComparable := *next
+	previousComparable.ConfigUploadRan = false
+	nextComparable.ConfigUploadRan = false
+	previousComparable.BeforeManifestSHA256 = nil
+	nextComparable.BeforeManifestSHA256 = nil
+	previousComparable.AfterManifestSHA256 = nil
+	nextComparable.AfterManifestSHA256 = nil
+	previousComparable.OriginalNodeUnschedulable = false
+	nextComparable.OriginalNodeUnschedulable = false
+	return reflect.DeepEqual(previousComparable, nextComparable)
 }
 
 func resolvedDigestTransitionAllowed(previous string, next string) bool {
@@ -978,6 +1042,13 @@ func cloneRecord(record OperationRecord) OperationRecord {
 		request := *record.KubernetesSysextUpdate
 		record.KubernetesSysextUpdate = &request
 	}
+	if record.KubeadmControlPlaneConfig != nil {
+		request := *record.KubeadmControlPlaneConfig
+		request.SupportedFieldDelta = cloneStrings(request.SupportedFieldDelta)
+		request.BeforeManifestSHA256 = cloneStringMap(request.BeforeManifestSHA256)
+		request.AfterManifestSHA256 = cloneStringMap(request.AfterManifestSHA256)
+		record.KubeadmControlPlaneConfig = &request
+	}
 	if record.KubeadmUpgradeEvidence != nil {
 		evidence := *record.KubeadmUpgradeEvidence
 		record.KubeadmUpgradeEvidence = &evidence
@@ -1031,6 +1102,17 @@ func cloneMarkers(values []PreExecMutationMarker) []PreExecMutationMarker {
 
 func cloneStrings(values []string) []string {
 	return append([]string(nil), values...)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func hasLiveInvocation(record OperationRecord, bootID string, live LiveInvocationFunc) bool {
@@ -1569,6 +1651,54 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 	}
 	if strings.TrimSpace(request.ConfigYAML) == "" {
 		return fmt.Errorf("configApplyRequest configYAML is required")
+	}
+	return nil
+}
+
+func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error {
+	required := map[string]string{
+		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,
+		"nodeName": request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
+		"configName": request.ConfigName, "configPath": request.ConfigPath,
+		"kubernetesPayloadVersion": request.KubernetesPayloadVersion, "snapshotRef": request.SnapshotRef,
+		"snapshotRevision": request.SnapshotRevision, "sourceEtcdVersion": request.SourceEtcdVersion,
+		"snapshotStorageLocation": request.SnapshotStorageLocation, "snapshotOperatorIdentity": request.SnapshotOperatorIdentity,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("kubeadmControlPlaneConfig %s is required", name)
+		}
+	}
+	if request.NodeCount != 3 || request.NodePosition < 1 || request.NodePosition > request.NodeCount {
+		return fmt.Errorf("kubeadmControlPlaneConfig node position must identify one of exactly three nodes")
+	}
+	if filepath.Base(request.ConfigName) != request.ConfigName || request.ConfigPath != "/etc/katl/kubeadm/"+request.ConfigName+"/config.yaml" {
+		return fmt.Errorf("kubeadmControlPlaneConfig config path is invalid")
+	}
+	for name, value := range map[string]string{
+		"desired config": request.DesiredConfigSHA256, "expected live config": request.ExpectedLiveConfigSHA256,
+		"kubernetes payload": request.KubernetesPayloadSHA256, "snapshot": request.SnapshotDigest,
+		"captured member list": request.CapturedMemberListDigest,
+	} {
+		if err := validateSHA256Hex("kubeadmControlPlaneConfig "+name, value); err != nil {
+			return err
+		}
+	}
+	if len(request.SupportedFieldDelta) == 0 {
+		return fmt.Errorf("kubeadmControlPlaneConfig supportedFieldDelta is required")
+	}
+	if _, err := time.Parse(time.RFC3339, request.SnapshotCreatedAt); err != nil {
+		return fmt.Errorf("kubeadmControlPlaneConfig snapshotCreatedAt must be RFC3339: %w", err)
+	}
+	for name, digest := range request.BeforeManifestSHA256 {
+		if err := validateSHA256Hex("kubeadmControlPlaneConfig before manifest "+name, digest); err != nil {
+			return err
+		}
+	}
+	for name, digest := range request.AfterManifestSHA256 {
+		if err := validateSHA256Hex("kubeadmControlPlaneConfig after manifest "+name, digest); err != nil {
+			return err
+		}
 	}
 	return nil
 }

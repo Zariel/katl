@@ -196,10 +196,10 @@ func (e *Executor) runKubeadmUpgradeCommand(ctx context.Context, record operatio
 		artifactErr = errors.Join(artifactErr, err)
 	}
 	if result.Err != nil || result.ExitStatus != 0 {
-		return e.failKubeadmUpgrade(record, phase, errors.Join(fmt.Errorf("target kubeadm failed: %s", toolFailure(result)), artifactErr), mutating)
+		return e.failKubeadmCommand(record, phase, errors.Join(fmt.Errorf("target kubeadm failed: %s", toolFailure(result)), artifactErr), mutating)
 	}
 	if artifactErr != nil {
-		return e.failKubeadmUpgrade(record, phase, fmt.Errorf("record redacted kubeadm diagnostics: %w", artifactErr), mutating)
+		return e.failKubeadmCommand(record, phase, fmt.Errorf("record redacted kubeadm diagnostics: %w", artifactErr), mutating)
 	}
 	_, err := e.Store.Update(record.OperationID, invocationID+"-complete", phase+"-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		completeInvocation(current.Invocations, invocationID, completed, operation.ResultSucceeded, result)
@@ -213,6 +213,13 @@ func (e *Executor) runKubeadmUpgradeCommand(ctx context.Context, record operatio
 		return current, nil
 	})
 	return err
+}
+
+func (e *Executor) failKubeadmCommand(record operation.OperationRecord, phase string, cause error, postMutation bool) error {
+	if record.KubeadmControlPlaneConfig != nil {
+		return e.failControlPlaneConfig(record, phase, cause)
+	}
+	return e.failKubeadmUpgrade(record, phase, cause, postMutation)
 }
 
 func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, current generation.ExtensionRef, request operation.KubernetesSysextUpdate, operationID string) (generation.ExtensionRef, error) {

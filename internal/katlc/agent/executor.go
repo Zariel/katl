@@ -103,7 +103,9 @@ func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileRepo
 func (e *Executor) Dispatch(ctx context.Context, record operation.OperationRecord) error {
 	if e.Async {
 		go func() {
-			_ = e.Execute(context.Background(), record)
+			if err := e.Execute(context.Background(), record); err != nil {
+				e.recordUnhandledExecutionFailure(record.OperationID, err)
+			}
 		}()
 		return nil
 	}
@@ -111,7 +113,18 @@ func (e *Executor) Dispatch(ctx context.Context, record operation.OperationRecor
 	return nil
 }
 
+func (e *Executor) recordUnhandledExecutionFailure(operationID string, cause error) {
+	current, err := e.Store.Read(operationID)
+	if err != nil || current.Terminal {
+		return
+	}
+	_, _ = e.failRecordPhase(operationID, "executor-unhandled-failure", "executor-unhandled-failure", "executor-unhandled-failure", "inspect the recorded executor failure, correct it, and submit a new operation", cause)
+}
+
 func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord) error {
+	if record.KubeadmControlPlaneConfig != nil {
+		return e.executeKubeadmControlPlaneConfig(ctx, record)
+	}
 	if record.ConfigApplyRequest != nil {
 		return e.executeConfigApply(ctx, record)
 	}
@@ -797,13 +810,21 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 }
 
 func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started func(int)) ToolResult {
-	commands := postKubeadmHealthCommands("")
-	if len(argv) > 0 {
-		commands = postKubeadmHealthCommands(argv[0])
-	}
+	commands := postKubeadmHealthCommands(argv...)
+	retryKubectl := len(argv) > 0 && argv[0] == OperationKindKubeadmControlPlaneConfig
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
 		result := runChildProcess(ctx, argv, started)
+		for retryKubectl && len(argv) > 0 && argv[0] == "/usr/bin/kubectl" && (result.Err != nil || result.ExitStatus != 0) {
+			select {
+			case <-ctx.Done():
+				result.Err = errors.Join(result.Err, ctx.Err())
+			case <-time.After(time.Second):
+				result = runChildProcess(ctx, argv, started)
+				continue
+			}
+			break
+		}
 		stdout.Write(result.Stdout)
 		stderr.Write(result.Stderr)
 		if result.Err != nil || result.ExitStatus != 0 {
@@ -815,7 +836,26 @@ func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started fun
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
 }
 
-func postKubeadmHealthCommands(kind string) [][]string {
+func postKubeadmHealthCommands(args ...string) [][]string {
+	kind := ""
+	if len(args) > 0 {
+		kind = args[0]
+	}
+	if kind == OperationKindKubeadmControlPlaneConfig {
+		node := ""
+		if len(args) > 1 {
+			node = args[1]
+		}
+		return [][]string{
+			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
+			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-scheduler.yaml"},
+			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "wait", "--for=condition=Ready", "node/" + node, "--timeout=2m"},
+			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
+			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "wait", "--for=condition=Ready", "pod/etcd-" + node, "--timeout=2m"},
+			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "exec", "etcd-" + node, "--", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key", "endpoint", "health", "--cluster"},
+		}
+	}
 	if kind == bootstrapplan.OperationKindJoinWorker {
 		return [][]string{
 			{"/usr/bin/test", "-s", "/etc/kubernetes/kubelet.conf"},

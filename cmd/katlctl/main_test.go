@@ -1405,11 +1405,13 @@ type fakeKatlcAgentClient struct {
 	validateResult    *agentapi.ConfigValidationResult
 	validateRequest   *agentapi.ValidateConfigRequest
 	submitRequest     *agentapi.SubmitOperationRequest
+	submitRequests    []*agentapi.SubmitOperationRequest
 	submitAccepted    *agentapi.OperationAccepted
 	nodeStatus        *agentapi.NodeStatus
 	nodeStatusErr     error
 	generation        *agentapi.Generation
 	generationRequest *agentapi.GetGenerationRequest
+	operationStatus   *agentapi.OperationStatus
 }
 
 type fakeWipeClusterConnector struct {
@@ -1490,6 +1492,14 @@ func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.
 
 func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
 	c.submitRequest = req
+	c.submitRequests = append(c.submitRequests, req)
+	if req.DryRun {
+		return &agentapi.OperationAccepted{
+			OperationKind: req.OperationKind,
+			RequestDigest: strings.Repeat("d", 64),
+			InitialStatus: &agentapi.OperationStatus{Phase: "dry-run"},
+		}, nil
+	}
 	if c.submitAccepted != nil {
 		return c.submitAccepted, nil
 	}
@@ -1501,7 +1511,7 @@ func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agenta
 }
 
 func (c *fakeKatlcAgentClient) GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error) {
-	return nil, nil
+	return c.operationStatus, nil
 }
 
 func (c *fakeKatlcAgentClient) WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error) {

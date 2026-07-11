@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -31,10 +33,15 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
 	"github.com/zariel/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/kubeadmplan"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
+	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	"google.golang.org/protobuf/encoding/protojson"
+	"gopkg.in/yaml.v3"
 )
 
 func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
@@ -339,6 +346,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	assertOperationKubernetesBundle(t, cp1Record, kubernetesBundle)
 	assertGenerationKubernetesBundle(t, ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), cp1Record, kubernetesBundle)
+	bootstrapGenerations := map[string]string{"cp-1": cp1Record.CandidateGenerationID}
 	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
 		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(evidenceDir, node.Name), "bootstrap-join-control-plane")
 		if err != nil {
@@ -351,6 +359,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		assertOperationKubernetesBundle(t, record, kubernetesBundle)
 		assertGenerationKubernetesBundle(t, ctx, node, filepath.Join(evidenceDir, node.Name), record, kubernetesBundle)
+		bootstrapGenerations[node.Name] = record.CandidateGenerationID
 	}
 
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3")
@@ -396,7 +405,319 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := writeThreeControlPlaneEtcdReport(etcdReportPath, etcdReport); err != nil {
 		t.Fatalf("write etcd report: %v", err)
 	}
+	if smoke.WorkloadProof {
+		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, tokenFiles, bootstrapGenerations, inventoryPath, kubeconfigPath, kubernetesBundle, cniFixtures, etcdReport); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("kubeadm control-plane config operation proof failed: %v", err)
+		}
+		postOperationReport, err := verifyThreeControlPlaneEtcdAt(ctx, filepath.Join(result.RunDir, "etcd-post-config-transcripts"), nodes, "/var/lib/etcd/katl-snapshots/three-control-plane-post-config.db")
+		if err != nil {
+			postOperationReport.FailureSummary = err.Error()
+			_ = writeThreeControlPlaneEtcdReport(filepath.Join(result.RunDir, "etcd-post-config-report.json"), postOperationReport)
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("verify stacked etcd after control-plane config operation: %v", err)
+		}
+		if err := writeThreeControlPlaneEtcdReport(filepath.Join(result.RunDir, "etcd-post-config-report.json"), postOperationReport); err != nil {
+			t.Fatal(err)
+		}
+	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses, tokenFiles, bootstrapGenerations map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, snapshot threeControlPlaneEtcdReport) error {
+	t.Helper()
+	const generationID = "2026.07.11-vmtest-control-plane-config"
+	proofDir := filepath.Join(result.RunDir, "kubeadm-control-plane-config")
+	if err := os.MkdirAll(proofDir, 0o755); err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		bootstrapGeneration := bootstrapGenerations[node.Name]
+		if bootstrapGeneration == "" {
+			return fmt.Errorf("bootstrap generation for %s is missing", node.Name)
+		}
+		if err := rebootIntoGeneration(ctx, node, bootstrapGeneration); err != nil {
+			return fmt.Errorf("boot %s into committed bootstrap generation: %w", node.Name, err)
+		}
+		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
+			return fmt.Errorf("reactivate %s CNI fixture after bootstrap generation boot: %w", node.Name, err)
+		}
+		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-bootstrap-generation-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
+			return fmt.Errorf("wait for cluster readiness after booting %s bootstrap generation: %w", node.Name, err)
+		}
+	}
+	liveConfig, err := kubectlOutput(ctx, kubeconfigPath, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
+	if err != nil {
+		return fmt.Errorf("collect live kubeadm config: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(proofDir, "live-cluster-configuration.yaml"), liveConfig, 0o600); err != nil {
+		return err
+	}
+	desiredConfig, deltas, err := controlPlaneProfilingConfig(liveConfig)
+	if err != nil {
+		return err
+	}
+	liveDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(liveConfig)
+	if err != nil {
+		return err
+	}
+	desiredDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(desiredConfig)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(proofDir, "desired-config.yaml"), desiredConfig, 0o600); err != nil {
+		return err
+	}
+	requestPath := filepath.Join(proofDir, "config-apply.yaml")
+	request := []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: control-plane\n")
+	if err := os.WriteFile(requestPath, request, 0o600); err != nil {
+		return err
+	}
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	for _, node := range nodes {
+		guestConfig := "/var/lib/katl/test-artifacts/control-plane-profiled.yaml"
+		if err := writeNodeFile(ctx, node, guestConfig, desiredConfig, 0o600, true); err != nil {
+			return fmt.Errorf("stage desired kubeadm config on %s: %w", node.Name, err)
+		}
+		installed := "/var/lib/katl/cluster/kubeadm/control-plane/config.yaml"
+		copyResult, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-m", "0600", guestConfig, installed}, 16<<10)
+		if err != nil {
+			return fmt.Errorf("install desired kubeadm config on %s: %w", node.Name, err)
+		}
+		if copyResult.ExitStatus != 0 {
+			return fmt.Errorf("install desired kubeadm config on %s: %w", node.Name, commandErrorDetail(copyResult))
+		}
+		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
+			"config", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--agent-token-file", tokenFiles[node.Name], "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
+		if err != nil {
+			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
+		}
+		var accepted agentapi.OperationAccepted
+		if err := protojson.Unmarshal(stdout, &accepted); err != nil || accepted.RecordPath == "" {
+			return fmt.Errorf("decode %s staged generation acceptance: %w", node.Name, err)
+		}
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, accepted.RecordPath, false); err != nil {
+			return err
+		}
+	}
+	for _, node := range nodes {
+		if err := rebootIntoGeneration(ctx, node, generationID); err != nil {
+			return err
+		}
+		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
+			return fmt.Errorf("reactivate %s CNI fixture: %w", node.Name, err)
+		}
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, "", true); err != nil {
+			return err
+		}
+		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-reboot-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
+			return fmt.Errorf("wait for cluster readiness after rebooting %s: %w", node.Name, err)
+		}
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-before-operation.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
+		return err
+	}
+	snapshotSHA, err := nodeFileSHA256(ctx, nodes[0], snapshot.Snapshot.Path)
+	if err != nil {
+		return err
+	}
+	membersJSON, err := json.Marshal(snapshot.Health.Members)
+	if err != nil {
+		return err
+	}
+	memberSum := sha256.Sum256(membersJSON)
+	etcdVersion := "unknown"
+	if len(snapshot.Health.EndpointStatuses) > 0 {
+		etcdVersion = snapshot.Health.EndpointStatuses[0].Version
+	}
+	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", "control-plane", "--desired-config-sha256", desiredDigest, "--expected-live-sha256", liveDigest, "--kubernetes-version", bundle.PayloadVersion, "--kubernetes-sha256", strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:"), "--rollout-id", "2026.07.11-vmtest-control-plane-config", "--snapshot-ref", filepath.Base(snapshot.Snapshot.Path), "--snapshot-sha256", snapshotSHA, "--snapshot-revision", snapshot.Snapshot.Revision, "--member-list-sha256", hex.EncodeToString(memberSum[:]), "--source-etcd-version", etcdVersion, "--snapshot-created-at", time.Now().UTC().Format(time.RFC3339), "--snapshot-location", snapshot.Snapshot.Path, "--snapshot-operator", "katl-vmtest"}
+	for _, delta := range deltas {
+		args = append(args, "--field-delta", delta)
+	}
+	stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "rollout", args...)
+	if err != nil {
+		return fmt.Errorf("run serial control-plane config rollout: %w: %s", err, stderr)
+	}
+	if !bytes.Contains(stdout, []byte(`"automaticRollback":false`)) {
+		return fmt.Errorf("rollout summary did not record automaticRollback=false: %s", stdout)
+	}
+	for position, node := range nodes {
+		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(proofDir, node.Name), "kubeadm-control-plane-config")
+		if err != nil {
+			return fmt.Errorf("collect %s config operation evidence: %w", node.Name, err)
+		}
+		body := record.KubeadmControlPlaneConfig
+		if body == nil || body.NodePosition != uint32(position+1) || body.CoordinatorUpload != (node.Name == "cp-3") || record.Result != operation.ResultSucceeded || body.DesiredConfigSHA256 != desiredDigest || len(body.BeforeManifestSHA256) != 3 || len(body.AfterManifestSHA256) != 3 {
+			return fmt.Errorf("%s control-plane config operation evidence is incomplete: %#v", node.Name, record)
+		}
+	}
+	uploaded, err := kubectlOutput(ctx, kubeconfigPath, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
+	if err != nil {
+		return err
+	}
+	uploadedDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(uploaded)
+	if err != nil || uploadedDigest != desiredDigest {
+		return fmt.Errorf("uploaded kubeadm config digest = %s, want %s: %w", uploadedDigest, desiredDigest, err)
+	}
+	for _, node := range nodes {
+		for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+			command, err := waitForKubectlOutputContains(ctx, kubeconfigPath, 2*time.Minute, []byte("--profiling=false"), "-n", "kube-system", "get", "pod", component+"-"+node.Name, "-o", "jsonpath={.spec.containers[0].command}")
+			if err != nil {
+				return fmt.Errorf("%s on %s does not run with profiling disabled: %w: %s", component, node.Name, err, command)
+			}
+		}
+	}
+	return nil
+}
+
+func waitForKubectlOutputContains(ctx context.Context, kubeconfigPath string, timeout time.Duration, needle []byte, args ...string) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	var last []byte
+	var lastErr error
+	for time.Now().Before(deadline) {
+		last, lastErr = kubectlOutput(ctx, kubeconfigPath, args...)
+		if lastErr == nil && bytes.Contains(last, needle) {
+			return last, nil
+		}
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	if lastErr != nil {
+		return last, lastErr
+	}
+	return last, fmt.Errorf("output did not contain %q before timeout", needle)
+}
+
+func controlPlaneProfilingConfig(live []byte) ([]byte, []string, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(live, &document); err != nil {
+		return nil, nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, nil, errors.New("live ClusterConfiguration must be one YAML mapping")
+	}
+	root := document.Content[0]
+	for _, component := range []string{"apiServer", "controllerManager", "scheduler"} {
+		section := yamlMappingValue(root, component)
+		if section == nil {
+			section = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: component}, section)
+		}
+		if section.Kind != yaml.MappingNode {
+			return nil, nil, fmt.Errorf("live %s must be a YAML mapping", component)
+		}
+		args := yamlMappingValue(section, "extraArgs")
+		if args == nil {
+			args = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			section.Content = append(section.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "extraArgs"}, args)
+		}
+		if args.Kind != yaml.SequenceNode {
+			return nil, nil, fmt.Errorf("live %s.extraArgs must be a YAML sequence", component)
+		}
+		args.Content = append(args.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "name"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "profiling"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "value"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "false", Style: yaml.DoubleQuotedStyle},
+		}})
+	}
+	clusterYAML, err := yaml.Marshal(&document)
+	if err != nil {
+		return nil, nil, err
+	}
+	desired := append([]byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\n"), clusterYAML...)
+	deltas, err := kubeadmplan.SupportedControlPlaneProfilingDelta(desired, live)
+	return desired, deltas, err
+}
+
+func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func runProofKatlctl(ctx context.Context, binary, dir, name string, args ...string) ([]byte, string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = os.Environ()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	_ = os.WriteFile(filepath.Join(dir, name+".stdout"), stdout.Bytes(), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, name+".stderr"), stderr.Bytes(), 0o644)
+	return stdout.Bytes(), stderr.String(), err
+}
+
+func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, operationRecordPath string, healthy bool) error {
+	deadline := time.Now().Add(5 * time.Minute)
+	var last string
+	for time.Now().Before(deadline) {
+		if operationRecordPath != "" {
+			if data, readErr := readNodeFile(ctx, node, operationRecordPath, 1<<20); readErr == nil {
+				if envelope, decodeErr := persistedrecord.DecodeEnvelope(data); decodeErr == nil {
+					if snapshot, payloadErr := persistedrecord.DecodePayload[operation.Snapshot](envelope); payloadErr == nil && snapshot.Record.Terminal && snapshot.Record.Result != operation.ResultSucceeded {
+						return fmt.Errorf("generation stage on %s failed in %s: %s", node.Name, snapshot.Record.Phase, snapshot.Record.FailureReason)
+					}
+				}
+			}
+		}
+		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "config", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--agent-token-file", tokenFile, "--generation", generationID)
+		last = stderr
+		if err == nil {
+			var generation agentapi.Generation
+			if decodeErr := protojson.Unmarshal(stdout, &generation); decodeErr == nil {
+				ready := generation.CommitState == "committed"
+				if healthy {
+					ready = ready && generation.HealthState == "healthy"
+				}
+				if ready && generation.GetConfigApply().GetKubeadmActionRequired() && generation.GetConfigApply().GetSelectedKubeadmConfigName() == "control-plane" {
+					return nil
+				}
+				last = generation.String()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return fmt.Errorf("generation %s on %s did not become ready: %s", generationID, node.Name, last)
+}
+
+func kubectlOutput(ctx context.Context, kubeconfig string, args ...string) ([]byte, error) {
+	argv := append([]string{"--kubeconfig", kubeconfig}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", argv...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, output)
+	}
+	return output, nil
+}
+
+func nodeFileSHA256(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string) (string, error) {
+	result, err := runNodeCommandWithRetry(ctx, node, []string{"sha256sum", path}, 16<<10)
+	if err != nil {
+		return "", fmt.Errorf("sha256 %s on %s: %w", path, node.Name, err)
+	}
+	if result.ExitStatus != 0 {
+		return "", fmt.Errorf("sha256 %s on %s: %w", path, node.Name, commandErrorDetail(result))
+	}
+	fields := strings.Fields(string(result.Stdout))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		return "", fmt.Errorf("invalid sha256 output for %s: %q", path, result.Stdout)
+	}
+	return fields[0], nil
 }
 
 type threeControlPlaneSmokeInputs struct {
@@ -603,7 +924,7 @@ func installKubernetesBundleCA(ctx context.Context, node vmtest.RunningInstalled
 		{name: "check katlc-agent", argv: []string{"systemctl", "is-active", "--quiet", "katlc-agent.service"}},
 	}
 	for _, command := range commands {
-		result, err := runNodeCommand(ctx, node, command.argv, 16<<10)
+		result, err := runNodeCommandWithRetry(ctx, node, command.argv, 16<<10)
 		if err != nil {
 			return fmt.Errorf("%s: %w", command.name, err)
 		}
@@ -1347,6 +1668,10 @@ type controlPlaneStaticPodReport struct {
 }
 
 func verifyThreeControlPlaneEtcd(ctx context.Context, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode) (threeControlPlaneEtcdReport, error) {
+	return verifyThreeControlPlaneEtcdAt(ctx, transcriptDir, nodes, "/var/lib/etcd/katl-snapshots/three-control-plane.db")
+}
+
+func verifyThreeControlPlaneEtcdAt(ctx context.Context, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, snapshotPath string) (threeControlPlaneEtcdReport, error) {
 	planned := plannedControlPlaneNodes(nodes)
 	transport := vmtestNodeTransport{Nodes: nodeMap(nodes), TranscriptDir: transcriptDir}
 	staticPods, err := verifyControlPlaneStaticPods(ctx, transport, planned)
@@ -1369,7 +1694,7 @@ func verifyThreeControlPlaneEtcd(ctx context.Context, transcriptDir string, node
 	if report.Quorum != 2 {
 		return threeControlPlaneEtcdReport{StaticPods: staticPods, Health: report, Transcript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1")}, fmt.Errorf("etcd quorum = %d, want 2", report.Quorum)
 	}
-	snapshot, err := checker.CreateSnapshot(ctx, planned["cp-1"], "/var/lib/etcd/katl-snapshots/three-control-plane.db")
+	snapshot, err := checker.CreateSnapshot(ctx, planned["cp-1"], snapshotPath)
 	if err != nil {
 		return threeControlPlaneEtcdReport{StaticPods: staticPods, Health: report, Transcript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1")}, err
 	}
@@ -1621,6 +1946,22 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
 	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
 		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
+	}
+}
+
+func TestControlPlaneProfilingConfigOnlyAddsSupportedFields(t *testing.T) {
+	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\ncertificateValidityPeriod: 8760h0m0s\napiServer:\n  extraArgs:\n    - name: authorization-mode\n      value: Node,RBAC\ncontrollerManager:\n  extraArgs:\n    - name: bind-address\n      value: 0.0.0.0\n")
+	desired, deltas, err := controlPlaneProfilingConfig(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ClusterConfiguration.apiServer.extraArgs.profiling=false",
+		"ClusterConfiguration.controllerManager.extraArgs.profiling=false",
+		"ClusterConfiguration.scheduler.extraArgs.profiling=false",
+	}
+	if !reflect.DeepEqual(deltas, want) {
+		t.Fatalf("deltas = %v, want %v\ndesired:\n%s", deltas, want, desired)
 	}
 }
 

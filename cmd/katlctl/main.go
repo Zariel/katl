@@ -92,6 +92,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 
 	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
+	clusterCmd.AddCommand(newKubeadmControlPlaneConfigCommand(ctx, stdout, stderr))
 	clusterWipeCmd := newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe")
 	clusterWipeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl cluster wipe node"))
 	clusterCmd.AddCommand(clusterWipeCmd)

@@ -316,6 +316,16 @@ func TestResolveRejectsDeniedHostPathsInPatchContents(t *testing.T) {
 	}
 }
 
+func TestPlanFromRenderedFilesAllowsStandardCertificatesDirectory(t *testing.T) {
+	_, err := PlanFromRenderedFiles("control-plane", []File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncertificatesDir: /etc/kubernetes/pki\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func kubeadmObject(name, configFile string) Object {
 	return Object{
 		APIVersion: APIVersion,
