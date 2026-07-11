@@ -72,11 +72,15 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		`--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml"`,
 		`--source-ref "$GITHUB_REF"`,
 		`--source-digest "$GITHUB_SHA"`,
-		"PROVENANCE.md",
+		"fetch-depth: 0",
+		"--notes-file dist/RELEASE_NOTES.md",
 	} {
 		if !strings.Contains(releaseWorkflow, value) {
 			t.Fatalf("KatlOS release workflow missing %q", value)
 		}
+	}
+	if strings.Contains(releaseWorkflow, "--generate-notes") {
+		t.Fatal("KatlOS releases must use the tested staged release notes")
 	}
 }
 

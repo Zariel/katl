@@ -13,9 +13,76 @@ fail() {
 usage() {
     cat >&2 <<'EOF'
 usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
+       scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts stage VERSION OUTPUT_DIR
 EOF
     exit 2
+}
+
+is_katlos_tag() {
+    local tag="$1"
+    [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|rc)\.(0|[1-9][0-9]*))?$ ]]
+}
+
+generate_release_notes() {
+    local version="$1"
+    local current_tag="v$version"
+    local repository_url="${KATL_RELEASE_REPOSITORY_URL:-https://github.com/katl-dev/katl}"
+    local target previous_tag="" range commit hash subject short_hash area summary
+    local -a commits=()
+
+    validate_version "$version"
+    if [[ "${GITHUB_REF_TYPE:-}" != branch ]] &&
+        git rev-parse --verify --quiet "refs/tags/$current_tag^{commit}" >/dev/null; then
+        target="refs/tags/$current_tag^{commit}"
+    else
+        target="${KATL_RELEASE_TARGET:-${GITHUB_SHA:-HEAD}}"
+        git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
+            fail "release notes target is not a commit: $target"
+    fi
+
+    while IFS= read -r tag; do
+        is_katlos_tag "$tag" || continue
+        [[ "$tag" != "$current_tag" ]] || continue
+        previous_tag="$tag"
+        break
+    done < <(git tag --merged "$target" --list 'v*' --sort=-version:refname)
+
+    if [[ -n "$previous_tag" ]]; then
+        range="$previous_tag..$target"
+    else
+        range="$target"
+    fi
+
+    mapfile -t commits < <(git log --format='%H%x09%s' "$range")
+    printf '## Changes\n\n'
+    if ((${#commits[@]} == 0)); then
+        printf '_No commits were added since the previous KatlOS release._\n'
+    fi
+    for commit in "${commits[@]}"; do
+        IFS=$'\t' read -r hash subject <<<"$commit"
+        [[ -n "$hash" ]] || continue
+        short_hash="${hash:0:7}"
+        if [[ "$subject" =~ ^([^:]+):[[:space:]]+(.+)$ ]]; then
+            area="${BASH_REMATCH[1]}"
+            summary="${BASH_REMATCH[2]}"
+            printf -- "- **%s:** %s ([\`%s\`](%s/commit/%s))\n" \
+                "$area" "$summary" "$short_hash" "$repository_url" "$hash"
+        else
+            printf -- "- %s ([\`%s\`](%s/commit/%s))\n" \
+                "$subject" "$short_hash" "$repository_url" "$hash"
+        fi
+    done
+
+    printf '\n## Verify downloads\n\n'
+    printf 'Release assets have keyless GitHub build-provenance attestations. '
+    printf "See \`PROVENANCE.md\` for verification instructions and scope.\n"
+    if [[ -n "$previous_tag" ]]; then
+        printf "\n**Full comparison:** [\`%s...%s\`](%s/compare/%s...%s)\n" \
+            "$previous_tag" "$current_tag" "$repository_url" "$previous_tag" "$current_tag"
+    else
+        printf '\nThis is the first KatlOS release in the repository history.\n'
+    fi
 }
 
 validate_version() {
@@ -135,6 +202,7 @@ checks. Provenance authenticates the repository and workflow that produced the
 bytes; it does not assert that an artifact is vulnerability-free, provide a
 Secure Boot signature, or replace Katl's future node-side trust policy.
 EOF
+    generate_release_notes "$version" >"$output/RELEASE_NOTES.md"
     (
         cd "$output"
         mapfile -d '' checksum_files < <(
@@ -151,6 +219,10 @@ case "${1:-}" in
     version)
         [[ $# -ge 4 && $# -le 5 ]] || usage
         version_for_ref "$2" "$3" "$4" "${5:-}"
+        ;;
+    notes)
+        [[ $# -eq 2 ]] || usage
+        generate_release_notes "$2"
         ;;
     stage)
         [[ $# -eq 3 ]] || usage

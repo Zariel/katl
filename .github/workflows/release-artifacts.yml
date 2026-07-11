@@ -43,6 +43,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -186,8 +188,7 @@ jobs:
               "$GITHUB_REF_NAME" \
               --verify-tag \
               --title "KatlOS $KATL_VERSION" \
-              --generate-notes \
-              --notes "These assets have keyless GitHub build-provenance attestations. See PROVENANCE.md for verification and scope." \
+              --notes-file dist/RELEASE_NOTES.md \
               "${prerelease[@]}" \
               dist/*
           fi

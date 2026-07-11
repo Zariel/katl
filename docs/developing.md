@@ -235,6 +235,10 @@ for every release asset using the `katl-dev/katl` workflow identity. The
 workflow verifies each attestation against its exact signer workflow, tag ref,
 and source commit after publishing. `SHA256SUMS` covers the staged asset set and
 `PROVENANCE.md` documents user verification and the remaining trust boundary.
+The staged `RELEASE_NOTES.md` is generated from commits since the previous
+canonical KatlOS CalVer tag. It links each commit, includes the full comparison,
+and becomes the GitHub release body; Kubernetes bundle tags are deliberately
+excluded when selecting the previous KatlOS release.
 This provenance does not provide Secure Boot signatures or implement Katl's
 future node-side trust-root, revocation, and downgrade policy.
 

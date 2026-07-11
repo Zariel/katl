@@ -61,6 +61,64 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactNotes(t *testing.T) {
+	repo := repoRoot(t)
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet")
+	runGit(t, gitDir, "config", "user.name", "Katl Test")
+	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
+
+	commits := []string{
+		"runtime: establish KatlOS root",
+		"release: publish first artifacts",
+		"release: automate Kubernetes bundles",
+		"release: attest KatlOS artifacts",
+	}
+	var hashes []string
+	for index, subject := range commits {
+		path := filepath.Join(gitDir, fmt.Sprintf("change-%d", index))
+		if err := os.WriteFile(path, []byte(subject+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, gitDir, "add", filepath.Base(path))
+		runGit(t, gitDir, "commit", "--quiet", "-m", subject)
+		hashes = append(hashes, strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD")))
+		if index == 1 {
+			runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
+			runGit(t, gitDir, "tag", "v1.36.0-katl.99")
+		}
+	}
+	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
+	cmd.Dir = gitDir
+	cmd.Env = append(os.Environ(), "KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes failed: %v\n%s", err, output)
+	}
+	notes := string(output)
+	for _, value := range []string{
+		"## Changes",
+		"- **release:** attest KatlOS artifacts",
+		"- **release:** automate Kubernetes bundles",
+		"https://github.example/katl-dev/katl/commit/" + hashes[3],
+		"## Verify downloads",
+		"`PROVENANCE.md`",
+		"v2026.7.0-dev.3...v2026.7.0-dev.4",
+		"https://github.example/katl-dev/katl/compare/v2026.7.0-dev.3...v2026.7.0-dev.4",
+	} {
+		if !strings.Contains(notes, value) {
+			t.Fatalf("release notes missing %q:\n%s", value, notes)
+		}
+	}
+	for _, value := range []string{commits[0], commits[1], "v1.36.0-katl.99"} {
+		if strings.Contains(notes, value) {
+			t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
+		}
+	}
+}
+
 func TestKatlReleaseArtifactStage(t *testing.T) {
 	repo := repoRoot(t)
 	buildDir := t.TempDir()
@@ -101,7 +159,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	want := []string{"PROVENANCE.md", "SHA256SUMS"}
+	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS"}
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
 	}
@@ -123,14 +181,20 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 			t.Fatalf("provenance notice missing %q: %q", value, provenance)
 		}
 	}
+	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
+	for _, value := range []string{"## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+		if !strings.Contains(releaseNotes, value) {
+			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
+		}
+	}
 
 	checksums := mustReadFile(t, filepath.Join(output, "SHA256SUMS"))
-	for _, name := range append([]string{"PROVENANCE.md"}, names...) {
+	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md"}, names...) {
 		if !strings.Contains(string(checksums), "  "+name+"\n") {
 			t.Fatalf("SHA256SUMS missing %q: %q", name, checksums)
 		}
 		for _, suffix := range []string{".json", ".sha256"} {
-			if name == "PROVENANCE.md" {
+			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" {
 				continue
 			}
 			if !strings.Contains(string(checksums), "  "+name+suffix+"\n") {
@@ -141,6 +205,17 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	if strings.Contains(string(checksums), "  SHA256SUMS\n") {
 		t.Fatalf("SHA256SUMS must not contain its own digest: %q", checksums)
 	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
