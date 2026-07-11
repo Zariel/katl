@@ -64,11 +64,17 @@ type Executor struct {
 	BundleClient         *http.Client
 	ResolveHostUpgrade   HostUpgradeResolver
 	Async                bool
+	workerMu             sync.Mutex
+	workerWG             sync.WaitGroup
+	workerCtx            context.Context
+	workerCancel         context.CancelFunc
+	stopped              bool
 }
 
 type toolPlan = operation.ExecutorPlan
 
 func NewExecutor(root string, store operation.Store, agentStartID string) *Executor {
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	executor := &Executor{
 		Root:          strings.TrimSpace(root),
 		Store:         store,
@@ -79,6 +85,8 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunPostHealth: runPostKubeadmHealthCommand,
 		MountBootRoot: mountRuntimeBootRoot,
 		Async:         true,
+		workerCtx:     workerCtx,
+		workerCancel:  workerCancel,
 	}
 	if runtimeRoot(executor.Root) == "/" {
 		executor.SetBootOneshot = setBootOneshot
@@ -101,16 +109,52 @@ func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileRepo
 }
 
 func (e *Executor) Dispatch(ctx context.Context, record operation.OperationRecord) error {
+	e.workerMu.Lock()
+	if e.stopped {
+		e.workerMu.Unlock()
+		return fmt.Errorf("agent executor is shutting down")
+	}
 	if e.Async {
+		workerCtx := e.workerCtx
+		e.workerWG.Add(1)
+		e.workerMu.Unlock()
 		go func() {
-			if err := e.Execute(context.Background(), record); err != nil {
+			defer e.workerWG.Done()
+			if err := e.Execute(workerCtx, record); err != nil {
 				e.recordUnhandledExecutionFailure(record.OperationID, err)
 			}
 		}()
 		return nil
 	}
+	e.workerMu.Unlock()
 	_ = e.Execute(ctx, record)
 	return nil
+}
+
+func (e *Executor) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.workerMu.Lock()
+	if !e.stopped {
+		e.stopped = true
+		if e.workerCancel != nil {
+			e.workerCancel()
+		}
+	}
+	e.workerMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		e.workerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for agent executor shutdown: %w", ctx.Err())
+	}
 }
 
 func (e *Executor) recordUnhandledExecutionFailure(operationID string, cause error) {

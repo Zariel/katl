@@ -31,6 +31,12 @@ type ServeConfig struct {
 	Dispatcher                     Dispatcher
 }
 
+type dispatcherShutdown interface {
+	Shutdown(context.Context) error
+}
+
+const dispatcherShutdownTimeout = 30 * time.Second
+
 func Serve(ctx context.Context, config ServeConfig) error {
 	root := strings.TrimSpace(config.Root)
 	if root == "" {
@@ -83,10 +89,20 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	select {
 	case <-ctx.Done():
 		server.GracefulStop()
-		return ctx.Err()
+		return errors.Join(ctx.Err(), shutdownDispatcher(dispatcher))
 	case err := <-errc:
-		return err
+		return errors.Join(err, shutdownDispatcher(dispatcher))
 	}
+}
+
+func shutdownDispatcher(dispatcher Dispatcher) error {
+	shutdown, ok := dispatcher.(dispatcherShutdown)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dispatcherShutdownTimeout)
+	defer cancel()
+	return shutdown.Shutdown(ctx)
 }
 
 func InitToken(path string) error {
