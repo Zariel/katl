@@ -15,7 +15,7 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		"publish:",
 		"packages: write",
 		"oras_1.3.3_linux_amd64.tar.gz",
-		"aeb684d8c24c18dce28fd1f7326636e4782b573108e244a93d4b1c4a5ec50f48",
+		"9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59",
 		"scripts/check-kubernetes-sysext",
 		"go run ./cmd/katl-publish-kubernetes-sysext",
 		"ghcr.io/katl-dev/bundles",
