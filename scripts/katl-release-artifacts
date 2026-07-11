@@ -84,6 +84,7 @@ stage_artifacts() {
     local version="$1"
     local output="$2"
     local name suffix path
+    local -a checksum_files=()
     local -a names=(
         "katl-installer.efi"
         "katl-installer.vmlinuz"
@@ -116,10 +117,34 @@ stage_artifacts() {
             cp -- "$build_dir/$name$suffix" "$output/"
         done
     done
-    cat >"$output/UNSIGNED.txt" <<'EOF'
-These Katl artifacts are unsigned. The adjacent SHA-256 files provide integrity
-checks only and do not establish publisher authenticity.
+    cat >"$output/PROVENANCE.md" <<'EOF'
+# KatlOS release provenance
+
+Assets published from a KatlOS tag release are covered by keyless GitHub
+build-provenance attestations issued to the `katl-dev/katl` release workflow.
+Verify a downloaded asset with:
+
+```sh
+gh attestation verify <asset> \
+  --repo katl-dev/katl \
+  --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml
+```
+
+`SHA256SUMS` and the adjacent `.sha256` files provide transport-integrity
+checks. Provenance authenticates the repository and workflow that produced the
+bytes; it does not assert that an artifact is vulnerability-free, provide a
+Secure Boot signature, or replace Katl's future node-side trust policy.
 EOF
+    (
+        cd "$output"
+        mapfile -d '' checksum_files < <(
+            find . -mindepth 1 -maxdepth 1 -type f \
+                ! -name SHA256SUMS -printf '%f\0' | sort -z
+        )
+        ((${#checksum_files[@]} > 0)) || fail "release output has no files to checksum"
+        sha256sum "${checksum_files[@]}" >SHA256SUMS
+        sha256sum --check SHA256SUMS
+    )
 }
 
 case "${1:-}" in

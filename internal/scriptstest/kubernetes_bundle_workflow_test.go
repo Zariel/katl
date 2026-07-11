@@ -63,6 +63,21 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	if !strings.Contains(releaseWorkflow, `- "v*"`) || strings.Contains(releaseWorkflow, `- "**"`) {
 		t.Fatalf("KatlOS release workflow must select KatlOS tags without consuming bundle tags")
 	}
+	for _, value := range []string{
+		"attestations: write",
+		"id-token: write",
+		"actions/attest@v4",
+		"subject-path: dist/*",
+		"Verify published release provenance",
+		`--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml"`,
+		`--source-ref "$GITHUB_REF"`,
+		`--source-digest "$GITHUB_SHA"`,
+		"PROVENANCE.md",
+	} {
+		if !strings.Contains(releaseWorkflow, value) {
+			t.Fatalf("KatlOS release workflow missing %q", value)
+		}
+	}
 }
 
 func TestKubernetesBundleRenovateContract(t *testing.T) {

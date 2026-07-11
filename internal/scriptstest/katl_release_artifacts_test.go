@@ -101,7 +101,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	want := []string{"UNSIGNED.txt"}
+	want := []string{"PROVENANCE.md", "SHA256SUMS"}
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
 	}
@@ -109,12 +109,37 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("staged files = %#v, want %#v", got, want)
 	}
-	unsigned, err := os.ReadFile(filepath.Join(output, "UNSIGNED.txt"))
+	provenance, err := os.ReadFile(filepath.Join(output, "PROVENANCE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(unsigned), "unsigned") || !strings.Contains(string(unsigned), "do not establish publisher authenticity") {
-		t.Fatalf("unsigned marker = %q", unsigned)
+	for _, value := range []string{
+		"gh attestation verify",
+		"katl-dev/katl/.github/workflows/release-artifacts.yml",
+		"Secure Boot signature",
+		"future node-side trust policy",
+	} {
+		if !strings.Contains(string(provenance), value) {
+			t.Fatalf("provenance notice missing %q: %q", value, provenance)
+		}
+	}
+
+	checksums := mustReadFile(t, filepath.Join(output, "SHA256SUMS"))
+	for _, name := range append([]string{"PROVENANCE.md"}, names...) {
+		if !strings.Contains(string(checksums), "  "+name+"\n") {
+			t.Fatalf("SHA256SUMS missing %q: %q", name, checksums)
+		}
+		for _, suffix := range []string{".json", ".sha256"} {
+			if name == "PROVENANCE.md" {
+				continue
+			}
+			if !strings.Contains(string(checksums), "  "+name+suffix+"\n") {
+				t.Fatalf("SHA256SUMS missing %q: %q", name+suffix, checksums)
+			}
+		}
+	}
+	if strings.Contains(string(checksums), "  SHA256SUMS\n") {
+		t.Fatalf("SHA256SUMS must not contain its own digest: %q", checksums)
 	}
 }
 

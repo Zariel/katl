@@ -230,9 +230,13 @@ and bootstrap configuration are supplied separately at boot. The loose
 installer and install-image artifacts remain available for PXE deployments.
 Loose runtime root/UKI intermediates and Kubernetes payload bundles are not
 published through this workflow. Kubernetes bundles have a separate producer
-contract. Katl release artifacts are currently unsigned, and each publication
-includes an `UNSIGNED.txt` marker stating that checksums provide integrity but
-not publisher authenticity.
+contract. Tag publications create keyless SLSA build-provenance attestations
+for every release asset using the `katl-dev/katl` workflow identity. The
+workflow verifies each attestation against its exact signer workflow, tag ref,
+and source commit after publishing. `SHA256SUMS` covers the staged asset set and
+`PROVENANCE.md` documents user verification and the remaining trust boundary.
+This provenance does not provide Secure Boot signatures or implement Katl's
+future node-side trust-root, revocation, and downgrade policy.
 
 ## Kubernetes Bundle Artifacts
 

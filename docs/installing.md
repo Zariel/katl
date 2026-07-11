@@ -72,6 +72,32 @@ installed system. Do not rebuild either artifact for each node. Put node
 identity, disk selection, networkd snippets, SSH authorized keys, system role,
 and bootstrap intent in the install manifest.
 
+### Verify release provenance
+
+Each KatlOS tag release includes `SHA256SUMS`, adjacent checksum files, and
+`PROVENANCE.md`. After downloading the required assets into one directory,
+verify their transport integrity:
+
+```sh
+sha256sum --ignore-missing --check SHA256SUMS
+```
+
+Then authenticate each asset against the keyless GitHub attestation issued to
+the Katl release workflow. Pin the expected tag in the verification policy:
+
+```sh
+gh attestation verify katl-installer.iso \
+  --repo katl-dev/katl \
+  --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
+  --source-ref refs/tags/v2026.7.0-dev.4
+```
+
+Repeat the attestation check for the KatlOS SquashFS or loose PXE artifact you
+will use. The attestation binds those bytes to the repository, workflow, tag,
+and source commit. It does not make the build vulnerability-free and is not a
+UEFI Secure Boot signature; production boot-key policy and node-side signature
+enforcement remain separate work.
+
 ## Install Manifest
 
 Each node needs an `install.katl.dev/v1alpha1` manifest. YAML is the preferred

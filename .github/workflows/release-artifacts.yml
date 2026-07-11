@@ -25,6 +25,10 @@ jobs:
     name: Build And Verify Katl Artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
@@ -132,6 +136,12 @@ jobs:
         shell: bash
         run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
 
+      - name: Attest staged release artifacts
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
+
       - name: Upload GitHub Actions artifact
         uses: actions/upload-artifact@v7
         with:
@@ -147,6 +157,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     permissions:
+      attestations: read
       contents: write
 
     steps:
@@ -176,7 +187,20 @@ jobs:
               --verify-tag \
               --title "KatlOS $KATL_VERSION" \
               --generate-notes \
-              --notes "These artifacts are currently unsigned; verify the adjacent SHA-256 files before use." \
+              --notes "These assets have keyless GitHub build-provenance attestations. See PROVENANCE.md for verification and scope." \
               "${prerelease[@]}" \
               dist/*
           fi
+
+      - name: Verify published release provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for artifact in dist/*; do
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" >/dev/null
+          done
