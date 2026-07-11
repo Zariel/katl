@@ -178,6 +178,10 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if kubeadmRef != "" {
 		bootstrapProfileResolvedID = "kubeadm:" + kubeadmRef
 	}
+	publicBundle := ""
+	if _, err := kubernetesbundle.ParseImageReference(kubernetes.bundleRef); err == nil {
+		publicBundle = kubernetes.bundleRef
+	}
 	installManifest := manifest.Manifest{
 		APIVersion: manifest.APIVersion,
 		Kind:       manifest.Kind,
@@ -192,18 +196,17 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
-				ClusterName:            strings.TrimSpace(config.Metadata.Name),
-				InventoryNodeName:      name,
-				NodeAddress:            strings.TrimSpace(layer.Bootstrap.Address),
-				ControlPlaneEndpoint:   controlPlaneEndpoint,
-				BootstrapProfileRef:    kubeadmRef,
-				ProfileResolvedID:      bootstrapProfileResolvedID,
-				KubernetesCatalogRef:   kubernetes.catalogRef,
-				KubernetesBundleSource: kubernetes.bundleSource,
-				KubernetesBundleRef:    kubernetes.bundleRef,
-				Access:                 manifestAccess(layer.Bootstrap.Access),
-				Labels:                 copyLabels(layer.Kubernetes.NodeLabels),
-				Taints:                 append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+				ClusterName:          strings.TrimSpace(config.Metadata.Name),
+				InventoryNodeName:    name,
+				NodeAddress:          strings.TrimSpace(layer.Bootstrap.Address),
+				ControlPlaneEndpoint: controlPlaneEndpoint,
+				BootstrapProfileRef:  kubeadmRef,
+				ProfileResolvedID:    bootstrapProfileResolvedID,
+				KubernetesCatalogRef: kubernetes.catalogRef,
+				KubernetesBundle:     publicBundle,
+				Access:               manifestAccess(layer.Bootstrap.Access),
+				Labels:               copyLabels(layer.Kubernetes.NodeLabels),
+				Taints:               append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
 			},
 		},
 		Install: manifest.InstallConfig{

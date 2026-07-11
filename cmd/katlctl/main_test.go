@@ -199,12 +199,11 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 
 func TestLoadInventoryPreservesKubernetesBundleSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
-	bundleRef := "v1.36.1@sha256:" + strings.Repeat("a", 64)
+	bundleRef := "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("a", 64)
 	if err := os.WriteFile(path, []byte(`
 controlPlaneEndpoint: api.katl.test:6443
 kubernetesVersion: v1.36.1
-kubernetesBundleSource: https://artifacts.example.test/kubernetes
-kubernetesBundleRef: `+bundleRef+`
+kubernetesBundle: `+bundleRef+`
 nodes:
 - name: cp-1
   address: 192.0.2.10
@@ -224,7 +223,7 @@ nodes:
 	if err != nil {
 		t.Fatalf("loadInventory() error = %v", err)
 	}
-	if inv.KubernetesBundleSource != "https://artifacts.example.test/kubernetes" || inv.KubernetesBundleRef != bundleRef {
+	if inv.KubernetesBundleSource != "https://ghcr.io/v2/katl-dev/kubernetes" || inv.KubernetesBundleRef != bundleRef {
 		t.Fatalf("bundle selection = %q %q", inv.KubernetesBundleSource, inv.KubernetesBundleRef)
 	}
 }
@@ -1863,9 +1862,7 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.1
-    bundle:
-      source: https://artifacts.example.test/kubernetes
-      ref: v1.36.1@sha256:` + strings.Repeat("b", 64) + `
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:` + strings.Repeat("b", 64) + `
   katlosImage:
     url: https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs
     sha256: ` + strings.Repeat("a", 64) + `

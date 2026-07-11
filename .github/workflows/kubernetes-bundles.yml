@@ -285,8 +285,7 @@ jobs:
             echo "### Published Kubernetes bundle"
             echo
             echo "- OCI: \`${OCI_REPOSITORY}@${manifest_digest}\`"
-            echo "- Source: \`https://ghcr.io/v2/katl-dev/kubernetes\`"
-            echo "- Ref: \`${PAYLOAD_VERSION}@${BUNDLE_DIGEST}\`"
+            echo "- Kubernetes bundle: \`${OCI_REPOSITORY}:${VERSION_TAG}@${manifest_digest}\`"
             echo "- Version tag: \`${OCI_REPOSITORY}:${VERSION_TAG}\`"
             echo "- Digest tag: \`${OCI_REPOSITORY}:${DIGEST_TAG}\`"
             echo

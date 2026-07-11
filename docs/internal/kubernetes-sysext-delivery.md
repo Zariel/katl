@@ -73,16 +73,10 @@ kubelet activation gate are implemented and VM-tested.
 ## Node Acquisition And Activation
 
 `katlc` acquires Kubernetes payload bundles from a user-supplied HTTPS source
-and a separate selector. The normalized source/ref shape is:
+and a separate selector. The public reference shape is:
 
 ```text
-source
-  Absolute HTTPS URL for a Katl Kubernetes bundle catalog, static OCI layout, or
-  registry manifest endpoint.
-
-ref
-  Exact payload selector `vMAJOR.MINOR.PATCH`, optionally pinned as
-  `vMAJOR.MINOR.PATCH@sha256:<bundle-manifest-digest>`.
+REGISTRY/REPOSITORY:vMAJOR.MINOR.PATCH-katl.BUILD[@sha256:<OCI-manifest-digest>]
 ```
 
 The YAML-facing install or bootstrap intent uses:
@@ -90,38 +84,32 @@ The YAML-facing install or bootstrap intent uses:
 ```yaml
 node:
   bootstrap:
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes
-    kubernetesBundleRef: v1.36.0@sha256:<bundle-manifest-digest>
+    kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<OCI-manifest-digest>
 ```
 
-`katlctl cluster bootstrap` and node-local `katlc` operations use the same
-fields, exposed as `--kubernetes-source` and `--kubernetes-ref` for the operator
-CLI and recorded in the OperationRecord as `kubernetes.source` and
-`kubernetes.ref`. Legacy catalog-only field names should be treated as
-pre-decision scaffolding and replaced by these fields during implementation.
+`katlctl cluster bootstrap` uses the same value through `--kubernetes-bundle`.
+Katl derives the registry API endpoint internally and records the submitted
+reference plus every resolved digest in the node-local operation record.
 
 Examples:
 
 ```text
-source=https://ghcr.io/v2/katl-dev/kubernetes
-ref=v1.36.0@sha256:<bundle-manifest-digest>
-
-source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
-ref=v1.36.0@sha256:<bundle-manifest-digest>
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<OCI-manifest-digest>
 ```
 
-`source` is a location, not a trust root. `ref` resolves to one exact Katl
-custom bundle manifest. A catalog or minor selector may be used for discovery,
-but before `katlc` writes a generation, the selected payload is normalized to an
-exact `vMAJOR.MINOR.PATCH` payload version, bundle manifest digest, and sysext
-payload SHA-256. Generation metadata never records a floating `default`, latest,
-or minor-only Kubernetes selection.
+The digest pin is optional so the first-use path remains approachable, but it is
+strongly recommended. Before `katlc` writes a generation, a tag-only reference
+is resolved once and normalized to the OCI manifest digest, exact Kubernetes
+payload version, Katl bundle manifest digest, and sysext payload SHA-256.
+Generation metadata never records a floating `default`, `latest`, or minor-only
+Kubernetes selection.
 
 Resolver behavior is host-shape specific but produces the same bundle manifest:
 
 ```text
 GHCR or registry source
-  Resolve the exact tag from ref through the OCI distribution API, fetch the
+  Resolve the tag or supplied manifest digest through the OCI distribution API, fetch the
   Katl bundle manifest from the OCI config descriptor, verify that the bundle
   manifest digest matches the pinned digest when present, then fetch payload
   and metadata layers by digest.
@@ -145,11 +133,10 @@ credentialed URLs are not accepted for v0.1.
 
 ## Bundle Format
 
-The Katl custom bundle manifest is the stable payload identity. Its digest is
-the `@sha256:` pin used in `kubernetesBundleRef`, regardless of whether the
-bundle is hosted through GHCR or a static HTTPS layout. OCI distribution
-manifests, tags, catalogs, and indexes help locate that custom manifest, but
-they are not the identity recorded as the bundle manifest digest.
+The user-facing `@sha256:` value pins the OCI distribution manifest. The Katl
+custom bundle manifest remains the stable payload identity inside that OCI
+manifest and is fetched through its config descriptor. Katl records and verifies
+both digests; the sysext payload digest remains the activation identity.
 
 The custom manifest media type is:
 
@@ -331,17 +318,11 @@ and runtime compatibility metadata unchanged. If a mirror recompresses,
 repackages, or regenerates any descriptor, it has created a new bundle and must
 publish a new bundle manifest digest.
 
-User-facing refs are therefore stable across hosting shapes:
+The public GHCR references are:
 
 ```text
-source=https://ghcr.io/v2/katl-dev/kubernetes
-ref=v1.36.0@sha256:<bundle-manifest-digest>
-
-source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
-ref=v1.36.0@sha256:<bundle-manifest-digest>
-
-source=https://mirror.example.invalid/katl/kubernetes
-ref=v1.36.0@sha256:<same-bundle-manifest-digest>
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<OCI-manifest-digest>
 ```
 
 The sysext payload digest, not the catalog digest, remains the activation digest
@@ -880,16 +861,16 @@ and node-local configuration remain in `katl-dev/katl`.
 OCI in GHCR is the canonical publication shape. Each project-minted bundle kind
 uses a clearly named package; Kubernetes is `ghcr.io/katl-dev/kubernetes`. A
 Kubernetes bundle has a human-facing `vMAJOR.MINOR.PATCH-katl.BUILD` tag and a
-mandatory `sha256-<bundle-manifest-digest>` tag. `katlc` derives the latter
-from the exact source/ref, resolves the OCI image manifest, and requires the
-pinned Katl bundle manifest to be its config. GitHub Releases or a static HTTPS
+mandatory `sha256-<bundle-manifest-digest>` resolver tag. End users provide the
+readable OCI image reference, optionally pinned to its OCI manifest digest;
+`katlc` requires the Katl bundle manifest to be the resolved config. GitHub Releases or a static HTTPS
 layout may mirror the same bytes later, but they are not the primary store.
 
 The readable tag deliberately retains the exact Kubernetes patch version.
 Renovate's Docker datasource preserves tag precision and treats the hyphenated
 suffix as compatibility, so `v1.36.0-katl.1` can advance to
 `v1.36.1-katl.1`. Consumers should pair that readable dependency with a digest
-pin; the Katl source/ref remains pinned to the custom bundle manifest digest.
+pin. Katl separately verifies and records the custom bundle manifest digest.
 
 The OCI manifest digest is the distribution digest. The sysext payload digest is
 still recorded as the activation digest in bundle metadata, catalog data, and

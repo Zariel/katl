@@ -243,7 +243,13 @@ func validateKubernetesBundleSelection(source string, ref string, kubernetesVers
 
 func payloadVersionFromBundleRef(ref string) (string, bool) {
 	parts := strings.Split(strings.TrimSpace(ref), "@")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !sha256DigestPattern.MatchString(parts[1]) {
+	if len(parts) > 2 || strings.TrimSpace(parts[0]) == "" || (len(parts) == 2 && !sha256DigestPattern.MatchString(parts[1])) {
+		return "", false
+	}
+	if match := imageBundleTagPattern.FindStringSubmatch(parts[0]); match != nil {
+		return "v" + match[1], true
+	}
+	if len(parts) != 2 {
 		return "", false
 	}
 	return strings.TrimSpace(parts[0]), true
@@ -505,6 +511,7 @@ func readinessDiagnostics(node PlannedNode, snapshot ReadinessSnapshot) []Diagno
 var (
 	urlPattern                = regexp.MustCompile(`https?://[^\s]+`)
 	sha256DigestPattern       = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	imageBundleTagPattern     = regexp.MustCompile(`:v([0-9]+\.[0-9]+\.[0-9]+)-katl\.[0-9]+$`)
 	dnsLabelPattern           = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	bootstrapTokenPattern     = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
 	discoveryTokenHashPattern = regexp.MustCompile(`(?i)\b(discovery-token-ca-cert-hash\s+)?sha256:[a-f0-9]{64}\b`)

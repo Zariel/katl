@@ -13,6 +13,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
@@ -235,8 +236,14 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		intent.Inventory.Labels = copyBootstrapLabels(bootstrap.Labels)
 		intent.Inventory.Taints = append([]manifest.NodeTaint(nil), bootstrap.Taints...)
 		intent.Kubernetes.CatalogRef = strings.TrimSpace(bootstrap.KubernetesCatalogRef)
-		intent.Kubernetes.BundleSource = strings.TrimSpace(bootstrap.KubernetesBundleSource)
-		intent.Kubernetes.BundleRef = strings.TrimSpace(bootstrap.KubernetesBundleRef)
+		if bundle := strings.TrimSpace(bootstrap.KubernetesBundle); bundle != "" {
+			image, err := kubernetesbundle.ParseImageReference(bundle)
+			if err != nil {
+				return ClusterIntent{}, fmt.Errorf("node.bootstrap.kubernetesBundle: %w", err)
+			}
+			intent.Kubernetes.BundleSource = image.Source
+			intent.Kubernetes.BundleRef = image.Value
+		}
 	}
 	if request.KubernetesSysext != nil {
 		intent.Kubernetes.SysextPath = strings.TrimSpace(request.KubernetesSysext.Path)

@@ -441,8 +441,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
 		"--control-plane-endpoint", cpAddress + ":6443",
-		"--kubernetes-bundle-source", kubernetesBundle.Source,
-		"--kubernetes-bundle-ref", kubernetesBundle.Ref,
+		"--kubernetes-bundle", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cpAddress,
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
@@ -833,11 +832,13 @@ func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Resu
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
 	}
-	server, err := startGuestReachableKubernetesBundleServer(gateway, bundle.Root)
+	server, err := startGuestReachableKubernetesBundleServer(gateway, bundle)
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
 	}
 	bundle.Source = server.Source
+	bundle.Ref = server.Ref
+	bundle.BundleManifestDigest = server.BundleManifestDigest
 	bundle.CACertPEM = server.CACertPEM
 	bundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
 	bundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
@@ -1333,8 +1334,7 @@ func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBun
 	}
 	data := `controlPlaneEndpoint: ` + cpAddress + `:6443
 kubernetesVersion: ` + kubernetesVersion + `
-kubernetesBundleSource: ` + strconv.Quote(kubernetesBundle.Source) + `
-kubernetesBundleRef: ` + strconv.Quote(kubernetesBundle.Ref) + `
+kubernetesBundle: ` + strconv.Quote(kubernetesBundle.Ref) + `
 nodes:
 - name: cp-1
   address: ` + cpAddress + `

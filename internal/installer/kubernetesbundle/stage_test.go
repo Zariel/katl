@@ -95,7 +95,8 @@ func TestFetchAndStageOCI(t *testing.T) {
 		Architecture:     "x86_64",
 	}
 
-	staged, err := fetchAndStageOCI(context.Background(), request, parsedRef, repository)
+	tag := registryTagPrefix + strings.TrimPrefix(parsedRef.BundleDigest, "sha256:")
+	staged, err := fetchAndStageOCI(context.Background(), request, parsedRef, repository, tag, parsedRef.BundleDigest, "", "")
 	if err != nil {
 		t.Fatalf("fetchAndStageOCI() error = %v", err)
 	}
@@ -108,6 +109,62 @@ func TestFetchAndStageOCI(t *testing.T) {
 	}
 	if string(payload) != "kubernetes sysext 1.36.0" {
 		t.Fatalf("payload = %q", payload)
+	}
+}
+
+func TestFetchAndStageOCIImageReference(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	repository := writeOCIRepository(t, fixture, nil)
+	manifest, err := repository.Resolve(context.Background(), "v1.36.0-katl.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1",
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@" + manifest.Digest.String(),
+	} {
+		image, err := ParseImageReference(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := Request{
+			Source:           image.Source,
+			Ref:              image.Value,
+			CacheDir:         t.TempDir(),
+			RuntimeInterface: "katl-runtime-1",
+			Architecture:     "x86_64",
+		}
+		staged, err := fetchAndStageOCI(context.Background(), request, ref{PayloadVersion: image.PayloadVersion}, repository, image.Tag, "", image.ManifestDigest, image.ArtifactVersion)
+		if err != nil {
+			t.Fatalf("fetchAndStageOCI(%q) error = %v", value, err)
+		}
+		if staged.BundleManifestDigest != fixture.staged.BundleManifestDigest || staged.ArtifactVersion != image.ArtifactVersion {
+			t.Fatalf("staged identity = %#v", staged)
+		}
+	}
+}
+
+func TestFetchAndStagePublicOCI(t *testing.T) {
+	if os.Getenv("KATL_LIVE_GHCR") != "1" {
+		t.Skip("set KATL_LIVE_GHCR=1 to verify the published Kubernetes bundle")
+	}
+	for _, ref := range []string{
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1",
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:1dc92e6d16bec47feea17647289e4a8912dd941fae7aae37d02e02308f9830e3",
+	} {
+		staged, err := FetchAndStage(context.Background(), Request{
+			Source:           "https://ghcr.io/v2/katl-dev/kubernetes",
+			Ref:              ref,
+			CacheDir:         t.TempDir(),
+			RuntimeInterface: "katl-runtime-1",
+			Architecture:     "x86_64",
+		})
+		if err != nil {
+			t.Fatalf("FetchAndStage(%q) error = %v", ref, err)
+		}
+		if staged.PayloadVersion != "v1.36.0" || staged.ArtifactVersion != "v1.36.0-katl.1" || staged.BundleManifestDigest != "sha256:a928cad17e0179f6811d1da262b016a429b422fd46a6014b7f21db3efeb4cba2" {
+			t.Fatalf("staged identity = %#v", staged)
+		}
 	}
 }
 
@@ -128,9 +185,37 @@ func TestFetchAndStageOCIRejectsMissingLayer(t *testing.T) {
 		Architecture:     "x86_64",
 	}
 
-	_, err = fetchAndStageOCI(context.Background(), request, parsedRef, repository)
+	tag := registryTagPrefix + strings.TrimPrefix(parsedRef.BundleDigest, "sha256:")
+	_, err = fetchAndStageOCI(context.Background(), request, parsedRef, repository, tag, parsedRef.BundleDigest, "", "")
 	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "OCI manifest has 3 layers, want 4") {
 		t.Fatalf("fetchAndStageOCI() error = %v, want missing layer rejection", err)
+	}
+}
+
+func TestParseImageReference(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	image, err := ParseImageReference("ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@" + digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Source != "https://ghcr.io/v2/katl-dev/kubernetes" || image.Tag != "v1.36.0-katl.1" || image.PayloadVersion != "v1.36.0" || image.ManifestDigest != digest {
+		t.Fatalf("image reference = %#v", image)
+	}
+	if version, err := PayloadVersionFromRef("ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1"); err != nil || version != "v1.36.0" {
+		t.Fatalf("PayloadVersionFromRef() = %q, %v", version, err)
+	}
+}
+
+func TestParseImageReferenceRejectsInvalid(t *testing.T) {
+	for _, value := range []string{
+		"ghcr.io/katl-dev/kubernetes",
+		"ghcr.io/katl-dev/kubernetes:latest",
+		"https://ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1",
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bad",
+	} {
+		if _, err := ParseImageReference(value); !errors.Is(err, ErrInvalidBundle) {
+			t.Fatalf("ParseImageReference(%q) error = %v", value, err)
+		}
 	}
 }
 
@@ -382,6 +467,9 @@ func writeOCIRepository(t *testing.T, fixture fixture, mutate func(*ocispec.Mani
 	if err := repository.Tag(ctx, manifestDescriptor, tag); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.Tag(ctx, manifestDescriptor, bundle.ArtifactVersion); err != nil {
+		t.Fatal(err)
+	}
 	return repository
 }
 
@@ -407,7 +495,7 @@ func writeSysextArtifact(t *testing.T, dir string, payloadVersion string, payloa
 		Path:           filepath.Base(rawPath),
 		SizeBytes:      int64(len(payload)),
 		SHA256:         digest,
-		Version:        payloadVersion + "-build.1",
+		Version:        payloadVersion + "-katl.1",
 		PayloadVersion: payloadVersion,
 		Architecture:   "x86_64",
 		SourceRepo: &artifact.SourceRepo{

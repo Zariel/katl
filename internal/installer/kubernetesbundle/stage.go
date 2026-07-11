@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -127,23 +128,93 @@ type Signature struct {
 
 var ErrInvalidBundle = errors.New("invalid Kubernetes payload bundle")
 
+var artifactVersionPattern = regexp.MustCompile(`^v([0-9]+\.[0-9]+\.[0-9]+)-katl\.[0-9]+$`)
+
+type ImageReference struct {
+	Value           string
+	Repository      string
+	Tag             string
+	ManifestDigest  string
+	PayloadVersion  string
+	ArtifactVersion string
+	Source          string
+}
+
+func ParseImageReference(value string) (ImageReference, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "://") {
+		return ImageReference{}, fmt.Errorf("%w: image reference must be REGISTRY/REPOSITORY:TAG with an optional @sha256 digest", ErrInvalidBundle)
+	}
+	nameAndTag, manifestDigest, hasDigest := strings.Cut(value, "@")
+	if hasDigest {
+		if strings.Contains(manifestDigest, "@") || validateDigest(manifestDigest) != nil {
+			return ImageReference{}, fmt.Errorf("%w: image reference manifest digest is invalid", ErrInvalidBundle)
+		}
+	}
+	lastSlash := strings.LastIndex(nameAndTag, "/")
+	lastColon := strings.LastIndex(nameAndTag, ":")
+	if lastSlash <= 0 || lastColon <= lastSlash+1 || lastColon == len(nameAndTag)-1 {
+		return ImageReference{}, fmt.Errorf("%w: image reference must include a registry, repository, and tag", ErrInvalidBundle)
+	}
+	repository := nameAndTag[:lastColon]
+	tag := nameAndTag[lastColon+1:]
+	parts := strings.SplitN(repository, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, "?#") {
+		return ImageReference{}, fmt.Errorf("%w: image reference repository is invalid", ErrInvalidBundle)
+	}
+	match := artifactVersionPattern.FindStringSubmatch(tag)
+	if match == nil {
+		return ImageReference{}, fmt.Errorf("%w: image tag %q must look like v1.36.0-katl.1", ErrInvalidBundle, tag)
+	}
+	if _, err := remote.NewRepository(repository); err != nil {
+		return ImageReference{}, fmt.Errorf("%w: image repository is invalid: %v", ErrInvalidBundle, err)
+	}
+	return ImageReference{
+		Value:           value,
+		Repository:      repository,
+		Tag:             tag,
+		ManifestDigest:  manifestDigest,
+		PayloadVersion:  "v" + match[1],
+		ArtifactVersion: tag,
+		Source:          "https://" + parts[0] + "/v2/" + parts[1],
+	}, nil
+}
+
 func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 	if err := validateRequest(request); err != nil {
-		return Staged{}, err
-	}
-	source := strings.TrimRight(strings.TrimSpace(request.Source), "/")
-	ref, err := parseRef(request.Ref)
-	if err != nil {
 		return Staged{}, err
 	}
 	client := request.Client
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Minute}
 	}
+	if image, err := ParseImageReference(request.Ref); err == nil {
+		if strings.TrimRight(strings.TrimSpace(request.Source), "/") != image.Source {
+			return Staged{}, fmt.Errorf("%w: image reference repository does not match source", ErrInvalidBundle)
+		}
+		repository, ok, err := registryRepository(request.Source, client)
+		if err != nil {
+			return Staged{}, err
+		}
+		if !ok {
+			return Staged{}, fmt.Errorf("%w: image reference requires an OCI registry source", ErrInvalidBundle)
+		}
+		identifier := image.Tag
+		if image.ManifestDigest != "" {
+			identifier = image.ManifestDigest
+		}
+		return fetchAndStageOCI(ctx, request, ref{PayloadVersion: image.PayloadVersion}, repository, identifier, "", image.ManifestDigest, image.ArtifactVersion)
+	}
+	source := strings.TrimRight(strings.TrimSpace(request.Source), "/")
+	ref, err := parseRef(request.Ref)
+	if err != nil {
+		return Staged{}, err
+	}
 	if repository, ok, err := registryRepository(request.Source, client); err != nil {
 		return Staged{}, err
 	} else if ok {
-		return fetchAndStageOCI(ctx, request, ref, repository)
+		tag := registryTagPrefix + strings.TrimPrefix(ref.BundleDigest, "sha256:")
+		return fetchAndStageOCI(ctx, request, ref, repository, tag, ref.BundleDigest, "", "")
 	}
 
 	indexURL := source + "/index.json"
@@ -268,11 +339,13 @@ func registryRepository(source string, client *http.Client) (ociRepository, bool
 	return repository, true, nil
 }
 
-func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository ociRepository) (Staged, error) {
-	tag := registryTagPrefix + strings.TrimPrefix(ref.BundleDigest, "sha256:")
-	manifestDescriptor, err := repository.Resolve(ctx, tag)
+func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository ociRepository, identifier, expectedBundleDigest, expectedManifestDigest, expectedArtifactVersion string) (Staged, error) {
+	manifestDescriptor, err := repository.Resolve(ctx, identifier)
 	if err != nil {
-		return Staged{}, fmt.Errorf("resolve Kubernetes payload OCI tag %s from %s: %w", tag, inventory.Redact(request.Source), err)
+		return Staged{}, fmt.Errorf("resolve Kubernetes payload OCI reference %s from %s: %w", identifier, inventory.Redact(request.Source), err)
+	}
+	if expectedManifestDigest != "" && manifestDescriptor.Digest.String() != expectedManifestDigest {
+		return Staged{}, fmt.Errorf("%w: resolved OCI manifest digest does not match image reference", ErrInvalidBundle)
 	}
 	manifestBytes, err := content.FetchAll(ctx, repository, manifestDescriptor)
 	if err != nil {
@@ -285,9 +358,10 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	if manifest.SchemaVersion != 2 || manifest.MediaType != ocispec.MediaTypeImageManifest || manifest.ArtifactType != bundleArtifactType {
 		return Staged{}, fmt.Errorf("%w: invalid Kubernetes payload OCI manifest identity", ErrInvalidBundle)
 	}
-	if manifest.Config.MediaType != bundleMediaType || manifest.Config.Digest.String() != ref.BundleDigest {
+	if manifest.Config.MediaType != bundleMediaType || (expectedBundleDigest != "" && manifest.Config.Digest.String() != expectedBundleDigest) {
 		return Staged{}, fmt.Errorf("%w: OCI config does not match pinned bundle manifest digest", ErrInvalidBundle)
 	}
+	ref.BundleDigest = manifest.Config.Digest.String()
 	bundleBytes, err := content.FetchAll(ctx, repository, manifest.Config)
 	if err != nil {
 		return Staged{}, fmt.Errorf("fetch Kubernetes payload bundle config from %s: %w", inventory.Redact(request.Source), err)
@@ -295,6 +369,9 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	var bundle Bundle
 	if err := json.Unmarshal(bundleBytes, &bundle); err != nil {
 		return Staged{}, fmt.Errorf("%w: decode bundle manifest: %v", ErrInvalidBundle, err)
+	}
+	if expectedArtifactVersion != "" && bundle.ArtifactVersion != expectedArtifactVersion {
+		return Staged{}, fmt.Errorf("%w: bundle artifact version %q does not match image tag %q", ErrInvalidBundle, bundle.ArtifactVersion, expectedArtifactVersion)
 	}
 	entry := IndexEntry{
 		PayloadVersion:             ref.PayloadVersion,
@@ -338,7 +415,7 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 		if err != nil {
 			return Staged{}, err
 		}
-		data, err := content.FetchAll(ctx, repository, layer)
+		data, err := fetchOCIContent(ctx, repository, layer)
 		if err != nil {
 			return Staged{}, fmt.Errorf("fetch OCI layer for descriptor %s from %s: %w", descriptor.Role, inventory.Redact(request.Source), err)
 		}
@@ -354,6 +431,24 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 		return Staged{}, err
 	}
 	return stage(request, bundle, bundleBytes, fetched[sysextRole], fetched[metadataRole], fetched[provenanceRole], fetched[catalogRole], *payload)
+}
+
+func fetchOCIContent(ctx context.Context, repository ociRepository, descriptor ocispec.Descriptor) ([]byte, error) {
+	reader, err := repository.Fetch(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	verified := content.NewVerifyReader(reader, descriptor)
+	data, err := io.ReadAll(verified)
+	if err != nil {
+		return nil, err
+	}
+	if err := verified.Verify(); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func ociPayloadDigest(bundle Bundle) string {
@@ -394,6 +489,9 @@ func matchingOCILayer(layers []ocispec.Descriptor, descriptor Descriptor) (ocisp
 }
 
 func PayloadVersionFromRef(value string) (string, error) {
+	if image, err := ParseImageReference(value); err == nil {
+		return image.PayloadVersion, nil
+	}
 	ref, err := parseRef(value)
 	if err != nil {
 		return "", err

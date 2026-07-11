@@ -19,6 +19,7 @@ import (
 	installer "github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"gopkg.in/yaml.v3"
@@ -96,19 +97,14 @@ type SourceInstallLayer struct {
 }
 
 type SourceKubernetesCluster struct {
-	Version    string       `yaml:"version,omitempty" json:"version,omitempty"`
-	Bundle     SourceBundle `yaml:"bundle,omitempty" json:"bundle,omitempty"`
-	CatalogRef string       `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
-}
-
-type SourceBundle struct {
-	Source string `yaml:"source,omitempty" json:"source,omitempty"`
-	Ref    string `yaml:"ref,omitempty" json:"ref,omitempty"`
+	Version    string `yaml:"version,omitempty" json:"version,omitempty"`
+	Bundle     string `yaml:"bundle,omitempty" json:"bundle,omitempty"`
+	CatalogRef string `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
 }
 
 type SourceKubernetesLayer struct {
 	Version    string               `yaml:"version,omitempty" json:"version,omitempty"`
-	Bundle     SourceBundle         `yaml:"bundle,omitempty" json:"bundle,omitempty"`
+	Bundle     string               `yaml:"bundle,omitempty" json:"bundle,omitempty"`
 	CatalogRef string               `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
 	Kubeadm    SourceKubeadmRef     `yaml:"kubeadm,omitempty" json:"kubeadm,omitempty"`
 	Labels     map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
@@ -172,6 +168,7 @@ type KubernetesPayloadRecord struct {
 	Source                     string   `json:"source,omitempty"`
 	Ref                        string   `json:"ref,omitempty"`
 	BundleManifestDigest       string   `json:"bundleManifestDigest,omitempty"`
+	OCIManifestDigest          string   `json:"ociManifestDigest,omitempty"`
 	ArtifactVersion            string   `json:"artifactVersion,omitempty"`
 	Architecture               string   `json:"architecture,omitempty"`
 	SupportedRuntimeInterfaces []string `json:"supportedRuntimeInterfaces,omitempty"`
@@ -375,30 +372,25 @@ func LowerSource(source SourceConfig) (clusterplan.Config, error) {
 
 func lowerKubernetesSelection(source SourceConfig) (clusterplan.KubernetesSelection, error) {
 	selection := source.Spec.Kubernetes
-	if strings.TrimSpace(selection.Version) == "" && strings.TrimSpace(selection.Bundle.Source) == "" && strings.TrimSpace(selection.Bundle.Ref) == "" && strings.TrimSpace(selection.CatalogRef) == "" {
+	if strings.TrimSpace(selection.Version) == "" && strings.TrimSpace(selection.Bundle) == "" && strings.TrimSpace(selection.CatalogRef) == "" {
 		selection = SourceKubernetesCluster{
 			Version:    source.Spec.Defaults.Kubernetes.Version,
 			Bundle:     source.Spec.Defaults.Kubernetes.Bundle,
 			CatalogRef: source.Spec.Defaults.Kubernetes.CatalogRef,
 		}
 	}
-	out := clusterplan.KubernetesSelection{
-		PayloadVersion: strings.TrimSpace(selection.Version),
-		BundleSource:   strings.TrimSpace(selection.Bundle.Source),
-		BundleRef:      strings.TrimSpace(selection.Bundle.Ref),
-		CatalogRef:     strings.TrimSpace(selection.CatalogRef),
-	}
-	if (out.BundleSource == "") != (out.BundleRef == "") {
-		return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.bundle.source and ref must be set together")
-	}
-	if out.BundleRef != "" {
-		if out.PayloadVersion != "" {
-			refVersion, _, ok := strings.Cut(out.BundleRef, "@")
-			if !ok || refVersion != out.PayloadVersion {
-				return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.version %q does not match bundle ref %q", out.PayloadVersion, out.BundleRef)
-			}
+	out := clusterplan.KubernetesSelection{PayloadVersion: strings.TrimSpace(selection.Version), CatalogRef: strings.TrimSpace(selection.CatalogRef)}
+	if bundle := strings.TrimSpace(selection.Bundle); bundle != "" {
+		image, err := kubernetesbundle.ParseImageReference(bundle)
+		if err != nil {
+			return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.bundle: %w", err)
+		}
+		if out.PayloadVersion != "" && out.PayloadVersion != image.PayloadVersion {
+			return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.version %q does not match bundle %q", out.PayloadVersion, bundle)
 		}
 		out.PayloadVersion = ""
+		out.BundleSource = image.Source
+		out.BundleRef = image.Value
 	}
 	return out, nil
 }
@@ -433,8 +425,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 
 func hasClusterKubernetesSelection(kubernetes SourceKubernetesLayer) bool {
 	return strings.TrimSpace(kubernetes.Version) != "" ||
-		strings.TrimSpace(kubernetes.Bundle.Source) != "" ||
-		strings.TrimSpace(kubernetes.Bundle.Ref) != "" ||
+		strings.TrimSpace(kubernetes.Bundle) != "" ||
 		strings.TrimSpace(kubernetes.CatalogRef) != ""
 }
 
@@ -660,7 +651,10 @@ func kubernetesPayloads(plan clusterplan.Plan) []KubernetesPayloadRecord {
 		SupportedRuntimeInterfaces: nonEmptyStrings(plan.KatlosImage.RuntimeInterface),
 		ResolverVersion:            "config-bundle-v1",
 	}
-	if _, digest, ok := strings.Cut(plan.KubernetesBundleRef, "@"); ok {
+	if image, err := kubernetesbundle.ParseImageReference(plan.KubernetesBundleRef); err == nil {
+		record.ArtifactVersion = image.ArtifactVersion
+		record.OCIManifestDigest = image.ManifestDigest
+	} else if _, digest, ok := strings.Cut(plan.KubernetesBundleRef, "@"); ok {
 		record.BundleManifestDigest = digest
 	}
 	return []KubernetesPayloadRecord{record}

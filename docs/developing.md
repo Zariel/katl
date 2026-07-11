@@ -253,8 +253,8 @@ second `sha256-<bundle-manifest-digest>` tag supports exact Katl resolution.
 GitHub creates a new container package as private. After the first publication,
 an organization owner must make the `kubernetes` package public in its package
 settings so uncredentialed KatlOS nodes can fetch it. This is a one-time GHCR
-namespace operation. The workflow summary prints the exact HTTPS source and
-digest-pinned bundle ref for install/bootstrap manifests. Published development
+namespace operation. The workflow summary prints the readable and digest-pinned
+OCI bundle references for install/bootstrap manifests. Published development
 bundles remain unsigned until the signing policy lands; the GitHub attestation
 records build provenance but is not yet a trust decision enforced by `katlc`.
 

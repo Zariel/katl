@@ -73,9 +73,7 @@ spec:
       settings: {}
     kubernetes:
       version: v1.36.1
-      bundle:
-        source: https://artifacts.example.invalid/katl/kubernetes
-        ref: v1.36.1@sha256:<bundle-manifest-digest>
+      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<OCI-manifest-digest>
       kubeadm:
         configRef: worker
 
@@ -184,9 +182,7 @@ spec:
             DHCP=yes
     kubernetes:
       version: v1.36.1
-      bundle:
-        source: https://artifacts.example.invalid/katl/kubernetes
-        ref: v1.36.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
   systemRoleDefaults:
     control-plane:
@@ -244,9 +240,7 @@ spec:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
     kubernetes:
       version: v1.36.1
-      bundle:
-        source: https://artifacts.example.invalid/katl/kubernetes
-        ref: v1.36.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
   nodeClasses:
     ms01:

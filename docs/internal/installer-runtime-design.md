@@ -968,14 +968,14 @@ metadata, GHCR or GitHub Releases hosting, and Renovate-driven patch bumps is
 defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
 For first install, the KatlOS image does not bundle exact-version Kubernetes
-sysext artifacts. The install manifest records bootstrap intent with
-`node.bootstrap.kubernetesBundleSource`, `node.bootstrap.kubernetesBundleRef`,
-and optional `node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap`
-asks `katlc` to fetch the matching payload bundle from the user-supplied HTTPS
-source, verify the bundle manifest and sysext digest, stage the sysext locally,
+sysext artifacts. The install manifest records bootstrap intent with one
+`node.bootstrap.kubernetesBundle` OCI reference and optional
+`node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap` asks `katlc`
+to fetch the matching payload bundle, verify the OCI manifest, bundle manifest,
+and sysext digest, stage the sysext locally,
 select it for generation 1, and record its path, digest, payload version,
 activation path, and compatibility metadata in generation spec. The normalized
-source/ref syntax is defined in `docs/internal/kubernetes-sysext-delivery.md`.
+reference syntax is defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes

@@ -270,10 +270,7 @@
         "profileResolvedID": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "kubernetesBundleSource": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "kubernetesBundleRef": {
+        "kubernetesBundle": {
           "$ref": "#/$defs/nonEmptyString"
         },
         "access": {

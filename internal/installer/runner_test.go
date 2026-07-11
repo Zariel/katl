@@ -96,14 +96,13 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 				Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
-				ClusterName:            "lab",
-				InventoryNodeName:      "cp-1",
-				NodeAddress:            "10.0.0.11",
-				ControlPlaneEndpoint:   "api.katl.test:6443",
-				BootstrapProfileRef:    "control-plane",
-				ProfileResolvedID:      "kubeadm:control-plane",
-				KubernetesBundleSource: "https://artifacts.example.test/kubernetes",
-				KubernetesBundleRef:    "v1.36.1@sha256:" + strings.Repeat("1", 64),
+				ClusterName:          "lab",
+				InventoryNodeName:    "cp-1",
+				NodeAddress:          "10.0.0.11",
+				ControlPlaneEndpoint: "api.katl.test:6443",
+				BootstrapProfileRef:  "control-plane",
+				ProfileResolvedID:    "kubeadm:control-plane",
+				KubernetesBundle:     "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("1", 64),
 				Access: manifest.BootstrapAccess{
 					Method:        "agent",
 					CredentialRef: "vsock:1234:10240",
@@ -148,8 +147,8 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 		t.Fatalf("labels/taints = %#v %#v", intent.Inventory.Labels, intent.Inventory.Taints)
 	}
 	if intent.Kubernetes.PayloadVersion != "v1.36.1" ||
-		intent.Kubernetes.BundleSource != "https://artifacts.example.test/kubernetes" ||
-		intent.Kubernetes.BundleRef != "v1.36.1@sha256:"+strings.Repeat("1", 64) ||
+		intent.Kubernetes.BundleSource != "https://ghcr.io/v2/katl-dev/kubernetes" ||
+		intent.Kubernetes.BundleRef != "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:"+strings.Repeat("1", 64) ||
 		intent.Kubernetes.SysextPath != "" ||
 		intent.Kubernetes.SysextSHA256 != "" {
 		t.Fatalf("kubernetes intent = %#v", intent.Kubernetes)
@@ -659,7 +658,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		appliedLayoutFacts(targetRoot),
 	}}
 	install := &Context{
-		ManifestPath:   writeManifestWithNode(t, `, "kubernetes": {"kubeadm": {"configRef": "control-plane"}}, "bootstrap": {"kubernetesBundleSource": "https://artifacts.example.test/kubernetes", "kubernetesBundleRef": "v1.34.8@sha256:`+strings.Repeat("1", 64)+`"}`),
+		ManifestPath:   writeManifestWithNode(t, `, "kubernetes": {"kubeadm": {"configRef": "control-plane"}}, "bootstrap": {"kubernetesBundle": "ghcr.io/katl-dev/kubernetes:v1.34.8-katl.1@sha256:`+strings.Repeat("1", 64)+`"}`),
 		TargetRoot:     targetRoot,
 		Commands:       commands,
 		Store:          store,
@@ -715,8 +714,8 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"bootedGenerationID": "0"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"defaultBootEntry": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleSource": "https://artifacts.example.test/kubernetes"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleRef": "v1.34.8@sha256:`+strings.Repeat("1", 64)+`"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleSource": "https://ghcr.io/v2/katl-dev/kubernetes"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleRef": "ghcr.io/katl-dev/kubernetes:v1.34.8-katl.1@sha256:`+strings.Repeat("1", 64)+`"`)
 	installedManifestFile, err := os.Open(filepath.Join(targetRoot, "var/lib/katl/install/manifest.json"))
 	if err != nil {
 		t.Fatalf("open installed manifest: %v", err)

@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -1065,12 +1066,9 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 		}
 	}
 	if strings.TrimSpace(request.KubernetesBundleRef) != "" {
-		parts := strings.Split(strings.TrimSpace(request.KubernetesBundleRef), "@")
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) != strings.TrimSpace(request.KubernetesPayloadVersion) {
-			return fmt.Errorf("kubernetesBundleRef must be pinned to kubernetesPayloadVersion")
-		}
-		if err := validateDigestValue("kubernetesBundleRef digest", parts[1]); err != nil {
-			return err
+		payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(request.KubernetesBundleRef)
+		if err != nil || payloadVersion != strings.TrimSpace(request.KubernetesPayloadVersion) {
+			return fmt.Errorf("kubernetesBundleRef must select kubernetesPayloadVersion")
 		}
 	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {

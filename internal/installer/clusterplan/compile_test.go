@@ -257,7 +257,7 @@ func TestCompileSelectsKubernetesBundleRef(t *testing.T) {
 		t.Fatalf("bootstrap inventory = %#v", plan.BootstrapInventory)
 	}
 	bootstrap := plan.Nodes[0].InstallManifest.Node.Bootstrap
-	if bootstrap == nil || bootstrap.KubernetesBundleSource != plan.KubernetesBundleSource || bootstrap.KubernetesBundleRef != bundleRef {
+	if bootstrap == nil || bootstrap.KubernetesBundle != "" {
 		t.Fatalf("install manifest bootstrap = %#v", bootstrap)
 	}
 	if plan.Nodes[0].KubernetesBundleRef != bundleRef {

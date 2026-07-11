@@ -109,8 +109,7 @@ node:
     nodeAddress: 192.0.2.11
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes
-    kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
   wipeTarget: true
   targetDisk:
@@ -147,8 +146,7 @@ node:
     nodeAddress: 192.0.2.21
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes
-    kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
@@ -346,33 +344,35 @@ Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
 Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
-The Kubernetes bundle reference is exact. For example,
-`node.bootstrap.kubernetesBundleRef: v1.36.0@sha256:<digest>` means bootstrap
-must select the compatible Kubernetes payload bundle whose manifest digest
-matches that pin. During the explicit bootstrap operation, `katlc` fetches that
-bundle from `node.bootstrap.kubernetesBundleSource`, verifies the Katl bundle
+The Kubernetes bundle is one ordinary OCI image reference. For example,
+`node.bootstrap.kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<digest>`
+means bootstrap must select that exact OCI manifest. During the explicit
+bootstrap operation, `katlc` fetches that bundle, verifies the Katl bundle
 metadata and payload digests, stages the sysext locally, and selects it for
 generation 1. To bootstrap a fresh cluster on `v1.36.1`, keep the KatlOS install
-image when runtime compatibility permits it and supply a source/ref pair that
-resolves to the `v1.36.1` bundle.
+image when runtime compatibility permits it and supply a bundle reference that
+resolves to the `v1.36.1` payload.
 
 Katl publishes development Kubernetes bundles as custom OCI artifacts in the
-public `ghcr.io/katl-dev/kubernetes` package. Use the registry API root as the
-source:
+public `ghcr.io/katl-dev/kubernetes` package. A tag-only reference is accepted:
 
 ```text
-https://ghcr.io/v2/katl-dev/kubernetes
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1
 ```
 
-The corresponding workflow run summary reports the exact ref, for example
-`v1.36.0@sha256:<bundle-manifest-digest>`. `katlc` derives the immutable
-`sha256-<digest>` OCI tag from that ref, verifies that the pinned
-bundle manifest is the OCI config, verifies every layer digest and size, checks
+Pinning the OCI manifest is strongly recommended for reproducible provisioning:
+
+```text
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<OCI-manifest-digest>
+```
+
+`katlc` verifies the resolved OCI manifest, the Katl bundle config, every layer
+digest and size, and
 Katl runtime compatibility, and only then stages the sysext. The readable
 `ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1` tag is suitable for Renovate's
 Docker datasource; the full patch precision lets Renovate propose Kubernetes
-patch updates. Manifests and generation records must still keep the exact
-digest-pinned ref.
+patch updates. An unpinned tag is resolved once for the operation record; a
+digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:

@@ -1045,7 +1045,7 @@ func installedKubernetesVersionFromBootstrapBundle(install *Context) string {
 	if install == nil || install.Manifest.Node.Bootstrap == nil {
 		return ""
 	}
-	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(install.Manifest.Node.Bootstrap.KubernetesBundleRef)
+	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(install.Manifest.Node.Bootstrap.KubernetesBundle)
 	if err != nil {
 		return ""
 	}

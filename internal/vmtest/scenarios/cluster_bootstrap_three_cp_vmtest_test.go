@@ -40,6 +40,9 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
@@ -206,13 +209,15 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage Kubernetes payload bundles: %v", err)
 	}
-	bundleServer, err := startGuestReachableKubernetesBundleServer(smoke.WorldScenario.World.Network.Gateway, kubernetesBundle.Root)
+	bundleServer, err := startGuestReachableKubernetesBundleServer(smoke.WorldScenario.World.Network.Gateway, kubernetesBundle)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start Kubernetes payload bundle server: %v", err)
 	}
 	defer bundleServer.Close()
 	kubernetesBundle.Source = bundleServer.Source
+	kubernetesBundle.Ref = bundleServer.Ref
+	kubernetesBundle.BundleManifestDigest = bundleServer.BundleManifestDigest
 	kubernetesBundle.CACertPEM = bundleServer.CACertPEM
 	kubernetesBundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
 	kubernetesBundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
@@ -317,8 +322,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
 		"--control-plane-endpoint", cp1Address + ":6443",
-		"--kubernetes-bundle-source", kubernetesBundle.Source,
-		"--kubernetes-bundle-ref", kubernetesBundle.Ref,
+		"--kubernetes-bundle", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cp1Address,
 		"--node-address", "cp-2=" + cp2Address,
 		"--node-address", "cp-3=" + cp3Address,
@@ -825,9 +829,11 @@ func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.R
 }
 
 type guestReachableBundleServer struct {
-	Server    *httptest.Server
-	Source    string
-	CACertPEM []byte
+	Server               *httptest.Server
+	Source               string
+	Ref                  string
+	BundleManifestDigest string
+	CACertPEM            []byte
 }
 
 func (s guestReachableBundleServer) Close() {
@@ -836,7 +842,137 @@ func (s guestReachableBundleServer) Close() {
 	}
 }
 
-func startGuestReachableKubernetesBundleServer(gateway string, root string) (guestReachableBundleServer, error) {
+type kubernetesBundleRegistry struct {
+	Handler              http.Handler
+	Tag                  string
+	ManifestDigest       string
+	BundleManifestDigest string
+}
+
+func newKubernetesBundleRegistry(bundle threeControlPlaneKubernetesPayloadBundle, repository string) (kubernetesBundleRegistry, error) {
+	bundlePath := bundle.BundlePaths[bundle.PayloadVersion]
+	bundleBytes, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return kubernetesBundleRegistry{}, fmt.Errorf("read Kubernetes bundle manifest: %w", err)
+	}
+	var manifest sysextcatalog.KubernetesPayloadBundle
+	if err := json.Unmarshal(bundleBytes, &manifest); err != nil {
+		return kubernetesBundleRegistry{}, fmt.Errorf("decode Kubernetes bundle manifest: %w", err)
+	}
+	artifactVersion := bundle.PayloadVersion + "-katl.0"
+	manifest.ArtifactVersion = artifactVersion
+	for i := range manifest.Metadata {
+		descriptor := &manifest.Metadata[i]
+		field := "artifactVersion"
+		if descriptor.Role == "sysext-metadata" {
+			field = "version"
+		}
+		path := filepath.Join(filepath.Dir(bundlePath), descriptor.FileName)
+		data, err := rewriteBundleVersion(path, field, artifactVersion)
+		if err != nil {
+			return kubernetesBundleRegistry{}, err
+		}
+		descriptor.Digest = digest.FromBytes(data).String()
+		descriptor.SizeBytes = int64(len(data))
+		if err := writeRegistryBlob(bundle.Root, descriptor.Digest, data); err != nil {
+			return kubernetesBundleRegistry{}, err
+		}
+	}
+	bundleBytes, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return kubernetesBundleRegistry{}, err
+	}
+	bundleBytes = append(bundleBytes, '\n')
+	if err := os.WriteFile(bundlePath, bundleBytes, 0o644); err != nil {
+		return kubernetesBundleRegistry{}, err
+	}
+	bundleDigest := digest.FromBytes(bundleBytes)
+	if err := writeRegistryBlob(bundle.Root, bundleDigest.String(), bundleBytes); err != nil {
+		return kubernetesBundleRegistry{}, err
+	}
+
+	config := ocispec.Descriptor{MediaType: "application/vnd.katl.kubernetes.payload.bundle.v1+json", Digest: bundleDigest, Size: int64(len(bundleBytes))}
+	layers := make([]ocispec.Descriptor, 0, len(manifest.Payloads)+len(manifest.Metadata))
+	mediaTypes := map[string]string{bundleDigest.String(): config.MediaType}
+	for _, descriptor := range append(append([]sysextcatalog.BundleDescriptor(nil), manifest.Payloads...), manifest.Metadata...) {
+		desc := ocispec.Descriptor{MediaType: descriptor.MediaType, Digest: digest.Digest(descriptor.Digest), Size: descriptor.SizeBytes}
+		if err := desc.Digest.Validate(); err != nil {
+			return kubernetesBundleRegistry{}, fmt.Errorf("invalid %s descriptor digest: %w", descriptor.Role, err)
+		}
+		layers = append(layers, desc)
+		mediaTypes[desc.Digest.String()] = desc.MediaType
+	}
+	ociManifest := ocispec.Manifest{
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: "application/vnd.katl.kubernetes.payload.bundle.v1",
+		Config:       config,
+		Layers:       layers,
+	}
+	ociBytes, err := json.Marshal(ociManifest)
+	if err != nil {
+		return kubernetesBundleRegistry{}, err
+	}
+	ociDigest := digest.FromBytes(ociBytes)
+	manifestPath := "/v2/" + repository + "/manifests/"
+	blobPath := "/v2/" + repository + "/blobs/"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case strings.HasPrefix(r.URL.Path, manifestPath):
+			ref := strings.TrimPrefix(r.URL.Path, manifestPath)
+			if ref != artifactVersion && ref != ociDigest.String() {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Docker-Content-Digest", ociDigest.String())
+			http.ServeContent(w, r, "manifest.json", time.Time{}, bytes.NewReader(ociBytes))
+		case strings.HasPrefix(r.URL.Path, blobPath):
+			blobDigest := strings.TrimPrefix(r.URL.Path, blobPath)
+			mediaType, ok := mediaTypes[blobDigest]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", mediaType)
+			w.Header().Set("Docker-Content-Digest", blobDigest)
+			http.ServeFile(w, r, filepath.Join(bundle.Root, "blobs", "sha256", strings.TrimPrefix(blobDigest, "sha256:")))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	return kubernetesBundleRegistry{Handler: handler, Tag: artifactVersion, ManifestDigest: ociDigest.String(), BundleManifestDigest: bundleDigest.String()}, nil
+}
+
+func rewriteBundleVersion(path, field, version string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	document[field] = version
+	data, err = json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func writeRegistryBlob(root, value string, data []byte) error {
+	path := filepath.Join(root, "blobs", "sha256", strings.TrimPrefix(value, "sha256:"))
+	return os.WriteFile(path, data, 0o644)
+}
+
+func startGuestReachableKubernetesBundleServer(gateway string, bundle threeControlPlaneKubernetesPayloadBundle) (guestReachableBundleServer, error) {
 	gateway = strings.TrimSpace(gateway)
 	if net.ParseIP(gateway) == nil {
 		return guestReachableBundleServer{}, fmt.Errorf("world network gateway %q is not an IP address", gateway)
@@ -849,15 +985,24 @@ func startGuestReachableKubernetesBundleServer(gateway string, root string) (gue
 	if err != nil {
 		return guestReachableBundleServer{}, err
 	}
-	server := httptest.NewUnstartedServer(http.FileServer(http.Dir(root)))
+	port := listener.Addr().(*net.TCPAddr).Port
+	host := net.JoinHostPort(gateway, strconv.Itoa(port))
+	repository := "katl-vmtest/kubernetes"
+	registry, err := newKubernetesBundleRegistry(bundle, repository)
+	if err != nil {
+		listener.Close()
+		return guestReachableBundleServer{}, err
+	}
+	server := httptest.NewUnstartedServer(registry.Handler)
 	server.Listener = listener
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	server.StartTLS()
-	port := listener.Addr().(*net.TCPAddr).Port
 	return guestReachableBundleServer{
-		Server:    server,
-		Source:    "https://" + net.JoinHostPort(gateway, strconv.Itoa(port)),
-		CACertPEM: caPEM,
+		Server:               server,
+		Source:               "https://" + host + "/v2/" + repository,
+		Ref:                  host + "/" + repository + ":" + registry.Tag + "@" + registry.ManifestDigest,
+		BundleManifestDigest: registry.BundleManifestDigest,
+		CACertPEM:            caPEM,
 	}, nil
 }
 
@@ -991,8 +1136,7 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 	var b strings.Builder
 	b.WriteString("controlPlaneEndpoint: \"\"\n")
 	b.WriteString("kubernetesVersion: " + kubernetesVersion + "\n")
-	b.WriteString("kubernetesBundleSource: " + strconv.Quote(kubernetesBundle.Source) + "\n")
-	b.WriteString("kubernetesBundleRef: " + strconv.Quote(kubernetesBundle.Ref) + "\n")
+	b.WriteString("kubernetesBundle: " + strconv.Quote(kubernetesBundle.Ref) + "\n")
 	b.WriteString("nodes:\n")
 	for _, node := range nodes {
 		b.WriteString("- name: " + node.Name + "\n")
@@ -2131,7 +2275,7 @@ func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *tes
 	}
 	bundle := threeControlPlaneKubernetesPayloadBundle{
 		Source: "https://192.0.2.1:9443",
-		Ref:    "v1.36.1@sha256:" + strings.Repeat("a", 64),
+		Ref:    "192.0.2.1:9443/katl-vmtest/kubernetes:v1.36.1-katl.0@sha256:" + strings.Repeat("a", 64),
 	}
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
 	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses, tokenFiles); err != nil {
@@ -2142,8 +2286,7 @@ func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *tes
 		t.Fatalf("read inventory: %v", err)
 	}
 	for _, want := range []string{
-		`kubernetesBundleSource: "https://192.0.2.1:9443"`,
-		`kubernetesBundleRef: "v1.36.1@sha256:` + strings.Repeat("a", 64) + `"`,
+		`kubernetesBundle: "192.0.2.1:9443/katl-vmtest/kubernetes:v1.36.1-katl.0@sha256:` + strings.Repeat("a", 64) + `"`,
 		"name: cp-1",
 		"address: 192.0.2.23",
 		"intent: control-plane",

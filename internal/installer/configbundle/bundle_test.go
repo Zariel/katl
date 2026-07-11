@@ -70,7 +70,7 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	if len(bundle.Nodes[0].KubeadmInputs) != 1 || bundle.Nodes[0].KubeadmInputs[0].Annotations["dev.katl.kubeadm.resolved-id"] != "control-plane" {
 		t.Fatalf("control-plane kubeadm inputs = %#v", bundle.Nodes[0].KubeadmInputs)
 	}
-	if bundle.Cluster.KubernetesPayloads[0].BundleManifestDigest != "sha256:"+strings.Repeat("b", 64) {
+	if bundle.Cluster.KubernetesPayloads[0].OCIManifestDigest != "sha256:"+strings.Repeat("b", 64) || bundle.Cluster.KubernetesPayloads[0].ArtifactVersion != "v1.36.1-katl.1" {
 		t.Fatalf("kubernetes payloads = %#v", bundle.Cluster.KubernetesPayloads)
 	}
 	if !hasDescriptor(bundle.Descriptors, "source-normalized", "source/cluster.normalized.yaml") ||
@@ -127,7 +127,7 @@ func TestBuildArchiveNodeClassGoldenScenarios(t *testing.T) {
 			want: bundleGolden{
 				ClusterName:          "lab",
 				SourceDigest:         "non-empty",
-				KubernetesPayloadRef: "v1.36.1@sha256:" + strings.Repeat("b", 64),
+				KubernetesPayloadRef: "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("b", 64),
 				Nodes: []bundleGoldenNode{
 					{
 						Name:             "cp-1",
@@ -154,7 +154,7 @@ func TestBuildArchiveNodeClassGoldenScenarios(t *testing.T) {
 			want: bundleGolden{
 				ClusterName:          "lab",
 				SourceDigest:         "non-empty",
-				KubernetesPayloadRef: "v1.36.1@sha256:" + strings.Repeat("b", 64),
+				KubernetesPayloadRef: "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("b", 64),
 				Nodes: []bundleGoldenNode{
 					{
 						Name:             "cp-1",
@@ -208,9 +208,7 @@ func TestBuildArchiveRejectsInvalidSourceRefsAndLayering(t *testing.T) {
 		{
 			name: "unresolved catalog ref",
 			raw: strings.Replace(validSourceConfig(), `version: v1.36.1
-    bundle:
-      source: https://artifacts.example.test/kubernetes
-      ref: v1.36.1@sha256:`+strings.Repeat("b", 64), "catalogRef: missing-catalog", 1),
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:`+strings.Repeat("b", 64), "catalogRef: missing-catalog", 1),
 			want: "invalid Kubernetes sysext catalog",
 		},
 		{
@@ -587,9 +585,7 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.1
-    bundle:
-      source: https://artifacts.example.test/kubernetes
-      ref: v1.36.1@sha256:` + strings.Repeat("b", 64) + `
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:` + strings.Repeat("b", 64) + `
   katlosImage:
     url: https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs
     sha256: ` + strings.Repeat("a", 64) + `

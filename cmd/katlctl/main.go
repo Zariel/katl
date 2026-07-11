@@ -17,6 +17,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -1357,8 +1358,7 @@ type clusterBootstrapOptions struct {
 	initNode                               string
 	joinWorker                             string
 	controlPlaneEndpoint                   string
-	kubernetesBundleSource                 string
-	kubernetesBundleRef                    string
+	kubernetesBundle                       string
 	kubeconfigOut                          string
 	overwriteKubeconfig                    bool
 	dryRun                                 bool
@@ -1385,8 +1385,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
-	cmd.Flags().StringVar(&opts.kubernetesBundleSource, "kubernetes-bundle-source", "", "HTTPS Kubernetes payload bundle source")
-	cmd.Flags().StringVar(&opts.kubernetesBundleRef, "kubernetes-bundle-ref", "", "exact Kubernetes payload bundle ref vMAJOR.MINOR.PATCH@sha256:<digest>")
+	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", "", "Kubernetes OCI bundle image reference; an @sha256 manifest pin is strongly recommended")
 	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", "", "operator kubeconfig output path")
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
@@ -1410,11 +1409,13 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(opts.kubernetesBundleSource) != "" {
-		inv.KubernetesBundleSource = strings.TrimSpace(opts.kubernetesBundleSource)
-	}
-	if strings.TrimSpace(opts.kubernetesBundleRef) != "" {
-		inv.KubernetesBundleRef = strings.TrimSpace(opts.kubernetesBundleRef)
+	if strings.TrimSpace(opts.kubernetesBundle) != "" {
+		image, err := kubernetesbundle.ParseImageReference(opts.kubernetesBundle)
+		if err != nil {
+			return fmt.Errorf("--kubernetes-bundle: %w", err)
+		}
+		inv.KubernetesBundleSource = image.Source
+		inv.KubernetesBundleRef = image.Value
 	}
 	bootstrap, err := parseUserBootstrap(opts.bootstrapManifestPaths.values, opts.bootstrapPreWaitValues.values, opts.bootstrapWaitValues.values, opts.bootstrapStableEndpoint, opts.bootstrapStableEndpointBeforeManifests)
 	if err != nil {
@@ -1559,16 +1560,20 @@ func loadInventory(path string) (inventory.Inventory, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return inventory.Inventory{}, fmt.Errorf("decode inventory: %w", err)
 	}
+	if strings.TrimSpace(doc.KubernetesBundle) != "" {
+		if _, err := kubernetesbundle.ParseImageReference(doc.KubernetesBundle); err != nil {
+			return inventory.Inventory{}, fmt.Errorf("decode inventory kubernetesBundle: %w", err)
+		}
+	}
 	return doc.inventory(), nil
 }
 
 type inventoryDocument struct {
-	ControlPlaneEndpoint   string               `yaml:"controlPlaneEndpoint"`
-	KubernetesVersion      string               `yaml:"kubernetesVersion"`
-	KubernetesBundleSource string               `yaml:"kubernetesBundleSource"`
-	KubernetesBundleRef    string               `yaml:"kubernetesBundleRef"`
-	Bootstrap              *inventory.Bootstrap `yaml:"bootstrap"`
-	Nodes                  []nodeDocument       `yaml:"nodes"`
+	ControlPlaneEndpoint string               `yaml:"controlPlaneEndpoint"`
+	KubernetesVersion    string               `yaml:"kubernetesVersion"`
+	KubernetesBundle     string               `yaml:"kubernetesBundle"`
+	Bootstrap            *inventory.Bootstrap `yaml:"bootstrap"`
+	Nodes                []nodeDocument       `yaml:"nodes"`
 }
 
 type nodeDocument struct {
@@ -1612,14 +1617,17 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 			KubernetesVersion: node.KubernetesVersion,
 		})
 	}
-	return inventory.Inventory{
-		ControlPlaneEndpoint:   d.ControlPlaneEndpoint,
-		KubernetesVersion:      d.KubernetesVersion,
-		KubernetesBundleSource: d.KubernetesBundleSource,
-		KubernetesBundleRef:    d.KubernetesBundleRef,
-		Bootstrap:              d.Bootstrap,
-		Nodes:                  nodes,
+	result := inventory.Inventory{
+		ControlPlaneEndpoint: d.ControlPlaneEndpoint,
+		KubernetesVersion:    d.KubernetesVersion,
+		Bootstrap:            d.Bootstrap,
+		Nodes:                nodes,
 	}
+	if image, err := kubernetesbundle.ParseImageReference(d.KubernetesBundle); err == nil {
+		result.KubernetesBundleSource = image.Source
+		result.KubernetesBundleRef = image.Value
+	}
+	return result
 }
 
 type addressOverrides struct {
