@@ -44,7 +44,7 @@ const (
 	catalogMediaType    = "application/vnd.katl.kubernetes.catalog.entry.v1+json"
 	bundleArtifactType  = "application/vnd.katl.kubernetes.payload.bundle.v1"
 	bundleMediaType     = "application/vnd.katl.kubernetes.payload.bundle.v1+json"
-	registryTagPrefix   = "kubernetes-sha256-"
+	registryTagPrefix   = "sha256-"
 )
 
 type Request struct {

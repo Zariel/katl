@@ -19,9 +19,10 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		"9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59",
 		"scripts/check-kubernetes-sysext",
 		"go run ./cmd/katl-publish-kubernetes-sysext",
-		"ghcr.io/katl-dev/bundles",
+		"ghcr.io/katl-dev/kubernetes",
 		"application/vnd.katl.kubernetes.payload.bundle.v1",
-		"kubernetes-sha256-",
+		"sha256-",
+		`version_tag="$ARTIFACT_VERSION"`,
 		"immutable OCI tag already exists",
 		"actions/attest@v4",
 	}

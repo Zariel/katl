@@ -246,12 +246,12 @@ Set `publish: true` only for a reviewed bundle identity. The workflow refuses
 to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
 as the OCI config with the sysext and metadata as layers, pulls the config back
 for byte verification, and creates a GitHub build-provenance attestation. The
-canonical shared store is `ghcr.io/katl-dev/bundles`; Kubernetes tags are
-prefixed with `kubernetes-` so other Katl-minted bundle kinds can share the OCI
-repository without sharing artifact identities.
+canonical package is `ghcr.io/katl-dev/kubernetes`. Its readable tags use the
+bundle build identity directly, for example `v1.36.0-katl.1`, while a
+second `sha256-<bundle-manifest-digest>` tag supports exact Katl resolution.
 
 GitHub creates a new container package as private. After the first publication,
-an organization owner must make the `bundles` package public in its package
+an organization owner must make the `kubernetes` package public in its package
 settings so uncredentialed KatlOS nodes can fetch it. This is a one-time GHCR
 namespace operation. The workflow summary prints the exact HTTPS source and
 digest-pinned bundle ref for install/bootstrap manifests. Published development

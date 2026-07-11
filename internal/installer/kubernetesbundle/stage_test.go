@@ -88,7 +88,7 @@ func TestFetchAndStageOCI(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := Request{
-		Source:           "https://ghcr.io/v2/katl-dev/bundles",
+		Source:           "https://ghcr.io/v2/katl-dev/kubernetes",
 		Ref:              fixture.ref(),
 		CacheDir:         t.TempDir(),
 		RuntimeInterface: "katl-runtime-1",
@@ -121,7 +121,7 @@ func TestFetchAndStageOCIRejectsMissingLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := Request{
-		Source:           "https://ghcr.io/v2/katl-dev/bundles",
+		Source:           "https://ghcr.io/v2/katl-dev/kubernetes",
 		Ref:              fixture.ref(),
 		CacheDir:         t.TempDir(),
 		RuntimeInterface: "katl-runtime-1",
@@ -139,10 +139,10 @@ func TestRegistryRepositorySource(t *testing.T) {
 		source string
 		want   bool
 	}{
-		{source: "https://ghcr.io/v2/katl-dev/bundles", want: true},
+		{source: "https://ghcr.io/v2/katl-dev/kubernetes", want: true},
 		{source: "https://packages.katl.dev/kubernetes", want: false},
 		{source: "https://ghcr.io/v2/", want: false},
-		{source: "https://user:secret@ghcr.io/v2/katl-dev/bundles", want: false},
+		{source: "https://user:secret@ghcr.io/v2/katl-dev/kubernetes", want: false},
 	} {
 		_, got, err := registryRepository(test.source, http.DefaultClient)
 		if err != nil {

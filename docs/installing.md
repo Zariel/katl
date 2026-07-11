@@ -109,7 +109,7 @@ node:
     nodeAddress: 192.0.2.11
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/bundles
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes
     kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
   wipeTarget: true
@@ -147,7 +147,7 @@ node:
     nodeAddress: 192.0.2.21
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/bundles
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes
     kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ```
 
@@ -357,20 +357,22 @@ image when runtime compatibility permits it and supply a source/ref pair that
 resolves to the `v1.36.1` bundle.
 
 Katl publishes development Kubernetes bundles as custom OCI artifacts in the
-public `ghcr.io/katl-dev/bundles` package. Use the registry API root as the
+public `ghcr.io/katl-dev/kubernetes` package. Use the registry API root as the
 source:
 
 ```text
-https://ghcr.io/v2/katl-dev/bundles
+https://ghcr.io/v2/katl-dev/kubernetes
 ```
 
 The corresponding workflow run summary reports the exact ref, for example
 `v1.36.0@sha256:<bundle-manifest-digest>`. `katlc` derives the immutable
-`kubernetes-sha256-<digest>` OCI tag from that ref, verifies that the pinned
+`sha256-<digest>` OCI tag from that ref, verifies that the pinned
 bundle manifest is the OCI config, verifies every layer digest and size, checks
-Katl runtime compatibility, and only then stages the sysext. GHCR tags such as
-`kubernetes-v1.36.0-katl.1-x86_64` are for inspection and discovery; manifests
-and generation records must keep the exact digest-pinned ref.
+Katl runtime compatibility, and only then stages the sysext. The readable
+`ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1` tag is suitable for Renovate's
+Docker datasource; the full patch precision lets Renovate propose Kubernetes
+patch updates. Manifests and generation records must still keep the exact
+digest-pinned ref.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:

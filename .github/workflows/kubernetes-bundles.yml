@@ -14,7 +14,7 @@ on:
         default: v1.36.0-katl.1
         type: string
       publish:
-        description: Publish the verified OCI artifact to ghcr.io/katl-dev/bundles
+        description: Publish the verified OCI artifact to ghcr.io/katl-dev/kubernetes
         required: true
         default: false
         type: boolean
@@ -46,7 +46,7 @@ jobs:
       KATL_CONTAINER_RUNTIME: docker
       KATL_KUBERNETES_PAYLOAD_VERSION: ${{ inputs.payload_version }}
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
-      OCI_REPOSITORY: ghcr.io/katl-dev/bundles
+      OCI_REPOSITORY: ghcr.io/katl-dev/kubernetes
       PAYLOAD_VERSION: ${{ inputs.payload_version }}
 
     steps:
@@ -176,8 +176,8 @@ jobs:
             echo "error: invalid staged bundle digest: $bundle_digest" >&2
             exit 1
           fi
-          version_tag="kubernetes-${ARTIFACT_VERSION}-${architecture}"
-          digest_tag="kubernetes-sha256-${bundle_digest#sha256:}"
+          version_tag="$ARTIFACT_VERSION"
+          digest_tag="sha256-${bundle_digest#sha256:}"
           bundle_dir="dist/bundles/${PAYLOAD_VERSION}/${architecture}"
           raw="dist/katl-kubernetes-${PAYLOAD_VERSION}-${architecture}.sysext.raw"
 
@@ -285,7 +285,7 @@ jobs:
             echo "### Published Kubernetes bundle"
             echo
             echo "- OCI: \`${OCI_REPOSITORY}@${manifest_digest}\`"
-            echo "- Source: \`https://ghcr.io/v2/katl-dev/bundles\`"
+            echo "- Source: \`https://ghcr.io/v2/katl-dev/kubernetes\`"
             echo "- Ref: \`${PAYLOAD_VERSION}@${BUNDLE_DIGEST}\`"
             echo "- Version tag: \`${OCI_REPOSITORY}:${VERSION_TAG}\`"
             echo "- Digest tag: \`${OCI_REPOSITORY}:${DIGEST_TAG}\`"
