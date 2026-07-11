@@ -365,11 +365,15 @@ build_default_artifacts() {
         local log
         local cache_label
         log="$(mktemp)"
-        cache_label="$(mkosi_cache_label_for_target "$target")"
+		cache_label="$(mkosi_cache_label_for_target "$target")"
 		printf 'vmtest building current repo artifact: scripts/mkosi %s\n' "$target" >&2
-		if ! "$repo_root/scripts/mkosi" "$target" > >(tee "$log" >&2) 2>&1; then
+		set +e
+		"$repo_root/scripts/mkosi" "$target" 2>&1 | tee "$log" >&2
+		local -a build_status=("${PIPESTATUS[@]}")
+		set -e
+		if [[ "${build_status[0]}" -ne 0 || "${build_status[1]}" -ne 0 ]]; then
 			setup_failures+=("build default vmtest artifact with scripts/mkosi $target failed")
-            rm -f "$log"
+			rm -f "$log"
 			return 1
 		fi
         if grep -q "^mkosi cache hit: ${cache_label} artifacts match the current repo$" "$log"; then
