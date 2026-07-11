@@ -137,6 +137,31 @@ func TestAgentWriteFile(t *testing.T) {
 	}
 }
 
+func TestAgentWriteFileChunks(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "artifacts", "upgrade.squashfs")
+	server := NewAgentServer("test")
+	server.AllowedWritePaths = []string{root + string(os.PathSeparator)}
+	for _, request := range []*vmtestpb.WriteFileRequest{
+		{Path: path, Content: []byte("first"), Mode: 0o600, Truncate: true},
+		{Path: path, Content: []byte("-second"), Mode: 0o600, Offset: 5},
+	} {
+		if _, err := server.writeFile(request); err != nil {
+			t.Fatalf("writeFile(%d) error = %v", request.Offset, err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read chunked file: %v", err)
+	}
+	if string(data) != "first-second" {
+		t.Fatalf("chunked data = %q", data)
+	}
+	if _, err := server.writeFile(&vmtestpb.WriteFileRequest{Path: path, Content: []byte("gap"), Offset: 99}); err == nil || !strings.Contains(err.Error(), "exceeds current size") {
+		t.Fatalf("sparse chunk error = %v", err)
+	}
+}
+
 func TestAgentWriteFileDefaultAllowlistSupportsKatlMetadata(t *testing.T) {
 	for _, path := range []string{
 		"/var/lib/katl/boot/selection.json",

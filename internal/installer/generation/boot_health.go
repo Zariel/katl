@@ -102,6 +102,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		bootDefaultSet = true
 	}
 	updatedStatus := status
+	updatedStatus.CommitState = CommitStateCommitted
 	updatedStatus.BootState = BootStateGood
 	updatedStatus.HealthState = HealthStateHealthy
 	updatedStatus.UpdatedAt = now.UTC()
@@ -112,7 +113,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		BootState:   updatedStatus.BootState,
 		HealthState: updatedStatus.HealthState,
 	})
-	if status.BootState != BootStateGood || status.HealthState != HealthStateHealthy {
+	if status.CommitState != CommitStateCommitted || status.BootState != BootStateGood || status.HealthState != HealthStateHealthy {
 		if err := WriteGenerationStatus(root, spec, updatedStatus); err != nil {
 			return BootHealthResult{}, err
 		}

@@ -75,6 +75,44 @@ func TestRecordBootHealthPromotesArmedSelection(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthRecommitsSupersededRollbackTarget(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 11, 1, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateSuperseded, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen1",
+		TrialGenerationID:             "gen0",
+		PreviousKnownGoodGenerationID: "gen1",
+		DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+		TrialBootEntry:                "loader/entries/katl-gen0.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen1.conf",
+		PendingTransactionID:          "rollback-gen0",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    DefaultPromotionPending,
+		UpdatedAt:                     now.Add(-time.Minute),
+	})
+	if _, err := RecordBootHealth(BootHealthRequest{
+		Root:           root,
+		GenerationID:   "gen0",
+		CommandLine:    bootHealthCommandLine("gen0"),
+		Result:         BootHealthSuccess,
+		Now:            now,
+		SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen0.conf"),
+	}); err != nil {
+		t.Fatalf("RecordBootHealth(rollback) error = %v", err)
+	}
+	_, status, err := ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatalf("ReadGeneration(gen0) error = %v", err)
+	}
+	if status.CommitState != CommitStateCommitted || status.BootState != BootStateGood || status.HealthState != HealthStateHealthy {
+		t.Fatalf("rollback target status = %#v, want committed/good/healthy", status)
+	}
+}
+
 func TestRecordBootHealthInfersBootedTrialFromCommandLine(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 10, 30, 0, 0, time.UTC)

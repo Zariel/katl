@@ -625,6 +625,8 @@ type WriteFileRequest struct {
 	Content       []byte                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
 	Mode          uint32                 `protobuf:"varint,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	Sensitive     bool                   `protobuf:"varint,4,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
+	Offset        uint64                 `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
+	Truncate      bool                   `protobuf:"varint,6,opt,name=truncate,proto3" json:"truncate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -683,6 +685,20 @@ func (x *WriteFileRequest) GetMode() uint32 {
 func (x *WriteFileRequest) GetSensitive() bool {
 	if x != nil {
 		return x.Sensitive
+	}
+	return false
+}
+
+func (x *WriteFileRequest) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *WriteFileRequest) GetTruncate() bool {
+	if x != nil {
+		return x.Truncate
 	}
 	return false
 }
@@ -1142,12 +1158,14 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\rR\tsizeBytes\x12\x1c\n" +
-	"\tredaction\x18\x04 \x01(\tR\tredaction\"r\n" +
+	"\tredaction\x18\x04 \x01(\tR\tredaction\"\xa6\x01\n" +
 	"\x10WriteFileRequest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\rR\x04mode\x12\x1c\n" +
-	"\tsensitive\x18\x04 \x01(\bR\tsensitive\"N\n" +
+	"\tsensitive\x18\x04 \x01(\bR\tsensitive\x12\x16\n" +
+	"\x06offset\x18\x05 \x01(\x04R\x06offset\x12\x1a\n" +
+	"\btruncate\x18\x06 \x01(\bR\btruncate\"N\n" +
 	"\x0fWriteFileResult\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x01 \x01(\rR\tsizeBytes\x12\x1c\n" +

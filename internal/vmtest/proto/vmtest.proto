@@ -67,6 +67,8 @@ message WriteFileRequest {
   bytes content = 2;
   uint32 mode = 3;
   bool sensitive = 4;
+  uint64 offset = 5;
+  bool truncate = 6;
 }
 
 message WriteFileResult {

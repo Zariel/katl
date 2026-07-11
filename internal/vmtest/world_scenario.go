@@ -192,6 +192,18 @@ func (scenario *WorldScenario) WriteSetupFailure(err error) error {
 	if err != nil {
 		failure = err.Error()
 	}
+	return scenario.WriteResult(WorldStatusSetupFailed, failure)
+}
+
+func (scenario *WorldScenario) WriteResult(status WorldStatus, failure string) error {
+	if scenario == nil {
+		return errors.New("world scenario is required")
+	}
+	switch status {
+	case WorldStatusPassed, WorldStatusFailed, WorldStatusSetupFailed, WorldStatusHostSkipped, WorldStatusDisabled:
+	default:
+		return fmt.Errorf("invalid world scenario result status %q", status)
+	}
 	if writeErr := scenario.WriteManifest(); writeErr != nil {
 		return writeErr
 	}
@@ -199,7 +211,7 @@ func (scenario *WorldScenario) WriteSetupFailure(err error) error {
 		APIVersion:     WorldAPIVersion,
 		Kind:           "VMTestScenarioResult",
 		ScenarioName:   scenario.Name,
-		Status:         WorldStatusSetupFailed,
+		Status:         status,
 		FailureSummary: failure,
 		ManifestPath:   scenario.ManifestPath,
 		ResultPath:     scenario.ResultPath,

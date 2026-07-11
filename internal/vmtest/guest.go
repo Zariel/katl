@@ -67,6 +67,8 @@ type GuestFileRequest struct {
 	MaxBytes     uint32
 	StoreContent bool
 	Sensitive    bool
+	Offset       uint64
+	Truncate     bool
 }
 
 type GuestFileArtifact struct {
@@ -257,6 +259,8 @@ func (g *GuestControl) WriteFile(ctx context.Context, req GuestFileRequest) (Gue
 		Content:   req.Content,
 		Mode:      uint32(req.Mode.Perm()),
 		Sensitive: req.Sensitive,
+		Offset:    req.Offset,
+		Truncate:  req.Truncate,
 	})
 	if err != nil {
 		record.Error = err.Error()

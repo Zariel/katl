@@ -488,7 +488,8 @@ func ValidateCommitTransition(from string, to string) error {
 	switch from + "->" + to {
 	case CommitStateCandidate + "->" + CommitStateCommitted,
 		CommitStateCandidate + "->" + CommitStateAbandoned,
-		CommitStateCommitted + "->" + CommitStateSuperseded:
+		CommitStateCommitted + "->" + CommitStateSuperseded,
+		CommitStateSuperseded + "->" + CommitStateCommitted:
 		return nil
 	default:
 		return fmt.Errorf("invalid commitState transition %s -> %s", from, to)

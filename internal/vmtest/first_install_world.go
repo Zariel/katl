@@ -932,17 +932,25 @@ func explicitMkosiArtifactIndexPath() string {
 func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
 	var index mkosiArtifactIndex
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	if current, err := readMkosiArtifactIndex(filepath.Join(mkosiDir, "artifacts.json"), repo); err == nil {
+		index = current
+	}
 	for _, artifact := range []mkosiArtifact{
 		{Kind: "installer-uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
 		{Kind: "runtime-root", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
 		{Kind: "kubernetes-sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw"), MetadataPath: filepath.Join(mkosiDir, "katl-kubernetes.raw.json")},
 	} {
-		if _, err := os.Stat(artifact.Path); err == nil {
+		if _, exists := index.artifact(artifact.Kind); !exists {
+			if _, err := os.Stat(artifact.Path); err != nil {
+				continue
+			}
 			index.Artifacts = append(index.Artifacts, artifact)
 		}
 	}
-	if artifact, err := discoverKatlOSInstallImage(repo); err == nil {
-		index.Artifacts = append(index.Artifacts, artifact)
+	if _, exists := index.artifact("katlos-install-image"); !exists {
+		if artifact, err := discoverKatlOSInstallImage(repo); err == nil {
+			index.Artifacts = append(index.Artifacts, artifact)
+		}
 	}
 	return index
 }

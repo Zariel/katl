@@ -65,6 +65,12 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
+	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
+	if e.MountBootRoot != nil {
+		if err := e.MountBootRoot(ctx, bootRoot); err != nil {
+			return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("mount boot root: %w", err))
+		}
+	}
 	record, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "stage-sysupdate-components"
 		current.ExternalMutationStarted = true
@@ -87,12 +93,6 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	}
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
-	}
-	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
-	if e.MountBootRoot != nil {
-		if err := e.MountBootRoot(ctx, runtimeRoot(e.Root)); err != nil {
-			return e.failHostUpgrade(record, "write-candidate-generation", err)
-		}
 	}
 	machineID, err := os.ReadFile(filepath.Join(runtimeRoot(e.Root), "etc/machine-id"))
 	if err != nil {
@@ -406,8 +406,7 @@ MatchPattern=katl_@v.efi
 
 [Target]
 Type=regular-file
-Path=/EFI/Linux
-PathRelativeTo=boot
+Path=/efi/EFI/Linux
 MatchPattern=katl_@v.efi
 Mode=0644
 InstancesMax=2

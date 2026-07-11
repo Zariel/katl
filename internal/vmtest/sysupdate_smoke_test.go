@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -18,6 +19,9 @@ import (
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
+	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 )
 
 func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
@@ -28,11 +32,13 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	runner := NewRunner(options)
 	runtime := InstalledRuntimeConfig{}
 	var plannedMAC string
+	var worldScenario *WorldScenario
 	spec := NodeSpec{Name: "sysupdate-partx-1", Role: ControlPlane}
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-sysupdate-root-uki", spec); ok {
 		runner = worldRun.Runner
 		runtime = worldRun.Config
 		plannedMAC = worldRun.Node.MACAddress
+		worldScenario = worldRun.Scenario
 	} else {
 		_ = RequireWorld(t)
 	}
@@ -47,8 +53,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		KVM:     runner.options().KVM,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
@@ -58,6 +65,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 	vm.Agent.Timeout = 30 * time.Second
+	vm.PreserveNVRAM = true
 	node, err := StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
 		Name: spec.Name,
 		Runtime: InstalledRuntimeConfig{
@@ -81,7 +89,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialAgent() error = %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		if client != nil {
+			_ = client.Close()
+		}
+	}()
 	guest := NewGuestControl(node.Result, client)
 	defer func() {
 		if t.Failed() {
@@ -89,117 +101,244 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		}
 	}()
 
-	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
-	currentSpec := readGuestFile(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/spec.json")
-	_, inactiveSlot, activeLabel, inactiveLabel := rootSlotsFromSpec(t, currentSpec)
-	activeDevice := guestCommandOutput(t, ctx, guest, "active-root-device", "blkid", "-t", "PARTLABEL="+activeLabel, "-o", "device")
-	activeDisk, activePart := partitionDiskAndNumber(t, strings.TrimSpace(activeDevice))
-	guestCommand(t, ctx, guest, "mark-active-root-installed", "sfdisk", "--part-label", activeDisk, activePart, "katl_"+currentGeneration)
-	guestCommand(t, ctx, guest, "refresh-active-root-partition", "partx", "--update", "--nr", activePart, activeDisk)
-	inactiveDevice := guestCommandOutput(t, ctx, guest, "inactive-root-device", "blkid", "-t", "PARTLABEL="+inactiveLabel, "-o", "device")
-	inactiveDisk, inactivePart := partitionDiskAndNumber(t, strings.TrimSpace(inactiveDevice))
-	if inactiveDisk != activeDisk {
-		t.Fatalf("active root disk %q differs from inactive root disk %q", activeDisk, inactiveDisk)
-	}
-	inactivePartUUID := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "inactive-root-partuuid", "blkid", "-s", "PARTUUID", "-o", "value", strings.TrimSpace(inactiveDevice)))
-	guestCommand(t, ctx, guest, "mark-inactive-root-empty", "sfdisk", "--part-label", inactiveDisk, inactivePart, "_empty")
-	guestCommand(t, ctx, guest, "refresh-inactive-root-partition", "partx", "--update", "--nr", inactivePart, inactiveDisk)
-	espDevice := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "esp-device", "blkid", "-t", "PARTLABEL=KATL_ESP", "-o", "device"))
-	guestCommand(t, ctx, guest, "mount-esp", "mount", espDevice, "/efi")
-	guestCommand(t, ctx, guest, "esp-mounted", "findmnt", "--target", "/efi", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS")
-
-	version := "2026.06.17"
-	generationID := "sysupdate-2026.06.17"
-	rootBytes := []byte("katl sysupdate root prototype\n")
-	ukiBytes := []byte("katl sysupdate uki prototype\n")
-	upgradePayload, upgradeImagePath := writeSysupdateUpgradeImagePayload(t, result.RunDir, version, rootBytes, ukiBytes)
-	sysupdateFixture := writeSysupdateGuestFixtureFromImage(t, ctx, guest, result.RunDir, version, upgradePayload)
-	proof, err := upgradePayload.SingleImageProof(katlosimage.SingleImageProofRequest{
-		ImagePath: upgradeImagePath,
-		Sysupdate: &katlosimage.SysupdateProof{
-			SourcePath:       "/var/lib/katl/test-artifacts/sysupdate/source",
-			RootTransferPath: sysupdateFixture.RootTransferPath,
-			UKITransferPath:  sysupdateFixture.UKITransferPath,
-			RootSourcePath:   sysupdateFixture.RootSourcePath,
-			UKISourcePath:    sysupdateFixture.UKISourcePath,
-		},
-	})
+	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
+	previousSpec, previousStatus := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
+	previousSpec.KernelCommandLine = append(previousSpec.KernelCommandLine,
+		"console=ttyS0,115200n8", "systemd.log_target=console", "loglevel=6", "katl.vmtest_agent=1", "katl.vmtest_debug_shell=1")
+	digest, err := generation.CanonicalSpecDigest(previousSpec)
 	if err != nil {
-		t.Fatalf("single-image upgrade proof: %v", err)
+		t.Fatalf("digest vmtest-visible previous generation: %v", err)
 	}
-	if err := katlosimage.WriteSingleImageProof(result.Artifacts.SingleImageProof, proof); err != nil {
-		t.Fatalf("write single-image upgrade proof: %v", err)
+	previousStatus.SpecDigest = digest
+	previousStatus.UpdatedAt = time.Now().UTC()
+	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+previousGeneration+"/spec.json", previousSpec)
+	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+previousGeneration+"/status.json", previousStatus)
+	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
+	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
+
+	upgrade := discoverBuiltUpgradeImage(t, previousSpec.RuntimeVersion)
+	localRef := filepath.ToSlash(filepath.Join("updates", filepath.Base(upgrade.Path)))
+	uploadGuestFile(t, ctx, guest, upgrade.Path, "/var/lib/katl/artifacts/"+localRef, 4<<20)
+	endpoint := katlcEndpoint(t, node, "")
+	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
+	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
+	acceptedData := runKatlctl(t, ctx, result, katlctl, "host-upgrade-submit",
+		"host", "upgrade",
+		"--endpoint", endpoint,
+		"--agent-token-file", tokenFile,
+		"--image-local-ref", localRef,
+		"--image-sha256", upgrade.SHA256,
+		"--image-size-bytes", strconv.FormatUint(upgrade.SizeBytes, 10),
+		"--candidate-generation", candidateGeneration,
+		"--client-request-id", "vmtest-host-upgrade-"+candidateGeneration,
+		"--actor", "installed runtime host upgrade vmtest",
+	)
+	var accepted agentapi.OperationAccepted
+	mustUnmarshalProtoJSON(t, acceptedData, &accepted)
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, token, accepted.OperationId)
+	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
+		t.Fatalf("host upgrade operation status = %+v", status)
+	}
+	trial := bootSelectionFromGuest(t, ctx, guest)
+	if trial.TrialGenerationID != candidateGeneration || trial.PreviousKnownGoodGenerationID != previousGeneration || !trial.PendingHealthValidation {
+		t.Fatalf("host upgrade trial selection = %#v", trial)
+	}
+	candidateSpec := generationFromGuest(t, ctx, guest, candidateGeneration)
+	if candidateSpec.RuntimeVersion != upgrade.Version || candidateSpec.Root.Slot == previousSpec.Root.Slot {
+		t.Fatalf("host upgrade candidate spec = %#v; previous = %#v", candidateSpec, previousSpec)
 	}
 
-	sysupdate := "/usr/lib/systemd/systemd-sysupdate"
-	definitions := "/var/lib/katl/test-artifacts/sysupdate/sysupdate.d"
-	guestCommand(t, ctx, guest, "sysupdate-list", sysupdate, "--no-pager", "--verify=no", "--sync=no", "--definitions="+definitions, "list")
-	guestCommand(t, ctx, guest, "sysupdate-update", sysupdate, "--no-pager", "--verify=no", "--sync=no", "--definitions="+definitions, "update", version)
-
-	sysupdateRootLabel := "katl_" + version
-	candidateRootDevice := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "candidate-root-label", "blkid", "-t", "PARTLABEL="+sysupdateRootLabel, "-o", "device"))
-	if candidateRootDevice != strings.TrimSpace(inactiveDevice) {
-		t.Fatalf("candidate root device = %q, want inactive device %q", candidateRootDevice, strings.TrimSpace(inactiveDevice))
-	}
-	gotRootBytes := guestCommandOutput(t, ctx, guest, "candidate-root-payload", "dd", "if="+candidateRootDevice, "bs="+strconv.Itoa(len(rootBytes)), "count=1", "status=none")
-	if gotRootBytes != string(rootBytes) {
-		t.Fatalf("candidate root payload = %q, want %q", gotRootBytes, string(rootBytes))
-	}
-	bootCountedUKIPath := "/efi/EFI/Linux/katl_" + version + "+1-0.efi"
-	assertGuestExists(t, ctx, guest, bootCountedUKIPath)
-	gotUKISHA := strings.Fields(guestCommandOutput(t, ctx, guest, "candidate-uki-sha256", "sha256sum", bootCountedUKIPath))
-	if len(gotUKISHA) == 0 || gotUKISHA[0] != sha256Hex(ukiBytes) {
-		t.Fatalf("candidate UKI SHA256 fields = %#v, want %s", gotUKISHA, sha256Hex(ukiBytes))
+	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	waitGenerationPromotion(t, ctx, guest, candidateGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
+	assertGuestFileContains(t, ctx, guest, stateMarker, "state-survives-host-upgrade-and-rollback")
+	promoted := bootSelectionFromGuest(t, ctx, guest)
+	if promoted.DefaultGenerationID != candidateGeneration || promoted.PreviousKnownGoodGenerationID != previousGeneration || promoted.PendingHealthValidation {
+		t.Fatalf("promoted host upgrade selection = %#v", promoted)
 	}
 
-	candidateSpec := candidateGenerationSpec(t, currentSpec, candidateGenerationSpecInput{
-		GenerationID:   generationID,
-		RuntimeVersion: version,
-		Slot:           inactiveSlot,
-		PartitionUUID:  inactivePartUUID,
-		RootSHA256:     sha256Hex(rootBytes),
-		UKIPath:        "/efi/EFI/Linux/katl_" + version + ".efi",
-		LoaderEntry:    "loader/entries/katl-" + generationID + ".conf",
-		CreatedAt:      time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
-	})
-	candidateStatus, err := generation.NewGenerationStatus(candidateSpec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, candidateSpec.CreatedAt)
-	if err != nil {
-		t.Fatalf("candidate generation status: %v", err)
-	}
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/spec.json", candidateSpec)
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/status.json", candidateStatus)
-	readCandidateSpec := generationFromGuest(t, ctx, guest, generationID)
-	if readCandidateSpec.Root.Slot != inactiveSlot || readCandidateSpec.Root.PartitionUUID != inactivePartUUID || readCandidateSpec.Boot.LoaderEntryPath == "" {
-		t.Fatalf("candidate spec = %#v, slot=%q partuuid=%q", readCandidateSpec, inactiveSlot, inactivePartUUID)
-	}
+	rollback := promoted
+	rollback.TrialGenerationID = previousGeneration
+	rollback.PreviousKnownGoodGenerationID = candidateGeneration
+	rollback.TrialBootEntry = previousSpec.Boot.LoaderEntryPath
+	rollback.PreviousKnownGoodBootEntry = candidateSpec.Boot.LoaderEntryPath
+	rollback.PendingTransactionID = "vmtest-host-rollback-" + previousGeneration
+	rollback.PendingHealthValidation = true
+	rollback.PersistentDefaultPromotion = generation.DefaultPromotionPending
+	rollback.UpdatedAt = time.Now().UTC()
+	writeGuestJSON(t, ctx, guest, "/var/lib/katl/boot/selection.json", rollback)
+	guestCommand(t, ctx, guest, "select-previous-known-good", "bootctl", "set-oneshot", filepath.Base(previousSpec.Boot.LoaderEntryPath))
 
-	selection := bootSelectionFromGuest(t, ctx, guest)
-	trial := generation.BootSelectionRecord{
-		APIVersion:                    generation.APIVersion,
-		Kind:                          generation.BootSelectionKind,
-		DefaultGenerationID:           selection.DefaultGenerationID,
-		TrialGenerationID:             generationID,
-		PreviousKnownGoodGenerationID: selection.DefaultGenerationID,
-		DefaultBootEntry:              selection.DefaultBootEntry,
-		TrialBootEntry:                "loader/entries/katl-" + generationID + ".conf",
-		PreviousKnownGoodBootEntry:    selection.DefaultBootEntry,
-		BootCountedTrialPath:          bootCountedUKIPath,
-		PendingTransactionID:          "vmtest-sysupdate-root-uki",
-		PendingHealthValidation:       true,
-		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
-		UpdatedAt:                     time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
+	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	waitGenerationPromotion(t, ctx, guest, previousGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
+	assertGuestFileContains(t, ctx, guest, stateMarker, "state-survives-host-upgrade-and-rollback")
+	rolledBack := bootSelectionFromGuest(t, ctx, guest)
+	if rolledBack.DefaultGenerationID != previousGeneration || rolledBack.PreviousKnownGoodGenerationID != candidateGeneration || rolledBack.PendingHealthValidation {
+		t.Fatalf("rolled-back boot selection = %#v", rolledBack)
 	}
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/boot/selection.json", trial)
-	readTrial := bootSelectionFromGuest(t, ctx, guest)
-	if readTrial.TrialGenerationID != generationID || readTrial.BootCountedTrialPath != bootCountedUKIPath || readTrial.PreviousKnownGoodGenerationID != currentGeneration {
-		t.Fatalf("trial boot selection = %#v", readTrial)
+	if previousSpec.RuntimeVersion == candidateSpec.RuntimeVersion || previousSpec.Boot.UKIPath == candidateSpec.Boot.UKIPath || previousSpec.Root.Slot == candidateSpec.Root.Slot {
+		t.Fatalf("upgrade did not produce distinct version, root slot, and UKI identities: previous=%#v candidate=%#v", previousSpec, candidateSpec)
 	}
-	t.Logf("sysupdate staging verified; candidate boot promotion and rollback require Katl activation glue beyond this staging smoke")
+	guestCommand(t, ctx, guest, "boot-health-evidence", "systemctl", "show", "katl-boot-health.service", "--property=Result,ExecMainStatus")
+	guestCommand(t, ctx, guest, "boot-complete-evidence", "systemctl", "is-active", "katl-boot-complete.target")
+	t.Log("host upgrade and rollback are serialized per node in v0.1; multi-node rollout orchestration remains operator-controlled")
+	powerOffGuestForCleanSuccess(t, ctx, &node, guest, client)
+	client = nil
 
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+	if worldScenario != nil {
+		if err := worldScenario.WriteResult(WorldStatusPassed, ""); err != nil {
+			t.Fatalf("write world scenario result: %v", err)
+		}
+	}
+}
+
+type builtUpgradeImage struct {
+	Path      string
+	Version   string
+	SHA256    string
+	SizeBytes uint64
+}
+
+func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeImage {
+	t.Helper()
+	runtimeData, err := os.ReadFile(filepath.Join(repoRoot(t), "_build", "mkosi", "katl-runtime-root.squashfs.json"))
+	if err != nil {
+		t.Fatalf("read current runtime artifact metadata: %v", err)
+	}
+	var runtimeMetadata struct {
+		BuildID string `json:"generation"`
+	}
+	if err := json.Unmarshal(runtimeData, &runtimeMetadata); err != nil || runtimeMetadata.BuildID == "" {
+		t.Fatalf("decode current runtime artifact identity: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(repoRoot(t), "_build", "mkosi", "katlos-upgrade-*-x86_64.squashfs.json"))
+	if err != nil {
+		t.Fatalf("discover KatlOS upgrade image metadata: %v", err)
+	}
+	var metadata struct {
+		ImageRole string `json:"imageRole"`
+		Version   string `json:"version"`
+		BuildID   string `json:"buildID"`
+		Path      string `json:"path"`
+		SizeBytes uint64 `json:"sizeBytes"`
+		SHA256    string `json:"sha256"`
+	}
+	metadataPath := ""
+	for _, candidate := range matches {
+		data, readErr := os.ReadFile(candidate)
+		if readErr != nil {
+			t.Fatalf("read KatlOS upgrade image metadata: %v", readErr)
+		}
+		var found = metadata
+		if err := json.Unmarshal(data, &found); err != nil {
+			t.Fatalf("decode KatlOS upgrade image metadata: %v", err)
+		}
+		if found.BuildID == runtimeMetadata.BuildID && found.Version != baseVersion {
+			if metadataPath != "" {
+				t.Fatalf("multiple upgrade images match current runtime build %s: %s and %s", runtimeMetadata.BuildID, metadataPath, candidate)
+			}
+			metadataPath, metadata = candidate, found
+		}
+	}
+	if metadataPath == "" {
+		t.Fatalf("no next-version KatlOS upgrade image matches current runtime build %s and base version %s; candidates: %v", runtimeMetadata.BuildID, baseVersion, matches)
+	}
+	if metadata.ImageRole != string(katlosimage.RoleUpgrade) || metadata.Version == "" || metadata.Path == "" || metadata.SizeBytes == 0 || len(metadata.SHA256) != 64 {
+		t.Fatalf("incomplete KatlOS upgrade image metadata: %+v", metadata)
+	}
+	path := filepath.Join(filepath.Dir(metadataPath), metadata.Path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat KatlOS upgrade image: %v", err)
+	}
+	if uint64(info.Size()) != metadata.SizeBytes {
+		t.Fatalf("KatlOS upgrade image size = %d, metadata = %d", info.Size(), metadata.SizeBytes)
+	}
+	digest, err := fileSHA256(path)
+	if err != nil {
+		t.Fatalf("hash KatlOS upgrade image: %v", err)
+	}
+	if digest != metadata.SHA256 {
+		t.Fatalf("KatlOS upgrade image SHA-256 = %s, metadata = %s", digest, metadata.SHA256)
+	}
+	return builtUpgradeImage{Path: path, Version: metadata.Version, SHA256: metadata.SHA256, SizeBytes: metadata.SizeBytes}
+}
+
+func uploadGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, source, target string, chunkSize int) {
+	t.Helper()
+	file, err := os.Open(source)
+	if err != nil {
+		t.Fatalf("open guest upload source: %v", err)
+	}
+	defer file.Close()
+	buffer := make([]byte, chunkSize)
+	var offset uint64
+	for {
+		n, readErr := io.ReadFull(file, buffer)
+		if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
+			t.Fatalf("read guest upload source at %d: %v", offset, readErr)
+		}
+		if n > 0 {
+			if _, err := guest.WriteFile(ctx, GuestFileRequest{
+				Name:     fmt.Sprintf("host-upgrade-image-%08d", offset),
+				Path:     target,
+				Content:  buffer[:n],
+				Mode:     0o600,
+				Timeout:  30 * time.Second,
+				Offset:   offset,
+				Truncate: offset == 0,
+			}); err != nil {
+				t.Fatalf("upload guest file %s at %d: %v", target, offset, err)
+			}
+			offset += uint64(n)
+		}
+		if readErr == io.ErrUnexpectedEOF || readErr == io.EOF {
+			break
+		}
+	}
+}
+
+func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *GuestControl, spec generation.GenerationSpec) {
+	t.Helper()
+	if got := currentGenerationFromGuest(t, ctx, guest); got != spec.GenerationID {
+		t.Fatalf("booted generation = %q, want %q", got, spec.GenerationID)
+	}
+	cmdline := readGuestFile(t, ctx, guest, "/proc/cmdline")
+	if !strings.Contains(cmdline, "katl.generation="+spec.GenerationID) || !strings.Contains(cmdline, "root=PARTUUID="+spec.Root.PartitionUUID) {
+		t.Fatalf("booted kernel command line does not identify generation root: %s", cmdline)
+	}
+	for _, argument := range spec.KernelCommandLine {
+		if !strings.Contains(cmdline, argument) {
+			t.Fatalf("booted kernel command line is missing generation argument %q: %s", argument, cmdline)
+		}
+	}
+	guestCommand(t, ctx, guest, "mount-esp-for-generation-verification", "mount", "/dev/disk/by-label/KATLEFI", "/efi")
+	assertGuestExists(t, ctx, guest, spec.Boot.UKIPath)
+}
+
+func waitGenerationPromotion(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var lastStatus generation.GenerationStatus
+	var lastSelection generation.BootSelectionRecord
+	for time.Now().Before(deadline) {
+		_, lastStatus = generationRecordsFromGuest(t, ctx, guest, generationID)
+		lastSelection = bootSelectionFromGuest(t, ctx, guest)
+		if lastStatus.CommitState == generation.CommitStateCommitted &&
+			lastStatus.BootState == generation.BootStateGood &&
+			lastStatus.HealthState == generation.HealthStateHealthy &&
+			lastSelection.DefaultGenerationID == generationID &&
+			!lastSelection.PendingHealthValidation {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("generation %s was not promoted; status=%#v selection=%#v", generationID, lastStatus, lastSelection)
 }
 
 type sysupdateGuestFixture struct {
@@ -500,8 +639,8 @@ func partitionDiskAndNumber(t *testing.T, device string) (string, string) {
 func bootSelectionFromGuest(t *testing.T, ctx context.Context, guest *GuestControl) generation.BootSelectionRecord {
 	t.Helper()
 	data := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
-	var selection generation.BootSelectionRecord
-	if err := json.Unmarshal([]byte(data), &selection); err != nil {
+	selection, err := decodeGuestRecord[generation.BootSelectionRecord]([]byte(data), generation.BootSelectionRecordType)
+	if err != nil {
 		t.Fatalf("decode boot selection: %v\n%s", err, data)
 	}
 	if err := generation.ValidateBootSelection(selection); err != nil {
@@ -512,20 +651,26 @@ func bootSelectionFromGuest(t *testing.T, ctx context.Context, guest *GuestContr
 
 func generationFromGuest(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) generation.GenerationSpec {
 	t.Helper()
+	spec, _ := generationRecordsFromGuest(t, ctx, guest, generationID)
+	return spec
+}
+
+func generationRecordsFromGuest(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) (generation.GenerationSpec, generation.GenerationStatus) {
+	t.Helper()
 	specData := readGuestFile(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/spec.json")
 	statusData := readGuestFile(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/status.json")
-	var spec generation.GenerationSpec
-	if err := json.Unmarshal([]byte(specData), &spec); err != nil {
+	spec, err := decodeGuestRecord[generation.GenerationSpec]([]byte(specData), generation.GenerationSpecRecordType)
+	if err != nil {
 		t.Fatalf("decode candidate generation spec: %v\n%s", err, specData)
 	}
-	var status generation.GenerationStatus
-	if err := json.Unmarshal([]byte(statusData), &status); err != nil {
+	status, err := decodeGuestRecord[generation.GenerationStatus]([]byte(statusData), generation.GenerationStatusRecordType)
+	if err != nil {
 		t.Fatalf("decode candidate generation status: %v\n%s", err, statusData)
 	}
 	if err := generation.ValidateGenerationStatus(spec, status); err != nil {
 		t.Fatalf("candidate generation invalid: %v\nspec=%s\nstatus=%s", err, specData, statusData)
 	}
-	return spec
+	return spec, status
 }
 
 func writeGuestJSON(t *testing.T, ctx context.Context, guest *GuestControl, path string, value any) {
@@ -534,16 +679,55 @@ func writeGuestJSON(t *testing.T, ctx context.Context, guest *GuestControl, path
 	if err != nil {
 		t.Fatalf("marshal guest JSON %s: %v", path, err)
 	}
+	recordType := ""
+	switch value.(type) {
+	case generation.BootSelectionRecord:
+		recordType = generation.BootSelectionRecordType
+	case generation.GenerationSpec:
+		recordType = generation.GenerationSpecRecordType
+	case generation.GenerationStatus:
+		recordType = generation.GenerationStatusRecordType
+	}
+	if recordType != "" {
+		data, err = persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
+			RecordType:    recordType,
+			RecordVersion: 1,
+			Payload:       data,
+		})
+		if err != nil {
+			t.Fatalf("marshal guest boot selection envelope %s: %v", path, err)
+		}
+	}
 	writeGuestFile(t, ctx, guest, path, data, 0o644)
+}
+
+func decodeGuestRecord[T any](data []byte, recordType string) (T, error) {
+	var value T
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return value, err
+	}
+	if _, enveloped := fields["recordType"]; !enveloped {
+		return value, json.Unmarshal(data, &value)
+	}
+	envelope, err := persistedrecord.DecodeEnvelope(data)
+	if err != nil {
+		return value, err
+	}
+	if envelope.RecordType != recordType || envelope.RecordVersion != 1 {
+		return value, fmt.Errorf("got %s/v%d, want %s/v1", envelope.RecordType, envelope.RecordVersion, recordType)
+	}
+	return persistedrecord.DecodePayload[T](envelope)
 }
 
 func writeGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, path string, content []byte, mode fs.FileMode) {
 	t.Helper()
 	if _, err := guest.WriteFile(ctx, GuestFileRequest{
-		Name:    filepath.Base(path),
-		Path:    path,
-		Content: content,
-		Mode:    mode,
+		Name:     filepath.Base(path),
+		Path:     path,
+		Content:  content,
+		Mode:     mode,
+		Truncate: true,
 	}); err != nil {
 		t.Fatalf("write guest file %s: %v", path, err)
 	}

@@ -181,6 +181,22 @@ func TestWorldScenarioWritesSetupFailureArtifacts(t *testing.T) {
 	}
 }
 
+func TestWorldScenarioWritesPassedResult(t *testing.T) {
+	world := testWorld(t)
+	scenario, err := world.PlanScenario("passed")
+	if err != nil {
+		t.Fatalf("PlanScenario() error = %v", err)
+	}
+	if err := scenario.WriteResult(WorldStatusPassed, ""); err != nil {
+		t.Fatalf("WriteResult() error = %v", err)
+	}
+	var result scenarioResult
+	readJSONForTest(t, scenario.ResultPath, &result)
+	if result.Status != WorldStatusPassed || result.ScenarioName != scenario.Name {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestWorldScenarioRequiresNodeIdentity(t *testing.T) {
 	world := testWorld(t)
 	scenario, err := world.PlanScenario("identity")

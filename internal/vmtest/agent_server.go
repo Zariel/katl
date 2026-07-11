@@ -209,7 +209,8 @@ func (s AgentServer) writeFile(req *vmtestpb.WriteFileRequest) (*vmtestpb.WriteF
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if err := writeNoFollow(path, req.Content, mode.Perm()); err != nil {
+	truncate := req.Truncate || req.Offset == 0
+	if err := writeNoFollowAt(path, req.Content, mode.Perm(), req.Offset, truncate); err != nil {
 		return nil, err
 	}
 	redaction := "none"
@@ -262,12 +263,30 @@ func prepareWriteParent(parent string) error {
 }
 
 func writeNoFollow(path string, content []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|noFollowFlag(), mode)
+	return writeNoFollowAt(path, content, mode, 0, true)
+}
+
+func writeNoFollowAt(path string, content []byte, mode os.FileMode, offset uint64, truncate bool) error {
+	flags := os.O_WRONLY | os.O_CREATE | noFollowFlag()
+	if truncate {
+		if offset != 0 {
+			return errors.New("truncated file write requires offset zero")
+		}
+		flags |= os.O_TRUNC
+	}
+	file, err := os.OpenFile(path, flags, mode)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	if _, err := file.Write(content); err != nil {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if offset > uint64(info.Size()) {
+		return fmt.Errorf("file write offset %d exceeds current size %d", offset, info.Size())
+	}
+	if _, err := file.WriteAt(content, int64(offset)); err != nil {
 		return err
 	}
 	return file.Chmod(mode)
@@ -440,6 +459,7 @@ func limitOrDefault(value, fallback uint32) uint32 {
 
 func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
+		"bootctl":           true,
 		"crictl":            true,
 		"blkid":             true,
 		"bgp-api-vip-smoke": true,
@@ -499,6 +519,7 @@ func defaultAgentFilePaths() []string {
 
 func defaultAgentWritePaths() []string {
 	return []string{
+		"/var/lib/katl/artifacts/",
 		"/var/lib/katl/boot/",
 		"/var/lib/katl/generations/",
 		"/var/lib/katl/test-artifacts/",

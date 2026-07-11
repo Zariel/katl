@@ -511,6 +511,15 @@ else
             fi
             exit "$status"
             ;;
+		build-katlos-upgrade-image)
+			shift
+			"$repo_root/scripts/mkosi" build-runtime
+			KATL_KATLOS_IMAGE_ROLE=upgrade \
+				KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0.0.0-dev.1}}" \
+				KATL_BUILD_COMMIT="$build_commit" \
+				"$repo_root/scripts/build-katlos-install-image" "$@"
+			exit $?
+			;;
         installer-image | runtime)
             profile="$1"
             shift

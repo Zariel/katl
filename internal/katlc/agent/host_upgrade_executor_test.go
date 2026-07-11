@@ -109,7 +109,12 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.ResolveHostUpgrade = func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error) { return payload, nil }
-	executor.MountBootRoot = func(context.Context, string) error { return nil }
+	executor.MountBootRoot = func(_ context.Context, path string) error {
+		if path != filepath.Join(root, "efi") {
+			t.Fatalf("MountBootRoot path = %q, want %q", path, filepath.Join(root, "efi"))
+		}
+		return nil
+	}
 	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error { oneshoot = entry; return nil }
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		switch filepath.Base(argv[0]) {

@@ -389,7 +389,7 @@ exec "$@"
 	}
 
 	mkosiArgs := readLines(t, mkosiArgsPath)
-	if !reflect.DeepEqual(mkosiArgs, []string{"build-installer", "build-katlos-install-image", "build-kubernetes-sysext"}) {
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-installer", "build-katlos-install-image", "build-katlos-upgrade-image", "build-kubernetes-sysext"}) {
 		t.Fatalf("mkosi args = %#v", mkosiArgs)
 	}
 	goArgs := readLines(t, goArgsPath)

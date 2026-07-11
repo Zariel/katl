@@ -96,7 +96,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	root := generation.RootSelection{
 		Slot:                  rootSlot,
 		PartitionUUID:         strings.TrimSpace(request.RootPartitionUUID),
-		RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
+		RuntimeVersion:        p.Index.Version,
 		RuntimeInterface:      p.Index.RuntimeInterface,
 		Architecture:          p.Index.Architecture,
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
@@ -122,7 +122,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		},
 		Sysexts:           sysexts,
 		Confexts:          confexts,
-		KernelCommandLine: append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
+		KernelCommandLine: mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
 		CreatedAt:         createdAt.UTC(),
 	}
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, createdAt)
@@ -153,6 +153,22 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		BootSelection:   selection,
 		PreservedAssets: append(sysextAssets, confextAssets...),
 	}, nil
+}
+
+func mergeKernelCommandLine(previous, required []string) []string {
+	merged := make([]string, 0, len(previous)+len(required))
+	seen := make(map[string]bool, len(previous)+len(required))
+	for _, options := range [][]string{previous, required} {
+		for _, option := range options {
+			option = strings.TrimSpace(option)
+			if option == "" || seen[option] {
+				continue
+			}
+			seen[option] = true
+			merged = append(merged, option)
+		}
+	}
+	return merged
 }
 
 func StagePreservedAssets(root string, plan HostUpgradePlan) error {

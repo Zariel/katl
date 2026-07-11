@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
 )
 
@@ -480,7 +481,11 @@ func createPreseedImage(ctx context.Context, dir, image string, runner DiskRunne
 }
 
 func createFATImage(ctx context.Context, dir, image, label string, runner DiskRunner) error {
-	size, err := fatImageSize(dir)
+	minimumSize := int64(8 * 1024 * 1024)
+	if label == "KATLEFI" {
+		minimumSize = int64(disk.DefaultESPSizeMiB * 1024 * 1024)
+	}
+	size, err := fatImageSize(dir, minimumSize)
 	if err != nil {
 		return err
 	}
@@ -508,7 +513,7 @@ func createFATImage(ctx context.Context, dir, image, label string, runner DiskRu
 	return nil
 }
 
-func fatImageSize(dir string) (int64, error) {
+func fatImageSize(dir string, minSize int64) (int64, error) {
 	var payload int64
 	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -527,9 +532,8 @@ func fatImageSize(dir string) (int64, error) {
 		return 0, fmt.Errorf("measure FAT image source dir: %w", err)
 	}
 	const (
-		minSize = int64(8 * 1024 * 1024)
-		slack   = int64(64 * 1024 * 1024)
-		mb      = int64(1024 * 1024)
+		slack = int64(64 * 1024 * 1024)
+		mb    = int64(1024 * 1024)
 	)
 	size := payload + slack
 	if size < minSize {
