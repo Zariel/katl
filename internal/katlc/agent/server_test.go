@@ -2295,6 +2295,19 @@ func writeInstalledClusterIntent(t *testing.T, root string, kubernetesVersion st
 	writeClusterIntent(t, root, []byte(intent))
 }
 
+func TestClusterIntentKubernetesActivationPathDefaultsForSelectedPayload(t *testing.T) {
+	intent := installer.ClusterIntent{
+		Kubernetes: installer.ClusterIntentKubernetes{PayloadVersion: "v1.36.0"},
+	}
+	if got, want := clusterIntentKubernetesActivationPath(intent), "/run/extensions/katl-kubernetes.raw"; got != want {
+		t.Fatalf("activation path = %q, want %q", got, want)
+	}
+	intent.Kubernetes.PayloadVersion = ""
+	if got := clusterIntentKubernetesActivationPath(intent); got != "" {
+		t.Fatalf("activation path without selected payload = %q, want empty", got)
+	}
+}
+
 func currentKubernetesExtensionRef(t *testing.T, root string) generation.ExtensionRef {
 	t.Helper()
 	spec, _, err := generation.ReadGeneration(root, "generation-0")

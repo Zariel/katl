@@ -18,8 +18,10 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
 		ChangedDomains:     []string{"networkd", "networkd", "tmpfiles"},
 		HealthState:        "unknown",
 		Kubeadm: KubeadmActionRequired{
-			Required: true,
-			Reason:   "rendered kubeadm input differs; join token abcdef.0123456789abcdef requires explicit action",
+			Required:           true,
+			PreviousConfigName: "control-plane-old",
+			SelectedConfigName: "control-plane",
+			Reason:             "rendered kubeadm input differs; join token abcdef.0123456789abcdef requires explicit action",
 		},
 		UpdatedAt: time.Date(2026, 6, 5, 15, 30, 0, 0, time.UTC),
 	})
@@ -71,6 +73,8 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
     ],
     "kubeadm": {
       "required": true,
+      "previousConfigName": "control-plane-old",
+      "selectedConfigName": "control-plane",
       "reason": "rendered kubeadm input differs; join token [REDACTED BOOTSTRAP TOKEN] requires explicit action"
     },
     "updatedAt": "2026-06-05T15:30:00Z"

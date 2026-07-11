@@ -162,7 +162,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	files = append(files, unsafeFiles...)
-	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, nil, nil, now)
+	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, matrixDecision.Diagnostics, nil, now)
 	audit.CandidateGeneration = request.GenerationID
 	audit.AcceptedApplyMode = matrixDecision.AcceptedMode
 	auditPath, err := writeAudit(request.Root, sourceID, desiredVersion, audit)
@@ -226,7 +226,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 				ConfextLevel: release.ConfextLevel,
 			},
 		},
-		Kubeadm:     kubeadmActionRequired(changes),
+		Kubeadm:     request.kubeadmActionRequired(changes),
 		RequestedAt: now,
 	})
 	if err != nil {
@@ -369,7 +369,7 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 		AcceptedApplyMode:  matrixDecision.AcceptedMode,
 		ChangedDomains:     matrixDecision.ChangedDomains,
 		HealthState:        request.CurrentRecord.HealthState,
-		Kubeadm:            kubeadmActionRequired(changes),
+		Kubeadm:            request.kubeadmActionRequired(changes),
 		UpdatedAt:          now,
 	})
 	if err != nil {
@@ -494,12 +494,21 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	return changes
 }
 
-func kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {
+func (request TrustedBundleRequest) kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {
 	for _, change := range changes {
 		if change.Domain == DomainKubeadmConfig || change.Domain == DomainSelectedKubeadmConfig {
+			previous := request.CurrentManifest.Node.Kubernetes.Kubeadm.ConfigRef
+			selected := previous
+			for _, overlay := range []NodeOverlay{request.ClusterDefaults, request.SystemRoleOverrides[request.CurrentManifest.Node.SystemRole], request.NodeOverrides[request.NodeName]} {
+				if overlay.Kubernetes != nil {
+					selected = overlay.Kubernetes.Kubeadm.ConfigRef
+				}
+			}
 			return generation.KubeadmActionRequired{
-				Required: true,
-				Reason:   "rendered kubeadm desired input changed and requires an explicit kubeadm-aware action",
+				Required:           true,
+				PreviousConfigName: previous,
+				SelectedConfigName: selected,
+				Reason:             "rendered kubeadm desired input changed; live kubeadm cluster state remains operator-owned and requires an explicit kubeadm-aware action",
 			}
 		}
 	}
@@ -607,7 +616,7 @@ func (request TrustedBundleRequest) audit(sourceID, desiredVersion, decision str
 		PreviousGeneration: request.CurrentRecord.GenerationID,
 		Decision:           decision,
 		Diagnostics:        diagnostics,
-		Kubeadm:            kubeadmActionRequired(changes),
+		Kubeadm:            request.kubeadmActionRequired(changes),
 		FailureReason:      generation.RedactConfigApplyMessage(errorString(cause)),
 		UpdatedAt:          now.UTC(),
 	}

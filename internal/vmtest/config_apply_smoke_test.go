@@ -19,8 +19,10 @@ import (
 	agent "github.com/zariel/katl/internal/katlc/agent"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -104,6 +106,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if err := RunKatlcSmoke(ctx, guest); err != nil {
 		t.Fatalf("katlc runtime smoke: %v", err)
 	}
+	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {
 			collectConfigApplyFailureEvidence(ctx, guest)
@@ -644,6 +647,17 @@ users: []
 			TargetSysextSha256:   strings.Repeat("e", 64),
 		},
 	})
+	if beforeSysext == "" {
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "has no selected Kubernetes sysext") {
+			t.Fatalf("submit Kubernetes sysext update without a selected sysext: %v, want fail-closed precondition", err)
+		}
+		assertGuestFileContains(t, ctx, guest, kubeletConf, "kind: Config")
+		assertGuestMissing(t, ctx, guest, "/etc/kubernetes/admin.conf")
+		assertGuestMissing(t, ctx, guest, "/etc/kubernetes/manifests/kube-apiserver.yaml")
+		assertGuestMissing(t, ctx, guest, "/var/lib/kubelet/config.yaml")
+		assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
+		return
+	}
 	if err != nil {
 		t.Fatalf("submit Kubernetes sysext update rejection request: %v", err)
 	}

@@ -164,9 +164,14 @@ func domainActions(acceptedMode string, domains []string) []generation.ConfigApp
 			Domain: domain,
 		}
 		if acceptedMode == generation.ApplyModeNextBoot {
-			action.Action = "stage-next-boot"
+			if domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig {
+				action.Action = "kubeadm-operation-required"
+				action.Diagnostic = "desired kubeadm input staged; live state requires an explicit kubeadm-aware operation"
+			} else {
+				action.Action = "stage-next-boot"
+				action.Diagnostic = "domain staged into next boot generation"
+			}
 			action.Status = generation.ConfigApplyActionSkipped
-			action.Diagnostic = "domain staged into next boot generation"
 		} else {
 			action.Action = liveAction(domain)
 			action.Status = generation.ConfigApplyActionPlanned

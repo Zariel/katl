@@ -671,7 +671,10 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 func clusterIntentKubernetesActivationPath(intent installer.ClusterIntent) string {
 	path := strings.TrimSpace(intent.Kubernetes.SysextPath)
 	if path == "" {
-		return ""
+		if strings.TrimSpace(intent.Kubernetes.PayloadVersion) == "" {
+			return ""
+		}
+		return "/run/extensions/katl-kubernetes.raw"
 	}
 	return "/run/extensions/" + filepath.Base(path)
 }

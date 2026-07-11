@@ -40,6 +40,7 @@ const (
 const (
 	DecisionAccepted       = "accepted"
 	DecisionStagedRequired = "staged-required"
+	DecisionActionRequired = "action-required"
 	DecisionRejected       = "rejected"
 )
 
@@ -82,6 +83,7 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 	decision := Decision{RequestedMode: requestedMode}
 	seen := make(map[string]struct{}, len(changes))
 	needsNextBoot := false
+	rejected := false
 	for _, change := range changes {
 		domain := strings.TrimSpace(change.Domain)
 		if domain == "" {
@@ -99,21 +101,27 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 				Decision:       DecisionRejected,
 				Message:        "unknown configuration domain is not supported",
 			})
+			rejected = true
 			continue
 		}
 		diagnostic := diagnosticForChange(requestedMode, change, policy)
 		switch diagnostic.Decision {
 		case DecisionAccepted:
+		case DecisionActionRequired:
+			needsNextBoot = true
+			decision.Diagnostics = append(decision.Diagnostics, diagnostic)
 		case DecisionStagedRequired:
 			needsNextBoot = true
 			if requestedMode != generation.ApplyModeAuto {
 				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
+				rejected = true
 			}
 		default:
 			decision.Diagnostics = append(decision.Diagnostics, diagnostic)
+			rejected = true
 		}
 	}
-	if len(decision.Diagnostics) > 0 {
+	if rejected {
 		decision.AcceptedMode = ""
 		return decision, fmt.Errorf("config apply %s request rejected for %d domain(s)", requestedMode, len(decision.Diagnostics))
 	}
@@ -137,6 +145,15 @@ func diagnosticForChange(requestedMode string, change Change, policy domainPolic
 	domain := strings.TrimSpace(change.Domain)
 	if requestedMode == generation.ApplyModeNextBoot {
 		if policy.Classification == ClassificationOperationOnly {
+			if policy.NextBootAllowed {
+				return Diagnostic{
+					Domain:            domain,
+					Classification:    policy.Classification,
+					Decision:          DecisionActionRequired,
+					RequiredOperation: policy.RequiredOperation,
+					Message:           requiredOperationMessage(policy),
+				}
+			}
 			return Diagnostic{
 				Domain:            domain,
 				Classification:    policy.Classification,
@@ -174,6 +191,15 @@ func diagnosticForChange(requestedMode string, change Change, policy domainPolic
 			Message:        "domain is staged-only for normal runtime configuration apply",
 		}
 	case ClassificationOperationOnly:
+		if requestedMode == generation.ApplyModeAuto && policy.NextBootAllowed {
+			return Diagnostic{
+				Domain:            domain,
+				Classification:    policy.Classification,
+				Decision:          DecisionActionRequired,
+				RequiredOperation: policy.RequiredOperation,
+				Message:           requiredOperationMessage(policy),
+			}
+		}
 		return Diagnostic{
 			Domain:            domain,
 			Classification:    policy.Classification,
@@ -254,6 +280,7 @@ var domainPolicies = map[string]domainPolicy{
 	},
 	DomainKubeadmConfig: {
 		Classification:      ClassificationOperationOnly,
+		NextBootAllowed:     true,
 		LiveRejectionReason: "kubeadm desired state changes require an explicit kubeadm-aware operation",
 		RequiredOperation:   "kubeadm-aware operation",
 	},
@@ -264,6 +291,7 @@ var domainPolicies = map[string]domainPolicy{
 	},
 	DomainSelectedKubeadmConfig: {
 		Classification:      ClassificationOperationOnly,
+		NextBootAllowed:     true,
 		LiveRejectionReason: "selected kubeadm config changes require an explicit kubeadm-aware action",
 		RequiredOperation:   "kubeadm-aware operation",
 	},

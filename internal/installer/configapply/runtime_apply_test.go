@@ -222,26 +222,47 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 	}
 }
 
-func TestApplyTrustedBundleRejectsKubeadmDesiredInputBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleStagesKubeadmInputWithoutSideEffects(t *testing.T) {
 	root := t.TempDir()
+	runner := &fakeCommandRunner{}
+	activator := &fakeActivator{}
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			KubeadmChanged: true,
+			Kubernetes: &manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane-v2"}},
 		},
 		CurrentManifest: manifestWithKubeadm(),
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
-			"control-plane": kubeadmPlan("control-plane"),
+			"control-plane-v2": kubeadmPlan("control-plane-v2"),
 		},
+		Executor: &Executor{Runner: runner, Activator: activator, Now: fixedNow},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "request rejected") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want kubeadm operation-only rejection; result = %#v", err, result)
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v, result = %#v", err, result)
 	}
-	if result.Audit.Decision != DecisionRejected || len(result.Audit.Diagnostics) != 1 || result.Audit.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
+	if result.Audit.Decision != DecisionAccepted || result.Audit.AcceptedApplyMode != generation.ApplyModeNextBoot || len(result.Audit.Diagnostics) != 1 || result.Audit.Diagnostics[0].Decision != DecisionActionRequired {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
-	assertGenerationMissing(t, root, "2026.06.05-002")
+	configPath := filepath.Join(result.Tree.ConfextDir, "etc/katl/kubeadm/control-plane-v2/config.yaml")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("stat staged kubeadm input: %v", err)
+	}
+	if result.Status.GenerationID != "2026.06.05-002" || result.Status.PreviousGeneration != "2026.06.05-001" || result.Status.Phase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("status identity/phase = %#v", result.Status)
+	}
+	if !result.Status.Kubeadm.Required || result.Status.Kubeadm.PreviousConfigName != "control-plane" || result.Status.Kubeadm.SelectedConfigName != "control-plane-v2" || !strings.Contains(result.Status.Kubeadm.Reason, "operator-owned") {
+		t.Fatalf("kubeadm action status = %#v", result.Status.Kubeadm)
+	}
+	if !hasDomainAction(result.Status.DomainActions, DomainSelectedKubeadmConfig, "kubeadm-operation-required", generation.ConfigApplyActionSkipped) {
+		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
+	}
+	if len(runner.commands) != 0 || activator.activated != "" {
+		t.Fatalf("normal apply executed commands %#v or activated %q", runner.commands, activator.activated)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc/kubernetes")); !os.IsNotExist(err) {
+		t.Fatalf("normal apply created /etc/kubernetes: %v", err)
+	}
 }
 
 func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T) {
@@ -612,7 +633,7 @@ func TestApplyTrustedBundleRejectsRawEtcInputBeforeRender(t *testing.T) {
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
-func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPathBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPath(t *testing.T) {
 	root := t.TempDir()
 	plan := kubeadmPlan("control-plane")
 	plan.Config.RenderPath = "/etc/kubernetes/admin.conf"
@@ -627,8 +648,8 @@ func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPathBeforeRender(t *testing
 			"control-plane": plan,
 		},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "request rejected") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want kubeadm operation-only rejection before render; result = %#v", err, result)
+	if err == nil || !strings.Contains(err.Error(), "cannot own kubeadm-managed /etc/kubernetes state") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want unsafe kubeadm render rejection; result = %#v", err, result)
 	}
 	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainKubeadmConfig) {
 		t.Fatalf("audit = %#v", result.Audit)
@@ -814,6 +835,15 @@ func kubeadmPlan(name string) kubeadmconfig.Plan {
 func containsDomain(domains []string, want string) bool {
 	for _, domain := range domains {
 		if domain == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDomainAction(actions []generation.ConfigApplyDomainAction, domain, action, status string) bool {
+	for _, candidate := range actions {
+		if candidate.Domain == domain && candidate.Action == action && candidate.Status == status {
 			return true
 		}
 	}

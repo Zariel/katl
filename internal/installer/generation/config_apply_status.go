@@ -88,8 +88,10 @@ type ConfigApplyRollback struct {
 }
 
 type KubeadmActionRequired struct {
-	Required bool   `json:"required"`
-	Reason   string `json:"reason,omitempty"`
+	Required           bool   `json:"required"`
+	PreviousConfigName string `json:"previousConfigName,omitempty"`
+	SelectedConfigName string `json:"selectedConfigName,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 func NewConfigApplyStatus(request ConfigApplyStatusRequest) (ConfigApplyStatus, error) {

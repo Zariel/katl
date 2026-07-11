@@ -105,7 +105,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 	}
 }
 
-func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
+func TestPlanChangeStagesKubeadmInputWithoutLiveAction(t *testing.T) {
 	live, err := PlanChange(currentRecord(), NodeConfigurationChange{
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
@@ -131,18 +131,23 @@ func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
 		Changes:          []Change{{Domain: DomainKubeadmConfig}},
 		GeneratedConfext: candidateConfext("2026.06.05-002"),
 		Kubeadm: generation.KubeadmActionRequired{
-			Required: true,
-			Reason:   "desired kubeadm input changed; join token abcdef.0123456789abcdef requires explicit action",
+			Required:           true,
+			PreviousConfigName: "control-plane",
+			SelectedConfigName: "control-plane",
+			Reason:             "desired kubeadm input changed; join token abcdef.0123456789abcdef requires explicit action",
 		},
 	})
-	if err == nil {
-		t.Fatalf("PlanChange(next kubeadm) error = nil, result = %#v", next)
+	if err != nil {
+		t.Fatalf("PlanChange(next kubeadm) error = %v, result = %#v", err, next)
 	}
-	if next.GenerationRecord.Kind != "" || next.Status.Kind != "" {
-		t.Fatalf("operation-only kubeadm built candidate metadata or status: %#v %#v", next.GenerationRecord, next.Status)
+	if next.Decision.AcceptedMode != generation.ApplyModeNextBoot || len(next.Decision.Diagnostics) != 1 || next.Decision.Diagnostics[0].Decision != DecisionActionRequired {
+		t.Fatalf("next kubeadm decision = %#v", next.Decision)
 	}
-	if len(next.Decision.Diagnostics) != 1 || next.Decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
-		t.Fatalf("next kubeadm diagnostics = %#v", next.Decision.Diagnostics)
+	if !next.Status.Kubeadm.Required || next.Status.Kubeadm.SelectedConfigName != "control-plane" || next.Status.PreviousGeneration == "" {
+		t.Fatalf("next kubeadm status = %#v", next.Status)
+	}
+	if len(next.Status.DomainActions) != 1 || next.Status.DomainActions[0].Action != "kubeadm-operation-required" || next.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
+		t.Fatalf("next kubeadm actions = %#v", next.Status.DomainActions)
 	}
 }
 

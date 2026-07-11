@@ -123,9 +123,7 @@ func TestPlanTreatsStagedOnlyDomainsAsNextBoot(t *testing.T) {
 
 func TestPlanRejectsOperationOnlyAndUnsupportedMutations(t *testing.T) {
 	operationOnly := map[string]string{
-		DomainKubeadmConfig:            "kubeadm-aware operation",
 		DomainSystemRole:               "wipe-reinstall",
-		DomainSelectedKubeadmConfig:    "kubeadm-aware operation",
 		DomainSelectedKubernetesSysext: "kubernetes-upgrade",
 		DomainKubeletNodeIdentity:      "kubeadm-aware operation",
 		DomainRootSelection:            "host-upgrade",
@@ -172,12 +170,39 @@ func TestPlanRejectsOperationOnlyAndUnsupportedMutations(t *testing.T) {
 	}
 }
 
+func TestPlanStagesKubeadmInputAsActionRequired(t *testing.T) {
+	for _, domain := range []string{DomainKubeadmConfig, DomainSelectedKubeadmConfig} {
+		t.Run(domain, func(t *testing.T) {
+			for _, mode := range []string{generation.ApplyModeAuto, generation.ApplyModeNextBoot} {
+				decision, err := Plan(mode, []Change{{Domain: domain}})
+				if err != nil {
+					t.Fatalf("Plan(%s) error = %v, decision = %#v", mode, err, decision)
+				}
+				if decision.AcceptedMode != generation.ApplyModeNextBoot || len(decision.Diagnostics) != 1 {
+					t.Fatalf("Plan(%s) decision = %#v", mode, decision)
+				}
+				diagnostic := decision.Diagnostics[0]
+				if diagnostic.Decision != DecisionActionRequired || diagnostic.Classification != ClassificationOperationOnly || diagnostic.RequiredOperation != "kubeadm-aware operation" {
+					t.Fatalf("Plan(%s) diagnostic = %#v", mode, diagnostic)
+				}
+			}
+
+			decision, err := Plan(generation.ApplyModeLive, []Change{{Domain: domain}})
+			if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].Decision != DecisionRejected {
+				t.Fatalf("Plan(live) error = %v, decision = %#v", err, decision)
+			}
+		})
+	}
+}
+
 func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 	allowed := []string{
 		DomainSysctl,
 		DomainNetworkd,
 		DomainNodeIdentity,
 		DomainModulesLoad,
+		DomainKubeadmConfig,
+		DomainSelectedKubeadmConfig,
 	}
 	for _, domain := range allowed {
 		t.Run("allowed-"+domain, func(t *testing.T) {
@@ -189,9 +214,7 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 	}
 
 	rejected := []string{
-		DomainKubeadmConfig,
 		DomainSystemRole,
-		DomainSelectedKubeadmConfig,
 		DomainKubeletNodeIdentity,
 		DomainHostAccountPolicy,
 		DomainSelectedKubernetesSysext,
