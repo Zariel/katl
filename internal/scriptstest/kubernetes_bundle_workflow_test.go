@@ -13,6 +13,7 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		"payload_version:",
 		"artifact_version:",
 		"publish:",
+		"artifact-metadata: write",
 		"packages: write",
 		"oras_1.3.3_linux_amd64.tar.gz",
 		"9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59",

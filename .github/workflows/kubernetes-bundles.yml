@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
+      artifact-metadata: write
       attestations: write
       contents: read
       id-token: write
