@@ -46,6 +46,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Restore Katl Go build caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+          key: katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
+
+      - name: Restore mkosi package caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            _build/mkosi/cache
+            _build/mkosi/package-cache
+          key: katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ hashFiles('Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/*.conf', 'mkosi.profiles/**/*.env') }}
+          restore-keys: |
+            katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+
       - name: Resolve release identity
         id: release
         shell: bash
