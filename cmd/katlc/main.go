@@ -19,8 +19,15 @@ var (
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		code := 1
+		if exit, ok := err.(commandExitError); ok {
+			code = exit.code
+			if exit.message == "" {
+				os.Exit(code)
+			}
+		}
 		fmt.Fprintf(os.Stderr, "katlc: %v\n", err)
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 
@@ -39,6 +46,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if args[0] == "agent" {
 		return runAgent(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "kubeadm" {
+		return runKubeadm(ctx, args[1:], stdout, stderr)
+	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
 }
 
@@ -49,6 +59,7 @@ Commands:
   version                 Print build version metadata.
   agent serve             Run the KatlOS node management agent.
   agent init-token        Create the day-one agent bearer token if missing.
+  kubeadm plan            Compare selected desired kubeadm input with read-only live state.
 
 `
 }

@@ -56,8 +56,8 @@ type Plan struct {
 }
 
 type Change struct {
-	Field   string
-	Message string
+	Field   string `json:"field"`
+	Message string `json:"message"`
 }
 
 type DesiredState struct {

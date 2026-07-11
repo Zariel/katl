@@ -1,0 +1,18 @@
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KubeadmPlan",
+  "configName": "control-plane",
+  "desiredPath": "/etc/katl/kubeadm/control-plane/config.yaml",
+  "classification": "bootstrap-needed",
+  "exitCode": 2,
+  "automaticApply": false,
+  "nextActions": [
+    "run the explicit kubeadm bootstrap operation appropriate for this node"
+  ],
+  "changes": [
+    {
+      "field": "live",
+      "message": "live kubeadm state is missing"
+    }
+  ]
+}
