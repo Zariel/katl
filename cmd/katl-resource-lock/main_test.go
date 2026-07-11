@@ -41,6 +41,27 @@ func TestRunRefreshAndVerify(t *testing.T) {
 	}
 }
 
+func TestRepositoryMkosiProfileDigestsAreLocked(t *testing.T) {
+	lockPath := resolveExistingPath("mkosi.profiles/resource-package-lock.json")
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read repository package lock: %v", err)
+	}
+	lock, err := resourcetest.DecodePackageLock(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode repository package lock: %v", err)
+	}
+	for _, profile := range lock.MkosiProfiles {
+		got, err := profileConfigDigest(profile.Path)
+		if err != nil {
+			t.Fatalf("hash mkosi profile %q: %v", profile.Name, err)
+		}
+		if got != profile.ConfigDigest {
+			t.Errorf("mkosi profile %q config SHA-256 = %s, lock has %s; refresh the resource package lock with the profile change", profile.Name, got, profile.ConfigDigest)
+		}
+	}
+}
+
 func TestRunVerifyRejectsPackageDrift(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
