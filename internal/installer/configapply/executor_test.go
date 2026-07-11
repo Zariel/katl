@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {

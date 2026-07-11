@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
 )
 

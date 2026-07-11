@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/artifact"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/sysextcatalog"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
 func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {

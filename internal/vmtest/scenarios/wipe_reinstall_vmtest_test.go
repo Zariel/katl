@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
 func TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke(t *testing.T) {

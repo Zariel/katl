@@ -18,15 +18,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/configbundle"
-	"github.com/zariel/katl/internal/installer/discovery"
-	"github.com/zariel/katl/internal/installer/disk"
-	"github.com/zariel/katl/internal/installer/handoff"
-	"github.com/zariel/katl/internal/installer/installmedia"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer/installmedia"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 var (

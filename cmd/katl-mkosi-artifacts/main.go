@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestFileStateStorePersistsStatus(t *testing.T) {

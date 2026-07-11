@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/cluster"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/spf13/cobra"
-	"github.com/zariel/katl/internal/bootstrap/cluster"
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/operation"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 )
 
 type kubeadmControlPlaneConfigOptions struct {

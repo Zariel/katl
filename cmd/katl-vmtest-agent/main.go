@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/zariel/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
 var (

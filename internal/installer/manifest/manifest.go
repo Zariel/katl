@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"gopkg.in/yaml.v3"
 )
 

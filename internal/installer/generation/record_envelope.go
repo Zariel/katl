@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/zariel/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
 const (

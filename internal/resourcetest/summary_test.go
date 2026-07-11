@@ -20,21 +20,21 @@ func TestAggregateClassifiesScenarioArtifacts(t *testing.T) {
 		{
 			name:    "passed",
 			result:  scenarioArtifact{Status: "passed", RunDir: "_build/vmtest/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("pass", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusPassed,
 			summary: SummaryPassed,
 		},
 		{
 			name:    "failed",
 			result:  scenarioArtifact{Status: "failed", RunDir: "_build/vmtest/run", FailureSummary: "agent smoke failed"},
-			goJSON:  goTestEventLine("fail", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("fail", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "fixture missing skip",
 			result:  scenarioArtifact{Status: "skipped", RunDir: "_build/vmtest/run", FailureSummary: "fixture missing"},
-			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("skip", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
@@ -48,28 +48,28 @@ func TestAggregateClassifiesScenarioArtifacts(t *testing.T) {
 					Detail: "virsh cannot connect",
 				}},
 			},
-			goJSON:  goTestEventLine("skip", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("skip", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusHostSkipped,
 			summary: SummaryPassed,
 		},
 		{
 			name:    "interrupted planned result",
 			result:  scenarioArtifact{Status: "planned", RunDir: "_build/vmtest/run"},
-			goJSON:  goTestEventLine("run", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("run", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "stale result",
 			result:  scenarioArtifact{ScenarioName: "previous scenario", Status: "passed", RunDir: "_build/vmtest/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("pass", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
 		{
 			name:    "stale run",
 			result:  scenarioArtifact{ScenarioName: "installed runtime agent smoke", RunID: "previous-run", Status: "passed", RunDir: "_build/vmtest/run"},
-			goJSON:  goTestEventLine("pass", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
+			goJSON:  goTestEventLine("pass", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", ""),
 			want:    StatusSetupFailed,
 			summary: SummaryFailed,
 		},
@@ -117,8 +117,8 @@ func TestAggregateMissingResultIsSetupFailed(t *testing.T) {
 
 func TestAggregateRecordsGoTestFailures(t *testing.T) {
 	manifest := aggregateManifest("_build/vmtest/run/result.json")
-	goJSON := goTestEventLine("output", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "boom\n") +
-		goTestEventLine("fail", "github.com/zariel/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "")
+	goJSON := goTestEventLine("output", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "boom\n") +
+		goTestEventLine("fail", "github.com/katl-dev/katl/internal/vmtest", "TestInstalledRuntimeVMTestAgentSmoke", "")
 	summary, err := Aggregate(AggregateRequest{
 		Manifest:   manifest,
 		GoTestJSON: strings.NewReader(goJSON),
@@ -163,7 +163,7 @@ func aggregateManifest(resultPath string) Manifest {
 	manifest.Scenarios = []Scenario{{
 		Name:                 "installed runtime agent smoke",
 		Suite:                "vmtest",
-		GoPackage:            "github.com/zariel/katl/internal/vmtest",
+		GoPackage:            "github.com/katl-dev/katl/internal/vmtest",
 		GoTest:               "TestInstalledRuntimeVMTestAgentSmoke",
 		Status:               StatusSetupFailed,
 		ResultPath:           resultPath,

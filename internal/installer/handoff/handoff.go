@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/configbundle"
-	"github.com/zariel/katl/internal/installer/manifest"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 type HandoffState string

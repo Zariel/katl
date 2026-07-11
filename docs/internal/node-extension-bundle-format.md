@@ -40,10 +40,10 @@ ref
 Examples:
 
 ```text
-source=https://ghcr.io/v2/katl/node-extensions
+source=https://ghcr.io/v2/katl-dev/node-extensions
 ref=bird/bird-v2.17.1-katl.1@sha256:<bundle-manifest-digest>
 
-source=https://github.com/katl/releases/download/node-extensions-v0.1/oci
+source=https://github.com/katl-dev/katl/releases/download/node-extensions-v0.1/oci
 ref=bgp-api-vip/bgp-api-vip-v0.1.0@sha256:<bundle-manifest-digest>
 ```
 

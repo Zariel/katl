@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestAgentClientServer(t *testing.T) {

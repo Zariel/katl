@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	installer "github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/clusterplan"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/platformendpoint"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	installer "github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/clusterplan"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"gopkg.in/yaml.v3"
 )
 

@@ -11,11 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/disk"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
 func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.OperationRecord) error {

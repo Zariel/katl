@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 func main() {

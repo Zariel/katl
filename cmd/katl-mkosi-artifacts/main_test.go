@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func TestWriteAndPath(t *testing.T) {

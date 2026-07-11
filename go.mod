@@ -1,4 +1,4 @@
-module github.com/zariel/katl
+module github.com/katl-dev/katl
 
 go 1.26
 

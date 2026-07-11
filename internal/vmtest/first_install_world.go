@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/configbundle"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	installmanifest "github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	installmanifest "github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
 

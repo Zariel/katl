@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/zariel/katl/internal/installer/sysextcatalog"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
 func main() {

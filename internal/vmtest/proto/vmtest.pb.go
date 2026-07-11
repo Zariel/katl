@@ -1200,7 +1200,7 @@ const file_internal_vmtest_proto_vmtest_proto_rawDesc = "" +
 	"\n" +
 	"write_file\x18\x0e \x01(\v2\x1f.katl.vmtest.v1.WriteFileResultH\x00R\twriteFile\x123\n" +
 	"\x05error\x18d \x01(\v2\x1b.katl.vmtest.v1.VmtestErrorH\x00R\x05errorB\b\n" +
-	"\x06resultB7Z5github.com/zariel/katl/internal/vmtest/proto;vmtestpbb\x06proto3"
+	"\x06resultB9Z7github.com/katl-dev/katl/internal/vmtest/proto;vmtestpbb\x06proto3"
 
 var (
 	file_internal_vmtest_proto_vmtest_proto_rawDescOnce sync.Once

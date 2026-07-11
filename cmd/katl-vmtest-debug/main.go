@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/zariel/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
 func usage() {

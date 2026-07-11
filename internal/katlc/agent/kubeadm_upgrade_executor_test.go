@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {

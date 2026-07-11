@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	installer "github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/configapply"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	installer "github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 var acceptedRecords = []persistedrecord.Handler{

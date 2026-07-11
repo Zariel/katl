@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/bgpapivip"
-	"github.com/zariel/katl/internal/installer/nodeextensionbundle"
-	"github.com/zariel/katl/internal/vmtest"
-	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/nodeextensionbundle"
+	"github.com/katl-dev/katl/internal/vmtest"
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestBIRDAndBGPAPIVIPExtensionsVMProof(t *testing.T) {

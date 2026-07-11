@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/kubernetesbundle"
-	"github.com/zariel/katl/internal/installer/operation"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 const (

@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
 const (

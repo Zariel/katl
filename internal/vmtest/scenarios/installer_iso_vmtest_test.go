@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
 const installerISOTestSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"

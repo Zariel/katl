@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
 func TestThreeNodeGeneration0InstallSmoke(t *testing.T) {

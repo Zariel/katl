@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer/handoff"
 )
 
 func TestFirstInstall(t *testing.T) {

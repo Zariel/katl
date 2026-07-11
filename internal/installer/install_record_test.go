@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func TestMaterializeInstallRecordRejectsUncleanGenerationID(t *testing.T) {

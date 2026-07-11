@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 func TestDomainClassificationMatrix(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/artifact"
 )
 
 func TestRunRequiresMetadata(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {

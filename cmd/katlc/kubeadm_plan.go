@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/kubeadmplan"
+	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 )
 
 const (

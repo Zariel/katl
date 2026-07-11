@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 const sysextRole = "systemd-sysext"

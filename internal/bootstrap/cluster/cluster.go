@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/bootstrap/kubeconfig"
-	"github.com/zariel/katl/internal/bootstrap/readiness"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
+	"github.com/katl-dev/katl/internal/bootstrap/readiness"
 	"gopkg.in/yaml.v3"
 )
 

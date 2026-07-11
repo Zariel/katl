@@ -90,7 +90,7 @@ The YAML-facing install or bootstrap intent uses:
 ```yaml
 node:
   bootstrap:
-    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes-payloads
     kubernetesBundleRef: v1.36.0@sha256:<bundle-manifest-digest>
 ```
 
@@ -103,10 +103,10 @@ pre-decision scaffolding and replaced by these fields during implementation.
 Examples:
 
 ```text
-source=https://ghcr.io/v2/katl/kubernetes-payloads
+source=https://ghcr.io/v2/katl-dev/kubernetes-payloads
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 
-source=https://github.com/katl/releases/download/kubernetes-v1.36.0/oci
+source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 ```
 
@@ -335,10 +335,10 @@ publish a new bundle manifest digest.
 User-facing refs are therefore stable across hosting shapes:
 
 ```text
-source=https://ghcr.io/v2/katl/kubernetes-payloads
+source=https://ghcr.io/v2/katl-dev/kubernetes-payloads
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 
-source=https://github.com/katl/releases/download/kubernetes-v1.36.0/oci
+source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 
 source=https://mirror.example.invalid/katl/kubernetes
@@ -502,6 +502,13 @@ metadata, mkosi inputs, package locks, sysext content checks, bundle manifest
 generation, VM fixtures, and milestone gates can move together. Splitting the
 producer before the artifact contract is executable would create a second
 release surface without reducing risk for the v0.1 proof.
+
+The immediate release-train outcome is an end-to-end user path: install KatlOS,
+select an exact Katl-published Kubernetes bundle, and let the supported
+bootstrap operation provision a Kubernetes cluster. Users must not need to
+clone Katl, run mkosi, or assemble a sysext bundle themselves. A KatlOS release
+without at least one compatible project-published Kubernetes bundle is not a
+complete Kubernetes provisioning story.
 
 The in-repository workflow is narrow:
 
@@ -859,6 +866,15 @@ topology choice, not a v0.1 requirement. A split producer must publish the same
 catalog schema and bundle layout and must not weaken runtime compatibility,
 package provenance, digest verification, or node-local generated-confext
 boundaries.
+
+The north-star split is one shared project-owned producer repository under the
+`katl-dev` organization for Kubernetes and other payload bundles minted by the
+project, rather than one source repository per payload. `katl-dev/packages` and
+`katl-dev/bundles` are candidate repository names; the source repository name
+is deliberately not part of the artifact contract. That producer consumes
+versioned KatlOS compatibility metadata and publishes independent immutable
+bundle namespaces. KatlOS product logic, bundle consumption, generation state,
+and node-local configuration remain in `katl-dev/katl`.
 
 ## Publication Target
 

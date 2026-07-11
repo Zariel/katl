@@ -18,15 +18,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/cluster"
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/artifact"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
-	"github.com/zariel/katl/internal/vmtest"
-	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	"github.com/katl-dev/katl/internal/bootstrap/cluster"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/vmtest"
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {

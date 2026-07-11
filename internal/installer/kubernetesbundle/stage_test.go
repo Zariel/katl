@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/artifact"
-	"github.com/zariel/katl/internal/installer/sysextcatalog"
+	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
 func TestFetchAndStage(t *testing.T) {

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

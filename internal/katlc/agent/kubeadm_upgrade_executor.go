@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
 const kubeadmUpgradeTimeout = 30 * time.Minute

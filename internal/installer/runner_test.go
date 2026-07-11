@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/discovery"
-	"github.com/zariel/katl/internal/installer/disk"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestDefaultPlanOrder(t *testing.T) {

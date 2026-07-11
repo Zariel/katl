@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func mergedLayer(layers ...NodeLayer) (NodeLayer, error) {

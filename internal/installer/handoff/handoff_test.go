@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 )
 
 func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {

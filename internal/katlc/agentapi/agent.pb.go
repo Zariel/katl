@@ -3217,7 +3217,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\fGetOperation\x12\".katl.agent.v1.GetOperationRequest\x1a\x1e.katl.agent.v1.OperationStatus\x12W\n" +
 	"\x0eWatchOperation\x12$.katl.agent.v1.WatchOperationRequest\x1a\x1d.katl.agent.v1.OperationEvent0\x01\x12`\n" +
 	"\x0fListGenerations\x12%.katl.agent.v1.ListGenerationsRequest\x1a&.katl.agent.v1.ListGenerationsResponse\x12O\n" +
-	"\rGetGeneration\x12#.katl.agent.v1.GetGenerationRequest\x1a\x19.katl.agent.v1.GenerationB9Z7github.com/zariel/katl/internal/katlc/agentapi;agentapib\x06proto3"
+	"\rGetGeneration\x12#.katl.agent.v1.GetGenerationRequest\x1a\x19.katl.agent.v1.GenerationB;Z9github.com/katl-dev/katl/internal/katlc/agentapi;agentapib\x06proto3"
 
 var (
 	file_internal_katlc_agentapi_agent_proto_rawDescOnce sync.Once

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 )
 
 const (

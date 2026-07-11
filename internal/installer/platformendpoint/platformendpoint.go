@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/bgpapivip"
-	"github.com/zariel/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/confext"
 )
 
 const (

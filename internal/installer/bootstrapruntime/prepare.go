@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zariel/katl/internal/bootstrap/cluster"
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/bootstrapplan"
-	"github.com/zariel/katl/internal/installer/confext"
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/bootstrap/cluster"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
+	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 type Result struct {

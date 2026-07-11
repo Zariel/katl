@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 )
 
 const (

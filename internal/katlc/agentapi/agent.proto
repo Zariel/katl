@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package katl.agent.v1;
 
-option go_package = "github.com/zariel/katl/internal/katlc/agentapi;agentapi";
+option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/confext"
-	"github.com/zariel/katl/internal/installer/generation"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestRuntimeUserspaceSmoke(t *testing.T) {

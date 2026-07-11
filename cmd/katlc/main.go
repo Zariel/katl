@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/zariel/katl/internal/katlc/agent"
+	"github.com/katl-dev/katl/internal/katlc/agent"
 )
 
 var (

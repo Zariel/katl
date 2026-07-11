@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
 func TestRedactSourceRemovesCredentialsAndQuery(t *testing.T) {

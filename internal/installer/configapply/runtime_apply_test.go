@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/confext"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
 func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {

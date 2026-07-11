@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/disk"
-	"github.com/zariel/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/handoff"
 	"gopkg.in/yaml.v3"
 )
 

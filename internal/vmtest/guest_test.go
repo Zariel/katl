@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestGuestCommandRecordsArtifacts(t *testing.T) {

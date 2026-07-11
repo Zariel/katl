@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/discovery"
-	"github.com/zariel/katl/internal/installer/disk"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	installstatus "github.com/zariel/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestVersion(t *testing.T) {

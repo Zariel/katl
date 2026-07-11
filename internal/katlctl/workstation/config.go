@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"gopkg.in/yaml.v3"
 )
 

@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/artifact"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/sysextcatalog"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {

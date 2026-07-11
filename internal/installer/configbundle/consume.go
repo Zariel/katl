@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/clusterplan"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/clusterplan"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 type ReadOptions struct {

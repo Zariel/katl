@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
 const KubernetesName = "kubernetes"

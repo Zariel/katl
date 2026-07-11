@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/resourcetest"
+	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
 func TestRunRefreshAndVerify(t *testing.T) {

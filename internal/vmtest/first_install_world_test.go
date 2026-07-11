@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer"
-	"github.com/zariel/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"gopkg.in/yaml.v3"
 )
 

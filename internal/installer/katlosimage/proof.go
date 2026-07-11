@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	installmanifest "github.com/zariel/katl/internal/installer/manifest"
+	installmanifest "github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 type SingleImageProofRequest struct {

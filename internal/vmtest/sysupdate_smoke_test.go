@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/katlosimage"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/operation"
-	"github.com/zariel/katl/internal/installer/persistedrecord"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {

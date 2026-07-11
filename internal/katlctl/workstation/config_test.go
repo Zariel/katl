@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 )
 
 func TestResolvePathPrecedence(t *testing.T) {

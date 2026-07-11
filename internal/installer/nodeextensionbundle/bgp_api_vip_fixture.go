@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 )
 
 const (

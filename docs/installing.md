@@ -109,7 +109,7 @@ node:
     nodeAddress: 192.0.2.11
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes-payloads
     kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
   wipeTarget: true
@@ -147,7 +147,7 @@ node:
     nodeAddress: 192.0.2.21
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
-    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes-payloads
     kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ```
 

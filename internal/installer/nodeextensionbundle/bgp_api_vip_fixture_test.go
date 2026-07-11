@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 )
 
 func TestWriteBGPAPIVIPFixture(t *testing.T) {

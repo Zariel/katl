@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/operation"
-	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func TestOrderControlPlanesChangesCoordinatorLast(t *testing.T) {

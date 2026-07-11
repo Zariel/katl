@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/confext"
 )
 
 func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {

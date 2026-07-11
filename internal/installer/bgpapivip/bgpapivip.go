@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zariel/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"gopkg.in/yaml.v3"
 )
 

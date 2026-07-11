@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package katl.vmtest.v1;
 
-option go_package = "github.com/zariel/katl/internal/vmtest/proto;vmtestpb";
+option go_package = "github.com/katl-dev/katl/internal/vmtest/proto;vmtestpb";
 
 message VmtestRequest {
   string request_id = 1;

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zariel/katl/internal/installer/configapply"
-	"github.com/zariel/katl/internal/installer/generation"
-	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zariel/katl/internal/bootstrap/inventory"
-	"github.com/zariel/katl/internal/installer/artifact"
-	"github.com/zariel/katl/internal/installer/bgpapivip"
-	"github.com/zariel/katl/internal/installer/confext"
-	"github.com/zariel/katl/internal/installer/kubeadmconfig"
-	"github.com/zariel/katl/internal/installer/manifest"
-	"github.com/zariel/katl/internal/installer/platformendpoint"
-	"github.com/zariel/katl/internal/installer/sysextcatalog"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/platformendpoint"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
 const sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"

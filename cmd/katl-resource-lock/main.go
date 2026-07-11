@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zariel/katl/internal/resourcetest"
+	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
 const defaultLockPath = "mkosi.profiles/resource-package-lock.json"
