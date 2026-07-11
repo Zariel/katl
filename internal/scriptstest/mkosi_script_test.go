@@ -167,6 +167,14 @@ func TestMkosiDefaultBuildIdentityIsStable(t *testing.T) {
 	if !strings.Contains(string(data), `build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"`) {
 		t.Fatalf("scripts/mkosi default build identity is not stable")
 	}
+	for _, want := range []string{
+		`go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"`,
+		`go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("scripts/mkosi cache roots missing %q", want)
+		}
+	}
 }
 
 func TestKatlosImageCheckSelectsRequestedRole(t *testing.T) {
@@ -211,6 +219,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		"KATL_VERSION=0.0.0-cache-test",
 		"TMPDIR="+tmp,
 	)
+	env = append(env, activeGoCacheEnv(t)...)
 
 	first := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	first.Dir = repo
@@ -462,4 +471,28 @@ func writeTemporaryFile(t *testing.T, path string, content string) {
 			t.Fatalf("remove temporary test file %s: %v", path, err)
 		}
 	})
+}
+
+func activeGoCacheEnv(t *testing.T) []string {
+	t.Helper()
+	values := make([]string, 0, 2)
+	for _, item := range []struct {
+		name string
+		env  string
+	}{
+		{"GOMODCACHE", "KATL_GO_MOD_CACHE"},
+		{"GOCACHE", "KATL_GO_BUILD_CACHE"},
+	} {
+		cmd := exec.Command("go", "env", item.name)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("go env %s failed: %v\n%s", item.name, err, output)
+		}
+		value := strings.TrimSpace(string(output))
+		if value == "" {
+			t.Fatalf("go env %s returned an empty path", item.name)
+		}
+		values = append(values, item.env+"="+value)
+	}
+	return values
 }
