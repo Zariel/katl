@@ -10,6 +10,9 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	workflow := string(mustReadFile(t, repo+"/.github/workflows/kubernetes-bundles.yml"))
 
 	required := []string{
+		"push:",
+		"- main",
+		"mkosi.profiles/kubernetes-sysext/kubernetes.env",
 		"payload_version:",
 		"artifact_version:",
 		"publish:",
@@ -18,6 +21,10 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		"oras_1.3.3_linux_amd64.tar.gz",
 		"9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59",
 		"scripts/check-kubernetes-sysext",
+		`source mkosi.profiles/kubernetes-sysext/kubernetes.env`,
+		`KATL_KUBERNETES_ARTIFACT_REVISION`,
+		`PUBLISH=true`,
+		`env.PUBLISH == 'true'`,
 		"go run ./cmd/katl-publish-kubernetes-sysext",
 		"ghcr.io/katl-dev/kubernetes",
 		"org.opencontainers.image.description",
@@ -55,5 +62,38 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	releaseWorkflow := string(mustReadFile(t, repo+"/.github/workflows/release-artifacts.yml"))
 	if !strings.Contains(releaseWorkflow, `- "v*"`) || strings.Contains(releaseWorkflow, `- "**"`) {
 		t.Fatalf("KatlOS release workflow must select KatlOS tags without consuming bundle tags")
+	}
+}
+
+func TestKubernetesBundleRenovateContract(t *testing.T) {
+	repo := repoRoot(t)
+	config := string(mustReadFile(t, repo+"/renovate.json"))
+	manifest := string(mustReadFile(t, repo+"/mkosi.profiles/kubernetes-sysext/kubernetes.env"))
+
+	for _, value := range []string{
+		`"customType": "regex"`,
+		`github-releases`,
+		`datasource=(?<datasource>rpm)`,
+		`Kubernetes v1.36 bundle`,
+		`"automerge": false`,
+		`KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=1`,
+	} {
+		if !strings.Contains(config, value) {
+			t.Fatalf("Renovate config missing %q", value)
+		}
+	}
+
+	for _, value := range []string{
+		`https://pkgs.k8s.io/core:/stable:/v1.36/rpm/repodata/`,
+		`KATL_KUBERNETES_PAYLOAD_DEFAULT=v1.36.0`,
+		`KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=3`,
+		`KATL_KUBERNETES_KUBEADM_VERSION:=0:1.36.0-150500.1.1.x86_64`,
+		`KATL_KUBERNETES_KUBELET_VERSION:=0:1.36.0-150500.1.1.x86_64`,
+		`KATL_KUBERNETES_KUBECTL_VERSION:=0:1.36.0-150500.1.1.x86_64`,
+		`KATL_KUBERNETES_CRITOOLS_VERSION:=0:1.36.0-150500.1.1.x86_64`,
+	} {
+		if !strings.Contains(manifest, value) {
+			t.Fatalf("Kubernetes release lock missing %q", value)
+		}
 	}
 }

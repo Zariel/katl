@@ -890,6 +890,12 @@ catalog entry. A successful `v1.36.1` publication does not replace `v1.36.0`;
 both remain addressable by exact payload version and digest until retention
 policy removes or deprecates them.
 
+The checked-in release lock carries an artifact revision in addition to the
+payload and exact RPM NEVRAs. A Renovate patch update resets that revision to
+`1`. A reviewed rebuild of unchanged Kubernetes package inputs increments the
+revision manually. The main-branch producer trigger consumes only this lock;
+unrelated Katl source changes do not mint a new Kubernetes bundle.
+
 Minor updates, such as `v1.36` to `v1.37`, require the same artifact production
 mechanics plus Kubernetes version-skew policy review. Katl should continue to
 reject unsupported minor transitions on already bootstrapped nodes until the

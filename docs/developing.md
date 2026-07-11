@@ -237,7 +237,16 @@ not publisher authenticity.
 ## Kubernetes Bundle Artifacts
 
 `.github/workflows/kubernetes-bundles.yml` is the independent Kubernetes
-payload producer. Dispatch it with an exact Kubernetes payload such as
+payload producer. The normal release path is a reviewed Renovate pull request.
+Renovate tracks the selected Kubernetes `v1.36` patch and the exact kubeadm,
+kubelet, kubectl, and cri-tools RPM NEVRAs in
+`mkosi.profiles/kubernetes-sysext/kubernetes.env`. Merging that lock update to
+`main` builds, verifies, publishes, and attests the corresponding immutable
+`vMAJOR.MINOR.PATCH-katl.1` GHCR artifact. Earlier patch releases and digests
+remain addressable.
+
+Manual dispatch remains the explicit rebuild and dry-run path. Dispatch it with
+an exact Kubernetes payload such as
 `v1.36.0`, an immutable Katl build identity such as `v1.36.0-katl.1`, and
 `publish: false` for a build-only verification run. A successful build uploads
 the complete staged bundle as a GitHub Actions artifact.

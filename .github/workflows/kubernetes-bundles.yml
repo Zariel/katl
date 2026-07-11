@@ -1,6 +1,11 @@
 name: Kubernetes Bundle Artifacts
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - mkosi.profiles/kubernetes-sysext/kubernetes.env
   workflow_dispatch:
     inputs:
       payload_version:
@@ -23,7 +28,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.artifact_version }}-x86_64
+  group: ${{ github.workflow }}-${{ inputs.artifact_version || github.ref }}-x86_64
   cancel-in-progress: false
 
 jobs:
@@ -39,18 +44,17 @@ jobs:
       packages: write
 
     env:
-      ARTIFACT_VERSION: ${{ inputs.artifact_version }}
+      DISPATCH_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
+      DISPATCH_PAYLOAD_VERSION: ${{ inputs.payload_version }}
+      DISPATCH_PUBLISH: ${{ inputs.publish }}
       GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ inputs.artifact_version }}
       KATL_CONTAINER_RUNTIME: docker
-      KATL_KUBERNETES_PAYLOAD_VERSION: ${{ inputs.payload_version }}
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
       OCI_REPOSITORY: ghcr.io/katl-dev/kubernetes
       OCI_DESCRIPTION: Kubernetes system extension bundle for KatlOS nodes
       OCI_LICENSES: MIT
       OCI_TITLE: KatlOS Kubernetes system extension
-      PAYLOAD_VERSION: ${{ inputs.payload_version }}
 
     steps:
       - name: Check out repository
@@ -76,9 +80,21 @@ jobs:
           echo "$install_dir" >> "$GITHUB_PATH"
           "$install_dir/oras" version
 
-      - name: Validate release identity
+      - name: Resolve and validate release identity
         shell: bash
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+            source mkosi.profiles/kubernetes-sysext/kubernetes.env
+            PAYLOAD_VERSION="$KATL_KUBERNETES_PAYLOAD_VERSION"
+            ARTIFACT_VERSION="${PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
+            PUBLISH=true
+          else
+            PAYLOAD_VERSION="$DISPATCH_PAYLOAD_VERSION"
+            ARTIFACT_VERSION="$DISPATCH_ARTIFACT_VERSION"
+            PUBLISH="$DISPATCH_PUBLISH"
+          fi
+
           if [[ ! "$PAYLOAD_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "error: payload_version must look like v1.36.0" >&2
             exit 1
@@ -87,6 +103,18 @@ jobs:
             echo "error: artifact_version must look like ${PAYLOAD_VERSION}-katl.1" >&2
             exit 1
           fi
+          if [[ "$PUBLISH" != "true" && "$PUBLISH" != "false" ]]; then
+            echo "error: publish must be true or false" >&2
+            exit 1
+          fi
+
+          {
+            echo "ARTIFACT_VERSION=$ARTIFACT_VERSION"
+            echo "KATL_BUILD_COMMIT=$ARTIFACT_VERSION"
+            echo "KATL_KUBERNETES_PAYLOAD_VERSION=$PAYLOAD_VERSION"
+            echo "PAYLOAD_VERSION=$PAYLOAD_VERSION"
+            echo "PUBLISH=$PUBLISH"
+          } >> "$GITHUB_ENV"
 
       - name: Restore Katl Go build caches
         uses: actions/cache@v6
@@ -236,21 +264,21 @@ jobs:
       - name: Upload inspected bundle artifact
         uses: actions/upload-artifact@v7
         with:
-          name: katl-kubernetes-bundle-${{ inputs.artifact_version }}-${{ steps.bundle.outputs.architecture }}
+          name: katl-kubernetes-bundle-${{ env.ARTIFACT_VERSION }}-${{ steps.bundle.outputs.architecture }}
           path: |
             dist/
             _build/oci-manifest.json
           if-no-files-found: error
 
       - name: Log in to GHCR
-        if: ${{ inputs.publish }}
+        if: ${{ env.PUBLISH == 'true' }}
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: echo "$GHCR_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
       - name: Publish immutable OCI bundle
-        if: ${{ inputs.publish }}
+        if: ${{ env.PUBLISH == 'true' }}
         id: publish
         shell: bash
         env:
@@ -321,7 +349,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attest published OCI manifest
-        if: ${{ inputs.publish }}
+        if: ${{ env.PUBLISH == 'true' }}
         uses: actions/attest@v4
         with:
           subject-name: ${{ env.OCI_REPOSITORY }}
