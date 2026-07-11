@@ -297,6 +297,14 @@ func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 	waitForOperation(t, server.Store, accepted.OperationId, func(record operation.OperationRecord) bool {
 		return record.Terminal && record.Result == operation.ResultSucceeded
 	})
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := executor.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Dispatch(context.Background(), operation.OperationRecord{OperationID: "op-after-shutdown"}); err == nil {
+		t.Fatal("executor accepted dispatch after shutdown")
+	}
 }
 
 func TestExecutorRecordsFailedChildProcess(t *testing.T) {
