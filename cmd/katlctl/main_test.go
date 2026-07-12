@@ -234,6 +234,7 @@ func TestConfigRenderNodeFromSource(t *testing.T) {
 func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "cluster.yaml")
+	outputPath := filepath.Join(dir, "homelab.katlcfg")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
@@ -264,6 +265,18 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	}
 	if len(report.Nodes) != 1 || report.Nodes[0] != (configValidationNode{Name: "cp-1", SystemRole: "control-plane"}) {
 		t.Fatalf("resolved nodes = %#v", report.Nodes)
+	}
+
+	stdout.Reset()
+	if err := run(context.Background(), []string{"config", "bundle", sourcePath, "--output", outputPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("bundle run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	var bundleReport configBundleReport
+	if err := json.Unmarshal(stdout.Bytes(), &bundleReport); err != nil {
+		t.Fatalf("decode bundle stdout: %v\n%s", err, stdout.String())
+	}
+	if bundleReport.BundleDigest != report.BundleDigest {
+		t.Fatalf("bundle digest = %q, validation predicted %q", bundleReport.BundleDigest, report.BundleDigest)
 	}
 }
 
