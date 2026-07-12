@@ -53,6 +53,9 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 	if err := runKubeadmControlPlaneConfig(context.Background(), opts, &stdout); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(stdout.String(), "requestDigest") {
+		t.Fatalf("stdout exposed request digest: %s", stdout.String())
+	}
 	for index, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		requests := clients[name].submitRequests
 		if len(requests) != 2 || !requests[0].DryRun || requests[1].DryRun {

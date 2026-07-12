@@ -81,9 +81,9 @@ wiped surface, preserved surface, and refusal.
 
 Run the identical command without `--plan` only when the cluster is intentionally
 being discarded. The command submits node-local destructive-reset operations
-and reports their operation IDs, request digests, and initial status.
+and reports their operation IDs and initial status.
 
-For each reported node endpoint, operation ID, and request digest, follow the
+For each reported node endpoint and operation ID, follow the
 node-local reset to terminal state:
 
 ```sh
@@ -91,7 +91,6 @@ katlctl operation status \
   --endpoint worker-1.example.test:9443 \
   --agent-token-file ./tokens/worker-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 

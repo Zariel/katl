@@ -9,7 +9,7 @@ known.
 | Symptom | Primary evidence |
 | --- | --- |
 | Installer never becomes ready | installer console; `katlos-install.service` journal |
-| Config bundle rejected | bundle command output; selected node; both bundle digests |
+| Config bundle rejected | bundle command output; selected node; validation error |
 | Installed node does not complete boot | boot console; boot-health and handoff services |
 | Agent cannot be reached | network path to TCP 9443; `katlc-agent.service`; token file mapping |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
@@ -40,7 +40,6 @@ katlctl operation status \
   --endpoint affected-node.example.test:9443 \
   --agent-token-file ./tokens/affected-node.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --diagnostics verbose
 ```
 
@@ -65,7 +64,7 @@ find /var/lib/katl/install -maxdepth 2 -type f -print
 ```
 
 Also retain the installer console, exact release filename and SHA-256, config
-bundle, selected node, archive SHA-256, internal `bundleDigest`, and disk
+bundle, selected node, and disk
 identity. A failure before validation completes must not repartition the disk;
 record disk state before attempting anything else.
 

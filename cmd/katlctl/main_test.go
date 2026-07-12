@@ -188,14 +188,13 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 		t.Fatalf("output bundle is empty")
 	}
 	var report struct {
-		Kind         string `json:"kind"`
-		Output       string `json:"output"`
-		BundleDigest string `json:"bundleDigest"`
+		Kind   string `json:"kind"`
+		Output string `json:"output"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
 	}
-	if report.Kind != "ConfigBundleReport" || report.Output != outputPath || !strings.HasPrefix(report.BundleDigest, "sha256:") {
+	if report.Kind != "ConfigBundleReport" || report.Output != outputPath || strings.Contains(stdout.String(), "Digest") {
 		t.Fatalf("report = %#v", report)
 	}
 }
@@ -243,7 +242,7 @@ func TestConfigRenderNodeFromMediaBundle(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte(source[:imageStart]+source[defaultsStart:]), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
+	archive, _, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
 	if err != nil {
 		t.Fatalf("BuildArchive() error = %v", err)
 	}
@@ -256,7 +255,6 @@ func TestConfigRenderNodeFromMediaBundle(t *testing.T) {
 	if err := run(context.Background(), []string{
 		"config", "render-node",
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", result.Digest,
 		"--node", "cp-1",
 		"--desired-version", "2",
 	}, &stdout, &stderr); err != nil {
@@ -300,8 +298,8 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	if report.Kind != "ClusterConfigValidation" || report.ClusterName != "lab" || report.Source != sourcePath {
 		t.Fatalf("report = %#v", report)
 	}
-	if !strings.HasPrefix(report.SourceDigest, "sha256:") || !strings.HasPrefix(report.BundleDigest, "sha256:") || !strings.HasPrefix(report.ArtifactVersion, "sha256:") {
-		t.Fatalf("report digests = %#v", report)
+	if strings.Contains(stdout.String(), "Digest") || strings.Contains(stdout.String(), "artifactVersion") {
+		t.Fatalf("report exposes integrity plumbing = %s", stdout.String())
 	}
 	if len(report.Nodes) != 1 || report.Nodes[0] != (configValidationNode{Name: "cp-1", SystemRole: "control-plane"}) {
 		t.Fatalf("resolved nodes = %#v", report.Nodes)
@@ -315,8 +313,8 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &bundleReport); err != nil {
 		t.Fatalf("decode bundle stdout: %v\n%s", err, stdout.String())
 	}
-	if bundleReport.BundleDigest != report.BundleDigest {
-		t.Fatalf("bundle digest = %q, validation predicted %q", bundleReport.BundleDigest, report.BundleDigest)
+	if bundleReport.Output != outputPath || strings.Contains(stdout.String(), "Digest") {
+		t.Fatalf("bundle report = %#v\n%s", bundleReport, stdout.String())
 	}
 }
 
@@ -694,7 +692,7 @@ func TestClusterBootstrapRequiresInventory(t *testing.T) {
 }
 
 func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	var got cluster.Request
 	old := runAgentBootstrap
 	runAgentBootstrap = func(_ context.Context, request cluster.Request, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
@@ -707,7 +705,6 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 	err := run(context.Background(), []string{
 		"cluster", "bootstrap",
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", bundleDigest,
 		"--init-node", "cp-1",
 		"--dry-run",
 	}, &stdout, &stderr)
@@ -1371,7 +1368,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl config apply" {
 		t.Fatalf("stage request = %+v", fake.stageRequest)
 	}
-	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-stage-01"`) {
+	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-stage-01"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
@@ -1413,7 +1410,7 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != strings.Repeat("b", 64) || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
 		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
 	}
-	if !strings.Contains(stdout.String(), "host-upgrade-01") {
+	if !strings.Contains(stdout.String(), "host-upgrade-01") || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
@@ -1467,7 +1464,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	if fake.stageRequest != nil || fake.applyRequest != nil {
 		t.Fatalf("direct mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
 	}
-	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-apply-auto-01"`) {
+	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-apply-auto-01"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
@@ -1516,13 +1513,13 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatalf("decode stdout = %v: %s", err, stdout.String())
 	}
-	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) {
+	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
 
 func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	fake := &fakeKatlcAgentClient{
 		validateResult: &agentapi.ConfigValidationResult{
 			Accepted:              true,
@@ -1551,7 +1548,6 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 		"config", "apply",
 		"--endpoint", "node-a.example.test:9443",
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", bundleDigest,
 		"--node", "cp-1",
 		"--desired-version", "2",
 		"--candidate-generation", "generation-bundle",
@@ -1687,14 +1683,31 @@ func TestAddressOverrideValidation(t *testing.T) {
 func TestPrintBootstrapResultIncludesOperationReference(t *testing.T) {
 	var stdout bytes.Buffer
 	printBootstrapResult(&stdout, cluster.Result{Phases: []cluster.Phase{{
-		Name:          "bootstrap-init",
-		Node:          "cp-1",
-		Status:        "failed",
-		OperationID:   "bootstrap-init-1",
-		RequestDigest: "digest-1",
+		Name:        "bootstrap-init",
+		Node:        "cp-1",
+		Status:      "failed",
+		OperationID: "bootstrap-init-1",
 	}}})
-	if got := stdout.String(); !strings.Contains(got, "operation-id=bootstrap-init-1 request-digest=digest-1") {
+	if got := stdout.String(); !strings.Contains(got, "operation-id=bootstrap-init-1") || strings.Contains(got, "digest") {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestOperatorCommandsHideIntegrityDigestFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "apply", "--help"},
+		{"config", "render-node", "--help"},
+		{"config", "apply", "--help"},
+		{"cluster", "bootstrap", "--help"},
+		{"operation", "status", "--help"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v) error = %v", args, err)
+		}
+		if strings.Contains(stdout.String(), "config-bundle-digest") || strings.Contains(stdout.String(), "request-digest") {
+			t.Fatalf("run(%v) exposed digest plumbing:\n%s", args, stdout.String())
+		}
 	}
 }
 

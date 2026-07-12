@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const operationWatchRPCDuration = 5 * time.Second
@@ -27,7 +28,6 @@ type operationStatusOptions struct {
 	endpoint       string
 	agentTokenFile string
 	operationID    string
-	requestDigest  string
 	diagnostics    string
 	watch          bool
 	timeout        time.Duration
@@ -53,7 +53,6 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.operationID, "operation-id", "", "accepted operation id")
-	cmd.Flags().StringVar(&opts.requestDigest, "request-digest", "", "expected request digest returned at acceptance")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "follow the operation until it reaches terminal state")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall status or watch timeout")
@@ -90,9 +89,8 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	defer conn.Close()
 
 	request := &agentapi.GetOperationRequest{
-		OperationId:           strings.TrimSpace(opts.operationID),
-		ExpectedRequestDigest: strings.TrimSpace(opts.requestDigest),
-		IncludeDiagnostics:    opts.diagnostics,
+		OperationId:        strings.TrimSpace(opts.operationID),
+		IncludeDiagnostics: opts.diagnostics,
 	}
 	status, err := conn.Client.GetOperation(requestCtx, request)
 	if err != nil {
@@ -200,9 +198,28 @@ func writeOperationStatus(stdout io.Writer, status *agentapi.OperationStatus) er
 	if status == nil {
 		return fmt.Errorf("agent returned an empty operation status")
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(status)
+	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
+	publicStatus.RequestDigest = ""
+	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
 	if err != nil {
 		return fmt.Errorf("marshal operation status: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func writeOperationAccepted(stdout io.Writer, accepted *agentapi.OperationAccepted) error {
+	if accepted == nil {
+		return fmt.Errorf("agent returned an empty operation acceptance")
+	}
+	publicAccepted := proto.Clone(accepted).(*agentapi.OperationAccepted)
+	publicAccepted.RequestDigest = ""
+	if publicAccepted.InitialStatus != nil {
+		publicAccepted.InitialStatus.RequestDigest = ""
+	}
+	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicAccepted)
+	if err != nil {
+		return fmt.Errorf("marshal operation accepted: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err

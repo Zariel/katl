@@ -52,10 +52,9 @@ If the source has already been compiled, replace `--source` with:
 
 ```text
 --config-bundle ./katl-lab.katlcfg
---config-bundle-digest "$BUNDLE_DIGEST"
 ```
 
-Set `BUNDLE_DIGEST` to the printed internal digest before using those arguments.
+Katl derives and verifies the bundle's integrity metadata from the file.
 
 ## Apply the Reviewed Request
 
@@ -73,8 +72,8 @@ katlctl config apply \
 ```
 
 Keep the inputs and client request ID identical to the reviewed plan. The JSON
-response records the operation ID, request digest, and initial status. Accepted
-does not mean complete.
+response records the operation ID and initial status. Accepted does not mean
+complete.
 
 Follow the accepted operation before evaluating generation health:
 
@@ -83,7 +82,6 @@ katlctl operation status \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 

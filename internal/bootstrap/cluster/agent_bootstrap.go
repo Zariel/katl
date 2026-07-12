@@ -385,8 +385,7 @@ type bootstrapInitResult struct {
 }
 
 type operationReference struct {
-	ID            string
-	RequestDigest string
+	ID string
 }
 
 type workerJoinMaterial struct {
@@ -405,7 +404,7 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	if err != nil {
 		return bootstrapInitResult{}, fmt.Errorf("submit operation: %w", err)
 	}
-	result := bootstrapInitResult{Operation: operationReference{ID: accepted.GetOperationId(), RequestDigest: accepted.GetRequestDigest()}}
+	result := bootstrapInitResult{Operation: operationReference{ID: accepted.GetOperationId()}}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
 		return result, err
@@ -495,7 +494,7 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	if err != nil {
 		return operationReference{}, fmt.Errorf("submit operation: %w", err)
 	}
-	operationRef := operationReference{ID: accepted.GetOperationId(), RequestDigest: accepted.GetRequestDigest()}
+	operationRef := operationReference{ID: accepted.GetOperationId()}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
 		return operationRef, err

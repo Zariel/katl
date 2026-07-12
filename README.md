@@ -141,11 +141,10 @@ bundle for all nodes:
 ```sh
 katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
-sha256sum ./katl-lab.katlcfg
 ```
 
-Keep both the printed `bundleDigest` and the archive SHA-256. They protect
-different layers and are not interchangeable.
+Katl verifies the bundle's content-addressed structure whenever it reads the
+file; operators do not need to copy or pass its internal digests.
 
 ### 3. Install each node
 
@@ -157,7 +156,6 @@ node by name:
 
 ```sh
 INSTALLER_ENDPOINT=http://192.0.2.10:8080
-BUNDLE_DIGEST='sha256:...'
 umask 077
 read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
 printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
@@ -167,7 +165,6 @@ katlctl install apply \
   --endpoint "$INSTALLER_ENDPOINT" \
   --token-file ./installer.token \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --node cp-1
 ```
 
@@ -186,15 +183,13 @@ activation. Kubernetes bootstrap is a separate operator action.
 ### 4. Bootstrap Kubernetes
 
 Once all installed nodes are reachable through their `katlc` endpoints, use the
-same config bundle and its internal digest. First retrieve each node's distinct
+same config bundle. First retrieve each node's distinct
 agent token over SSH and populate the per-node `file:` credential references as
 described in [Access installed nodes](docs/operations/access.md):
 
 ```sh
-BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
@@ -246,21 +241,19 @@ Remove `--plan` only after reviewing the response. Automated fleet rollout and
 Kubernetes version upgrade execution are not supported alpha workflows.
 
 Every accepted config, host-upgrade, bootstrap, and destructive-reset response
-includes an `operationId` and `requestDigest`. Query a snapshot or follow it to
-terminal state through the same node agent:
+includes an `operationId`. Query a snapshot or follow it to terminal state
+through the same node agent:
 
 ```sh
 katlctl operation status \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 
-The digest binds the query to the exact accepted request. Watch streams are an
-optimization; `katlctl` falls back to the node's authoritative persisted status
-if a stream is interrupted.
+Watch streams are an optimization; `katlctl` falls back to the node's
+authoritative persisted status if a stream is interrupted.
 
 ## Release artifacts
 

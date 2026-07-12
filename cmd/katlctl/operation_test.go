@@ -48,7 +48,6 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 				"--endpoint", "node.test:9443",
 				"--agent-token-file", tokenPath,
 				"--operation-id", "operation-1",
-				"--request-digest", strings.Repeat("a", 64),
 				"--diagnostics", "verbose",
 			}, &stdout, &stderr)
 			if err != nil {
@@ -61,7 +60,10 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 			if got.GetOperationKind() != kind || !got.GetRecoveryRequired() || got.GetFailureReason() != "operator recovery is required" {
 				t.Fatalf("status = %#v", &got)
 			}
-			if client.operationRequest.GetExpectedRequestDigest() != strings.Repeat("a", 64) || client.operationRequest.GetIncludeDiagnostics() != "verbose" {
+			if got.GetRequestDigest() != "" || strings.Contains(stdout.String(), "requestDigest") {
+				t.Fatalf("status exposed request digest: %s", stdout.String())
+			}
+			if client.operationRequest.GetExpectedRequestDigest() != "" || client.operationRequest.GetIncludeDiagnostics() != "verbose" {
 				t.Fatalf("request = %#v", client.operationRequest)
 			}
 		})
