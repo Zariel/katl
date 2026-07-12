@@ -135,8 +135,8 @@ metadata:
 spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
-    version: v1.36.1
-    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    version: v1.36.0
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
   defaults:
     install:
       wipeTarget: true
@@ -178,7 +178,7 @@ spec:
         ---
         apiVersion: kubeadm.k8s.io/v1beta4
         kind: ClusterConfiguration
-        kubernetesVersion: v1.36.1
+        kubernetesVersion: v1.36.0
     worker:
       config: |
         apiVersion: kubeadm.k8s.io/v1beta4
@@ -374,31 +374,31 @@ Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
 The Kubernetes bundle is one ordinary OCI image reference. For example,
-`spec.kubernetes.bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<digest>`
+`spec.kubernetes.bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b`
 means bootstrap must select that exact OCI manifest. During the explicit
 bootstrap operation, `katlc` fetches that bundle, verifies the Katl bundle
 metadata and payload digests, stages the sysext locally, and selects it for
-generation 1. To bootstrap a fresh cluster on `v1.36.1`, keep the KatlOS install
-image when runtime compatibility permits it and supply a bundle reference that
-resolves to the `v1.36.1` payload.
+generation 1. The selected alpha reference above supplies the `v1.36.0`
+payload; a different Kubernetes version requires its matching bundle reference
+and a KatlOS runtime compatible with that bundle.
 
 Katl publishes development Kubernetes bundles as custom OCI artifacts in the
 public `ghcr.io/katl-dev/kubernetes` package. A tag-only reference is accepted:
 
 ```text
-ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3
 ```
 
 Pinning the OCI manifest is strongly recommended for reproducible provisioning:
 
 ```text
-ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<OCI-manifest-digest>
+ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
 ```
 
 `katlc` verifies the resolved OCI manifest, the Katl bundle config, every layer
 digest and size, and
 Katl runtime compatibility, and only then stages the sysext. The readable
-`ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1` tag is suitable for Renovate's
+`ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3` tag is suitable for Renovate's
 Docker datasource; the full patch precision lets Renovate propose Kubernetes
 patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.

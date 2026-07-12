@@ -1,0 +1,40 @@
+name: Public Kubernetes Bundle
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  verify:
+    name: Anonymous Pull And Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Fetch and verify selected alpha bundle anonymously
+        run: |
+          scripts/check-public-kubernetes-bundle \
+            ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3 \
+            sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
+
+      - name: Authenticate provenance client to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Verify GitHub provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify \
+            oci://ghcr.io/katl-dev/kubernetes@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b \
+            --repo katl-dev/katl \
+            --signer-workflow katl-dev/katl/.github/workflows/kubernetes-bundles.yml \
+            --source-ref refs/heads/main
