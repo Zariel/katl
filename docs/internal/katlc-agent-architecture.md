@@ -46,7 +46,8 @@ redacted diagnostics and status projections
 loading inventory or compiled plans
 selecting the bootstrap init node
 sequencing requests across nodes
-polling or watching returned operation IDs
+polling or watching accepted operations internally
+discovering current and recent durable operations after client interruption
 writing disposable client summaries
 writing explicit client-side output such as kubeconfig files
 ```
@@ -115,10 +116,12 @@ katlctl bootstrap init
 katlctl bootstrap join-control-plane
 katlctl bootstrap join-worker
 katlctl kubeconfig get
+katlctl operations list
+katlctl operations status
 ```
 
 These commands load operator config, select target nodes, call the node-local
-agent APIs, poll or watch operation IDs, and write client-side output. They do
+agent APIs, track operation IDs internally, and write client-side output. They do
 not create node-local state directly. Existing greenfield scaffolding may still
 use older command names such as `katlctl cluster bootstrap`; move that surface
 toward the target shape instead of preserving both names.

@@ -452,6 +452,41 @@ func (s *Server) GetOperation(ctx context.Context, req *agentapi.GetOperationReq
 	return status, nil
 }
 
+func (s *Server) ListOperations(ctx context.Context, req *agentapi.ListOperationsRequest) (*agentapi.ListOperationsResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		req = &agentapi.ListOperationsRequest{}
+	}
+	if req.Limit < 0 || req.Limit > 100 {
+		return nil, status.Error(codes.InvalidArgument, "limit must be between 0 and 100")
+	}
+	options, err := responseOptions(req.IncludeDiagnostics)
+	if err != nil {
+		return nil, err
+	}
+	records, err := s.Store.List()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list operations: %v", err)
+	}
+	limit := int(req.Limit)
+	if limit == 0 {
+		limit = 20
+	}
+	response := &agentapi.ListOperationsResponse{}
+	for _, record := range records {
+		if req.ActiveOnly && record.Terminal {
+			continue
+		}
+		response.Operations = append(response.Operations, operationStatus(record, options.Diagnostics))
+		if len(response.Operations) == limit {
+			break
+		}
+	}
+	return response, nil
+}
+
 func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agentapi.KatlcAgent_WatchOperationServer) error {
 	if req == nil || strings.TrimSpace(req.OperationId) == "" {
 		return status.Error(codes.InvalidArgument, "operationID is required")

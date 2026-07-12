@@ -12,6 +12,7 @@ service KatlcAgent {
   rpc SubmitOperation(SubmitOperationRequest) returns (OperationAccepted);
   rpc CreateWorkerJoinMaterial(CreateWorkerJoinMaterialRequest) returns (CreateWorkerJoinMaterialResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
   rpc ListGenerations(ListGenerationsRequest) returns (ListGenerationsResponse);
   rpc GetGeneration(GetGenerationRequest) returns (Generation);
@@ -205,6 +206,16 @@ message GetOperationRequest {
   string operation_id = 1;
   string expected_request_digest = 2;
   string include_diagnostics = 3;
+}
+
+message ListOperationsRequest {
+  bool active_only = 1;
+  int32 limit = 2;
+  string include_diagnostics = 3;
+}
+
+message ListOperationsResponse {
+  repeated OperationStatus operations = 1;
 }
 
 message OperationStatus {

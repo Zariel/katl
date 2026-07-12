@@ -211,7 +211,6 @@ katlctl host upgrade \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --candidate-generation "katlos-$VERSION" \
-  --client-request-id "cp-1-katlos-$VERSION" \
   --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
 ```
 
@@ -221,20 +220,19 @@ the inactive root slot.
 Remove `--plan` only after reviewing the response. Automated fleet rollout and
 Kubernetes version upgrade execution are not supported alpha workflows.
 
-Every accepted config, host-upgrade, bootstrap, and destructive-reset response
-includes an `operationId`. Query a snapshot or follow it to terminal state
-through the same node agent:
+Mutating commands follow the node's durable operation to completion by default.
+Progress is written to stderr and the final structured result to stdout. A lost
+watch automatically falls back to polling the durable node record.
+
+Use `--no-wait` only for deliberately detached work. The detached response
+includes an operation reference. Current and recent operations remain
+discoverable afterward:
 
 ```sh
-katlctl operation status \
+katlctl operations list \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
+  --agent-token-file ./tokens/cp-1.token
 ```
-
-Watch streams are an optimization; `katlctl` falls back to the node's
-authoritative persisted status if a stream is interrupted.
 
 ## Release artifacts
 

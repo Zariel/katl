@@ -36,7 +36,7 @@ Keep these artifacts together for the life of an evaluation:
 - the source `ClusterConfig` and compiled `.katlcfg` bundle;
 - the Kubernetes OCI reference;
 - one protected agent token file per node;
-- the kubeconfig, operation IDs, generation IDs, and relevant timestamps; and
+- the kubeconfig, command results, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
 
 Treat command outcomes precisely:
@@ -48,26 +48,23 @@ Treat command outcomes precisely:
 - **failed-needs-repair** means do not blindly retry or assume host rollback
   reverted Kubernetes state.
 
-Use a unique, stable `--client-request-id` for each intended mutation. Reuse it
-only when retrying the exact same request. Changing inputs requires a new ID.
+`katlctl` generates mutation idempotency keys and follows durable operations to
+their terminal result. Operators do not need to create request IDs or retain
+operation IDs. Progress is written to stderr and final structured status to
+stdout.
 
-For every accepted mutation, retain its `operationId`. Use the generic status
-path for config apply, host upgrade, bootstrap, and
-destructive reset:
+Use `--no-wait` only when intentionally detaching a command. Discover current
+or recent node work later with:
 
 ```sh
-katlctl operation status \
+katlctl operations list \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
+  --agent-token-file ./tokens/cp-1.token
 ```
 
-Without `--watch`, the command returns one authoritative snapshot. With it,
-progress is written to stderr and final structured status to stdout. A lost
-watch automatically falls back to polling the durable node record. Use
-`--diagnostics verbose` when the normal redacted status is insufficient. A
-watched terminal failure still prints its final JSON status and exits nonzero.
+`katlctl operation status --operation-id ID` remains an advanced diagnostic
+path for one exact record. Use `--diagnostics verbose` when normal redacted
+status is insufficient.
 
 ## Boundaries That Matter During Operations
 

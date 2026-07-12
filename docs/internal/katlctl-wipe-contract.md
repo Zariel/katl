@@ -29,9 +29,6 @@ Required common flags:
 --acknowledge TEXT
   Must exactly match the acknowledgement text above after shell parsing.
 
---client-request-id ID
-  Idempotency key recorded in every accepted node-local operation request.
-
 --output json
   v0.1 status and plan output format. Other formats are unsupported.
 ```
@@ -46,6 +43,13 @@ Optional common flags:
 --timeout DURATION
   Upper bound for client-side waits. Timeout stops waiting but does not cancel an
   accepted node-local wipe operation.
+
+--no-wait
+  Return after every selected node accepts its durable operation. The detached
+  result includes operation IDs for exact later lookup.
+
+--client-request-id ID
+  Optional advanced override for the automatically generated idempotency key.
 ```
 
 Authentication and authorization:
@@ -63,9 +67,9 @@ Plan and status output:
 - `--plan` prints JSON with `command`, `targets`, `acknowledgementAccepted`,
   `kubernetesCleanup`, `nodeLocalOperations`, `wipedState`, `preservedState`,
   and `refusals`.
-- Executing commands print JSON with one entry per selected node, including the
-  accepted node-local operation ID, current phase, terminal status when known,
-  and the evidence paths or redacted diagnostics available to the client.
+- Executing commands wait by default and print JSON with one entry per selected
+  node, including the final phase, terminal status, and redacted diagnostics.
+  Opaque operation IDs appear only for detached execution or exact diagnostics.
 - Aggregate success means every selected node has had its Katl-owned disk boot
   path disabled so a reboot must use installer media or PXE. Partial success
   exits non-zero and reports each node's terminal or last observed status.
@@ -103,10 +107,10 @@ Requests are refused before node-local mutation when:
 Failure behavior:
 
 - After a node-local operation is accepted, `katlctl` may lose connectivity
-  without changing the operation's authority. Operators must use status polling
-  against node-local `katlc` to resume observation.
+  without changing the operation's authority. Operators discover durable work
+  with `katlctl operations list` and may resume exact observation by ID.
 - If mutation may have started, retry is not automatic. A later command must use
-  the same `--client-request-id` or an explicit recovery flow once one exists.
+  operation discovery rather than blindly submitting another destructive reset.
 - Diagnostics must redact bearer tokens, kubeconfigs, bootstrap tokens,
   certificate private keys, and etcd secrets.
 
@@ -116,7 +120,7 @@ Command:
 
 ```text
 katlctl wipe node --inventory PATH --node NAME --kubeconfig PATH \
-  --confirm-destructive-wipe --acknowledge TEXT --client-request-id ID
+  --confirm-destructive-wipe --acknowledge TEXT
 ```
 
 Target selection:
@@ -165,7 +169,7 @@ Command:
 
 ```text
 katlctl cluster wipe --inventory PATH --all \
-  --confirm-destructive-wipe --acknowledge TEXT --client-request-id ID
+  --confirm-destructive-wipe --acknowledge TEXT
 ```
 
 The old `katlctl wipe cluster` spelling is a temporary compatibility alias. It

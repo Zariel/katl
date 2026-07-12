@@ -27,6 +27,7 @@ import (
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestVersion(t *testing.T) {
@@ -972,7 +973,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 		}
 	}
 	for _, node := range report.Nodes {
-		if !node.Accepted || node.OperationKind != wipeClusterOperationKind || node.OperationID == "" {
+		if !node.Accepted || node.OperationKind != wipeClusterOperationKind || node.OperationID != "" || !node.Terminal || node.Result != "succeeded" {
 			t.Fatalf("node result = %#v", node)
 		}
 	}
@@ -1368,9 +1369,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl config apply" {
 		t.Fatalf("stage request = %+v", fake.stageRequest)
 	}
-	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-stage-01"`) || strings.Contains(stdout.String(), "requestDigest") {
-		t.Fatalf("stdout = %s", stdout.String())
-	}
+	assertSuccessfulMutationOutput(t, stdout.Bytes())
 }
 
 func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
@@ -1396,7 +1395,6 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 		"--endpoint", "node-a.example.test:9443",
 		"--image-url", "https://updates.example.test/katlos-upgrade.squashfs",
 		"--candidate-generation", "generation-upgrade-1",
-		"--client-request-id", "req-host-upgrade",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -1405,12 +1403,13 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 	if request == nil || request.OperationKind != "host-upgrade" || request.GetHostUpgrade() == nil {
 		t.Fatalf("submit request = %+v", request)
 	}
+	if !strings.HasPrefix(request.ClientRequestId, "katlctl-") {
+		t.Fatalf("generated client request id = %q", request.ClientRequestId)
+	}
 	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != "" || request.HostUpgrade.ImageSizeBytes != 0 || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
 		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
 	}
-	if !strings.Contains(stdout.String(), "host-upgrade-01") || strings.Contains(stdout.String(), "requestDigest") {
-		t.Fatalf("stdout = %s", stdout.String())
-	}
+	assertSuccessfulMutationOutput(t, stdout.Bytes())
 }
 
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
@@ -1462,9 +1461,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	if fake.stageRequest != nil || fake.applyRequest != nil {
 		t.Fatalf("direct mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
 	}
-	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-apply-auto-01"`) || strings.Contains(stdout.String(), "requestDigest") {
-		t.Fatalf("stdout = %s", stdout.String())
-	}
+	assertSuccessfulMutationOutput(t, stdout.Bytes())
 }
 
 func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
@@ -1567,8 +1564,17 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 	if request.SourceID != "lab" || request.DesiredVersion != "2" || request.NodeOverrides["cp-1"].Identity == nil {
 		t.Fatalf("rendered request = %#v", request)
 	}
-	if !strings.Contains(stdout.String(), "generation-bundle-apply") {
-		t.Fatalf("stdout = %s", stdout.String())
+	assertSuccessfulMutationOutput(t, stdout.Bytes())
+}
+
+func assertSuccessfulMutationOutput(t *testing.T, data []byte) {
+	t.Helper()
+	var status agentapi.OperationStatus
+	if err := protojson.Unmarshal(data, &status); err != nil {
+		t.Fatalf("decode mutation result: %v\n%s", err, data)
+	}
+	if !status.Terminal || status.Result != operation.ResultSucceeded || status.OperationId != "" || status.RequestDigest != "" {
+		t.Fatalf("mutation result = %+v", &status)
 	}
 }
 
@@ -1740,6 +1746,8 @@ type fakeKatlcAgentClient struct {
 	generationRequest *agentapi.GetGenerationRequest
 	operationStatus   *agentapi.OperationStatus
 	operationRequest  *agentapi.GetOperationRequest
+	operations        *agentapi.ListOperationsResponse
+	operationsRequest *agentapi.ListOperationsRequest
 }
 
 type fakeWipeClusterConnector struct {
@@ -1794,7 +1802,7 @@ func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
 			OperationId:   "wipe-" + machineID,
 			OperationKind: wipeClusterOperationKind,
 			RequestDigest: strings.Repeat("a", 64),
-			InitialStatus: &agentapi.OperationStatus{Phase: "accepted"},
+			InitialStatus: &agentapi.OperationStatus{Phase: "completed", Terminal: true, Result: "succeeded"},
 		},
 	}
 }
@@ -1840,7 +1848,26 @@ func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agenta
 
 func (c *fakeKatlcAgentClient) GetOperation(_ context.Context, req *agentapi.GetOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationStatus, error) {
 	c.operationRequest = req
+	if c.operationStatus == nil {
+		accepted := c.stageAccepted
+		if c.submitAccepted != nil {
+			accepted = c.submitAccepted
+		}
+		status := &agentapi.OperationStatus{OperationId: req.OperationId, Phase: "completed", Terminal: true, Result: "succeeded"}
+		if accepted != nil {
+			status.OperationKind = accepted.GetOperationKind()
+		}
+		return status, nil
+	}
 	return c.operationStatus, nil
+}
+
+func (c *fakeKatlcAgentClient) ListOperations(_ context.Context, req *agentapi.ListOperationsRequest, _ ...grpc.CallOption) (*agentapi.ListOperationsResponse, error) {
+	c.operationsRequest = req
+	if c.operations == nil {
+		return &agentapi.ListOperationsResponse{}, nil
+	}
+	return c.operations, nil
 }
 
 func (c *fakeKatlcAgentClient) WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error) {

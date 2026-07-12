@@ -500,8 +500,7 @@ katlctl config apply validate \
   --source ./cluster.yaml \
   --node cp-1 \
   --desired-version 2 \
-  --candidate-generation config-2 \
-  --client-request-id cp-1-config-2
+  --candidate-generation config-2
 ```
 
 If the source has already been compiled, use the bundle instead of
@@ -514,15 +513,14 @@ katlctl config apply validate \
   --config-bundle ./katl-lab.katlcfg \
   --node cp-1 \
   --desired-version 2 \
-  --candidate-generation config-2 \
-  --client-request-id cp-1-config-2
+  --candidate-generation config-2
 ```
 
 Remove `validate` to submit the accepted plan. The default `--mode auto` uses
 the agent's domain matrix to choose live apply or next boot; `--mode live` and
 `--mode next-boot` request an explicit policy and are rejected when unsafe.
-Keep the same inputs when submitting; the client request id becomes the
-idempotency key for the accepted operation.
+Keep the same configuration inputs when submitting. `katlctl` generates the
+idempotency key and follows the accepted operation to its terminal result.
 
 The renderer currently carries hostname, SSH authorized keys, and systemd-
 networkd files from the selected node. It deliberately excludes disk/install

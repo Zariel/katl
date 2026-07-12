@@ -32,16 +32,16 @@ find /var/lib/katl/generations -maxdepth 2 -type f -print
 find /var/lib/katl/operations -maxdepth 3 -type f -print
 ```
 
-For one accepted operation, first query its redacted durable status through the
-agent:
+First discover current and recent durable operations through the agent:
 
 ```sh
-katlctl operation status \
+katlctl operations list \
   --endpoint affected-node.example.test:9443 \
-  --agent-token-file ./tokens/affected-node.token \
-  --operation-id "$OPERATION_ID" \
-  --diagnostics verbose
+  --agent-token-file ./tokens/affected-node.token
 ```
+
+Use `katlctl operation status --operation-id ID --diagnostics verbose` when an
+exact record needs deeper inspection.
 
 If the agent is unavailable, use SSH as a break-glass evidence path and read
 the record without editing it. The journal directory is authoritative when a

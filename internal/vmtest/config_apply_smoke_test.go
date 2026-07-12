@@ -299,7 +299,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 
 	rejectedApplyGeneration := "2026.06.06-vmtest-rejected-apply"
-	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-rejected", "live", rejectedApplyGeneration, "vmtest-config-apply-rejected-submit", configApplyFixture(t, "rejected-live-without-preflight.yaml"))
+	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-rejected", "live", rejectedApplyGeneration, configApplyFixture(t, "rejected-live-without-preflight.yaml"), true)
 	rejectedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, rejectedAccepted.OperationId)
 	if rejectedStatus.Result == operation.ResultSucceeded ||
 		rejectedStatus.GetExternalMutationStarted() ||
@@ -312,7 +312,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
-	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "", liveGeneration, "vmtest-config-apply-live", configApplyFixture(t, "live-sysctl.yaml"))
+	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-sysctl.yaml"), false)
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
@@ -333,7 +333,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	assertGuestNonLoopbackLink(t, ctx, guest)
-	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged-networkd", "next-boot", stagedGeneration, "vmtest-config-apply-staged-networkd", configApplyFixture(t, "next-boot-networkd.yaml"))
+	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged-networkd", "next-boot", stagedGeneration, configApplyFixture(t, "next-boot-networkd.yaml"), false)
 	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, stagedAccepted.OperationId)
 	if stagedStatus.Result != operation.ResultSucceeded || stagedStatus.ConfigApplyPhase != "next-boot" {
 		t.Fatalf("staged operation status = %+v, want succeeded next-boot config apply", stagedStatus)
@@ -372,7 +372,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	return guest, nil
 }
 
-func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, clientRequestID, fixture string) agentapi.OperationAccepted {
+func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
 	t.Helper()
 	args := []string{
 		"config", "apply",
@@ -380,19 +380,38 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 		"--agent-token-file", tokenFile,
 		"--file", fixture,
 		"--candidate-generation", generationID,
-		"--client-request-id", clientRequestID,
 		"--actor", "installed-runtime config apply vmtest",
 	}
 	if mode != "" {
 		args = append(args, "--mode", mode)
 	}
-	output := runKatlctl(t, ctx, result, katlctl, name, args...)
-	var accepted agentapi.OperationAccepted
-	mustUnmarshalProtoJSON(t, output, &accepted)
-	if strings.TrimSpace(accepted.OperationId) == "" || strings.TrimSpace(accepted.RecordPath) == "" {
-		t.Fatalf("%s accepted operation = %+v, want operation ID and record path", name, accepted)
+	output, commandErr := runKatlctlOutcome(t, ctx, result, katlctl, name, args...)
+	if wantFailure && commandErr == nil {
+		t.Fatalf("%s succeeded, want terminal operation failure\n%s", name, output)
 	}
-	return accepted
+	if !wantFailure && commandErr != nil {
+		t.Fatalf("%s: katlctl failed: %v\n%s", name, commandErr, output)
+	}
+	var terminal agentapi.OperationStatus
+	mustUnmarshalProtoJSON(t, output, &terminal)
+	if !terminal.Terminal || (wantFailure && terminal.Result == operation.ResultSucceeded) || (!wantFailure && terminal.Result != operation.ResultSucceeded) {
+		t.Fatalf("%s terminal result = %+v", name, &terminal)
+	}
+	listOutput := runKatlctl(t, ctx, result, katlctl, name+"-operations",
+		"operations", "list", "--endpoint", endpoint, "--agent-token-file", tokenFile, "--limit", "20")
+	var listed agentapi.ListOperationsResponse
+	mustUnmarshalProtoJSON(t, listOutput, &listed)
+	for _, status := range listed.Operations {
+		if status.CandidateGenerationId == generationID {
+			return agentapi.OperationAccepted{
+				OperationId:   status.OperationId,
+				OperationKind: status.OperationKind,
+				RecordPath:    "/var/lib/katl/operations/" + status.OperationId + "/record.json",
+			}
+		}
+	}
+	t.Fatalf("%s operation for generation %q not found in recent operations", name, generationID)
+	return agentapi.OperationAccepted{}
 }
 
 func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, generationID string) agentapi.Generation {
@@ -535,6 +554,15 @@ func failIfRestartExited(t *testing.T, handle *VMHandle) {
 
 func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) []byte {
 	t.Helper()
+	stdout, err := runKatlctlOutcome(t, ctx, result, katlctl, name, args...)
+	if err != nil {
+		t.Fatalf("%s: katlctl failed: %v\nstdout:\n%s", name, err, stdout)
+	}
+	return stdout
+}
+
+func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) ([]byte, error) {
+	t.Helper()
 	dir := filepath.Join(result.RunDir, "katlctl", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create katlctl artifact dir: %v", err)
@@ -563,9 +591,9 @@ func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name 
 	_ = os.WriteFile(filepath.Join(dir, "stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
-		t.Fatalf("%s: katlctl failed: %v\nstdout:\n%s\nstderr:\n%s", name, err, stdout.String(), stderr.String())
+		return stdout.Bytes(), fmt.Errorf("%w\nstderr:\n%s", err, stderr.String())
 	}
-	return stdout.Bytes()
+	return stdout.Bytes(), nil
 }
 
 func configApplyFixture(t *testing.T, name string) string {

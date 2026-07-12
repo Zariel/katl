@@ -71,8 +71,7 @@ katlctl cluster wipe \
   --inventory ./cluster-inventory.yaml \
   --all \
   --confirm-destructive-wipe \
-  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.' \
-  --client-request-id discard-katl-lab-1
+  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.'
 ```
 
 Even a plan requires the acknowledgement so automation cannot casually turn a
@@ -80,19 +79,8 @@ review command into a destructive one. Review every target, address, role,
 wiped surface, preserved surface, and refusal.
 
 Run the identical command without `--plan` only when the cluster is intentionally
-being discarded. The command submits node-local destructive-reset operations
-and reports their operation IDs and initial status.
-
-For each reported node endpoint and operation ID, follow the
-node-local reset to terminal state:
-
-```sh
-katlctl operation status \
-  --endpoint worker-1.example.test:9443 \
-  --agent-token-file ./tokens/worker-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
-```
+being discarded. The command follows every node-local destructive reset and
+reports each terminal result.
 
 Do not proceed to reinstall until every intended reset reports `terminal: true`
 and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
@@ -107,8 +95,7 @@ katlctl cluster wipe node \
   --inventory ./cluster-inventory.yaml \
   --node worker-1 \
   --confirm-destructive-wipe \
-  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.' \
-  --client-request-id replace-worker-1-1
+  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.'
 ```
 
 Execution additionally requires `--kubeconfig ./kubeconfig`. If Kubernetes
