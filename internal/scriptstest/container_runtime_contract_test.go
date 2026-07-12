@@ -63,6 +63,23 @@ func TestBaseContainerRuntimeContractIsEnforced(t *testing.T) {
 	)
 }
 
+func TestReleaseProfilesPinTrustPackages(t *testing.T) {
+	repo := repoRoot(t)
+	wants := []string{
+		"p11-kit-0:0.26.2-1.fc44.x86_64",
+		"p11-kit-trust-0:0.26.2-1.fc44.x86_64",
+	}
+	for _, profile := range []string{"runtime", "installer-image"} {
+		config := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", profile, "mkosi.conf")))
+		packages := mkosiPackages(config)
+		for _, want := range wants {
+			if !packages[want] {
+				t.Errorf("%s mkosi profile missing pinned package %q", profile, want)
+			}
+		}
+	}
+}
+
 func mkosiPackages(config string) map[string]bool {
 	packages := map[string]bool{}
 	inPackages := false
