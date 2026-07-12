@@ -49,6 +49,7 @@ var newWipeClusterConnector = func(token string) cluster.AgentConnector {
 }
 
 const (
+	configBundleCreator      = "katlctl config bundle"
 	wipeClusterOperationKind = "destructive-reset"
 	wipeAcknowledgementText  = "I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity."
 )
@@ -951,7 +952,7 @@ func runConfigValidate(sourcePath string, stdout, stderr io.Writer) error {
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
-		CreatedBy:      "katlctl config validate",
+		CreatedBy:      configBundleCreator,
 	})
 	if err != nil {
 		return err
@@ -1032,7 +1033,7 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 		SourcePath:     opts.sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
-		CreatedBy:      "katlctl config bundle",
+		CreatedBy:      configBundleCreator,
 	})
 	if err != nil {
 		return err
@@ -1110,7 +1111,7 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 			SourcePath:     opts.sourcePath,
 			KatlctlVersion: version,
 			KatlctlCommit:  commit,
-			CreatedBy:      "katlctl config render-node",
+			CreatedBy:      configBundleCreator,
 		})
 		if buildErr != nil {
 			return nil, buildErr
