@@ -64,6 +64,15 @@ jobs:
             run: ^TestInstalledRuntimeTwoNodeKubeadmJoinSmoke$
             go_timeout: 60m
             timeout_minutes: 110
+          - id: kubernetes-upgrade
+            name: Kubernetes Bundle Upgrade VM
+            artifact_set: default
+            package: ./internal/vmtest/scenarios
+            run: ^TestKubeadmUpgradeOperationSmoke$
+            go_timeout: 75m
+            timeout_minutes: 140
+            source_bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
+            target_bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537
 
     env:
       GOTOOLCHAIN: auto
@@ -72,6 +81,8 @@ jobs:
       KATL_VMTEST_DEBUG_ON_FAILURE: "0"
       KATL_VMTEST_REQUIRE_SCENARIO_RESULT: "1"
       KATL_VMTEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.gate.id }}
+      KATL_VMTEST_KUBERNETES_BUNDLE: ${{ matrix.gate.source_bundle || '' }}
+      KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE: ${{ matrix.gate.target_bundle || '' }}
 
     steps:
       - name: Check out repository
@@ -167,6 +178,8 @@ jobs:
             KATL_VMTEST_KEEP="$KATL_VMTEST_KEEP" \
             KATL_VMTEST_DEBUG_ON_FAILURE="$KATL_VMTEST_DEBUG_ON_FAILURE" \
             KATL_VMTEST_REQUIRE_SCENARIO_RESULT="$KATL_VMTEST_REQUIRE_SCENARIO_RESULT" \
+            KATL_VMTEST_KUBERNETES_BUNDLE="$KATL_VMTEST_KUBERNETES_BUNDLE" \
+            KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE="$KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE" \
             KATL_OVMF_CODE="${KATL_OVMF_CODE:-}" \
             KATL_OVMF_VARS="${KATL_OVMF_VARS:-}" \
             KATL_VMTEST_LIBVIRT_URI="${KATL_VMTEST_LIBVIRT_URI:-}" \

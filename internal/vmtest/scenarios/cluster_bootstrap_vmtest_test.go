@@ -22,6 +22,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -125,6 +126,13 @@ func operationBackedFreshFixtureWorld(world vmtest.World) vmtest.World {
 
 func operationBackedKubernetesVersion(t *testing.T, repo string) string {
 	t.Helper()
+	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
+		image, err := kubernetesbundle.ParseImageReference(value)
+		if err != nil {
+			t.Fatalf("parse published Kubernetes bundle: %v", err)
+		}
+		return image.PayloadVersion
+	}
 	if version := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), os.Getenv("KATL_KUBERNETES_PAYLOAD_VERSION")); version != "" {
 		return version
 	}
@@ -605,6 +613,27 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	}
 	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
 	metadataHost := targetHost + ".json"
+	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); value != "" {
+		image, err := kubernetesbundle.ParseImageReference(value)
+		if err != nil {
+			return fmt.Errorf("parse published target Kubernetes bundle: %w", err)
+		}
+		staged, err := kubernetesbundle.FetchAndStage(ctx, kubernetesbundle.Request{
+			Source:           image.Source,
+			Ref:              image.Value,
+			CacheDir:         filepath.Join(smoke.Result.ManifestDir, "published-kubernetes-upgrade"),
+			RuntimeInterface: "katl-runtime-1",
+			Architecture:     "x86_64",
+		})
+		if err != nil {
+			return fmt.Errorf("fetch published target Kubernetes bundle: %w", err)
+		}
+		if staged.PayloadVersion != targetVersion {
+			return fmt.Errorf("published target Kubernetes bundle payload is %s, want %s", staged.PayloadVersion, targetVersion)
+		}
+		targetHost = staged.SysextPath
+		metadataHost = staged.MetadataPath
+	}
 	target, err := os.ReadFile(targetHost)
 	if err != nil {
 		return fmt.Errorf("read target Kubernetes sysext: %w", err)
@@ -828,6 +857,25 @@ func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid 
 }
 
 func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Result, gateway, kubernetesVersion string) (threeControlPlaneKubernetesPayloadBundle, guestReachableBundleServer, error) {
+	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
+		image, err := kubernetesbundle.ParseImageReference(value)
+		if err != nil {
+			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+		}
+		if image.PayloadVersion != kubernetesVersion {
+			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, fmt.Errorf("published Kubernetes bundle payload is %s, want %s", image.PayloadVersion, kubernetesVersion)
+		}
+		bundle := threeControlPlaneKubernetesPayloadBundle{
+			Source:         image.Source,
+			Ref:            image.Value,
+			PayloadVersion: image.PayloadVersion,
+			LogPath:        filepath.Join(result.RunDir, "kubernetes-payload-bundle.log"),
+		}
+		if err := writeKubernetesBundleSourceLog(bundle.LogPath, bundle); err != nil {
+			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+		}
+		return bundle, guestReachableBundleServer{}, nil
+	}
 	bundle, err := stageThreeControlPlaneKubernetesPayloadBundles(repo, result, kubernetesVersion)
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err

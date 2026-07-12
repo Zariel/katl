@@ -148,6 +148,18 @@ scripts/vmtest-run ./internal/vmtest/scenarios \
   -timeout 60m -count=1
 ```
 
+To exercise the release boundary rather than locally built Kubernetes
+artifacts, provide digest-pinned source and target OCI bundles. The upgrade
+scenario fetches and verifies both bundles through the product bundle path:
+
+```sh
+KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b' \
+KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537' \
+scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
+  -run '^TestKubeadmUpgradeOperationSmoke$' \
+  -count=1 -failfast -timeout 75m
+```
+
 The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
 host capabilities, records `world.json`, `host-capabilities.json`, `run.json`,
 and `go-test.log`, exports the world environment, and then executes `go test`
@@ -327,7 +339,18 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest \
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -run '^TestInstalledRuntimeTwoNodeKubeadmJoinSmoke$' \
   -count=1 -failfast -timeout 60m
+KATL_VMTEST_KUBERNETES_BUNDLE='<digest-pinned-source-bundle>' \
+KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='<digest-pinned-target-bundle>' \
+scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
+  -run '^TestKubeadmUpgradeOperationSmoke$' \
+  -count=1 -failfast -timeout 75m
 ```
+
+The upgrade row pins the published source and target OCI references in the
+workflow matrix. It proves etcd snapshot capture, control-plane-first kubeadm
+upgrade, generation selection across reboot, worker upgrade, and final cluster
+health. Update those pins deliberately when promoting a newly published bundle
+pair into the compatibility gate.
 
 The runtime artifact set is intentionally limited to direct-runtime tests.
 Installed-runtime tests consume the KatlOS install image and reject

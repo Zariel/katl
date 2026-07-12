@@ -600,9 +600,13 @@ else
 				KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
 				KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}" \
 				"$repo_root/scripts/mkosi" build-kubernetes-sysext
-			for suffix in raw raw.json raw.sha256; do
+			for suffix in raw raw.json; do
 				cp "$build_dir/katl-kubernetes.$suffix" "$build_dir/katl-kubernetes-upgrade.$suffix"
 			done
+			(
+				cd "$build_dir"
+				sha256sum katl-kubernetes-upgrade.raw > katl-kubernetes-upgrade.raw.sha256
+			)
 			exit 0
 			;;
         build-katlos-install-image)
