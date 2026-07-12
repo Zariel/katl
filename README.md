@@ -131,10 +131,12 @@ file; operators do not need to copy or pass its internal digests.
 ### 3. Install each node
 
 Attach or write `katl-installer.iso` using your normal UEFI virtual-media or USB
-workflow, then boot it. Without preseed input, the installer waits safely and
-prints an HTTP handoff URL and one-time token. Store the token in a protected
-temporary file, then submit the same bundle to every node while selecting that
-node by name:
+workflow, then boot it. The installer reports progress on both a local VGA
+console and a 115200-baud serial console. Secure Boot must remain disabled until
+Katl publishes signed boot artifacts. Without preseed input, the installer waits
+safely and prints an HTTP handoff URL and one-time token. Store the token in a
+protected temporary file, then submit the same bundle to every node while
+selecting that node by name:
 
 ```sh
 INSTALLER_ENDPOINT=http://192.0.2.10:8080

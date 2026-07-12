@@ -145,6 +145,29 @@ exit 1
 	}
 }
 
+func TestInstallerConsoleAndVMGateContract(t *testing.T) {
+	repo := repoRoot(t)
+	profile := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.conf")))
+	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.extra/etc/systemd/journald.conf.d/10-katl-installer-console.conf")))
+	workflow := string(mustReadFile(t, filepath.Join(repo, ".github/workflows/vmtest.yml")))
+
+	for _, value := range []string{"console=tty0", "console=ttyS0,115200n8"} {
+		if !strings.Contains(profile, value) {
+			t.Fatalf("installer profile missing console %q", value)
+		}
+	}
+	for _, value := range []string{"ForwardToConsole=yes", "TTYPath=/dev/ttyS0"} {
+		if !strings.Contains(journal, value) {
+			t.Fatalf("installer dual-console journal routing missing %q", value)
+		}
+	}
+	for _, value := range []string{"Installer ISO Boot VM", "^TestInstallerISOBootSmoke$"} {
+		if !strings.Contains(workflow, value) {
+			t.Fatalf("installer ISO VM workflow missing %q", value)
+		}
+	}
+}
+
 func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
