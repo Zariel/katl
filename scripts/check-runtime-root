@@ -194,6 +194,7 @@ for path in \
     /usr/libexec/cni/ptp \
     /usr/libexec/cni/portmap \
     /usr/bin/katlc \
+    /usr/bin/katl-console \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
@@ -219,6 +220,7 @@ for path in \
     /usr/lib/systemd/system/katl-state-projection-check.service \
     /usr/lib/systemd/system/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/katlc-agent.service \
+    /usr/lib/systemd/system/katl-console.service \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
@@ -232,6 +234,9 @@ for path in \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/multi-user.target.wants/katlc-agent.service \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-console.service \
+    /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf \
+    /usr/lib/systemd/system/getty.target.wants/getty@tty2.service \
     /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
     has_path "$path"
@@ -281,6 +286,9 @@ root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
+file_has /usr/lib/systemd/system/katl-console.service "ExecStart=/usr/bin/katl-console --mode=runtime --tty=/dev/tty1"
+file_has /usr/lib/systemd/system/katl-console.service "TTYPath=/dev/tty1"
+file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "ConditionPathExists=!/usr/bin/katl-console"
 has_path /usr/lib/katl/runtime/katl-runtime-status
 has_path /etc/katl
 has_path /etc/kubernetes

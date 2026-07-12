@@ -91,6 +91,7 @@ file_has() {
 
 for path in \
     /usr/bin/katlos-install \
+    /usr/bin/katl-console \
     /usr/bin/systemctl \
     /usr/bin/journalctl \
     /usr/bin/networkctl \
@@ -108,6 +109,7 @@ for path in \
     /usr/bin/findmnt \
     /usr/bin/sshd \
     /usr/lib/systemd/system/katlos-install.service \
+    /usr/lib/systemd/system/katl-console.service \
     /usr/lib/systemd/system/katl-installer.target \
     /usr/lib/systemd/system/katl-input-apply.service \
     /usr/lib/systemd/system/katl-installer-smoke.service \
@@ -117,6 +119,8 @@ for path in \
     /etc/systemd/system/sshd.service.d/10-katl-disabled.conf \
     /etc/systemd/journald.conf.d/10-katl-installer-console.conf \
     /usr/lib/systemd/network/80-katl-installer-dhcp.network \
+    /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf \
+    /usr/lib/systemd/system/getty.target.wants/getty@tty2.service \
     /usr/lib/modules-load.d/50-katl-installer.conf
 do
     has_path "$path"
@@ -126,7 +130,10 @@ file_has /usr/lib/systemd/system/katlos-install.service "ExecStart=/usr/bin/katl
 file_has /usr/lib/systemd/system/katlos-install.service "Type=notify"
 file_has /usr/lib/systemd/system/katlos-install.service "NotifyAccess=main"
 file_has /usr/lib/systemd/system/katlos-install.service "After=katl-input-apply.service systemd-modules-load.service"
-file_has /usr/lib/systemd/system/katl-installer.target "Wants=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service"
+file_has /usr/lib/systemd/system/katl-console.service "ExecStart=/usr/bin/katl-console --mode=installer --tty=/dev/tty1"
+file_has /usr/lib/systemd/system/katl-console.service "TTYPath=/dev/tty1"
+file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "ConditionPathExists=!/usr/bin/katl-console"
+file_has /usr/lib/systemd/system/katl-installer.target "Wants=systemd-journald.service katl-console.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service"
 file_has /usr/lib/systemd/system/katl-input-apply.service "ExecStart=/usr/bin/katlos-install --apply-input"
 file_has /usr/lib/systemd/system/katl-installer-smoke.service "Katl installer ready"
 file_has /etc/systemd/system/sshd.service.d/10-katl-disabled.conf "ConditionPathExists=/etc/katl/installer-ssh.enabled"

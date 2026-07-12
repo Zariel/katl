@@ -182,10 +182,12 @@ target_go_binaries() {
     case "$1" in
         installer | installer-iso)
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlos-install" "./cmd/katlos-install" "versioned"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katl-console" "./cmd/katl-console" "versioned"
             printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
         runtime)
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlc" "./cmd/katlc" "versioned"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katl-console" "./cmd/katl-console" "versioned"
             if [[ "$vmtest_image_support" == 1 ]]; then
                 printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
             fi

@@ -28,7 +28,7 @@ func TestInstallerServiceHasOperationalReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(target), "After=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service") {
+	if !strings.Contains(string(target), "After=systemd-journald.service katl-console.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service") {
 		t.Fatal("installer target does not wait for operational installer readiness")
 	}
 	config, err := os.ReadFile(filepath.Join(root, "mkosi.profiles", "installer-image", "mkosi.conf"))

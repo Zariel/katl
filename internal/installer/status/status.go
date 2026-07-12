@@ -28,6 +28,7 @@ const (
 
 const (
 	StateRunning                    = "running"
+	StateDebugHold                  = "debug-hold"
 	StateWaitingForConfig           = "waiting-for-config"
 	StateInstallRefused             = "install-refused"
 	StateFailedBeforeMutation       = "failed-before-mutation"

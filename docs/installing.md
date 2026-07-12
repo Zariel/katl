@@ -301,6 +301,10 @@ create or operate DHCP, iPXE, or matchbox configuration.
 Boot the same `katl-installer.iso` on each node without preseed input. The
 installer mounts its embedded KatlOS image read-only, prints a handoff URL and
 one-time token to the console and journal, and waits without mutating disks.
+The VGA console keeps a KatlOS dashboard on `tty1` showing installer state,
+active network addresses, the handoff URL and token, disk-mutation status, and a
+live tail of the boot journal. Press `Ctrl+Alt+F2` for a local recovery shell;
+the dashboard, serial journal, and SSH service operate independently.
 
 The current handoff uses a bearer token over unencrypted HTTP. Use only an
 isolated provisioning network, never expose port 8080 to an untrusted network,

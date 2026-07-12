@@ -41,6 +41,21 @@ go build \
     -o "$DESTDIR/usr/bin/katlos-install" \
     ./cmd/katlos-install
 
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w -X main.version=$version -X main.commit=$commit -X main.date=$date" \
+    -o "$DESTDIR/usr/bin/katl-console" \
+    ./cmd/katl-console
+
+mkdir -p "$DESTDIR/usr/lib/systemd/system/getty.target.wants"
+ln -sf ../getty@.service "$DESTDIR/usr/lib/systemd/system/getty.target.wants/getty@tty2.service"
+
 if [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
     mkdir -p "$(dirname "$KATL_INSTALLER_PACKAGE_SET")"
     rpm \
