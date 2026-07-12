@@ -25,15 +25,14 @@ const (
 )
 
 type installApplyOptions struct {
-	endpoint     string
-	token        string
-	tokenFile    string
-	bundlePath   string
-	bundleDigest string
-	nodeName     string
-	noWait       bool
-	timeout      time.Duration
-	output       string
+	endpoint   string
+	token      string
+	tokenFile  string
+	bundlePath string
+	nodeName   string
+	noWait     bool
+	timeout    time.Duration
+	output     string
 }
 
 type installStatusOptions struct {
@@ -47,7 +46,6 @@ type installHandoffReport struct {
 	Kind         string                `json:"kind"`
 	Endpoint     string                `json:"endpoint"`
 	SelectedNode string                `json:"selectedNode,omitempty"`
-	BundleDigest string                `json:"bundleDigest,omitempty"`
 	Handoff      handoff.HandoffStatus `json:"handoff"`
 }
 
@@ -72,7 +70,6 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	cmd.Flags().StringVar(&opts.token, "token", "", "one-time installer token; --token-file avoids shell history exposure")
 	cmd.Flags().StringVar(&opts.tokenFile, "token-file", "", "protected file containing the one-time installer token")
 	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "verified Katl config bundle")
-	cmd.Flags().StringVar(&opts.bundleDigest, "config-bundle-digest", "", "expected internal config bundle manifest digest")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the config bundle")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
@@ -114,9 +111,6 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if strings.TrimSpace(opts.bundlePath) == "" {
 		return fmt.Errorf("--config-bundle is required")
 	}
-	if strings.TrimSpace(opts.bundleDigest) == "" {
-		return fmt.Errorf("--config-bundle-digest is required")
-	}
 	if strings.TrimSpace(opts.nodeName) == "" {
 		return fmt.Errorf("--node is required")
 	}
@@ -124,7 +118,6 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		return err
 	}
 	selected, err := configbundle.ReadSelectedNodeFile(opts.bundlePath, configbundle.ReadOptions{
-		ExpectedDigest:          opts.bundleDigest,
 		NodeName:                opts.nodeName,
 		AllowMissingKatlosImage: true,
 	})
@@ -147,7 +140,7 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return redactInstallError(err, token)
 	}
-	report := newInstallHandoffReport(endpoint, selected.Node.Name, selected.BundleDigest, accepted)
+	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
 	if opts.noWait {
 		return writeInstallReport(stdout, report)
 	}
@@ -183,7 +176,7 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if err != nil {
 		return err
 	}
-	return writeInstallReport(stdout, newInstallHandoffReport(endpoint, status.SelectedNode, status.InstallStatus.BundleDigest, status))
+	return writeInstallReport(stdout, newInstallHandoffReport(endpoint, status.SelectedNode, status))
 }
 
 func normalizeInstallerEndpoint(value string) (string, error) {
@@ -397,18 +390,21 @@ func requestTimeout(overall time.Duration) time.Duration {
 	return maximum
 }
 
-func newInstallHandoffReport(endpoint, node, digest string, status handoff.HandoffStatus) installHandoffReport {
+func newInstallHandoffReport(endpoint, node string, status handoff.HandoffStatus) installHandoffReport {
 	return installHandoffReport{
 		APIVersion:   installstatus.APIVersion,
 		Kind:         "InstallHandoffReport",
 		Endpoint:     endpoint,
 		SelectedNode: node,
-		BundleDigest: digest,
 		Handoff:      status,
 	}
 }
 
 func writeInstallReport(stdout io.Writer, report installHandoffReport) error {
+	report.Handoff.InstallStatus.BundleDigest = ""
+	report.Handoff.InstallStatus.SourceDigest = ""
+	report.Handoff.InstallStatus.NodeMaterialDigest = ""
+	report.Handoff.InstallStatus.InstallMaterialDigest = ""
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal installer handoff report: %w", err)

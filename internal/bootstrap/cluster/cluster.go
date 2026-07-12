@@ -131,12 +131,11 @@ type Result struct {
 }
 
 type Phase struct {
-	Name          string                    `json:"name"`
-	Node          string                    `json:"node,omitempty"`
-	Action        inventory.BootstrapAction `json:"action,omitempty"`
-	Status        string                    `json:"status"`
-	OperationID   string                    `json:"operationID,omitempty"`
-	RequestDigest string                    `json:"requestDigest,omitempty"`
+	Name        string                    `json:"name"`
+	Node        string                    `json:"node,omitempty"`
+	Action      inventory.BootstrapAction `json:"action,omitempty"`
+	Status      string                    `json:"status"`
+	OperationID string                    `json:"operationID,omitempty"`
 }
 
 const (
@@ -621,12 +620,11 @@ func (r *Result) addPhase(name, node string, action inventory.BootstrapAction, s
 
 func (r *Result) addOperationPhase(name, node string, action inventory.BootstrapAction, status string, operation operationReference) {
 	r.Phases = append(r.Phases, Phase{
-		Name:          name,
-		Node:          node,
-		Action:        action,
-		Status:        status,
-		OperationID:   operation.ID,
-		RequestDigest: operation.RequestDigest,
+		Name:        name,
+		Node:        node,
+		Action:      action,
+		Status:      status,
+		OperationID: operation.ID,
 	})
 }
 

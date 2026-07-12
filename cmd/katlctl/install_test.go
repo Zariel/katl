@@ -42,7 +42,7 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 }
 
 func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	server, err := handoff.NewHandoffServer("install-token", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,6 @@ func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
 		"--endpoint", ts.URL,
 		"--token", "install-token",
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", bundleDigest,
 		"--node", "cp-1",
 		"--no-wait",
 	}, &stdout, &stderr)
@@ -67,7 +66,7 @@ func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if report.SelectedNode != "cp-1" || report.BundleDigest != bundleDigest || report.Handoff.State != handoff.HandoffAccepted || !report.Handoff.BundleAccepted {
+	if report.SelectedNode != "cp-1" || report.Handoff.State != handoff.HandoffAccepted || !report.Handoff.BundleAccepted || strings.Contains(stdout.String(), "bundleDigest") {
 		t.Fatalf("report = %#v", report)
 	}
 	payload := server.Bundle()
@@ -77,7 +76,7 @@ func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
 }
 
 func TestInstallApplyReadsProtectedTokenFile(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	server, err := handoff.NewHandoffServer("file-token", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +94,6 @@ func TestInstallApplyReadsProtectedTokenFile(t *testing.T) {
 		"--endpoint", ts.URL,
 		"--token-file", tokenPath,
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", bundleDigest,
 		"--node", "cp-1",
 		"--no-wait",
 	}, &stdout, &stderr)
@@ -138,7 +136,6 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 		"--endpoint", ts.URL,
 		"--token", "wait-token",
 		"--config-bundle", bundlePath,
-		"--config-bundle-digest", bundleDigest,
 		"--node", "cp-1",
 		"--timeout", "5s",
 	}, &stdout, &stderr)
@@ -155,7 +152,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 }
 
 func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	var statusRequests atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
@@ -175,7 +172,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--endpoint", ts.URL, "--token", "failure-token",
-		"--config-bundle", bundlePath, "--config-bundle-digest", bundleDigest,
+		"--config-bundle", bundlePath,
 		"--node", "cp-1", "--timeout", "5s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") {
@@ -198,10 +195,10 @@ func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--endpoint", ts.URL, "--token", "local-token",
-		"--config-bundle", bundlePath, "--config-bundle-digest", "sha256:" + strings.Repeat("0", 64),
-		"--node", "cp-1", "--no-wait",
+		"--config-bundle", bundlePath,
+		"--node", "missing-node", "--no-wait",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if err == nil || !strings.Contains(err.Error(), "missing-node") {
 		t.Fatalf("run() error = %v", err)
 	}
 	if requests.Load() != 0 {
@@ -210,7 +207,7 @@ func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
 }
 
 func TestInstallApplyRedactsTokenFromHTTPFailure(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	const token = "secret-install-token"
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +223,7 @@ func TestInstallApplyRedactsTokenFromHTTPFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--endpoint", ts.URL, "--token", token,
-		"--config-bundle", bundlePath, "--config-bundle-digest", bundleDigest,
+		"--config-bundle", bundlePath,
 		"--node", "cp-1", "--no-wait",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "<redacted>") || strings.Contains(err.Error(), token) {
@@ -260,7 +257,7 @@ func TestInstallApplyRejectsInvalidEndpointAndOversizedBundle(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err = run(context.Background(), []string{
 		"install", "apply", "--endpoint", "http://installer.test:8080", "--token", "token",
-		"--config-bundle", path, "--config-bundle-digest", "sha256:" + strings.Repeat("0", 64), "--node", "cp-1",
+		"--config-bundle", path, "--node", "cp-1",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized bundle error = %v", err)
@@ -281,7 +278,7 @@ func installTestStatus(handoffState handoff.HandoffState, state, step string) ha
 }
 
 func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	var submitted atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -300,7 +297,7 @@ func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--endpoint", ts.URL, "--token", "token",
-		"--config-bundle", bundlePath, "--config-bundle-digest", bundleDigest,
+		"--config-bundle", bundlePath,
 		"--node", "cp-1", "--timeout", "3s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "became unavailable") || !strings.Contains(err.Error(), "Partition") {
@@ -309,12 +306,12 @@ func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
 }
 
 func TestInstallTokenFlagsAreExclusive(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	for _, args := range [][]string{
 		{"--token", "a", "--token-file", "token-file"},
 		{},
 	} {
-		base := []string{"install", "apply", "--endpoint", "http://installer.test:8080", "--config-bundle", bundlePath, "--config-bundle-digest", bundleDigest, "--node", "cp-1", "--no-wait"}
+		base := []string{"install", "apply", "--endpoint", "http://installer.test:8080", "--config-bundle", bundlePath, "--node", "cp-1", "--no-wait"}
 		base = append(base, args...)
 		var stdout, stderr bytes.Buffer
 		err := run(context.Background(), base, &stdout, &stderr)
@@ -325,7 +322,7 @@ func TestInstallTokenFlagsAreExclusive(t *testing.T) {
 }
 
 func TestInstallTokenFileMustBePrivate(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	bundlePath, _ := writeConfigBundle(t)
 	tokenPath := filepath.Join(t.TempDir(), "installer.token")
 	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -333,7 +330,7 @@ func TestInstallTokenFileMustBePrivate(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--endpoint", "http://installer.test:8080", "--token-file", tokenPath,
-		"--config-bundle", bundlePath, "--config-bundle-digest", bundleDigest, "--node", "cp-1", "--no-wait",
+		"--config-bundle", bundlePath, "--node", "cp-1", "--no-wait",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "permissions") {
 		t.Fatalf("run() error = %v", err)

@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -218,12 +219,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(accepted)
-	if err != nil {
-		return fmt.Errorf("marshal operation accepted: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeOperationAccepted(stdout, accepted)
 }
 
 type wipeClusterOptions struct {
@@ -499,7 +495,6 @@ type wipeClusterNodeResult struct {
 	Accepted      bool     `json:"accepted"`
 	OperationID   string   `json:"operationID,omitempty"`
 	OperationKind string   `json:"operationKind,omitempty"`
-	RequestDigest string   `json:"requestDigest,omitempty"`
 	Phase         string   `json:"phase,omitempty"`
 	Terminal      bool     `json:"terminal,omitempty"`
 	Result        string   `json:"result,omitempty"`
@@ -721,7 +716,6 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 			result.Accepted = true
 			result.OperationID = accepted.GetOperationId()
 			result.OperationKind = accepted.GetOperationKind()
-			result.RequestDigest = accepted.GetRequestDigest()
 			if status := accepted.GetInitialStatus(); status != nil {
 				result.Phase = status.GetPhase()
 				result.Terminal = status.GetTerminal()
@@ -915,7 +909,6 @@ type configBundleOptions struct {
 type nodeConfigInputOptions struct {
 	sourcePath     string
 	bundlePath     string
-	bundleDigest   string
 	nodeName       string
 	sourceID       string
 	desiredVersion string
@@ -927,14 +920,11 @@ type configValidationNode struct {
 }
 
 type configValidationReport struct {
-	APIVersion      string                 `json:"apiVersion"`
-	Kind            string                 `json:"kind"`
-	Source          string                 `json:"source"`
-	ClusterName     string                 `json:"clusterName"`
-	SourceDigest    string                 `json:"sourceDigest"`
-	BundleDigest    string                 `json:"bundleDigest"`
-	ArtifactVersion string                 `json:"artifactVersion"`
-	Nodes           []configValidationNode `json:"nodes"`
+	APIVersion  string                 `json:"apiVersion"`
+	Kind        string                 `json:"kind"`
+	Source      string                 `json:"source"`
+	ClusterName string                 `json:"clusterName"`
+	Nodes       []configValidationNode `json:"nodes"`
 }
 
 func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -964,14 +954,11 @@ func runConfigValidate(sourcePath string, stdout, stderr io.Writer) error {
 		nodes = append(nodes, configValidationNode{Name: node.Name, SystemRole: node.SystemRole})
 	}
 	report := configValidationReport{
-		APIVersion:      configbundle.APIVersion,
-		Kind:            "ClusterConfigValidation",
-		Source:          sourcePath,
-		ClusterName:     result.Manifest.ClusterName,
-		SourceDigest:    result.Manifest.Source.SourceDigest,
-		BundleDigest:    result.Digest,
-		ArtifactVersion: result.Manifest.ArtifactVersion,
-		Nodes:           nodes,
+		APIVersion:  configbundle.APIVersion,
+		Kind:        "ClusterConfigValidation",
+		Source:      sourcePath,
+		ClusterName: result.Manifest.ClusterName,
+		Nodes:       nodes,
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -999,11 +986,10 @@ func newConfigSchemaCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 type configBundleReport struct {
-	APIVersion   string `json:"apiVersion"`
-	Kind         string `json:"kind"`
-	Output       string `json:"output"`
-	BundleDigest string `json:"bundleDigest"`
-	ArchiveSize  int64  `json:"archiveSizeBytes"`
+	APIVersion  string `json:"apiVersion"`
+	Kind        string `json:"kind"`
+	Output      string `json:"output"`
+	ArchiveSize int64  `json:"archiveSizeBytes"`
 }
 
 func newConfigBundleCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -1041,11 +1027,10 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 		return err
 	}
 	report := configBundleReport{
-		APIVersion:   configbundle.APIVersion,
-		Kind:         "ConfigBundleReport",
-		Output:       opts.outputPath,
-		BundleDigest: result.Digest,
-		ArchiveSize:  result.ArchiveSize,
+		APIVersion:  configbundle.APIVersion,
+		Kind:        "ConfigBundleReport",
+		Output:      opts.outputPath,
+		ArchiveSize: result.ArchiveSize,
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -1080,7 +1065,6 @@ func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
 func addNodeConfigInputFlags(cmd *cobra.Command, opts *nodeConfigInputOptions) {
 	cmd.Flags().StringVar(&opts.sourcePath, "source", "", "ClusterConfig source YAML")
 	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "verified Katl config bundle")
-	cmd.Flags().StringVar(&opts.bundleDigest, "config-bundle-digest", "", "expected internal config bundle manifest digest")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from cluster intent")
 	cmd.Flags().StringVar(&opts.sourceID, "source-id", "", "runtime configuration source id; defaults to the cluster name")
 	cmd.Flags().StringVar(&opts.desiredVersion, "desired-version", "", "monotonic unsigned runtime configuration version")
@@ -1098,15 +1082,7 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 	if strings.TrimSpace(opts.desiredVersion) == "" {
 		return nil, fmt.Errorf("--desired-version is required")
 	}
-	if fromSource && strings.TrimSpace(opts.bundleDigest) != "" {
-		return nil, fmt.Errorf("--config-bundle-digest requires --config-bundle")
-	}
-	if fromBundle && strings.TrimSpace(opts.bundleDigest) == "" {
-		return nil, fmt.Errorf("--config-bundle-digest is required with --config-bundle")
-	}
-
 	readOptions := configbundle.ReadOptions{
-		ExpectedDigest:          opts.bundleDigest,
 		NodeName:                opts.nodeName,
 		AllowMissingKatlosImage: true,
 	}
@@ -1217,8 +1193,8 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	var configYAML []byte
 	var err error
 	if fileInput {
-		if strings.TrimSpace(opts.nodeConfig.bundleDigest) != "" || strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {
-			return fmt.Errorf("--config-bundle-digest, --source-id, and --desired-version require --source or --config-bundle")
+		if strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {
+			return fmt.Errorf("--source-id and --desired-version require --source or --config-bundle")
 		}
 		configYAML, err = os.ReadFile(opts.configPath)
 		if err != nil {
@@ -1256,7 +1232,9 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		if err != nil {
 			return err
 		}
-		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(result)
+		publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
+		publicResult.RequestDigest = ""
+		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicResult)
 		if err != nil {
 			return fmt.Errorf("marshal validation result: %w", err)
 		}
@@ -1325,12 +1303,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(accepted)
-	if err != nil {
-		return fmt.Errorf("marshal operation accepted: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeOperationAccepted(stdout, accepted)
 }
 
 func configApplyOperationKind(acceptedMode string) (string, error) {
@@ -1556,7 +1529,6 @@ type clusterBootstrapOptions struct {
 	addresses                              addressOverrides
 	inventoryPath                          string
 	configBundlePath                       string
-	configBundleDigest                     string
 	initNode                               string
 	joinWorker                             string
 	controlPlaneEndpoint                   string
@@ -1585,7 +1557,6 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
 	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to verified Katl config bundle")
-	cmd.Flags().StringVar(&opts.configBundleDigest, "config-bundle-digest", "", "expected internal config bundle manifest digest")
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
@@ -1670,9 +1641,6 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 		return inventory.Inventory{}, fmt.Errorf("--config-bundle and --inventory are mutually exclusive")
 	}
 	if bundlePath == "" {
-		if strings.TrimSpace(opts.configBundleDigest) != "" {
-			return inventory.Inventory{}, fmt.Errorf("--config-bundle-digest requires --config-bundle")
-		}
 		return loadInventory(inventoryPath)
 	}
 	if strings.TrimSpace(opts.kubernetesBundle) != "" {
@@ -1681,7 +1649,7 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
 		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in --config-bundle")
 	}
-	bundle, err := configbundle.ReadBundleFile(bundlePath, opts.configBundleDigest)
+	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
@@ -1781,7 +1749,7 @@ func printBootstrapResult(stdout io.Writer, result cluster.Result) {
 	for _, phase := range result.Phases {
 		operationFields := ""
 		if phase.OperationID != "" {
-			operationFields = fmt.Sprintf(" operation-id=%s request-digest=%s", phase.OperationID, phase.RequestDigest)
+			operationFields = fmt.Sprintf(" operation-id=%s", phase.OperationID)
 		}
 		if phase.Node != "" {
 			fmt.Fprintf(stdout, "phase=%s node=%s status=%s%s\n", phase.Name, phase.Node, phase.Status, operationFields)

@@ -229,12 +229,10 @@ Validate the complete source without writing output, then compile it:
 ```sh
 katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
-sha256sum ./katl-lab.katlcfg
 ```
 
-Save both values printed by these commands. `bundleDigest` identifies the
-verified bundle manifest inside the archive; the `sha256sum` value protects the
-archive bytes while a PXE node downloads them. They are different digests.
+Katl derives and verifies the bundle's content-addressed integrity metadata
+whenever it reads the file. Operators do not need to retain or pass it.
 
 The destructive guard has two parts: the resolved node must set
 `install.wipeTarget: true`, and boot input must set `katl.install.mode=auto`.
@@ -265,7 +263,6 @@ Current bundle-oriented kernel arguments are:
 ```text
 katl.bundle.url=<config bundle URL>
 katl.bundle.sha256=<config bundle archive SHA-256>
-katl.bundle.digest=<internal bundle manifest digest>
 katl.bundle=<local config bundle path>
 katl.node=<node name>
 katl.install.mode=auto
@@ -276,8 +273,8 @@ ip=...
 ```
 
 A URL bundle must have `katl.bundle.sha256`; otherwise it cannot authorize disk
-mutation. Supplying `katl.bundle.digest` is strongly recommended and detects a
-valid archive that contains the wrong compiled cluster. Without input, or with
+mutation. The installer derives the internal bundle identity after verifying
+the downloaded archive. Without input, or with
 `katl.wait-for-config=1`, the installer waits for handoff. Debug mode never
 starts an install.
 
@@ -288,13 +285,12 @@ Illustrative iPXE entry for `cp-1`:
 set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
 set bundle_sha <config-bundle-archive-sha256>
-set bundle_digest sha256:<internal-bundle-manifest-digest>
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.bundle.sha256=${bundle_sha} katl.bundle.digest=${bundle_digest} katl.install.mode=auto
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.bundle.sha256=${bundle_sha} katl.install.mode=auto
 initrd ${base}/katl-installer.initrd
 boot
 ```
 
-Matchbox profiles carry the same five `katl.*` arguments. Groups should select
+Matchbox profiles carry the same four `katl.*` arguments. Groups should select
 only `katl.node`; they do not need a different bundle URL or archive digest per
 node. Katl does not create or operate DHCP, iPXE, or matchbox configuration.
 
@@ -319,7 +315,6 @@ Copy the one-time token from the console into a protected temporary file, then
 submit the verified bundle:
 
 ```sh
-BUNDLE_DIGEST='sha256:...'
 umask 077
 read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
 printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
@@ -329,15 +324,14 @@ katlctl install apply \
   --endpoint "$INSTALLER_ENDPOINT" \
   --token-file ./installer.token \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --node cp-1
 
 rm -f ./installer.token
 ```
 
 For the worker, boot the same ISO and submit the same file with
-`--node worker-1`. `katlctl install apply` validates the archive, internal
-bundle digest, and selected node before contacting the installer. The installer
+`--node worker-1`. `katlctl install apply` validates the archive integrity and
+selected node before contacting the installer. The installer
 then validates the compiled install material and embedded KatlOS image before
 it can mutate the selected disk. The endpoint refuses later submissions.
 
@@ -366,7 +360,7 @@ unless you are deliberately integrating at that lower-level boundary.
 `katlos-install` validates before destructive disk mutation:
 
 ```text
-config bundle archive and internal manifest digests
+config bundle archive integrity and content descriptors
 selected node and compiled install manifest schema
 destructive install guard
 target disk selector and size
@@ -441,14 +435,11 @@ patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, bootstrap directly from the same verified bundle. Use the
-`bundleDigest` printed by `katlctl config bundle`, not the archive SHA-256:
+management endpoints, bootstrap directly from the same verified bundle:
 
 ```text
-BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
@@ -516,12 +507,10 @@ If the source has already been compiled, use the verified bundle instead of
 recompiling it:
 
 ```text
-BUNDLE_DIGEST='sha256:...'
 katlctl config apply validate \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --node cp-1 \
   --desired-version 2 \
   --candidate-generation config-2 \
@@ -587,7 +576,7 @@ installer console output
 journalctl -b
 journalctl -b -u katlos-install.service
 /var/lib/katl/install status and copied manifest files
-the config bundle, selected node name, and both bundle digests
+the config bundle and selected node name
 the KatlOS image metadata and SHA-256 file
 systemctl status katlc-agent.service
 systemctl status katl-boot-complete.target
@@ -597,8 +586,8 @@ Common failures:
 
 ```text
 bundle or selected node rejected
-  Run katlctl config validate again. Check the selected node name, internal
-  bundleDigest, archive SHA-256, SSH authorized keys, system role, kubeadm
+  Run katlctl config validate again. Check the selected node name, SSH
+  authorized keys, system role, kubeadm
   config reference, and target disk. PXE sources must include spec.katlosImage;
   ISO installs derive it from the embedded media descriptor.
 

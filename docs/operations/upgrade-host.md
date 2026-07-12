@@ -45,18 +45,16 @@ candidate generation, resource locks, and refusal diagnostics.
 
 ## Stage the Trial
 
-Run the identical command without `--plan`. Save the returned `operationId` and
-`requestDigest`. The response means accepted, not staged successfully.
+Run the identical command without `--plan`. Save the returned `operationId`.
+The response means accepted, not staged successfully.
 
-Follow the accepted operation through the node agent, binding the query to the
-returned request digest:
+Follow the accepted operation through the node agent:
 
 ```sh
 katlctl operation status \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 

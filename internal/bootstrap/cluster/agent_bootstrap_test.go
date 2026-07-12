@@ -111,7 +111,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "control-plane-join", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
-	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[2].RequestDigest != "digest-init" || result.Phases[3].OperationID != "bootstrap-join-control-plane-1" || result.Phases[3].RequestDigest != "digest-cp-join" {
+	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[3].OperationID != "bootstrap-join-control-plane-1" {
 		t.Fatalf("operation phases = %#v", result.Phases)
 	}
 	if len(cpClient.createMaterialRequests) != 1 {
@@ -146,7 +146,7 @@ func TestRunAgentBootstrapPreservesFailedOperationReference(t *testing.T) {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
 	failed := result.Phases[len(result.Phases)-1]
-	if failed.Status != "failed" || failed.OperationID != "bootstrap-init-failed" || failed.RequestDigest != "digest-failed" {
+	if failed.Status != "failed" || failed.OperationID != "bootstrap-init-failed" {
 		t.Fatalf("failed phase = %#v", failed)
 	}
 }

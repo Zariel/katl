@@ -141,7 +141,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 		if terminal.Result != operation.ResultSucceeded {
 			return fmt.Errorf("node %s stopped rollout: %s: %s", t.node.Name, terminal.Phase, terminal.FailureReason)
 		}
-		summary = append(summary, map[string]string{"node": t.node.Name, "operationID": accepted.OperationId, "requestDigest": accepted.RequestDigest, "result": terminal.Result})
+		summary = append(summary, map[string]string{"node": t.node.Name, "operationID": accepted.OperationId, "result": terminal.Result})
 	}
 	return json.NewEncoder(stdout).Encode(map[string]any{"rolloutID": opts.rolloutID, "coordinator": opts.coordinator, "nodes": summary, "automaticRollback": false})
 }

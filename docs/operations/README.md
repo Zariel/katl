@@ -34,7 +34,6 @@ Keep these artifacts together for the life of an evaluation:
 
 - the exact KatlOS release URL, assets, checksums, and provenance result;
 - the source `ClusterConfig` and compiled `.katlcfg` bundle;
-- both the config bundle archive SHA-256 and its internal `bundleDigest`;
 - the digest-pinned Kubernetes OCI reference;
 - one protected agent token file per node;
 - the kubeconfig, operation IDs, generation IDs, and relevant timestamps; and
@@ -52,8 +51,8 @@ Treat command outcomes precisely:
 Use a unique, stable `--client-request-id` for each intended mutation. Reuse it
 only when retrying the exact same request. Changing inputs requires a new ID.
 
-For every accepted mutation, retain both `operationId` and `requestDigest`.
-Use the generic status path for config apply, host upgrade, bootstrap, and
+For every accepted mutation, retain its `operationId`. Use the generic status
+path for config apply, host upgrade, bootstrap, and
 destructive reset:
 
 ```sh
@@ -61,7 +60,6 @@ katlctl operation status \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 

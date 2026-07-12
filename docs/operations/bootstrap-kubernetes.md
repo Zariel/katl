@@ -7,7 +7,6 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same verified `.katlcfg` bundle used for installation is available;
-- its internal `bundleDigest` is recorded;
 - each node has a reachable address and protected per-node token file;
 - the Kubernetes bundle reference is digest-pinned and compatible with the
   KatlOS runtime;
@@ -26,11 +25,10 @@ been installed. Do not silently replace the bundle after installation:
 ```sh
 katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
-sha256sum ./katl-lab.katlcfg
 ```
 
-Use the `bundleDigest` printed by `config bundle`, not the archive SHA-256, in
-the bootstrap command.
+Katl derives and verifies the bundle's integrity metadata when it reads the
+file; it is not an operator input.
 
 ## Dry Run
 
@@ -38,11 +36,9 @@ Validate topology, node access, bundle selection, and bootstrap ordering without
 running kubeadm:
 
 ```sh
-BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --dry-run \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig
 ```
@@ -61,10 +57,8 @@ Kubernetes version, and bundle reference. A dry run must not create generation
 Run the same command without `--dry-run`:
 
 ```sh
-BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
@@ -77,14 +71,13 @@ Save the command output and returned operation IDs.
 
 Bootstrap waits for its submitted operations, but their node-local records
 remain queryable afterward. If the workstation disconnects or a result is
-unclear, query the affected node with the returned ID and digest:
+unclear, query the affected node with the returned operation ID:
 
 ```sh
 katlctl operation status \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --operation-id "$OPERATION_ID" \
-  --request-digest "$REQUEST_DIGEST" \
   --watch
 ```
 
@@ -96,10 +89,8 @@ management workflow, or explicitly include reviewed manifests and readiness
 conditions:
 
 ```sh
-BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --bootstrap-manifest ./cni.yaml \
