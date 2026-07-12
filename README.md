@@ -108,7 +108,7 @@ metadata:
 spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
-    version: v1.36.0
+    version: v1.36.1
     bundle: ghcr.io/katl-dev/kubernetes:<version>
   # defaults, kubeadmConfigs, and nodes omitted here; use the complete example
   # in docs/installing.md.

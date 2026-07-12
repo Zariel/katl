@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -95,8 +96,10 @@ func TestPublicKubernetesBundleWorkflowContract(t *testing.T) {
 		"workflow_dispatch:",
 		"packages: read",
 		"scripts/check-public-kubernetes-bundle",
-		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3",
-		"sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b",
+		"source mkosi.profiles/kubernetes-sysext/kubernetes.env",
+		`artifact_version="${KATL_KUBERNETES_PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"`,
+		`verification="$(scripts/check-public-kubernetes-bundle "$image")"`,
+		`digest="${verification##*@}"`,
 		"gh attestation verify",
 		"docker login ghcr.io",
 		"--repo katl-dev/katl",
@@ -111,6 +114,7 @@ func TestPublicKubernetesBundleWorkflowContract(t *testing.T) {
 	for _, value := range []string{
 		"https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull",
 		`fetch_manifest "$tag"`,
+		`resolved_digest="sha256:$(sha256sum "$work/tag.json"`,
 		`fetch_manifest "$expected_digest"`,
 		`cmp --silent "$work/tag.json" "$work/digest.json"`,
 		`sha256sum "$blob"`,
@@ -146,15 +150,38 @@ func TestKubernetesBundleRenovateContract(t *testing.T) {
 
 	for _, value := range []string{
 		`https://pkgs.k8s.io/core:/stable:/v1.36/rpm/repodata/`,
-		`KATL_KUBERNETES_PAYLOAD_DEFAULT=v1.36.1`,
 		`KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=1`,
-		`KATL_KUBERNETES_KUBEADM_VERSION:=0:1.36.1-150500.1.1`,
-		`KATL_KUBERNETES_KUBELET_VERSION:=0:1.36.1-150500.1.1`,
-		`KATL_KUBERNETES_KUBECTL_VERSION:=0:1.36.1-150500.1.1`,
-		`KATL_KUBERNETES_CRITOOLS_VERSION:=0:1.36.0-150500.1.1`,
+		`KATL_KUBERNETES_PAYLOAD_DEFAULT=`,
+		`KATL_KUBERNETES_KUBEADM_VERSION:=`,
+		`KATL_KUBERNETES_KUBELET_VERSION:=`,
+		`KATL_KUBERNETES_KUBECTL_VERSION:=`,
+		`KATL_KUBERNETES_CRITOOLS_VERSION:=`,
 	} {
 		if !strings.Contains(manifest, value) {
 			t.Fatalf("Kubernetes release lock missing %q", value)
+		}
+	}
+	payload := regexp.MustCompile(`KATL_KUBERNETES_PAYLOAD_DEFAULT=v([0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(manifest)
+	if payload == nil {
+		t.Fatal("Kubernetes release lock has no exact payload version")
+	}
+	for _, name := range []string{"KUBEADM", "KUBELET", "KUBECTL"} {
+		match := regexp.MustCompile(`KATL_KUBERNETES_` + name + `_VERSION:=0:([0-9]+\.[0-9]+\.[0-9]+)-`).FindStringSubmatch(manifest)
+		if match == nil || match[1] != payload[1] {
+			t.Fatalf("%s package version does not match payload %s", name, payload[1])
+		}
+	}
+
+	prepare := string(mustReadFile(t, repo+"/scripts/prepare-kubernetes-release"))
+	for _, value := range []string{
+		"go run ./cmd/katl-kubernetes-release prepare",
+		"scripts/mkosi build-runtime",
+		"scripts/mkosi build-kubernetes-sysext",
+		"scripts/check-kubernetes-sysext",
+		"go run ./cmd/katl-kubernetes-release identity",
+	} {
+		if !strings.Contains(prepare, value) {
+			t.Fatalf("Kubernetes release preparation missing %q", value)
 		}
 	}
 }
