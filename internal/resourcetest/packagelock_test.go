@@ -31,6 +31,36 @@ func TestVerifyPackageLockMatchesManifest(t *testing.T) {
 	}
 }
 
+func TestVerifyPackageLockSelection(t *testing.T) {
+	lock := validPackageLock()
+	extraSet := lock.PackageSets[0]
+	extraSet.Name = "kubernetes-sysext"
+	extraSet.Source = "mkosi.profiles/kubernetes-sysext"
+	lock.PackageSets = append(lock.PackageSets, extraSet)
+	extraProfile := lock.MkosiProfiles[0]
+	extraProfile.Name = "kubernetes-sysext"
+	extraProfile.Path = "mkosi.profiles/kubernetes-sysext"
+	extraProfile.PackageSetRef = extraSet.Name
+	lock.MkosiProfiles = append(lock.MkosiProfiles, extraProfile)
+	digest := digestForLock(t, lock)
+	manifest := manifestForPackageLock(digest)
+
+	if err := VerifyPackageLock(PackageLockVerification{
+		Lock: lock, Manifest: manifest, LockDigest: digest, RequiredPackageSets: []string{"runtime"},
+	}); err != nil {
+		t.Fatalf("VerifyPackageLock() selected error = %v", err)
+	}
+	if err := VerifyPackageLock(PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: digest}); err == nil || !strings.Contains(err.Error(), "kubernetes-sysext") {
+		t.Fatalf("VerifyPackageLock() unscoped error = %v, want missing kubernetes-sysext", err)
+	}
+	err := VerifyPackageLock(PackageLockVerification{
+		Lock: lock, Manifest: manifest, LockDigest: digest, RequiredPackageSets: []string{"missing"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "selected package set \"missing\" is missing from package lock") {
+		t.Fatalf("VerifyPackageLock() unknown selection error = %v", err)
+	}
+}
+
 func TestVerifyPackageLockRejectsPackageDrift(t *testing.T) {
 	lock := validPackageLock()
 	digest := digestForLock(t, lock)
