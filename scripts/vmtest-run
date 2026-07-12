@@ -90,6 +90,10 @@ vmtest_requests_kubernetes_upgrade() {
     return 1
 }
 
+vmtest_uses_published_kubernetes_upgrade_bundles() {
+	[[ -n "${KATL_VMTEST_KUBERNETES_BUNDLE:-}" && -n "${KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE:-}" ]]
+}
+
 usage() {
     cat <<'EOF'
 usage: scripts/vmtest-run [vmtest-run options] [go test args]
@@ -320,6 +324,15 @@ validate_current_artifact_inputs() {
     if has_explicit_artifact_index || has_explicit_installer_artifact || has_explicit_runtime_artifact || has_explicit_install_manifest; then
         setup_failures+=("explicit installer artifact inputs are not supported by scripts/vmtest-run; use current repo artifacts validated by katl-resource-lock")
     fi
+	if vmtest_requests_kubernetes_upgrade; then
+		local published_source_set=0
+		local published_target_set=0
+		[[ -n "${KATL_VMTEST_KUBERNETES_BUNDLE:-}" ]] && published_source_set=1
+		[[ -n "${KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE:-}" ]] && published_target_set=1
+		if [[ "$published_source_set" != "$published_target_set" ]]; then
+			setup_failures+=("published Kubernetes upgrade proof requires both KATL_VMTEST_KUBERNETES_BUNDLE and KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")
+		fi
+	fi
 }
 
 build_default_artifacts() {
@@ -339,10 +352,12 @@ build_default_artifacts() {
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
 			targets+=("build-katlos-upgrade-image")
-				if vmtest_requests_kubernetes_upgrade; then
+				if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
 					targets+=("build-kubernetes-upgrade-sysext")
 				fi
-                targets+=("build-kubernetes-sysext")
+				if ! vmtest_requests_kubernetes_upgrade || ! vmtest_uses_published_kubernetes_upgrade_bundles; then
+					targets+=("build-kubernetes-sysext")
+				fi
             elif ! has_explicit_runtime_artifact; then
                 targets+=("build-runtime")
             fi
@@ -389,6 +404,22 @@ build_default_artifacts() {
         fi
         rm -f "$log"
 	done
+	if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
+		verify_kubernetes_upgrade_artifacts
+	fi
+}
+
+verify_kubernetes_upgrade_artifacts() {
+	local base="$repo_root/_build/mkosi/katl-kubernetes.raw"
+	local target="$repo_root/_build/mkosi/katl-kubernetes-upgrade.raw"
+	printf 'vmtest verifying source Kubernetes sysext independently: %s\n' "$base" >&2
+	"$repo_root/scripts/check-kubernetes-sysext" "$base"
+	printf 'vmtest verifying target Kubernetes sysext independently: %s\n' "$target" >&2
+	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
+		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
+		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
+		KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}" \
+		"$repo_root/scripts/check-kubernetes-sysext" "$target"
 }
 
 mkosi_cache_label_for_target() {
@@ -462,14 +493,26 @@ prepare_resource_manifest() {
     fi
 
     local revision
+	local -a lock_args
     revision="$(git_revision)"
     printf 'vmtest validating current repo artifacts: katl-resource-lock prepare-mkosi --mode strict\n' >&2
-    if ! run_resource_lock prepare-mkosi \
+	lock_args=(prepare-mkosi \
         -manifest "$resource_manifest" \
         -lock "$package_lock" \
         -mode strict \
         -run-id "$run_id" \
-        -git-revision "$revision"; then
+		-git-revision "$revision")
+	if vmtest_requests_kubernetes_upgrade; then
+		# The committed lock names the selected release payload. Upgrade tests
+		# deliberately build a different source payload, so validate the KatlOS
+		# package sets here and validate both Kubernetes sysexts independently.
+		lock_args+=(
+			-package-set installer-image
+			-package-set runtime
+			-package-set katlos-install-image
+		)
+	fi
+	if ! run_resource_lock "${lock_args[@]}"; then
         setup_failures+=("strict vmtest resource manifest validation failed")
         return 1
     fi

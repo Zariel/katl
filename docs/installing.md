@@ -560,11 +560,13 @@ that image and validates component compatibility before selection.
 
 Kubernetes version upgrades remain separate from day-one install. They require a
 kubeadm-aware operation that can make the target `kubeadm` available before the
-target kubelet starts. Until that path is implemented and tested, treat
-Kubernetes upgrades as unsupported operational work. Producing and publishing a
-new sysext such as `v1.36.1` is useful immediately for fresh installs and
-future upgrade planning, but it does not by itself make `v1.36.0` to `v1.36.1`
-mutation safe on an existing cluster.
+target kubelet starts. Katl's node-side operation and VM proof now exercise a
+control-plane-first `v1.36.0` to `v1.36.1` upgrade, including an etcd snapshot,
+reboots, worker upgrade, and final cluster health. There is not yet a supported
+`katlctl` command that coordinates that operation across an operator's cluster,
+so continue to treat Kubernetes upgrades as unsupported operational work. A
+published sysext alone is not sufficient authorization to perform the mutation
+manually.
 
 ## Troubleshooting
 

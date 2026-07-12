@@ -1025,6 +1025,9 @@ func kubernetesBundleServerCertificate(gateway string) (tls.Certificate, []byte,
 }
 
 func installKubernetesBundleCA(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, bundle threeControlPlaneKubernetesPayloadBundle) error {
+	if len(bundle.CACertPEM) == 0 {
+		return nil
+	}
 	if err := writeNodeFile(ctx, node, bundle.CACertGuestPath, bundle.CACertPEM, 0o644, false); err != nil {
 		return err
 	}
