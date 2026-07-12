@@ -231,6 +231,46 @@ func TestConfigRenderNodeFromSource(t *testing.T) {
 	}
 }
 
+func TestConfigRenderNodeFromMediaBundle(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	source := configBundleSource()
+	imageStart := strings.Index(source, "  katlosImage:\n")
+	defaultsStart := strings.Index(source, "  defaults:\n")
+	if imageStart < 0 || defaultsStart <= imageStart {
+		t.Fatal("source image block not found")
+	}
+	if err := os.WriteFile(sourcePath, []byte(source[:imageStart]+source[defaultsStart:]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	bundlePath := filepath.Join(dir, "cluster.katlcfg")
+	if err := os.WriteFile(bundlePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"config", "render-node",
+		"--config-bundle", bundlePath,
+		"--config-bundle-digest", result.Digest,
+		"--node", "cp-1",
+		"--desired-version", "2",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	request, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(stdout.String()), configapply.TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("decode rendered node config: %v\n%s", err, stdout.String())
+	}
+	if request.SourceID != "lab" || request.DesiredVersion != "2" {
+		t.Fatalf("rendered request metadata = %#v", request)
+	}
+}
+
 func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "cluster.yaml")

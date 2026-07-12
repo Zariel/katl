@@ -18,9 +18,10 @@ import (
 )
 
 type ReadOptions struct {
-	ExpectedDigest     string
-	NodeName           string
-	DefaultKatlosImage manifest.KatlosImage
+	ExpectedDigest          string
+	NodeName                string
+	DefaultKatlosImage      manifest.KatlosImage
+	AllowMissingKatlosImage bool
 }
 
 type SelectedNodeMaterial struct {
@@ -118,7 +119,10 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 	if err != nil {
 		return SelectedNodeMaterial{}, fmt.Errorf("read selected install material: %w", err)
 	}
-	installManifest, defaulted, err := manifest.DecodeWithDefaultImage(bytes.NewReader(installData), options.DefaultKatlosImage)
+	installManifest, defaulted, err := manifest.DecodeWithOptions(bytes.NewReader(installData), manifest.DecodeOptions{
+		DefaultKatlosImage:      options.DefaultKatlosImage,
+		AllowMissingKatlosImage: options.AllowMissingKatlosImage,
+	})
 	if err != nil {
 		return SelectedNodeMaterial{}, fmt.Errorf("decode selected install material %q: %w", node.Name, err)
 	}
@@ -294,6 +298,9 @@ func validateBundleManifest(bundle BundleManifest) error {
 
 func validateSelectedCompatibility(bundle BundleManifest, installManifest manifest.Manifest) error {
 	image := installManifest.KatlosImage
+	if manifest.KatlosImageEmpty(image) {
+		return nil
+	}
 	if len(bundle.Compatibility.SupportedArchitectures) > 0 && !containsString(bundle.Compatibility.SupportedArchitectures, image.Architecture) {
 		return fmt.Errorf("config bundle does not support selected install architecture %q", image.Architecture)
 	}

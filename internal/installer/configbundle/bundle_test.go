@@ -115,6 +115,13 @@ func TestBuildArchiveDefersKatlosImageToInstallMedia(t *testing.T) {
 	if _, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1"}); err == nil || !strings.Contains(err.Error(), "katlosImage") {
 		t.Fatalf("ReadSelectedNode() error = %v, want missing media image rejection", err)
 	}
+	selected, err = ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() runtime rendering error = %v", err)
+	}
+	if !manifest.KatlosImageEmpty(selected.InstallManifest.KatlosImage) || selected.KatlosImageFromMedia {
+		t.Fatalf("selected runtime image = %#v, from media = %v", selected.InstallManifest.KatlosImage, selected.KatlosImageFromMedia)
+	}
 }
 
 func TestInstallingGuideClusterConfigCompiles(t *testing.T) {
