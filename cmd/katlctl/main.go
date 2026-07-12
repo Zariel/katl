@@ -1103,7 +1103,11 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 		return nil, fmt.Errorf("--config-bundle-digest is required with --config-bundle")
 	}
 
-	readOptions := configbundle.ReadOptions{ExpectedDigest: opts.bundleDigest, NodeName: opts.nodeName}
+	readOptions := configbundle.ReadOptions{
+		ExpectedDigest:          opts.bundleDigest,
+		NodeName:                opts.nodeName,
+		AllowMissingKatlosImage: true,
+	}
 	var selected configbundle.SelectedNodeMaterial
 	var err error
 	if fromSource {

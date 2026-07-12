@@ -157,6 +157,15 @@ func Decode(reader io.Reader) (Manifest, error) {
 }
 
 func DecodeWithDefaultImage(reader io.Reader, defaultImage KatlosImage) (Manifest, bool, error) {
+	return DecodeWithOptions(reader, DecodeOptions{DefaultKatlosImage: defaultImage})
+}
+
+type DecodeOptions struct {
+	DefaultKatlosImage      KatlosImage
+	AllowMissingKatlosImage bool
+}
+
+func DecodeWithOptions(reader io.Reader, options DecodeOptions) (Manifest, bool, error) {
 	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 
@@ -177,11 +186,11 @@ func DecodeWithDefaultImage(reader io.Reader, defaultImage KatlosImage) (Manifes
 		return Manifest{}, false, fmt.Errorf("kind must be %s", Kind)
 	}
 	defaulted := false
-	if KatlosImageEmpty(manifest.KatlosImage) && !KatlosImageEmpty(defaultImage) {
-		manifest.KatlosImage = defaultImage
+	if KatlosImageEmpty(manifest.KatlosImage) && !KatlosImageEmpty(options.DefaultKatlosImage) {
+		manifest.KatlosImage = options.DefaultKatlosImage
 		defaulted = true
 	}
-	if err := Validate(manifest); err != nil {
+	if err := ValidateWithOptions(manifest, ValidateOptions{AllowMissingKatlosImage: options.AllowMissingKatlosImage}); err != nil {
 		return Manifest{}, false, err
 	}
 	return manifest, defaulted, nil
