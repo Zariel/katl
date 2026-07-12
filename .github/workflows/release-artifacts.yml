@@ -135,6 +135,16 @@ jobs:
               KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
             '
 
+      - name: Verify release resource lock
+        shell: bash
+        run: |
+          go run ./cmd/katl-resource-lock prepare-mkosi \
+            -manifest _build/release-resource-test-manifest.json \
+            -lock mkosi.profiles/resource-package-lock.json \
+            -mode strict \
+            -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
+            -git-revision "$GITHUB_SHA"
+
       - name: Stage supported publication artifacts
         shell: bash
         run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
