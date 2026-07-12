@@ -90,6 +90,13 @@ func TestWriteAndPath(t *testing.T) {
 	if metadata.InstallerInterface != "katl-installer-test" {
 		t.Fatalf("installer interface = %q", metadata.InstallerInterface)
 	}
+	if metadata.Compression != "" {
+		t.Fatalf("installer UKI compression = %q, want empty outer compression", metadata.Compression)
+	}
+	readTestJSON(t, installerInitrd+".json", &metadata)
+	if metadata.ArtifactRole != "installer-initrd" || metadata.Compression != "zstd" {
+		t.Fatalf("installer initrd metadata = %#v", metadata)
+	}
 	readTestJSON(t, installerISO+".json", &metadata)
 	if metadata.ArtifactRole != "installer-iso" || metadata.Format != "iso" || metadata.BuildID != "test-build" {
 		t.Fatalf("installer ISO metadata = %#v", metadata)

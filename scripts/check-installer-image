@@ -17,9 +17,15 @@ need() {
 need cpio
 need grep
 need ukify
+need zstd
 
 [[ -f "$artifact" ]] || fail "installer UKI not found: $artifact"
 [[ -f "$initrd" ]] || fail "installer initrd not found: $initrd"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-check.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+initrd_cpio="$work/installer.cpio"
+zstd -q -d -c "$initrd" >"$initrd_cpio" || fail "decompress installer initrd failed"
 
 inspect="$(ukify inspect "$artifact")" || fail "inspect installer UKI failed"
 grep -Fq '.linux:' <<<"$inspect" || fail "installer UKI missing .linux section"
@@ -28,7 +34,7 @@ grep -Fq '.cmdline:' <<<"$inspect" || fail "installer UKI missing .cmdline secti
 grep -Fq 'console=ttyS0,115200n8 console=tty0 systemd.log_target=console loglevel=6' <<<"$inspect" ||
     fail "installer UKI command line mismatch"
 
-initrd_list="$(cpio -it <"$initrd" 2>/dev/null)" || fail "list installer initrd failed"
+initrd_list="$(cpio -it <"$initrd_cpio" 2>/dev/null)" || fail "list installer initrd failed"
 if grep -Eiq '(^|/)[^/]*(vmtest|vm-test)[^/]*($|/)' <<<"$initrd_list"; then
     fail "installer image contains VM-test support"
 fi
@@ -49,7 +55,7 @@ file_has() {
     local path="${1#/}"
     local pattern="$2"
     local output
-    output="$(cpio -i --to-stdout "$path" <"$initrd" 2>/dev/null)" ||
+    output="$(cpio -i --to-stdout "$path" <"$initrd_cpio" 2>/dev/null)" ||
         fail "read installer path failed: /$path"
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }

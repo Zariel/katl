@@ -156,12 +156,23 @@ func TestInstallerConsoleAndVMGateContract(t *testing.T) {
 			t.Fatalf("installer profile missing console %q", value)
 		}
 	}
+	for _, value := range []string{"CompressOutput=zstd", "CompressLevel=19"} {
+		if !strings.Contains(profile, value) {
+			t.Fatalf("installer profile missing compression setting %q", value)
+		}
+	}
+	checker := string(mustReadFile(t, filepath.Join(repo, "scripts/check-installer-image")))
+	for _, value := range []string{"need zstd", `zstd -q -d -c "$initrd"`} {
+		if !strings.Contains(checker, value) {
+			t.Fatalf("installer verification missing compressed initrd handling %q", value)
+		}
+	}
 	for _, value := range []string{"ForwardToConsole=yes", "TTYPath=/dev/ttyS0"} {
 		if !strings.Contains(journal, value) {
 			t.Fatalf("installer dual-console journal routing missing %q", value)
 		}
 	}
-	for _, value := range []string{"Installer ISO Boot VM", "^TestInstallerISOBootSmoke$"} {
+	for _, value := range []string{"Installer Boot Media VM", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"} {
 		if !strings.Contains(workflow, value) {
 			t.Fatalf("installer ISO VM workflow missing %q", value)
 		}
