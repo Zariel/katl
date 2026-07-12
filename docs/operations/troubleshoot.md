@@ -4,6 +4,11 @@ Troubleshooting starts by identifying the lifecycle boundary that failed. Do
 not retry a mutating command until its durable state and mutation boundary are
 known.
 
+On an attached VGA or ipKVM console, `tty1` is the KatlOS status dashboard and
+includes current network addresses plus a live journal tail. Use
+`Ctrl+Alt+F2` for a local shell. The last rendered dashboard is also available
+at `/run/katl/console/rendered.txt` for collection over SSH.
+
 ## First Classification
 
 | Symptom | Primary evidence |

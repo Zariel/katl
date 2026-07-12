@@ -1,0 +1,20 @@
+[Unit]
+Description=KatlOS operator console
+DefaultDependencies=no
+Wants=systemd-journald.service systemd-networkd.service
+After=systemd-journald.service systemd-networkd.service
+Before=initrd.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/katl-console --mode=installer --tty=/dev/tty1
+Restart=always
+RestartSec=1s
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes

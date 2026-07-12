@@ -15,6 +15,11 @@ SSH is the supported way to retrieve the initial per-node token. Treat token
 files like private keys: store them with mode `0600`, never commit them, never
 put token values in `ClusterConfig`, and redact them from logs and issues.
 
+The installed system keeps an operator dashboard on VGA `tty1`. It reports the
+node addresses, boot and generation health, installer handoff state, and a live
+journal tail. Press `Ctrl+Alt+F2` for the local login console. The dashboard does
+not replace SSH or `katlctl`; it is a read-only view of the same durable state.
+
 ## Confirm Generation 0
 
 On each node:

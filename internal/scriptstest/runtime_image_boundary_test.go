@@ -85,6 +85,33 @@ func TestReleaseRootPackagingIsCompressedAndPruned(t *testing.T) {
 	assertTextContains(t, installerBuild, `-ldflags="-s -w`)
 }
 
+func TestOperatorConsoleOwnsTTY1AndPreservesRecoveryAccess(t *testing.T) {
+	repo := repoRoot(t)
+	installerUnit := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "system", "katl-console.service")))
+	runtimeUnit := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "systemd", "system", "katl-console.service")))
+	for name, unit := range map[string]string{"installer": installerUnit, "runtime": runtimeUnit} {
+		assertTextContains(t, unit,
+			"TTYPath=/dev/tty1",
+			"StandardInput=tty",
+			"StandardOutput=tty",
+			"Conflicts=getty@tty1.service",
+			"Restart=always",
+		)
+		if !strings.Contains(unit, "--mode="+name) {
+			t.Fatalf("%s console unit does not select its mode", name)
+		}
+	}
+	for _, profile := range []string{"installer-image", "runtime"} {
+		build := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", profile, "mkosi.build")))
+		assertTextContains(t, build,
+			`./cmd/katl-console`,
+			`getty.target.wants/getty@tty2.service`,
+		)
+		dropIn := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", profile, "mkosi.extra", "usr", "lib", "systemd", "system", "getty@tty1.service.d", "10-katl-console.conf")))
+		assertTextContains(t, dropIn, "ConditionPathExists=!/usr/bin/katl-console")
+	}
+}
+
 func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build"))

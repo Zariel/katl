@@ -1,0 +1,225 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/katl-dev/katl/internal/operatorconsole"
+	"golang.org/x/sys/unix"
+)
+
+var (
+	version = "0.0.0-dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx, os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "katl-console: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("katl-console", flag.ContinueOnError)
+	modeValue := flags.String("mode", "", "console mode: installer or runtime")
+	ttyPath := flags.String("tty", "/dev/tty1", "virtual terminal to own")
+	statusPath := flags.String("status", "", "override install status path")
+	handoffPath := flags.String("handoff", operatorconsole.HandoffPath, "installer handoff projection path")
+	snapshotPath := flags.String("snapshot", "/run/katl/console/rendered.txt", "plain-text rendered dashboard snapshot")
+	refresh := flags.Duration("refresh", time.Second, "dashboard refresh interval")
+	journalLines := flags.Int("journal-lines", 200, "maximum buffered journal lines")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	mode := operatorconsole.Mode(strings.TrimSpace(*modeValue))
+	if mode != operatorconsole.ModeInstaller && mode != operatorconsole.ModeRuntime {
+		return fmt.Errorf("mode must be installer or runtime")
+	}
+	if *refresh <= 0 {
+		return fmt.Errorf("refresh interval must be positive")
+	}
+	if *journalLines < 1 {
+		return fmt.Errorf("journal-lines must be positive")
+	}
+
+	tty, err := os.OpenFile(*ttyPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open dashboard tty %s: %w", *ttyPath, err)
+	}
+	defer tty.Close()
+	_, _ = io.WriteString(tty, "\x1b[?25l\x1b[2J")
+	defer io.WriteString(tty, "\x1b[?25h\n")
+
+	ring := newJournalRing(*journalLines)
+	go followJournal(ctx, ring)
+	collector := operatorconsole.Collector{
+		Mode:        mode,
+		Version:     version,
+		StatusPath:  strings.TrimSpace(*statusPath),
+		HandoffPath: strings.TrimSpace(*handoffPath),
+	}
+	ticker := time.NewTicker(*refresh)
+	defer ticker.Stop()
+	for {
+		if err := render(tty, strings.TrimSpace(*snapshotPath), collector.Collect(ring.Lines())); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func render(tty *os.File, snapshotPath string, snapshot operatorconsole.Snapshot) error {
+	width, height := terminalSize(tty)
+	plain := operatorconsole.Render(snapshot, width, height)
+	if _, err := io.WriteString(tty, "\x1b[H\x1b[2J"+plain); err != nil {
+		return fmt.Errorf("render dashboard: %w", err)
+	}
+	if snapshotPath != "" {
+		if err := writeSnapshot(snapshotPath, []byte(plain)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func terminalSize(tty *os.File) (int, int) {
+	size, err := unix.IoctlGetWinsize(int(tty.Fd()), unix.TIOCGWINSZ)
+	if err != nil || size.Col == 0 || size.Row == 0 {
+		return 80, 25
+	}
+	return int(size.Col), int(size.Row)
+}
+
+func writeSnapshot(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create dashboard snapshot directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".rendered-*")
+	if err != nil {
+		return fmt.Errorf("create dashboard snapshot: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o644); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish dashboard snapshot: %w", err)
+	}
+	return nil
+}
+
+type journalRing struct {
+	mu    sync.Mutex
+	limit int
+	lines []string
+}
+
+func newJournalRing(limit int) *journalRing {
+	return &journalRing{limit: limit}
+}
+
+func (r *journalRing) Add(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, line)
+	if len(r.lines) > r.limit {
+		r.lines = append([]string(nil), r.lines[len(r.lines)-r.limit:]...)
+	}
+}
+
+func (r *journalRing) Lines() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.lines...)
+}
+
+func followJournal(ctx context.Context, ring *journalRing) {
+	for ctx.Err() == nil {
+		err := streamJournal(ctx, ring, exec.CommandContext)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			ring.Add("journal stream unavailable: " + err.Error())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+type commandContext func(context.Context, string, ...string) *exec.Cmd
+
+func streamJournal(ctx context.Context, ring *journalRing, command commandContext) error {
+	cmd := command(ctx, "journalctl", "--boot", "--follow", "--lines=100", "--output=short-monotonic", "--no-pager")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var stderrText strings.Builder
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderrText, stderr)
+		close(done)
+	}()
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4096), 256<<10)
+	for scanner.Scan() {
+		ring.Add(scanner.Text())
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	<-done
+	if scanErr != nil {
+		return scanErr
+	}
+	if waitErr != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		if detail := strings.TrimSpace(stderrText.String()); detail != "" {
+			return fmt.Errorf("%w: %s", waitErr, detail)
+		}
+		return waitErr
+	}
+	return nil
+}

@@ -27,12 +27,14 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/operatorconsole"
 )
 
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	version            = "dev"
+	commit             = "unknown"
+	date               = "unknown"
+	consoleHandoffPath = operatorconsole.HandoffPath
 )
 
 func main() {
@@ -292,6 +294,11 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 
 	switch input.Action {
 	case installer.InstallActionHoldForDebug:
+		status := installstatus.New(installstatus.StateDebugHold, time.Now().UTC())
+		status.CurrentStep = "DebugHold"
+		status.InputMode = inputMode
+		status.InputSource = inputMode
+		writeConsoleInstallStatus(runDir, status, stdout)
 		reportInstallerProgress(stdout, "debug hold active", true)
 		fmt.Fprintln(stdout, "katlos-install debug hold active")
 		<-ctx.Done()
@@ -563,6 +570,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
+	writeConsoleInstallStatus(runDir, server.Status().InstallStatus, stdout)
 	server.SetStatusReader(func() (installstatus.Record, error) {
 		return installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
 	})
@@ -588,6 +596,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	baseURL, err := waitHandoffAnnouncementBaseURL(ctx, listener.Addr())
 	if err != nil {
 		return err
+	}
+	if err := operatorconsole.WriteHandoff(consoleHandoffPath, baseURL, server.Token()); err != nil {
+		fmt.Fprintf(stdout, "katlos-install console handoff projection: %v\n", err)
 	}
 	fmt.Fprintln(stdout, server.Announcement(baseURL))
 	reportInstallerProgress(stdout, "waiting for configuration at "+baseURL, false)
@@ -632,6 +643,17 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			return err
 		case <-ticker.C:
 		}
+	}
+}
+
+func writeConsoleInstallStatus(runDir string, status installstatus.Record, stdout io.Writer) {
+	path := filepath.Join(runDir, "state", "status.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Fprintf(stdout, "katlos-install console status: %v\n", err)
+		return
+	}
+	if err := installstatus.WriteFile(path, status); err != nil {
+		fmt.Fprintf(stdout, "katlos-install console status: %v\n", err)
 	}
 }
 
