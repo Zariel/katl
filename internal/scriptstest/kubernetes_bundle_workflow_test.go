@@ -85,6 +85,47 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	}
 }
 
+func TestPublicKubernetesBundleWorkflowContract(t *testing.T) {
+	repo := repoRoot(t)
+	workflow := string(mustReadFile(t, repo+"/.github/workflows/public-kubernetes-bundle.yml"))
+	check := string(mustReadFile(t, repo+"/scripts/check-public-kubernetes-bundle"))
+
+	for _, value := range []string{
+		"schedule:",
+		"workflow_dispatch:",
+		"packages: read",
+		"scripts/check-public-kubernetes-bundle",
+		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3",
+		"sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b",
+		"gh attestation verify",
+		"docker login ghcr.io",
+		"--repo katl-dev/katl",
+		"--signer-workflow katl-dev/katl/.github/workflows/kubernetes-bundles.yml",
+		"--source-ref refs/heads/main",
+	} {
+		if !strings.Contains(workflow, value) {
+			t.Fatalf("public Kubernetes bundle workflow missing %q", value)
+		}
+	}
+
+	for _, value := range []string{
+		"https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull",
+		`fetch_manifest "$tag"`,
+		`fetch_manifest "$expected_digest"`,
+		`cmp --silent "$work/tag.json" "$work/digest.json"`,
+		`sha256sum "$blob"`,
+		`actual_size="$(stat -c %s "$blob")"`,
+		`.artifactVersion == $artifact_version`,
+		`.payloadVersion == $payload_version`,
+		`index("katl-runtime-1")`,
+		`index("kubeadm.k8s.io/v1beta4")`,
+	} {
+		if !strings.Contains(check, value) {
+			t.Fatalf("public Kubernetes bundle check missing %q", value)
+		}
+	}
+}
+
 func TestKubernetesBundleRenovateContract(t *testing.T) {
 	repo := repoRoot(t)
 	config := string(mustReadFile(t, repo+"/renovate.json"))

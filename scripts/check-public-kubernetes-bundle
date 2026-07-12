@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${1:-}"
+expected_digest="${2:-}"
+if [[ ! "$image" =~ ^ghcr\.io/katl-dev/kubernetes:([A-Za-z0-9._-]+)$ ]]; then
+    echo "usage: scripts/check-public-kubernetes-bundle ghcr.io/katl-dev/kubernetes:TAG sha256:DIGEST" >&2
+    exit 2
+fi
+tag="${BASH_REMATCH[1]}"
+payload_version="${tag%-katl.*}"
+if [[ ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "error: expected OCI manifest digest must be sha256 followed by 64 lowercase hex characters" >&2
+    exit 2
+fi
+
+repository="katl-dev/kubernetes"
+work="$(mktemp -d "${TMPDIR:-/tmp}/katl-public-bundle.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+token="$(curl --fail --silent --show-error --location \
+    "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull" | jq -r '.token')"
+if [[ -z "$token" || "$token" == null ]]; then
+    echo "error: GHCR did not issue an anonymous pull token" >&2
+    exit 1
+fi
+
+fetch_manifest() {
+    local reference="$1"
+    local output="$2"
+    curl --fail --silent --show-error --location \
+        --header "Authorization: Bearer $token" \
+        --header 'Accept: application/vnd.oci.image.manifest.v1+json' \
+        "https://ghcr.io/v2/${repository}/manifests/${reference}" \
+        --output "$output"
+}
+
+fetch_manifest "$tag" "$work/tag.json"
+fetch_manifest "$expected_digest" "$work/digest.json"
+if ! cmp --silent "$work/tag.json" "$work/digest.json"; then
+    echo "error: tag and expected digest resolved to different OCI manifests" >&2
+    exit 1
+fi
+
+if ! jq -e --arg tag "$tag" '
+    .schemaVersion == 2 and
+    .mediaType == "application/vnd.oci.image.manifest.v1+json" and
+    .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
+    .config.mediaType == "application/vnd.katl.kubernetes.payload.bundle.v1+json" and
+    (.layers | length) == 4 and
+    .annotations["org.opencontainers.image.version"] == $tag and
+    .annotations["org.opencontainers.image.source"] == "https://github.com/katl-dev/katl" and
+    .annotations["org.opencontainers.image.licenses"] == "MIT"
+' "$work/tag.json" >/dev/null; then
+    echo "error: OCI manifest metadata does not match the public Kubernetes bundle contract" >&2
+    exit 1
+fi
+
+jq -r '[.config] + .layers | .[] | [.digest, (.size | tostring), .mediaType] | @tsv' "$work/tag.json" |
+while IFS=$'\t' read -r digest size media_type; do
+    blob="$work/${digest#sha256:}"
+    curl --fail --silent --show-error --location \
+        --header "Authorization: Bearer $token" \
+        "https://ghcr.io/v2/${repository}/blobs/${digest}" \
+        --output "$blob"
+    actual_digest="sha256:$(sha256sum "$blob" | cut -d ' ' -f 1)"
+    actual_size="$(stat -c %s "$blob")"
+    if [[ "$actual_digest" != "$digest" || "$actual_size" != "$size" ]]; then
+        echo "error: blob verification failed for $digest" >&2
+        exit 1
+    fi
+    if [[ "$media_type" == "application/vnd.katl.kubernetes.payload.bundle.v1+json" ]]; then
+        if ! jq -e --arg artifact_version "$tag" --arg payload_version "$payload_version" '
+            .apiVersion == "payload.katl.dev/v1alpha1" and
+            .kind == "KubernetesPayloadBundle" and
+            .name == "katl-kubernetes" and
+            .artifactVersion == $artifact_version and
+            .payloadVersion == $payload_version and
+            (.supportedRuntimeInterfaces | index("katl-runtime-1")) != null and
+            (.supportedKubeadmConfigAPIFamilies | index("kubeadm.k8s.io/v1beta4")) != null and
+            (.packageVersions.kubeadm | type) == "string" and
+            (.packageVersions.kubeadm | length) > 0
+        ' "$blob" >/dev/null; then
+            echo "error: Kubernetes bundle config metadata does not match the selected public reference" >&2
+            jq '{apiVersion, kind, name, artifactVersion, payloadVersion, supportedRuntimeInterfaces, supportedKubeadmConfigAPIFamilies, kubeadmPackageVersion: .packageVersions.kubeadm}' "$blob" >&2
+            exit 1
+        fi
+    fi
+    printf 'verified %s %s %s\n' "$digest" "$size" "$media_type"
+    rm -f "$blob"
+done
+
+echo "verified anonymous Kubernetes bundle ${image}@${expected_digest}"
