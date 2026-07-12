@@ -38,9 +38,10 @@ build/boot/test loop.
 - Required smoke path: `scripts/vmtest-run` with libvirt system VM execution
   and deterministic serial capture.
 - Firmware expectation: the runner is given readable OVMF/edk2 pflash images.
-- Serial settings: the guest kernel command line includes
-  `console=ttyS0,115200n8`; libvirt exposes that serial device to the runner's
-  captured console log.
+- Console settings: the guest kernel command line includes both
+  `console=ttyS0,115200n8` and `console=tty0`. VGA remains the interactive
+  display console while the installer journal is mirrored to ttyS0 for the
+  runner's deterministic captured console log.
 - Stable boot signal: `Katl hello`.
 - Generated VM logs and scratch state belong under `build/`.
 

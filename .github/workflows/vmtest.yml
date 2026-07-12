@@ -50,6 +50,13 @@ jobs:
             run: ^TestFirstInstallTargetDiskSerialSmoke$
             go_timeout: 35m
             timeout_minutes: 70
+          - id: installer-iso-boot
+            name: Installer ISO Boot VM
+            artifact_set: default
+            package: ./internal/vmtest/scenarios
+            run: ^TestInstallerISOBootSmoke$
+            go_timeout: 15m
+            timeout_minutes: 45
           - id: installed-runtime
             name: Installed Runtime VM
             artifact_set: default

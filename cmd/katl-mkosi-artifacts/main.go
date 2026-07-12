@@ -1163,7 +1163,7 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 		SHA256:                   digest,
 		CreatedAt:                created,
 		InstallerInterface:       cfg.InstallerInterface,
-		DefaultKernelCommandLine: []string{"console=ttyS0,115200n8", "systemd.log_target=console", "loglevel=6"},
+		DefaultKernelCommandLine: []string{"console=ttyS0,115200n8", "console=tty0", "systemd.log_target=console", "loglevel=6"},
 		SupportedInputModes:      []string{"pxe-preseed", "local-handoff", "offline-media"},
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")
