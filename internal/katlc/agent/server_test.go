@@ -71,6 +71,29 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 }
 
+func TestListOperationsFiltersActiveRecords(t *testing.T) {
+	server := newTestServer(t)
+	active := createAgentOperation(t, server.Store, "op-active")
+	terminal := createAgentOperation(t, server.Store, "op-terminal")
+	if _, err := server.Store.Update(terminal.OperationID, "complete", "complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		completedAt := time.Now().UTC()
+		record.Terminal = true
+		record.Result = operation.ResultSucceeded
+		record.CompletedAt = &completedAt
+		return record, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := server.ListOperations(context.Background(), &agentapi.ListOperationsRequest{ActiveOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Operations) != 1 || response.Operations[0].OperationId != active.OperationID {
+		t.Fatalf("operations = %#v", response.Operations)
+	}
+}
+
 func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	var dispatched atomic.Int32

@@ -394,7 +394,7 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 		return err
 	}
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "wipe", "node", "--inventory", initial.Inventory, "--node", "worker-1", "--kubeconfig", initial.Kubeconfig, "--confirm-destructive-wipe", "--acknowledge", wipeClusterAcknowledgement, "--client-request-id", "vmtest-wipe-node", "--timeout", "10m"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "wipe", "node", "--inventory", initial.Inventory, "--node", "worker-1", "--kubeconfig", initial.Kubeconfig, "--confirm-destructive-wipe", "--acknowledge", wipeClusterAcknowledgement, "--timeout", "10m"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
@@ -441,7 +441,6 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 		"--all",
 		"--confirm-destructive-wipe",
 		"--acknowledge", wipeClusterAcknowledgement,
-		"--client-request-id", "vmtest-wipe-cluster",
 		"--timeout", "10m",
 	}, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
@@ -516,6 +515,8 @@ func assertWipeClusterReport(data []byte) error {
 			Accepted      bool   `json:"accepted"`
 			OperationKind string `json:"operationKind"`
 			OperationID   string `json:"operationID"`
+			Terminal      bool   `json:"terminal"`
+			Result        string `json:"result"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -534,7 +535,7 @@ func assertWipeClusterReport(data []byte) error {
 		return fmt.Errorf("cluster wipe report nodes = %#v", report.Nodes)
 	}
 	for _, node := range report.Nodes {
-		if !node.Accepted || node.OperationKind != "destructive-reset" || strings.TrimSpace(node.OperationID) == "" {
+		if !node.Accepted || node.OperationKind != "destructive-reset" || strings.TrimSpace(node.OperationID) != "" || !node.Terminal || node.Result != operation.ResultSucceeded {
 			return fmt.Errorf("cluster wipe report node = %#v", node)
 		}
 	}

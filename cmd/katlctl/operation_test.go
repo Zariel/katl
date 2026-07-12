@@ -70,6 +70,50 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 	}
 }
 
+func TestOperationsListDiscoversRecentWork(t *testing.T) {
+	client := &fakeKatlcAgentClient{operations: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{
+		{OperationId: "active-1", OperationKind: "host-upgrade", RequestDigest: strings.Repeat("a", 64), Phase: "download"},
+		{OperationId: "done-1", OperationKind: "generation-apply", RequestDigest: strings.Repeat("b", 64), Phase: "complete", Terminal: true, Result: "succeeded"},
+	}}}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"operations", "list", "--endpoint", "node:9443", "--active", "--limit", "5"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got agentapi.ListOperationsResponse
+	if err := protojson.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode operations: %v\n%s", err, stdout.String())
+	}
+	if len(got.Operations) != 2 || got.Operations[0].OperationId != "active-1" {
+		t.Fatalf("operations = %#v", got.Operations)
+	}
+	if strings.Contains(stdout.String(), "requestDigest") {
+		t.Fatalf("operations exposed request digest: %s", stdout.String())
+	}
+	if client.operationsRequest == nil || !client.operationsRequest.ActiveOnly || client.operationsRequest.Limit != 5 {
+		t.Fatalf("list request = %#v", client.operationsRequest)
+	}
+}
+
+func TestDetachedAcceptanceHidesNodeRecordPath(t *testing.T) {
+	var stdout bytes.Buffer
+	err := writeOperationAccepted(&stdout, &agentapi.OperationAccepted{
+		OperationId: "op-1", OperationKind: "host-upgrade", RecordPath: "/var/lib/katl/operations/op-1/record.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "op-1") || strings.Contains(stdout.String(), "recordPath") || strings.Contains(stdout.String(), "/var/lib/katl") {
+		t.Fatalf("detached output = %s", stdout.String())
+	}
+}
+
 func TestFollowOperationUsesWatchSequence(t *testing.T) {
 	terminal := &agentapi.OperationStatus{OperationId: "operation-1", OperationKind: "host-upgrade", Phase: "complete", LatestJournalSeq: 4, Terminal: true, Result: "succeeded"}
 	client := &fakeOperationClient{streams: []*fakeOperationStream{{events: []*agentapi.OperationEvent{{OperationId: "operation-1", JournalSeq: 4, Terminal: true, Status: terminal}}}}}

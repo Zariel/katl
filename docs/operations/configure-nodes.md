@@ -39,8 +39,7 @@ katlctl config apply validate \
   --source ./cluster.yaml \
   --node cp-1 \
   --desired-version 2 \
-  --candidate-generation config-2 \
-  --client-request-id cp-1-config-2
+  --candidate-generation config-2
 ```
 
 Validation reports the changed domains and accepted apply mode without
@@ -67,27 +66,13 @@ katlctl config apply \
   --source ./cluster.yaml \
   --node cp-1 \
   --desired-version 2 \
-  --candidate-generation config-2 \
-  --client-request-id cp-1-config-2
+  --candidate-generation config-2
 ```
 
-Keep the inputs and client request ID identical to the reviewed plan. The JSON
-response records the operation ID and initial status. Accepted does not mean
-complete.
-
-Follow the accepted operation before evaluating generation health:
-
-```sh
-katlctl operation status \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
-```
-
-Require `terminal: true` and `result: succeeded`. If `recoveryRequired` is
-true, stop and follow `failureReason` and `nextAction`; do not submit a new
-apply merely because the watch disconnected.
+Keep the configuration inputs identical to the reviewed plan. `katlctl`
+generates the retry identity, follows the durable apply, and exits only after a
+terminal result. Require `terminal: true` and `result: succeeded`. If
+`recoveryRequired` is true, stop and follow `failureReason` and `nextAction`.
 
 ## Check Generation Status
 

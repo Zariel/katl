@@ -66,18 +66,16 @@ katlctl cluster bootstrap \
 The normal sequence verifies and stages the Kubernetes sysext, initializes the
 first control plane, creates join material, joins remaining nodes, checks
 post-kubeadm health, commits generation 1, and writes the operator kubeconfig.
-Save the command output and returned operation IDs.
+Save the command output and resulting kubeconfig.
 
-Bootstrap waits for its submitted operations, but their node-local records
+Bootstrap waits for its submitted operations, and their node-local records
 remain queryable afterward. If the workstation disconnects or a result is
-unclear, query the affected node with the returned operation ID:
+unclear, discover the affected node's current and recent operations:
 
 ```sh
-katlctl operation status \
+katlctl operations list \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
+  --agent-token-file ./tokens/cp-1.token
 ```
 
 ## Establish Cluster Networking
@@ -121,7 +119,7 @@ endpoint, and node readiness matches the chosen CNI stage.
 ## Failure Boundary
 
 Do not assume rerunning bootstrap is safe. If kubeadm or API mutation began,
-host generation rollback does not erase it. Preserve operation IDs and follow
+host generation rollback does not erase it. Preserve the command result and follow
 [Troubleshoot KatlOS](troubleshoot.md). Additional-control-plane repair,
 Kubernetes version upgrade, and general reconciliation are not supported alpha
 operations.

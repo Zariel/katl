@@ -26,6 +26,7 @@ const (
 	KatlcAgent_SubmitOperation_FullMethodName          = "/katl.agent.v1.KatlcAgent/SubmitOperation"
 	KatlcAgent_CreateWorkerJoinMaterial_FullMethodName = "/katl.agent.v1.KatlcAgent/CreateWorkerJoinMaterial"
 	KatlcAgent_GetOperation_FullMethodName             = "/katl.agent.v1.KatlcAgent/GetOperation"
+	KatlcAgent_ListOperations_FullMethodName           = "/katl.agent.v1.KatlcAgent/ListOperations"
 	KatlcAgent_WatchOperation_FullMethodName           = "/katl.agent.v1.KatlcAgent/WatchOperation"
 	KatlcAgent_ListGenerations_FullMethodName          = "/katl.agent.v1.KatlcAgent/ListGenerations"
 	KatlcAgent_GetGeneration_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetGeneration"
@@ -42,6 +43,7 @@ type KatlcAgentClient interface {
 	SubmitOperation(ctx context.Context, in *SubmitOperationRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(ctx context.Context, in *CreateWorkerJoinMaterialRequest, opts ...grpc.CallOption) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationStatus, error)
+	ListOperations(ctx context.Context, in *ListOperationsRequest, opts ...grpc.CallOption) (*ListOperationsResponse, error)
 	WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error)
 	ListGenerations(ctx context.Context, in *ListGenerationsRequest, opts ...grpc.CallOption) (*ListGenerationsResponse, error)
 	GetGeneration(ctx context.Context, in *GetGenerationRequest, opts ...grpc.CallOption) (*Generation, error)
@@ -125,6 +127,16 @@ func (c *katlcAgentClient) GetOperation(ctx context.Context, in *GetOperationReq
 	return out, nil
 }
 
+func (c *katlcAgentClient) ListOperations(ctx context.Context, in *ListOperationsRequest, opts ...grpc.CallOption) (*ListOperationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOperationsResponse)
+	err := c.cc.Invoke(ctx, KatlcAgent_ListOperations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *katlcAgentClient) WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[0], KatlcAgent_WatchOperation_FullMethodName, cOpts...)
@@ -175,6 +187,7 @@ type KatlcAgentServer interface {
 	SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error)
+	ListOperations(context.Context, *ListOperationsRequest) (*ListOperationsResponse, error)
 	WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error
 	ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error)
 	GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error)
@@ -208,6 +221,9 @@ func (UnimplementedKatlcAgentServer) CreateWorkerJoinMaterial(context.Context, *
 }
 func (UnimplementedKatlcAgentServer) GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOperation not implemented")
+}
+func (UnimplementedKatlcAgentServer) ListOperations(context.Context, *ListOperationsRequest) (*ListOperationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListOperations not implemented")
 }
 func (UnimplementedKatlcAgentServer) WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchOperation not implemented")
@@ -365,6 +381,24 @@ func _KatlcAgent_GetOperation_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KatlcAgent_ListOperations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOperationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).ListOperations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_ListOperations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).ListOperations(ctx, req.(*ListOperationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _KatlcAgent_WatchOperation_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchOperationRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -446,6 +480,10 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetOperation",
 			Handler:    _KatlcAgent_GetOperation_Handler,
+		},
+		{
+			MethodName: "ListOperations",
+			Handler:    _KatlcAgent_ListOperations_Handler,
 		},
 		{
 			MethodName: "ListGenerations",

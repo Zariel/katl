@@ -46,6 +46,22 @@ func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
 	}
 }
 
+func TestStoreListsMostRecentlyUpdatedFirst(t *testing.T) {
+	store := testStore(t)
+	older := mustCreate(t, store, "op-older")
+	newer := baseRecord("op-newer")
+	if _, err := store.Create(newer, "accepted", older.UpdatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].OperationID != "op-newer" || records[1].OperationID != "op-older" {
+		t.Fatalf("records = %#v", records)
+	}
+}
+
 func TestValidateHostUpgrade(t *testing.T) {
 	valid := HostUpgrade{
 		ImageLocalRef:         "updates/katlos-upgrade.squashfs",

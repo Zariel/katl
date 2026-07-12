@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +21,17 @@ const operationWatchRPCDuration = 5 * time.Second
 
 const operationPollInterval = 500 * time.Millisecond
 
+func clientRequestID(value string) (string, error) {
+	if value = strings.TrimSpace(value); value != "" {
+		return value, nil
+	}
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate request id: %w", err)
+	}
+	return "katlctl-" + hex.EncodeToString(random[:]), nil
+}
+
 type operationClient interface {
 	GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error)
 	WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error)
@@ -34,9 +47,20 @@ type operationStatusOptions struct {
 	output         string
 }
 
+type operationListOptions struct {
+	endpoint       string
+	agentTokenFile string
+	activeOnly     bool
+	limit          int32
+	diagnostics    string
+	timeout        time.Duration
+	output         string
+}
+
 func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: "operation", Short: "KatlOS operation status"}
+	cmd := &cobra.Command{Use: "operations", Aliases: []string{"operation"}, Short: "Inspect KatlOS operations"}
 	cmd.AddCommand(newOperationStatusCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newOperationListCommand(ctx, stdout, stderr))
 	return cmd
 }
 
@@ -58,6 +82,73 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall status or watch timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
 	return cmd
+}
+
+func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := operationListOptions{limit: 20, diagnostics: "normal", timeout: 15 * time.Second, output: "json"}
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List current and recent KatlOS operations",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runOperationList(ctx, opts, stdout, stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().BoolVar(&opts.activeOnly, "active", false, "show only non-terminal operations")
+	cmd.Flags().Int32Var(&opts.limit, "limit", opts.limit, "maximum operations to return")
+	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "list request timeout")
+	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	return cmd
+}
+
+func runOperationList(ctx context.Context, opts operationListOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
+	}
+	if strings.TrimSpace(opts.endpoint) == "" {
+		return fmt.Errorf("--endpoint is required")
+	}
+	if opts.limit < 1 || opts.limit > 100 {
+		return fmt.Errorf("--limit must be between 1 and 100")
+	}
+	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
+		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
+	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	token, err := readAgentToken(opts.agentTokenFile)
+	if err != nil {
+		return err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	conn, err := dialKatlcAgent(requestCtx, opts.endpoint, token)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	response, err := conn.Client.ListOperations(requestCtx, &agentapi.ListOperationsRequest{
+		ActiveOnly:         opts.activeOnly,
+		Limit:              opts.limit,
+		IncludeDiagnostics: opts.diagnostics,
+	})
+	if err != nil {
+		return err
+	}
+	for _, status := range response.GetOperations() {
+		status.RequestDigest = ""
+	}
+	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("marshal operations: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
 }
 
 func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout, stderr io.Writer) error {
@@ -128,7 +219,7 @@ func followOperation(ctx context.Context, client operationClient, request *agent
 	for {
 		progress := fmt.Sprintf("%s/%s/%t/%s", status.GetOperationKind(), status.GetPhase(), status.GetTerminal(), status.GetResult())
 		if progress != lastProgress {
-			fmt.Fprintf(stderr, "katlctl operation id=%s kind=%s phase=%s terminal=%t result=%s\n", status.GetOperationId(), status.GetOperationKind(), status.GetPhase(), status.GetTerminal(), status.GetResult())
+			fmt.Fprintf(stderr, "katlctl operation kind=%s phase=%s terminal=%t result=%s\n", status.GetOperationKind(), status.GetPhase(), status.GetTerminal(), status.GetResult())
 			lastProgress = progress
 		}
 		if status.GetTerminal() {
@@ -208,12 +299,63 @@ func writeOperationStatus(stdout io.Writer, status *agentapi.OperationStatus) er
 	return err
 }
 
+func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationStatus) error {
+	if status == nil {
+		return fmt.Errorf("agent returned an empty operation status")
+	}
+	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
+	publicStatus.OperationId = ""
+	publicStatus.RequestDigest = ""
+	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
+	if err != nil {
+		return fmt.Errorf("marshal operation result: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func waitAcceptedOperation(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stdout, stderr io.Writer) error {
+	if accepted == nil || strings.TrimSpace(accepted.GetOperationId()) == "" {
+		return fmt.Errorf("agent returned an empty operation acceptance")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request := &agentapi.GetOperationRequest{OperationId: accepted.GetOperationId(), IncludeDiagnostics: "normal"}
+	status := accepted.GetInitialStatus()
+	if status == nil {
+		var err error
+		status, err = client.GetOperation(waitCtx, request)
+		if err != nil {
+			return fmt.Errorf("get accepted operation %s: %w", accepted.GetOperationId(), err)
+		}
+	}
+	status = proto.Clone(status).(*agentapi.OperationStatus)
+	if status.OperationId == "" {
+		status.OperationId = accepted.GetOperationId()
+	}
+	if status.OperationKind == "" {
+		status.OperationKind = accepted.GetOperationKind()
+	}
+	var err error
+	if !status.GetTerminal() {
+		status, err = followOperation(waitCtx, client, request, status, stderr)
+	}
+	if writeErr := writeMutationOperationStatus(stdout, status); writeErr != nil {
+		return writeErr
+	}
+	if err != nil {
+		return err
+	}
+	return operationResultError(status)
+}
+
 func writeOperationAccepted(stdout io.Writer, accepted *agentapi.OperationAccepted) error {
 	if accepted == nil {
 		return fmt.Errorf("agent returned an empty operation acceptance")
 	}
 	publicAccepted := proto.Clone(accepted).(*agentapi.OperationAccepted)
 	publicAccepted.RequestDigest = ""
+	publicAccepted.RecordPath = ""
 	if publicAccepted.InitialStatus != nil {
 		publicAccepted.InitialStatus.RequestDigest = ""
 	}

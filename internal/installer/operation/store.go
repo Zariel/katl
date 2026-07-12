@@ -598,6 +598,35 @@ func (s Store) Read(operationID string) (OperationRecord, error) {
 	return record, nil
 }
 
+// List returns durable operation records with the most recently updated first.
+func (s Store) List() ([]OperationRecord, error) {
+	entries, err := os.ReadDir(s.Root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read operation store: %w", err)
+	}
+	records := make([]OperationRecord, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		record, err := s.Read(entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("read operation %q: %w", entry.Name(), err)
+		}
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UpdatedAt.Equal(records[j].UpdatedAt) {
+			return records[i].OperationID < records[j].OperationID
+		}
+		return records[i].UpdatedAt.After(records[j].UpdatedAt)
+	})
+	return records, nil
+}
+
 func (s Store) EventsAfter(operationID string, afterSeq int) ([]JournalEvent, error) {
 	dir, err := s.operationDir(operationID)
 	if err != nil {

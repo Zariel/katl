@@ -31,7 +31,6 @@ katlctl host upgrade \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --candidate-generation "katlos-$VERSION" \
-  --client-request-id "cp-1-katlos-$VERSION" \
   --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
 ```
 
@@ -44,18 +43,8 @@ component metadata before changing the inactive slot.
 
 ## Stage the Trial
 
-Run the identical command without `--plan`. Save the returned `operationId`.
-The response means accepted, not staged successfully.
-
-Follow the accepted operation through the node agent:
-
-```sh
-katlctl operation status \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --operation-id "$OPERATION_ID" \
-  --watch
-```
+Run the identical command without `--plan`. `katlctl` follows the durable stage
+operation and returns its terminal result.
 
 Do not reboot until the operation is terminal with `result: succeeded` and
 `nextAction` says to reboot into the bounded candidate trial. A terminal staging

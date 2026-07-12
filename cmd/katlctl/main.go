@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -142,11 +143,13 @@ type hostUpgradeOptions struct {
 	clientRequestID     string
 	actor               string
 	plan                bool
+	noWait              bool
+	waitTimeout         time.Duration
 	output              string
 }
 
 func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := hostUpgradeOptions{actor: "katlctl host upgrade", output: "json"}
+	opts := hostUpgradeOptions{actor: "katlctl host upgrade", waitTimeout: 30 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Stage one KatlOS image for bounded next-boot activation",
@@ -160,9 +163,12 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.imageURL, "image-url", "", "HTTPS KatlOS upgrade image URL")
 	cmd.Flags().StringVar(&opts.imageLocalRef, "image-local-ref", "", "relative KatlOS image reference under the node artifact store")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
-	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
+	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate without accepting an operation")
+	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
+	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
 	return cmd
 }
@@ -175,8 +181,12 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if strings.TrimSpace(opts.endpoint) == "" {
 		return fmt.Errorf("--endpoint is required")
 	}
-	if strings.TrimSpace(opts.clientRequestID) == "" {
-		return fmt.Errorf("--client-request-id is required")
+	if opts.waitTimeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	requestID, err := clientRequestID(opts.clientRequestID)
+	if err != nil {
+		return err
 	}
 	request := operation.HostUpgrade{
 		ImageURL:              strings.TrimSpace(opts.imageURL),
@@ -198,7 +208,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:      operation.APIVersion,
 		Kind:            "SubmitOperationRequest",
-		ClientRequestId: opts.clientRequestID,
+		ClientRequestId: requestID,
 		OperationKind:   "host-upgrade",
 		Actor:           strings.TrimSpace(opts.actor),
 		DryRun:          opts.plan,
@@ -211,7 +221,10 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	return writeOperationAccepted(stdout, accepted)
+	if opts.plan || opts.noWait {
+		return writeOperationAccepted(stdout, accepted)
+	}
+	return waitAcceptedOperation(ctx, conn.Client, accepted, opts.waitTimeout, stdout, stderr)
 }
 
 type wipeClusterOptions struct {
@@ -225,6 +238,7 @@ type wipeClusterOptions struct {
 	clientRequestID string
 	agentTokenFile  string
 	planOnly        bool
+	noWait          bool
 	timeout         string
 	output          string
 }
@@ -244,10 +258,12 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 	cmd.Flags().BoolVar(&opts.allowPartial, "allow-partial-cluster", false, "allow a partial cluster target set")
 	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
 	cmd.Flags().StringVar(&opts.acknowledgement, "acknowledge", "", "required destructive acknowledgement text")
-	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
+	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "", "operation timeout duration")
+	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after nodes accept their operations")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
 	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
 	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe; may be repeated")
 	return cmd
@@ -267,8 +283,13 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if opts.acknowledgement != wipeAcknowledgementText {
 		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
 	}
-	if strings.TrimSpace(opts.clientRequestID) == "" {
-		return fmt.Errorf("--client-request-id is required")
+	requestID, err := clientRequestID(opts.clientRequestID)
+	if err != nil {
+		return err
+	}
+	waitTimeout, err := time.ParseDuration(opts.timeout)
+	if err != nil || waitTimeout <= 0 {
+		return fmt.Errorf("--timeout must be a positive duration")
 	}
 	if opts.all && len(opts.selectedNodes.values) > 0 {
 		return fmt.Errorf("--all and --node cannot be combined")
@@ -314,7 +335,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		report.NodeLocalOperations = plannedWipeClusterOperations(targets)
 		return printWipeClusterReport(stdout, report)
 	}
-	submitErr := submitWipeCluster(ctx, connector, &report, targets, strings.TrimSpace(opts.clientRequestID), strings.TrimSpace(opts.timeout))
+	submitErr := submitWipeCluster(ctx, connector, &report, targets, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
 	if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -331,6 +352,7 @@ type wipeNodeOptions struct {
 	clientRequestID string
 	agentTokenFile  string
 	planOnly        bool
+	noWait          bool
 	timeout         string
 	output          string
 }
@@ -349,10 +371,12 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
 	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
 	cmd.Flags().StringVar(&opts.acknowledgement, "acknowledge", "", "required destructive acknowledgement text")
-	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
+	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "", "operation timeout duration")
+	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
 	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
 	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe")
 	return cmd
@@ -378,8 +402,13 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	if opts.acknowledgement != wipeAcknowledgementText {
 		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
 	}
-	if strings.TrimSpace(opts.clientRequestID) == "" {
-		return fmt.Errorf("--client-request-id is required")
+	requestID, err := clientRequestID(opts.clientRequestID)
+	if err != nil {
+		return err
+	}
+	waitTimeout, err := time.ParseDuration(opts.timeout)
+	if err != nil || waitTimeout <= 0 {
+		return fmt.Errorf("--timeout must be a positive duration")
 	}
 
 	inv, err := loadInventory(opts.inventoryPath)
@@ -438,7 +467,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
 	}
 
-	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, strings.TrimSpace(opts.clientRequestID), strings.TrimSpace(opts.timeout))
+	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
 	if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -662,7 +691,7 @@ func wipeNodeOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperation
 	return operation
 }
 
-func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, clientRequestID string, timeout string) error {
+func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, clientRequestID string, timeout string, noWait bool, waitTimeout time.Duration, stderr io.Writer) error {
 	var failures []string
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
@@ -697,7 +726,6 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 				WipeSurfaces:           operationSpec.WipeSurfaces,
 			},
 		})
-		closeErr := closeAgentConnection(conn)
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 			failures = append(failures, node.Name)
@@ -706,7 +734,9 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 			failures = append(failures, node.Name)
 		} else {
 			result.Accepted = true
-			result.OperationID = accepted.GetOperationId()
+			if noWait {
+				result.OperationID = accepted.GetOperationId()
+			}
 			result.OperationKind = accepted.GetOperationKind()
 			if status := accepted.GetInitialStatus(); status != nil {
 				result.Phase = status.GetPhase()
@@ -716,7 +746,34 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 					result.Diagnostics = append(result.Diagnostics, inventory.Redact(status.GetFailureReason()))
 				}
 			}
+			if !noWait {
+				waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+				status := accepted.GetInitialStatus()
+				if status == nil {
+					status, err = conn.Client.GetOperation(waitCtx, &agentapi.GetOperationRequest{OperationId: accepted.GetOperationId(), IncludeDiagnostics: "normal"})
+				}
+				if err == nil && status != nil && !status.GetTerminal() {
+					status, err = followOperation(waitCtx, conn.Client, &agentapi.GetOperationRequest{OperationId: accepted.GetOperationId(), IncludeDiagnostics: "normal"}, status, stderr)
+				}
+				cancel()
+				if err != nil {
+					result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
+					failures = append(failures, node.Name)
+				} else if status == nil {
+					result.Diagnostics = append(result.Diagnostics, "agent returned an empty operation status")
+					failures = append(failures, node.Name)
+				} else {
+					result.Phase = status.GetPhase()
+					result.Terminal = status.GetTerminal()
+					result.Result = status.GetResult()
+					if resultErr := operationResultError(status); resultErr != nil {
+						result.Diagnostics = append(result.Diagnostics, inventory.Redact(resultErr.Error()))
+						failures = append(failures, node.Name)
+					}
+				}
+			}
 		}
+		closeErr := closeAgentConnection(conn)
 		if closeErr != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(closeErr.Error()))
 			failures = append(failures, node.Name)
@@ -1120,6 +1177,8 @@ type configApplyOptions struct {
 	clientRequestID     string
 	actor               string
 	plan                bool
+	noWait              bool
+	waitTimeout         time.Duration
 	output              string
 }
 
@@ -1145,8 +1204,10 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 		},
 	}
 	addConfigApplyFlags(validateCmd, &validateOpts)
-	if flag := validateCmd.Flags().Lookup("plan"); flag != nil {
-		flag.Hidden = true
+	for _, name := range []string{"plan", "no-wait", "timeout", "client-request-id"} {
+		if flag := validateCmd.Flags().Lookup(name); flag != nil {
+			flag.Hidden = true
+		}
 	}
 	cmd.AddCommand(validateCmd)
 	cmd.AddCommand(newConfigApplyStatusCommand(ctx, stdout, stderr))
@@ -1154,28 +1215,37 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 }
 
 func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
+	if opts.waitTimeout == 0 {
+		opts.waitTimeout = 30 * time.Minute
+	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.configPath, "file", "", "pre-rendered NodeConfigurationChange YAML")
 	addNodeConfigInputFlags(cmd, &opts.nodeConfig)
 	cmd.Flags().StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
-	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key for this apply request")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
+	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
 	cmd.Flags().BoolVar(&opts.plan, "plan", opts.plan, "validate and plan without accepting an operation")
+	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
+	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
 }
 
 func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr io.Writer) error {
-	_ = stderr
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
 	if strings.TrimSpace(opts.endpoint) == "" {
 		return fmt.Errorf("--endpoint is required")
 	}
-	if strings.TrimSpace(opts.clientRequestID) == "" {
-		return fmt.Errorf("--client-request-id is required")
+	if opts.waitTimeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	requestID, err := clientRequestID(opts.clientRequestID)
+	if err != nil {
+		return err
 	}
 	fileInput := strings.TrimSpace(opts.configPath) != ""
 	intentInput := strings.TrimSpace(opts.nodeConfig.sourcePath) != "" || strings.TrimSpace(opts.nodeConfig.bundlePath) != ""
@@ -1183,7 +1253,6 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return fmt.Errorf("exactly one of --file, --source, or --config-bundle is required")
 	}
 	var configYAML []byte
-	var err error
 	if fileInput {
 		if strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {
 			return fmt.Errorf("--source-id and --desired-version require --source or --config-bundle")
@@ -1214,7 +1283,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       opts.clientRequestID,
+			ClientRequestId:       requestID,
 			Actor:                 opts.actor,
 			ApplyMode:             opts.mode,
 			CandidateGenerationId: opts.candidateGeneration,
@@ -1237,7 +1306,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	req := &agentapi.GenerationApplyRequest{
 		ApiVersion:            operation.APIVersion,
 		Kind:                  "GenerationApplyRequest",
-		ClientRequestId:       opts.clientRequestID,
+		ClientRequestId:       requestID,
 		Actor:                 opts.actor,
 		CandidateGenerationId: opts.candidateGeneration,
 		NodeName:              opts.nodeConfig.nodeName,
@@ -1256,7 +1325,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       opts.clientRequestID,
+			ClientRequestId:       requestID,
 			Actor:                 opts.actor,
 			ApplyMode:             requestedMode,
 			CandidateGenerationId: opts.candidateGeneration,
@@ -1279,7 +1348,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		accepted, err = conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion:      operation.APIVersion,
 			Kind:            "SubmitOperationRequest",
-			ClientRequestId: opts.clientRequestID,
+			ClientRequestId: requestID,
 			OperationKind:   operationKind,
 			Actor:           opts.actor,
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{
@@ -1295,7 +1364,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	return writeOperationAccepted(stdout, accepted)
+	if opts.noWait {
+		return writeOperationAccepted(stdout, accepted)
+	}
+	return waitAcceptedOperation(ctx, conn.Client, accepted, opts.waitTimeout, stdout, stderr)
 }
 
 func configApplyOperationKind(acceptedMode string) (string, error) {
