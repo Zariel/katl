@@ -45,9 +45,10 @@ type PackageRepository struct {
 }
 
 type PackageLockVerification struct {
-	Lock       PackageLock
-	Manifest   Manifest
-	LockDigest string
+	Lock                PackageLock
+	Manifest            Manifest
+	LockDigest          string
+	RequiredPackageSets []string
 }
 
 func DecodePackageLock(r io.Reader) (PackageLock, error) {
@@ -94,7 +95,22 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 	for _, set := range verification.Lock.PackageSets {
 		lockSets[set.Name] = set
 	}
+	selectedSets, err := packageSetSelection(verification.RequiredPackageSets)
+	if err != nil {
+		return err
+	}
+	for name := range selectedSets {
+		if _, ok := lockSets[name]; !ok {
+			return fmt.Errorf("selected package set %q is missing from package lock", name)
+		}
+		if _, ok := manifestSets[name]; !ok {
+			return fmt.Errorf("selected package set %q is missing from resource manifest", name)
+		}
+	}
 	for _, manifestSet := range verification.Manifest.PackageSets {
+		if !packageSetSelected(manifestSet.Name, selectedSets) {
+			continue
+		}
 		lockedSet, ok := lockSets[manifestSet.Name]
 		if !ok {
 			return fmt.Errorf("package set %q is missing from package lock", manifestSet.Name)
@@ -104,12 +120,18 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 		}
 	}
 	for _, lockedSet := range verification.Lock.PackageSets {
+		if !packageSetSelected(lockedSet.Name, selectedSets) {
+			continue
+		}
 		if _, ok := manifestSets[lockedSet.Name]; !ok {
 			return fmt.Errorf("package set %q is missing from resource manifest", lockedSet.Name)
 		}
 	}
 
 	for _, lockedProfile := range verification.Lock.MkosiProfiles {
+		if !packageSetSelected(lockedProfile.PackageSetRef, selectedSets) {
+			continue
+		}
 		manifestProfile, ok := manifestProfiles[lockedProfile.Name]
 		if !ok {
 			return fmt.Errorf("mkosi profile %q is missing from resource manifest", lockedProfile.Name)
@@ -143,6 +165,32 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 		}
 	}
 	return nil
+}
+
+func packageSetSelection(names []string) (map[string]struct{}, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	selected := make(map[string]struct{}, len(names))
+	for _, value := range names {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			return nil, errors.New("selected package set must not be empty")
+		}
+		if _, ok := selected[name]; ok {
+			return nil, fmt.Errorf("selected package set %q is duplicated", name)
+		}
+		selected[name] = struct{}{}
+	}
+	return selected, nil
+}
+
+func packageSetSelected(name string, selected map[string]struct{}) bool {
+	if len(selected) == 0 {
+		return true
+	}
+	_, ok := selected[name]
+	return ok
 }
 
 func PackageLockFromManifest(manifest Manifest) (PackageLock, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -214,6 +215,15 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	gitRevision := flags.String("git-revision", "", "git revision to record")
 	fedoraRepo := flags.String("fedora-repository", "fedora=", "Fedora repository in id=baseURL form")
 	mkosiVersionFlag := flags.String("mkosi-version", "auto", "mkosi version to record; auto detects mkosi and empty disables recording")
+	var packageSets []string
+	flags.Func("package-set", "package set required by strict verification; repeat to select a subset", func(value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return errors.New("package set must not be empty")
+		}
+		packageSets = append(packageSets, value)
+		return nil
+	})
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -269,6 +279,9 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	lockDigest := ""
 	switch *mode {
 	case "refresh":
+		if len(packageSets) != 0 {
+			return errors.New("--package-set requires --mode strict")
+		}
 		lock, err := resourcetest.PackageLockFromManifest(manifest)
 		if err != nil {
 			return err
@@ -297,7 +310,9 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("decode package lock %s: %w", *lockPath, err)
 		}
-		if err := resourcetest.VerifyPackageLock(resourcetest.PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: lockDigest}); err != nil {
+		if err := resourcetest.VerifyPackageLock(resourcetest.PackageLockVerification{
+			Lock: lock, Manifest: manifest, LockDigest: lockDigest, RequiredPackageSets: packageSets,
+		}); err != nil {
 			return err
 		}
 	default:

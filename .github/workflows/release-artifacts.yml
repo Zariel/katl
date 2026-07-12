@@ -150,7 +150,10 @@ jobs:
             -mode strict \
             -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
             -git-revision "$GITHUB_SHA" \
-            -mkosi-version "$mkosi_version"
+            -mkosi-version "$mkosi_version" \
+            -package-set installer-image \
+            -package-set runtime \
+            -package-set katlos-install-image
 
       - name: Stage supported publication artifacts
         shell: bash
