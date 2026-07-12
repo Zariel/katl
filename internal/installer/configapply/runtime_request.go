@@ -4,7 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +31,12 @@ type nodeConfigurationChangeSpec struct {
 	ClusterDefaults     nodeConfigurationOverlay            `json:"clusterDefaults,omitempty" yaml:"clusterDefaults,omitempty"`
 	SystemRoleOverrides map[string]nodeConfigurationOverlay `json:"systemRoleOverrides,omitempty" yaml:"systemRoleOverrides,omitempty"`
 	NodeOverrides       map[string]nodeConfigurationOverlay `json:"nodeOverrides,omitempty" yaml:"nodeOverrides,omitempty"`
+	KubeadmConfigs      map[string]inlineKubeadmConfig      `json:"kubeadmConfigs,omitempty" yaml:"kubeadmConfigs,omitempty"`
+}
+
+type inlineKubeadmConfig struct {
+	Config  string            `json:"config" yaml:"config"`
+	Patches map[string]string `json:"patches,omitempty" yaml:"patches,omitempty"`
 }
 
 type nodeConfigurationOverlay struct {
@@ -59,9 +70,14 @@ func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) 
 	request.SourceID = document.Metadata.SourceID
 	request.DesiredVersion = document.Metadata.DesiredVersion
 	request.ApplyMode = document.Apply.Mode
-	request.ClusterDefaults = document.Spec.ClusterDefaults.nodeOverlay()
-	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides)
-	request.NodeOverrides = nodeOverlayMap(document.Spec.NodeOverrides)
+	kubeadmConfigs, changedKubeadmConfigs, err := mergeInlineKubeadmConfigs(base.KubeadmConfigs, document.Spec.KubeadmConfigs)
+	if err != nil {
+		return TrustedBundleRequest{}, err
+	}
+	request.KubeadmConfigs = kubeadmConfigs
+	request.ClusterDefaults = document.Spec.ClusterDefaults.nodeOverlay(changedKubeadmConfigs)
+	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides, changedKubeadmConfigs)
+	request.NodeOverrides = nodeOverlayMap(document.Spec.NodeOverrides, changedKubeadmConfigs)
 	return request, nil
 }
 
@@ -73,24 +89,75 @@ func ApplyNodeConfigurationChange(ctx context.Context, reader io.Reader, base Tr
 	return ApplyTrustedBundle(ctx, request)
 }
 
-func nodeOverlayMap(overlays map[string]nodeConfigurationOverlay) map[string]NodeOverlay {
+func nodeOverlayMap(overlays map[string]nodeConfigurationOverlay, changedConfigs map[string]struct{}) map[string]NodeOverlay {
 	if len(overlays) == 0 {
 		return nil
 	}
 	out := make(map[string]NodeOverlay, len(overlays))
 	for name, overlay := range overlays {
-		out[name] = overlay.nodeOverlay()
+		out[name] = overlay.nodeOverlay(changedConfigs)
 	}
 	return out
 }
 
-func (overlay nodeConfigurationOverlay) nodeOverlay() NodeOverlay {
-	return NodeOverlay{
-		Identity:      overlay.Identity,
-		SystemRole:    overlay.SystemRole,
-		Networkd:      overlay.Networkd,
-		Sysctl:        overlay.Sysctl,
-		Kubernetes:    overlay.Kubernetes,
-		LivePreflight: overlay.LivePreflight,
+func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]struct{}) NodeOverlay {
+	kubeadmChanged := false
+	if overlay.Kubernetes != nil {
+		_, kubeadmChanged = changedConfigs[strings.TrimSpace(overlay.Kubernetes.Kubeadm.ConfigRef)]
 	}
+	return NodeOverlay{
+		Identity:       overlay.Identity,
+		SystemRole:     overlay.SystemRole,
+		Networkd:       overlay.Networkd,
+		Sysctl:         overlay.Sysctl,
+		Kubernetes:     overlay.Kubernetes,
+		KubeadmChanged: kubeadmChanged,
+		LivePreflight:  overlay.LivePreflight,
+	}
+}
+
+func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline map[string]inlineKubeadmConfig) (map[string]kubeadmconfig.Plan, map[string]struct{}, error) {
+	if len(inline) == 0 {
+		return installed, nil, nil
+	}
+	configs := make(map[string]kubeadmconfig.Plan, len(installed)+len(inline))
+	changed := make(map[string]struct{}, len(inline))
+	for name, plan := range installed {
+		configs[name] = plan
+	}
+	names := make([]string, 0, len(inline))
+	for name := range inline {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		input := inline[name]
+		files := []kubeadmconfig.File{{
+			RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+			Content:    []byte(input.Config),
+			Mode:       0o644,
+		}}
+		patchNames := make([]string, 0, len(input.Patches))
+		for patchName := range input.Patches {
+			patchNames = append(patchNames, patchName)
+		}
+		sort.Strings(patchNames)
+		for _, patchName := range patchNames {
+			files = append(files, kubeadmconfig.File{
+				RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", name, "patches", patchName)),
+				Content:    []byte(input.Patches[patchName]),
+				Mode:       0o644,
+			})
+		}
+		plan, err := kubeadmconfig.PlanFromRenderedFiles(name, files)
+		if err != nil {
+			return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
+		}
+		previous, exists := installed[name]
+		if !exists || !reflect.DeepEqual(previous.NativeEtcFiles(), plan.NativeEtcFiles()) {
+			changed[name] = struct{}{}
+		}
+		configs[name] = plan
+	}
+	return configs, changed, nil
 }

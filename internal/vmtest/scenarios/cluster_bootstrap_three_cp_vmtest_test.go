@@ -478,24 +478,13 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		return err
 	}
 	requestPath := filepath.Join(proofDir, "config-apply.yaml")
-	request := fmt.Appendf(nil, "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: %s\n", configName)
+	inlineConfig := strings.ReplaceAll(strings.TrimSuffix(string(desiredConfig), "\n"), "\n", "\n        ")
+	request := fmt.Appendf(nil, "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  kubeadmConfigs:\n    %s:\n      config: |\n        %s\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: %s\n", configName, inlineConfig, configName)
 	if err := os.WriteFile(requestPath, request, 0o600); err != nil {
 		return err
 	}
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
-		guestConfig := "/var/lib/katl/test-artifacts/control-plane-profiled.yaml"
-		if err := writeNodeFile(ctx, node, guestConfig, desiredConfig, 0o600, true); err != nil {
-			return fmt.Errorf("stage desired kubeadm config on %s: %w", node.Name, err)
-		}
-		installed := "/var/lib/katl/cluster/kubeadm/" + configName + "/config.yaml"
-		copyResult, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-D", "-m", "0600", guestConfig, installed}, 16<<10)
-		if err != nil {
-			return fmt.Errorf("install desired kubeadm config on %s: %w", node.Name, err)
-		}
-		if copyResult.ExitStatus != 0 {
-			return fmt.Errorf("install desired kubeadm config on %s: %w", node.Name, commandErrorDetail(copyResult))
-		}
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
 			"config", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--agent-token-file", tokenFiles[node.Name], "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
 		if err != nil {

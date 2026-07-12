@@ -105,6 +105,33 @@ spec:
 	}
 }
 
+func TestValidateNodeConfigurationChangeAcceptsInlineKubeadmRef(t *testing.T) {
+	input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: next-boot
+spec:
+  kubeadmConfigs:
+    control-plane-profiled:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.0
+  clusterDefaults:
+    kubernetes:
+      kubeadm:
+        configRef: control-plane-profiled
+`
+	result := ValidateNodeConfigurationChange(input, Options{CheckKubeadmRefs: true})
+	if !result.Accepted() {
+		t.Fatalf("diagnostics = %#v, want accepted", result.Strings())
+	}
+}
+
 func TestValidateNodeConfigurationChangeRejectsInvalidSysctlValues(t *testing.T) {
 	input := `
 apiVersion: katl.dev/v1alpha1

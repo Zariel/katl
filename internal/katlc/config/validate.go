@@ -112,6 +112,7 @@ func validateDocument(root *yaml.Node, options Options, result *Result) {
 		result.add("invalid-field", "spec", "spec must be a mapping")
 		return
 	}
+	options.KubeadmConfigNames = mergedKubeadmConfigNames(options.KubeadmConfigNames, mappingValue(spec, "kubeadmConfigs"))
 	for _, pair := range mappingPairsWithPath(spec, "spec") {
 		switch pair.key {
 		case "clusterDefaults":
@@ -120,8 +121,69 @@ func validateDocument(root *yaml.Node, options Options, result *Result) {
 			validateOverlayMap(pair.value, pair.path, options, result)
 		case "nodeOverrides":
 			validateOverlayMap(pair.value, pair.path, options, result)
+		case "kubeadmConfigs":
+			validateInlineKubeadmConfigs(pair.value, pair.path, result)
 		default:
 			result.add(unsupportedCode(pair.key), pair.path, "configuration domain is not supported")
+		}
+	}
+}
+
+func mergedKubeadmConfigNames(installed map[string]struct{}, inline *yaml.Node) map[string]struct{} {
+	names := make(map[string]struct{}, len(installed))
+	for name := range installed {
+		names[name] = struct{}{}
+	}
+	if inline != nil && inline.Kind == yaml.MappingNode {
+		for _, pair := range mappingPairs(inline) {
+			names[pair.key] = struct{}{}
+		}
+	}
+	return names
+}
+
+func validateInlineKubeadmConfigs(node *yaml.Node, path string, result *Result) {
+	if node.Kind != yaml.MappingNode {
+		result.add("invalid-field", path, "kubeadmConfigs must be a mapping")
+		return
+	}
+	for _, config := range mappingPairsWithPath(node, path) {
+		if !validName(config.key) {
+			result.add("invalid-kubeadm-name", config.path, fmt.Sprintf("%q must be a DNS label", config.key))
+		}
+		if config.value.Kind != yaml.MappingNode {
+			result.add("invalid-field", config.path, "inline kubeadm config must be a mapping")
+			continue
+		}
+		for _, field := range mappingPairsWithPath(config.value, config.path) {
+			switch field.key {
+			case "config":
+				if strings.TrimSpace(scalarValue(field.value)) == "" {
+					result.add("missing-kubeadm-config", field.path, "config must contain kubeadm YAML")
+				}
+			case "patches":
+				validateInlineKubeadmPatches(field.value, field.path, result)
+			default:
+				result.add("unsupported-field", field.path, "inline kubeadm config field is not supported")
+			}
+		}
+		if mappingValue(config.value, "config") == nil {
+			result.add("missing-field", config.path+".config", "config is required")
+		}
+	}
+}
+
+func validateInlineKubeadmPatches(node *yaml.Node, path string, result *Result) {
+	if node.Kind != yaml.MappingNode {
+		result.add("invalid-field", path, "patches must be a mapping of file names to YAML content")
+		return
+	}
+	for _, patch := range mappingPairsWithPath(node, path) {
+		if err := validateNetworkdName(patch.key); err != nil {
+			result.add("unsafe-render-path", patch.path, err.Error())
+		}
+		if strings.TrimSpace(scalarValue(patch.value)) == "" {
+			result.add("missing-kubeadm-patch", patch.path, "patch must contain kubeadm patch YAML")
 		}
 	}
 }

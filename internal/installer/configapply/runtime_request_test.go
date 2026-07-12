@@ -59,6 +59,47 @@ spec:
 	}
 }
 
+func TestDecodeNodeConfigurationChangeAddsInlineKubeadmConfig(t *testing.T) {
+	document := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: next-boot
+spec:
+  kubeadmConfigs:
+    control-plane-profiled:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.0
+  clusterDefaults:
+    kubernetes:
+      kubeadm:
+        configRef: control-plane-profiled
+`
+	request, err := DecodeNodeConfigurationChange(strings.NewReader(document), TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() error = %v", err)
+	}
+	plan, ok := request.KubeadmConfigs["control-plane-profiled"]
+	if !ok || plan.Name != "control-plane-profiled" || !strings.Contains(string(plan.Config.Content), "kind: ClusterConfiguration") {
+		t.Fatalf("inline kubeadm plan = %#v", plan)
+	}
+	if request.ClusterDefaults.Kubernetes == nil || request.ClusterDefaults.Kubernetes.Kubeadm.ConfigRef != "control-plane-profiled" || !request.ClusterDefaults.KubeadmChanged {
+		t.Fatalf("cluster defaults = %#v", request.ClusterDefaults)
+	}
+	same, err := DecodeNodeConfigurationChange(strings.NewReader(document), TrustedBundleRequest{KubeadmConfigs: request.KubeadmConfigs})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() same config error = %v", err)
+	}
+	if same.ClusterDefaults.KubeadmChanged {
+		t.Fatalf("identical inline kubeadm config reported changed: %#v", same.ClusterDefaults)
+	}
+}
+
 func TestDecodeNodeConfigurationChangeRejectsUnknownFields(t *testing.T) {
 	tests := []struct {
 		name string

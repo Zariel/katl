@@ -504,7 +504,28 @@ policy, system role, Kubernetes bundle selection, and kubeadm lifecycle state.
 Those changes require reinstall, host update, Kubernetes upgrade, or another
 explicit lifecycle operation. `--file` remains available for an advanced,
 pre-rendered `NodeConfigurationChange`, with `--node` selecting any
-`nodeOverrides` entry it contains.
+`nodeOverrides` entry it contains. An advanced request may carry a named
+desired kubeadm input and select it atomically:
+
+```yaml
+spec:
+  kubeadmConfigs:
+    control-plane-profiled:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.0
+  clusterDefaults:
+    kubernetes:
+      kubeadm:
+        configRef: control-plane-profiled
+```
+
+Inline `patches` may also map single file names to native kubeadm patch YAML.
+Applying the request renders the named desired input and records that a
+kubeadm-aware action is required; normal config apply still does not mutate
+kubeadm-owned cluster state. Run the explicit Katl kubeadm operation after the
+candidate generation is committed.
 
 ## Upgrades
 
