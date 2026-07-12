@@ -222,6 +222,7 @@ type bootMetadata struct {
 	Path                     string   `json:"path"`
 	SizeBytes                int64    `json:"sizeBytes"`
 	SHA256                   string   `json:"sha256"`
+	Compression              string   `json:"compression,omitempty"`
 	CreatedAt                string   `json:"createdAt"`
 	InstallerInterface       string   `json:"installerInterface"`
 	DefaultKernelCommandLine []string `json:"defaultKernelCommandLine"`
@@ -1161,6 +1162,7 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 		Path:                     rel,
 		SizeBytes:                size,
 		SHA256:                   digest,
+		Compression:              installerBootCompression(role),
 		CreatedAt:                created,
 		InstallerInterface:       cfg.InstallerInterface,
 		DefaultKernelCommandLine: []string{"console=ttyS0,115200n8", "console=tty0", "systemd.log_target=console", "loglevel=6"},
@@ -1175,6 +1177,13 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 		return fmt.Errorf("write installer boot metadata %s: %w", relPath(cfg.RepoRoot, path), err)
 	}
 	return nil
+}
+
+func installerBootCompression(role string) string {
+	if role == "installer-initrd" {
+		return "zstd"
+	}
+	return ""
 }
 
 func writeJSON(path string, value any, repoRoot string) error {

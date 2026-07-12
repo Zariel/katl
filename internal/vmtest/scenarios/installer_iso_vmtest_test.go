@@ -58,6 +58,61 @@ func TestInstallerISOBootSmoke(t *testing.T) {
 	}
 }
 
+func TestInstallerPXEBootSmoke(t *testing.T) {
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installer PXE boot smoke")
+	}
+	world := vmtest.RequireWorld(t)
+	worldScenario := world.NewScenario(t, "installer-pxe-boot")
+	options.StateRoot = filepath.Join(worldScenario.Dir, "vm-runs")
+	options.Keep = vmtest.KeepFailed
+	repo := katlRepoRoot(t)
+	kernel := os.Getenv("KATL_INSTALLER_KERNEL")
+	if kernel == "" {
+		kernel = filepath.Join(repo, "_build", "mkosi", "katl-installer.vmlinuz")
+	}
+	initrd := os.Getenv("KATL_INSTALLER_INITRD")
+	if initrd == "" {
+		initrd = filepath.Join(repo, "_build", "mkosi", "katl-installer.initrd")
+	}
+	result, err := vmtest.RunInstallerBoot(
+		context.Background(),
+		vmtest.NewRunner(options),
+		vmtest.Scenario{Name: "installer-pxe-boot"},
+		vmtest.InstallerBootConfig{
+			InstallerKernel: kernel,
+			InstallerInitrd: initrd,
+			CommandLine: []string{
+				"console=ttyS0,115200n8",
+				"systemd.log_target=console",
+				"loglevel=6",
+			},
+			Expect: "Katl installer ready",
+			VM: vmtest.VMConfig{
+				KVM:     options.KVM,
+				RAMMiB:  2048,
+				CPUs:    2,
+				Timeout: 3 * time.Minute,
+			},
+		},
+		vmtest.VMRunner{},
+	)
+	if err != nil {
+		_ = worldScenario.WriteSetupFailure(err)
+		t.Fatalf("RunInstallerBoot() error = %v", err)
+	}
+	if result.Status != vmtest.StatusPassed {
+		if err := worldScenario.WriteResult(vmtest.WorldStatusFailed, result.FailureSummary); err != nil {
+			t.Fatalf("write failed world result: %v", err)
+		}
+		t.Fatalf("installer PXE boot status = %q: %s", result.Status, result.FailureSummary)
+	}
+	if err := worldScenario.WriteResult(vmtest.WorldStatusPassed, ""); err != nil {
+		t.Fatalf("write passed world result: %v", err)
+	}
+}
+
 func TestInstallerISOFirstInstallSmoke(t *testing.T) {
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
