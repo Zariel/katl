@@ -149,8 +149,8 @@ metadata:
 spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
-    version: v1.36.0
-    bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3
+    version: v1.36.1
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1
   defaults:
     install:
       wipeTarget: true
@@ -188,7 +188,7 @@ spec:
         ---
         apiVersion: kubeadm.k8s.io/v1beta4
         kind: ClusterConfiguration
-        kubernetesVersion: v1.36.0
+        kubernetesVersion: v1.36.1
     worker:
       config: |
         apiVersion: kubeadm.k8s.io/v1beta4
@@ -409,7 +409,7 @@ later explicit operator action.
 The Kubernetes bundle is one ordinary OCI image reference. During the explicit
 bootstrap operation, `katlc` resolves and fetches that bundle, checks its
 contents internally, stages the sysext locally, and selects it for generation
-1. The selected alpha reference above supplies the `v1.36.0`
+1. The selected alpha reference above supplies the `v1.36.1`
 payload; a different Kubernetes version requires its matching bundle reference
 and a KatlOS runtime compatible with that bundle.
 
@@ -417,20 +417,20 @@ Katl publishes development Kubernetes bundles as custom OCI artifacts in the
 public `ghcr.io/katl-dev/kubernetes` package. A tag-only reference is accepted:
 
 ```text
-ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3
+ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1
 ```
 
 An immutable OCI manifest pin is optional when exact byte-for-byte
 reproducibility matters:
 
 ```text
-ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
+ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537
 ```
 
 `katlc` verifies the resolved OCI manifest, the Katl bundle config, every layer
 digest and size, and
 Katl runtime compatibility, and only then stages the sysext. The readable
-`ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3` tag is suitable for Renovate's
+`ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1` tag is suitable for Renovate's
 Docker datasource; the full patch precision lets Renovate propose Kubernetes
 patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
@@ -538,7 +538,7 @@ spec:
       config: |
         apiVersion: kubeadm.k8s.io/v1beta4
         kind: ClusterConfiguration
-        kubernetesVersion: v1.36.0
+        kubernetesVersion: v1.36.1
   clusterDefaults:
     kubernetes:
       kubeadm:

@@ -9,14 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       payload_version:
-        description: Exact Kubernetes payload version, for example v1.36.1
-        required: true
-        default: v1.36.1
+        description: Exact Kubernetes payload version; empty uses the committed release manifest
+        required: false
         type: string
       artifact_version:
-        description: Immutable Katl bundle build version, for example v1.36.1-katl.1
-        required: true
-        default: v1.36.1-katl.1
+        description: Immutable Katl bundle build version; empty derives it from the committed release manifest
+        required: false
         type: string
       publish:
         description: Publish the verified OCI artifact to ghcr.io/katl-dev/kubernetes
@@ -83,15 +81,21 @@ jobs:
       - name: Resolve and validate release identity
         shell: bash
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
-            source mkosi.profiles/kubernetes-sysext/kubernetes.env
+          # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+          source mkosi.profiles/kubernetes-sysext/kubernetes.env
+          if [[ "$GITHUB_EVENT_NAME" == "push" || -z "$DISPATCH_PAYLOAD_VERSION" ]]; then
             PAYLOAD_VERSION="$KATL_KUBERNETES_PAYLOAD_VERSION"
-            ARTIFACT_VERSION="${PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
-            PUBLISH=true
           else
             PAYLOAD_VERSION="$DISPATCH_PAYLOAD_VERSION"
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" || -z "$DISPATCH_ARTIFACT_VERSION" ]]; then
+            ARTIFACT_VERSION="${PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
+          else
             ARTIFACT_VERSION="$DISPATCH_ARTIFACT_VERSION"
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            PUBLISH=true
+          else
             PUBLISH="$DISPATCH_PUBLISH"
           fi
 

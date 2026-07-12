@@ -18,11 +18,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Fetch and verify selected alpha bundle anonymously
+      - name: Resolve and verify selected bundle anonymously
+        id: bundle
+        shell: bash
         run: |
-          scripts/check-public-kubernetes-bundle \
-            ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3 \
-            sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
+          # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+          source mkosi.profiles/kubernetes-sysext/kubernetes.env
+          artifact_version="${KATL_KUBERNETES_PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
+          image="ghcr.io/katl-dev/kubernetes:${artifact_version}"
+          verification="$(scripts/check-public-kubernetes-bundle "$image")"
+          printf '%s\n' "$verification"
+          digest="${verification##*@}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: public bundle check returned invalid digest: $digest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate provenance client to GHCR
         env:
@@ -34,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh attestation verify \
-            oci://ghcr.io/katl-dev/kubernetes@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b \
+            "oci://ghcr.io/katl-dev/kubernetes@${{ steps.bundle.outputs.digest }}" \
             --repo katl-dev/katl \
             --signer-workflow katl-dev/katl/.github/workflows/kubernetes-bundles.yml \
             --source-ref refs/heads/main

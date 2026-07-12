@@ -254,11 +254,27 @@ kubelet, kubectl, and cri-tools RPM NEVRAs in
 `vMAJOR.MINOR.PATCH-katl.1` GHCR artifact. Earlier patch releases and digests
 remain addressable.
 
+Prepare or complete that reviewed update with one command on a capable build
+host:
+
+```sh
+scripts/prepare-kubernetes-release v1.36.2
+```
+
+The command resolves the exact x86_64 RPMs from the selected official
+Kubernetes repository, requires kubeadm, kubelet, and kubectl to match the
+payload patch, selects the newest compatible cri-tools patch, resets the Katl
+artifact revision to `1`, builds the runtime and sysext, refreshes the resource
+lock, and runs the producer checks. Review the resulting release manifest and
+resource-lock diff, then submit them as a normal ready pull request. The merge
+is the release event; no tag or manual workflow dispatch is required.
+
 Manual dispatch remains the explicit rebuild and dry-run path. Dispatch it with
-an exact Kubernetes payload such as
-`v1.36.0`, an immutable Katl build identity such as `v1.36.0-katl.1`, and
-`publish: false` for a build-only verification run. A successful build uploads
-the complete staged bundle as a GitHub Actions artifact.
+empty version inputs to rebuild the committed release manifest, or provide an
+exact Kubernetes payload and immutable Katl build identity to inspect another
+candidate. Keep `publish: false` for a build-only verification run. A
+successful build uploads the complete staged bundle as a GitHub Actions
+artifact.
 
 Set `publish: true` only for a reviewed bundle identity. The workflow refuses
 to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
@@ -278,6 +294,12 @@ namespace operation. The workflow summary prints the readable and digest-pinned
 OCI bundle references for install/bootstrap manifests. Published development
 bundles remain unsigned until the signing policy lands; the GitHub attestation
 records build provenance but is not yet a trust decision enforced by `katlc`.
+
+The scheduled public-bundle workflow derives the selected readable tag from
+the same committed release manifest, resolves its immutable digest
+anonymously, verifies every OCI blob, and verifies the GitHub attestation. A
+patch release therefore does not require a second commit just to update a
+hard-coded verifier digest.
 
 ## GitHub VM Tests
 

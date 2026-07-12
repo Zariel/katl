@@ -4,12 +4,12 @@ set -euo pipefail
 image="${1:-}"
 expected_digest="${2:-}"
 if [[ ! "$image" =~ ^ghcr\.io/katl-dev/kubernetes:([A-Za-z0-9._-]+)$ ]]; then
-    echo "usage: scripts/check-public-kubernetes-bundle ghcr.io/katl-dev/kubernetes:TAG sha256:DIGEST" >&2
+    echo "usage: scripts/check-public-kubernetes-bundle ghcr.io/katl-dev/kubernetes:TAG [sha256:DIGEST]" >&2
     exit 2
 fi
 tag="${BASH_REMATCH[1]}"
 payload_version="${tag%-katl.*}"
-if [[ ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+if [[ -n "$expected_digest" && ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "error: expected OCI manifest digest must be sha256 followed by 64 lowercase hex characters" >&2
     exit 2
 fi
@@ -36,6 +36,13 @@ fetch_manifest() {
 }
 
 fetch_manifest "$tag" "$work/tag.json"
+resolved_digest="sha256:$(sha256sum "$work/tag.json" | cut -d ' ' -f 1)"
+if [[ -z "$expected_digest" ]]; then
+    expected_digest="$resolved_digest"
+elif [[ "$resolved_digest" != "$expected_digest" ]]; then
+    echo "error: tag resolved to $resolved_digest, want $expected_digest" >&2
+    exit 1
+fi
 fetch_manifest "$expected_digest" "$work/digest.json"
 if ! cmp --silent "$work/tag.json" "$work/digest.json"; then
     echo "error: tag and expected digest resolved to different OCI manifests" >&2
