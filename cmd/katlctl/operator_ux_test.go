@@ -46,7 +46,7 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "192.0.2.11:6443" || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Access.CredentialRef; !strings.Contains(got, "/credentials/homelab/cp-1.token") {
+	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Access.CredentialRef; got != "agent/cp-1" {
 		t.Fatalf("credentialRef = %q", got)
 	}
 }

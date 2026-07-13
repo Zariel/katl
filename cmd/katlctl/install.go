@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 		},
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the cluster config")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name or configured address; inferred when the config contains one node")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
@@ -95,18 +96,11 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	endpoint, err := resolveInstallerEndpoint(ctx, opts.endpoint, opts.timeout)
-	if err != nil {
-		return err
-	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
 	if strings.TrimSpace(opts.sourcePath) == "" {
 		return fmt.Errorf("source config path is required")
-	}
-	if strings.TrimSpace(opts.nodeName) == "" {
-		return fmt.Errorf("--node is required")
 	}
 	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
 		SourcePath:     opts.sourcePath,
@@ -120,13 +114,21 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if len(archive) > maxInstallBundleSize {
 		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
 	}
+	nodeName, err := resolveInstallNode(archive, result.Digest, opts.nodeName)
+	if err != nil {
+		return err
+	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
 		ExpectedDigest:          result.Digest,
-		NodeName:                opts.nodeName,
+		NodeName:                nodeName,
 		AllowMissingKatlosImage: true,
 	})
 	if err != nil {
 		return fmt.Errorf("select node from compiled cluster config: %w", err)
+	}
+	endpoint, err := resolveInstallerEndpoint(ctx, installEndpointHint(opts.endpoint, opts.nodeName, nodeName), opts.timeout)
+	if err != nil {
+		return err
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, opts.timeout)
@@ -160,6 +162,71 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		return fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, installFailure(status.InstallStatus))
 	}
 	return nil
+}
+
+func installEndpointHint(endpoint, selector, nodeName string) string {
+	if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
+		return endpoint
+	}
+	selector = strings.TrimSpace(selector)
+	if selector != "" && selector != nodeName {
+		return selector
+	}
+	return ""
+}
+
+func resolveInstallNode(archive []byte, digest, selector string) (string, error) {
+	bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), digest)
+	if err != nil {
+		return "", fmt.Errorf("read compiled cluster config: %w", err)
+	}
+	return selectInstallNode(bundle.Manifest, selector)
+}
+
+func selectInstallNode(manifest configbundle.BundleManifest, selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		if len(manifest.Nodes) == 1 {
+			return manifest.Nodes[0].Name, nil
+		}
+		return "", fmt.Errorf("--node is required because the cluster config contains %d nodes (%s)", len(manifest.Nodes), installNodeChoices(manifest))
+	}
+	for _, node := range manifest.Nodes {
+		if node.Name == selector {
+			return node.Name, nil
+		}
+	}
+	var matches []string
+	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
+		if strings.TrimSpace(node.Address) == selector {
+			matches = append(matches, node.Name)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		sort.Strings(matches)
+		return "", fmt.Errorf("--node address %q matches multiple nodes (%s); use a node name", selector, strings.Join(matches, ", "))
+	}
+	return "", fmt.Errorf("--node %q does not match a configured node name or address; choose %s", selector, installNodeChoices(manifest))
+}
+
+func installNodeChoices(manifest configbundle.BundleManifest) string {
+	addresses := make(map[string]string, len(manifest.Cluster.BootstrapInventory.Nodes))
+	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
+		addresses[node.Name] = strings.TrimSpace(node.Address)
+	}
+	choices := make([]string, 0, len(manifest.Nodes))
+	for _, node := range manifest.Nodes {
+		choice := node.Name
+		if address := addresses[node.Name]; address != "" {
+			choice += " (" + address + ")"
+		}
+		choices = append(choices, choice)
+	}
+	sort.Strings(choices)
+	return strings.Join(choices, ", ")
 }
 
 func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, stderr io.Writer) error {

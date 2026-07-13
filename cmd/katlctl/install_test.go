@@ -19,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -252,7 +253,6 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	err := run(context.Background(), []string{
 		"install", "apply", sourcePath,
 		"--endpoint", ts.URL,
-		"--node", "cp-1",
 		"--no-wait",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -268,6 +268,113 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	payload := server.Bundle()
 	if payload.NodeName != "cp-1" || len(payload.Data) == 0 {
 		t.Fatalf("server bundle = node=%q bytes=%d", payload.NodeName, len(payload.Data))
+	}
+}
+
+func TestInstallApplyAcceptsGeneratedConfigByAddress(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "cluster.yaml")
+	keyPath := filepath.Join(dir, "id_ed25519.pub")
+	if err := os.WriteFile(keyPath, []byte(uxTestSSHKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"config", "init", outputPath,
+		"--ssh-authorized-key", keyPath,
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("config init error = %v, stderr=%s", err, stderr.String())
+	}
+
+	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "katlos-install.raw",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "test",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(context.Background(), []string{
+		"install", "apply", outputPath,
+		"--endpoint", ts.URL,
+		"--node", "192.0.2.11",
+		"--no-wait",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("install apply error = %v, stderr=%s", err, stderr.String())
+	}
+	if payload := server.Bundle(); payload.NodeName != "cp-1" || len(payload.Data) == 0 {
+		t.Fatalf("server bundle = node=%q bytes=%d", payload.NodeName, len(payload.Data))
+	}
+}
+
+func TestSelectInstallNode(t *testing.T) {
+	manifest := configbundle.BundleManifest{
+		Nodes: []configbundle.NodeRecord{{Name: "cp-1"}, {Name: "worker-1"}},
+		Cluster: configbundle.ClusterRecord{BootstrapInventory: inventory.Inventory{Nodes: []inventory.Node{
+			{Name: "cp-1", Address: "192.0.2.11"},
+			{Name: "worker-1", Address: "192.0.2.21"},
+		}}},
+	}
+	for _, test := range []struct {
+		name     string
+		selector string
+		want     string
+		wantErr  string
+	}{
+		{name: "name", selector: "cp-1", want: "cp-1"},
+		{name: "address", selector: "192.0.2.21", want: "worker-1"},
+		{name: "required for multiple", wantErr: "contains 2 nodes"},
+		{name: "unknown", selector: "192.0.2.99", wantErr: "cp-1 (192.0.2.11)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectInstallNode(manifest, test.selector)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("selectInstallNode() error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("selectInstallNode() = %q, %v, want %q", got, err, test.want)
+			}
+		})
+	}
+
+	single := manifest
+	single.Nodes = single.Nodes[:1]
+	if got, err := selectInstallNode(single, ""); err != nil || got != "cp-1" {
+		t.Fatalf("single-node selection = %q, %v", got, err)
+	}
+	manifest.Cluster.BootstrapInventory.Nodes[1].Address = "192.0.2.11"
+	if _, err := selectInstallNode(manifest, "192.0.2.11"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
+		t.Fatalf("ambiguous address error = %v", err)
+	}
+}
+
+func TestInstallEndpointHint(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		endpoint string
+		selector string
+		nodeName string
+		want     string
+	}{
+		{name: "explicit endpoint", endpoint: "http://installer.test:8080", selector: "192.0.2.11", nodeName: "cp-1", want: "http://installer.test:8080"},
+		{name: "address selector", selector: "192.0.2.11", nodeName: "cp-1", want: "192.0.2.11"},
+		{name: "node name discovers", selector: "cp-1", nodeName: "cp-1"},
+		{name: "inferred node discovers", nodeName: "cp-1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := installEndpointHint(test.endpoint, test.selector, test.nodeName); got != test.want {
+				t.Fatalf("installEndpointHint() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

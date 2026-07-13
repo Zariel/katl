@@ -103,6 +103,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
+		layer.Bootstrap.Access = portableBootstrapAccess(name, layer.Bootstrap.Access)
 		layer = applyTargetDiskDefaults(layer)
 		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint, endpointPlan)
 		if err != nil {
@@ -311,6 +312,16 @@ func manifestAccess(access inventory.Access) manifest.BootstrapAccess {
 		User:          strings.TrimSpace(access.User),
 		CredentialRef: strings.TrimSpace(access.CredentialRef),
 	}
+}
+
+func portableBootstrapAccess(node string, access inventory.Access) inventory.Access {
+	access.Method = strings.TrimSpace(access.Method)
+	access.User = strings.TrimSpace(access.User)
+	access.CredentialRef = strings.TrimSpace(access.CredentialRef)
+	if access.Method == "agent" && strings.HasPrefix(access.CredentialRef, "file:") {
+		access.CredentialRef = "agent/" + node
+	}
+	return access
 }
 
 func copyLabels(labels map[string]string) map[string]string {

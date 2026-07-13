@@ -78,6 +78,24 @@ func TestCompileClusterPlan(t *testing.T) {
 	}
 }
 
+func TestCompileMakesWorkstationCredentialRefPortable(t *testing.T) {
+	config := validConfig()
+	config.Spec.Nodes[0].Overrides.Bootstrap.Access = inventory.Access{
+		Method:        "agent",
+		CredentialRef: "file:/home/operator/.config/katl/credentials/lab/cp-1.token",
+	}
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if got := plan.Nodes[0].InstallManifest.Node.Bootstrap.Access.CredentialRef; got != "agent/cp-1" {
+		t.Fatalf("install credentialRef = %q", got)
+	}
+	if got := plan.BootstrapInventory.Nodes[0].Access.CredentialRef; got != "agent/cp-1" {
+		t.Fatalf("inventory credentialRef = %q", got)
+	}
+}
+
 func TestCompileNodeClassGoldenScenarios(t *testing.T) {
 	tests := []struct {
 		name   string
