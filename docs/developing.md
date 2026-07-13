@@ -226,6 +226,16 @@ with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
+Release production uses a dependency-aware job graph. Runtime, installer, and
+`katlctl` builds start concurrently. The install and upgrade images are then
+packaged concurrently from the one verified runtime artifact, and a final job
+assembles the installer ISO from those verified intermediates before staging
+and attesting the complete release set. The Fedora mkosi builder uses the
+GitHub Actions cache backend for reusable Docker layers; mkosi package and Go
+build caches remain scoped independently. Published-asset provenance checks
+use bounded concurrency because every release asset has an independent
+attestation.
+
 KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,
 `-alpha.N`, `-beta.N`, and `-rc.N` prereleases. The first public alpha for the
 July 2026 line is `2026.7.0-alpha.1`; the stable identity is `2026.7.0`. Use

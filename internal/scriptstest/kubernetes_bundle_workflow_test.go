@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestKubernetesBundleWorkflowContract(t *testing.T) {
@@ -83,6 +85,52 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	}
 	if strings.Contains(releaseWorkflow, "--generate-notes") {
 		t.Fatal("KatlOS releases must use the tested staged release notes")
+	}
+}
+
+func TestKatlReleaseWorkflowBuildGraph(t *testing.T) {
+	repo := repoRoot(t)
+	workflow := string(mustReadFile(t, repo+"/.github/workflows/release-artifacts.yml"))
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(workflow), &document); err != nil {
+		t.Fatalf("parse KatlOS release workflow: %v", err)
+	}
+
+	if count := strings.Count(workflow, "scripts/mkosi build-runtime"); count != 1 {
+		t.Fatalf("KatlOS release workflow runtime build count = %d, want exactly one", count)
+	}
+	for _, value := range []string{
+		"  runtime:\n",
+		"  installer:\n",
+		"  katlctl:\n",
+		"  katlos-images:\n",
+		"  assemble:\n",
+		"docker/build-push-action@",
+		"cache-from: type=gha,scope=katl-mkosi-builder",
+		"name: katl-runtime-${{ github.sha }}",
+		"name: katl-installer-${{ github.sha }}",
+		"name: katlos-images-${{ github.sha }}",
+		"scripts/build-katlos-install-image &",
+		"KATL_KATLOS_IMAGE_ROLE=upgrade scripts/build-katlos-install-image &",
+	} {
+		if !strings.Contains(workflow, value) {
+			t.Fatalf("KatlOS release workflow missing parallel build contract %q", value)
+		}
+	}
+
+	images := workflow[strings.Index(workflow, "  katlos-images:\n"):strings.Index(workflow, "  assemble:\n")]
+	assertTextContains(t, images, "- runtime", "Download verified runtime")
+	assemble := workflow[strings.Index(workflow, "  assemble:\n"):strings.Index(workflow, "  publish-tag:\n")]
+	assertTextContains(t, assemble,
+		"- runtime",
+		"- installer",
+		"- katlctl",
+		"- katlos-images",
+		"scripts/build-installer-iso",
+		"actions/attest@v4",
+	)
+	if !regexp.MustCompile(`xargs[^\n]*-P[1-9][0-9]*`).MatchString(workflow) {
+		t.Fatal("KatlOS release workflow does not verify published attestations with bounded concurrency")
 	}
 }
 
