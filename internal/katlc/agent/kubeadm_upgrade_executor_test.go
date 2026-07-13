@@ -22,6 +22,12 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-test")
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	executor.SetBootDefault = func(_ context.Context, _ string, entry string) error {
+		if entry != "loader/entries/katl-gen1.conf" {
+			t.Fatalf("boot default entry = %q", entry)
+		}
+		return nil
+	}
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, append([]string(nil), argv...))
 		joined := strings.Join(argv, " ")
@@ -50,13 +56,23 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if completed.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != kubeadmAccessOperationPrivate || completed.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" || completed.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm {
 		t.Fatalf("upgrade evidence = %+v", completed.KubeadmUpgradeEvidence)
 	}
-	assertCommandOrder(t, commands, "kubeadm upgrade plan v1.36.2", "kubeadm upgrade apply --yes v1.36.2", "systemd-sysext refresh", "systemctl restart kubelet.service")
+	assertCommandOrder(t, commands, "kubeadm upgrade plan v1.36.2", "kubeadm upgrade apply --yes v1.36.2", "systemctl stop kubelet.service", "systemd-sysext refresh", "systemctl restart kubelet.service")
 	spec, status, err := generation.ReadGeneration(root, "gen1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateTrying || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
+	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
 		t.Fatalf("candidate = spec %+v status %+v", spec, status)
+	}
+	if completed.BootHealthPending || completed.ActivationMode != operation.ActivationModeLive || completed.ActivationState != operation.ActivationStateActiveLive {
+		t.Fatalf("online lifecycle = mode %q state %q bootPending %v", completed.ActivationMode, completed.ActivationState, completed.BootHealthPending)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "gen1" || selection.BootedGenerationID != "gen1" || selection.PendingHealthValidation {
+		t.Fatalf("live selection = %#v", selection)
 	}
 	if len(spec.Confexts) != 1 || spec.Confexts[0].Path != "/var/lib/katl/generations/gen1/confext" {
 		t.Fatalf("candidate confext refs = %+v", spec.Confexts)
@@ -132,6 +148,48 @@ func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) 
 	}
 	if sawUnmount {
 		t.Fatal("operation-private target kubeadm repair view was removed after mutation failure")
+	}
+}
+
+func TestExecutorRestoresSourceSysextAndKubeletWhenLiveActivationFails(t *testing.T) {
+	root, store, record, now := kubeadmUpgradeFixture(t, "worker")
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Async = false
+	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	restarts := 0
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case joined == "systemctl restart kubelet.service":
+			restarts++
+			if restarts == 1 {
+				return ToolResult{Err: errors.New("target kubelet failed"), ExitStatus: 1}
+			}
+		}
+		return ToolResult{}
+	}
+	if err := executor.Execute(context.Background(), record); err == nil {
+		t.Fatal("Execute() error = nil")
+	}
+	if restarts != 2 {
+		t.Fatalf("kubelet restarts = %d, want failed target restart and source recovery restart", restarts)
+	}
+	activation := filepath.Join(root, "run/extensions/katl-kubernetes.raw")
+	target, err := os.Readlink(activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "/var/lib/katl/generations/gen0/sysext/kubernetes.raw" {
+		t.Fatalf("restored sysext target = %q", target)
+	}
+	failed, err := store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair {
+		t.Fatalf("failed operation = %+v", failed)
 	}
 }
 
@@ -247,7 +305,7 @@ func TestExecutorCapturesUpgradeSnapshotInsideNode(t *testing.T) {
 func createUnresolvedUpgradeRecord(t *testing.T, store operation.Store, id string, request *operation.KubernetesSysextUpdate) operation.OperationRecord {
 	t.Helper()
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
-	record, err := store.Create(operation.OperationRecord{OperationID: id, OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", Actor: "katlctl", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(request.UpgradeRole), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: request.CandidateGenerationID, KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeNextBoot, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
+	record, err := store.Create(operation.OperationRecord{OperationID: id, OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", Actor: "katlctl", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(request.UpgradeRole), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: request.CandidateGenerationID, KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeLive, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +417,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	if err := generation.WriteGeneration(root, previous, status); err != nil {
 		t.Fatal(err)
 	}
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, DefaultGenerationID: "gen0", BootedGenerationID: "gen0", Generation0FallbackID: "gen0", UpdatedAt: now}); err != nil {
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, DefaultGenerationID: "gen0", BootedGenerationID: "gen0", Generation0FallbackID: "gen0", DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
@@ -367,7 +425,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	request := &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/kubernetes.raw", TargetSysextSHA256: targetSHA, TargetSysextSize: uint64(len(target)), CandidateGenerationID: "gen1", UpgradeRole: role, SourcePayloadVersion: "v1.36.1", SnapshotRef: "snapshot-1", SnapshotDigest: snapshotSHA, SnapshotCreatedAt: now.Format(time.RFC3339), CapturedMemberListDigest: strings.Repeat("c", 64), SnapshotStorageLocation: "/var/lib/katl/etcd-snapshots/snapshot-1.db", SnapshotOperatorIdentity: "operator-a"}
-	record, err := store.Create(operation.OperationRecord{OperationID: "kubeadm-upgrade-1", OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(role), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: "gen1", KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeNextBoot, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
+	record, err := store.Create(operation.OperationRecord{OperationID: "kubeadm-upgrade-1", OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(role), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: "gen1", KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeLive, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
 	if err != nil {
 		t.Fatal(err)
 	}

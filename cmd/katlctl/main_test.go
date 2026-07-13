@@ -1103,12 +1103,12 @@ func TestClusterWipeNodeSubmitsWithNodeActor(t *testing.T) {
 	newWipeClusterConnector = func(token string) cluster.AgentConnector {
 		return connector
 	}
-	oldKubectl := wipeNodeKubectlRunner
+	oldKubectl := operatorKubectlRunner
 	kubectl := &fakeKubectlRunner{}
-	wipeNodeKubectlRunner = kubectl
+	operatorKubectlRunner = kubectl
 	t.Cleanup(func() {
 		newWipeClusterConnector = oldConnector
-		wipeNodeKubectlRunner = oldKubectl
+		operatorKubectlRunner = oldKubectl
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -1150,12 +1150,12 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 	newWipeClusterConnector = func(token string) cluster.AgentConnector {
 		return connector
 	}
-	oldKubectl := wipeNodeKubectlRunner
+	oldKubectl := operatorKubectlRunner
 	kubectl := &fakeKubectlRunner{}
-	wipeNodeKubectlRunner = kubectl
+	operatorKubectlRunner = kubectl
 	t.Cleanup(func() {
 		newWipeClusterConnector = oldConnector
-		wipeNodeKubectlRunner = oldKubectl
+		operatorKubectlRunner = oldKubectl
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -1198,12 +1198,12 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 	newWipeClusterConnector = func(token string) cluster.AgentConnector {
 		return connector
 	}
-	oldKubectl := wipeNodeKubectlRunner
+	oldKubectl := operatorKubectlRunner
 	kubectl := &fakeKubectlRunner{}
-	wipeNodeKubectlRunner = kubectl
+	operatorKubectlRunner = kubectl
 	t.Cleanup(func() {
 		newWipeClusterConnector = oldConnector
-		wipeNodeKubectlRunner = oldKubectl
+		operatorKubectlRunner = oldKubectl
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -1257,16 +1257,16 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 	newWipeClusterConnector = func(token string) cluster.AgentConnector {
 		return connector
 	}
-	oldKubectl := wipeNodeKubectlRunner
+	oldKubectl := operatorKubectlRunner
 	kubectl := &fakeKubectlRunner{results: []readiness.CommandResult{
 		{ExitStatus: 0},
 		{ExitStatus: 1, Stderr: "drain timed out with token abcdef.abcdefghijklmnop"},
 		{ExitStatus: 1, Stderr: "delete failed with Bearer secret-token"},
 	}}
-	wipeNodeKubectlRunner = kubectl
+	operatorKubectlRunner = kubectl
 	t.Cleanup(func() {
 		newWipeClusterConnector = oldConnector
-		wipeNodeKubectlRunner = oldKubectl
+		operatorKubectlRunner = oldKubectl
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -1307,12 +1307,12 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 	newWipeClusterConnector = func(token string) cluster.AgentConnector {
 		return connector
 	}
-	oldKubectl := wipeNodeKubectlRunner
+	oldKubectl := operatorKubectlRunner
 	kubectl := &fakeKubectlRunner{}
-	wipeNodeKubectlRunner = kubectl
+	operatorKubectlRunner = kubectl
 	t.Cleanup(func() {
 		newWipeClusterConnector = oldConnector
-		wipeNodeKubectlRunner = oldKubectl
+		operatorKubectlRunner = oldKubectl
 	})
 
 	var stdout, stderr bytes.Buffer

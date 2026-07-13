@@ -305,9 +305,8 @@ snapshot/restore VM tests before Katl claims snapshot recovery support
 
 ## Post-Decision Execution Sketches
 
-The following role flows are the intended shape after the selected target
-kubeadm access mode and kubelet activation gate have implementation and VM
-coverage. They are not supported execution paths before that gate is closed.
+The following role flows define the supported target-kubeadm and kubelet
+activation sequence. Release claims require the matching VM coverage.
 
 Control-plane apply node:
 
@@ -317,11 +316,12 @@ make target kubeadm available to the operation
 run kubeadm upgrade plan
 record the selected target version
 run kubeadm upgrade apply <target-version>
-drain policy is operator-controlled or explicitly requested by the operation
+leave the node schedulable by default; optional client-side cordon is explicit
+stop the source kubelet
+refresh the globally selected Kubernetes sysext
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-commit the candidate host generation or leave boot health pending according to
-  the operation result
+promote the live candidate as the healthy persistent boot default
 ```
 
 Additional control-plane nodes:
@@ -330,10 +330,11 @@ Additional control-plane nodes:
 stage target Kubernetes sysext in a candidate generation
 make target kubeadm available to the operation
 run kubeadm upgrade node
+stop the source kubelet
+refresh the globally selected Kubernetes sysext
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-commit the candidate host generation or leave boot health pending according to
-  the operation result
+promote the live candidate as the healthy persistent boot default
 ```
 
 Worker nodes:
@@ -342,16 +343,17 @@ Worker nodes:
 stage target Kubernetes sysext in a candidate generation
 make target kubeadm available to the operation
 run kubeadm upgrade node
+stop the source kubelet
+refresh the globally selected Kubernetes sysext
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-commit the candidate host generation or leave boot health pending according to
-  the operation result
+promote the live candidate as the healthy persistent boot default
 ```
 
-Drain and uncordon are intentionally not hidden inside generation activation.
-Katl may offer an explicit operation flag or a higher-level control-client flow
-for those steps, but the operation status must show whether they were requested,
-skipped, or left to the operator.
+Drain is intentionally not hidden inside generation activation. The normal
+home-lab path keeps running pods in place. `katlctl --cordon` optionally prevents
+new scheduling during each node operation and restores scheduling afterward;
+it does not drain or evict workloads.
 
 ## State And Status
 
@@ -603,7 +605,8 @@ VM release gates cover:
 single-control-plane patch upgrade through kubeadm apply
 worker upgrade after the control plane
 real stacked-etcd snapshot evidence before control-plane mutation
-candidate generation staging, commit, reboot activation, and node readiness
+candidate generation staging, live activation without reboot, durable boot
+  default promotion, and node readiness
 pre-mutation failure and post-mutation repair-required operation semantics
 ```
 

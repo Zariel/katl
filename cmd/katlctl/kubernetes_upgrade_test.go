@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 )
 
 func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
@@ -38,17 +40,12 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 			nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-" + name, AgentStartId: "before-" + name, CurrentGenerationId: "gen-1"},
 			generation:      &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0", Sha256: strings.Repeat("a", 64)}}},
 			submitAccepted:  &agentapi.OperationAccepted{OperationId: "internal-" + name},
-			operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy", NextAction: "reboot for boot health"},
+			operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy"},
 		}
 		client.onSubmit = func(req *agentapi.SubmitOperationRequest) {
 			if !req.DryRun {
 				executionOrder = append(executionOrder, name)
 			}
-		}
-		client.onReboot = func(req *agentapi.RebootRequest) {
-			client.nodeStatus.AgentStartId = "after-" + name
-			client.nodeStatus.CurrentGenerationId = req.TargetGenerationId
-			client.generation = &agentapi.Generation{GenerationId: req.TargetGenerationId, CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1"}}}
 		}
 		clients[name] = client
 	}
@@ -82,7 +79,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	}
 	roles := []string{"apply", "control-plane", "worker"}
 	for i, name := range []string{"cp-1", "cp-2", "worker-1"} {
-		if report.Nodes[i].Name != name || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "boot-healthy" {
+		if report.Nodes[i].Name != name || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "healthy" {
 			t.Fatalf("node report %d = %#v", i, report.Nodes[i])
 		}
 		requests := clients[name].submitRequests
@@ -96,8 +93,8 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 		if body.TargetSysextPath != "" || body.TargetSysextSha256 != "" || body.SnapshotDigest != "" || body.CandidateGenerationId == "" {
 			t.Fatalf("%s request exposed internal artifact or snapshot inputs: %#v", name, body)
 		}
-		if len(clients[name].rebootRequests) != 1 {
-			t.Fatalf("%s reboot requests = %#v", name, clients[name].rebootRequests)
+		if len(clients[name].rebootRequests) != 0 {
+			t.Fatalf("%s unexpectedly rebooted: %#v", name, clients[name].rebootRequests)
 		}
 	}
 	if want := []string{"cp-1", "cp-2", "worker-1"}; !reflect.DeepEqual(executionOrder, want) {
@@ -130,6 +127,49 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 	}
 }
 
+func TestKubernetesUpgradeCordonRequiresKubeconfig(t *testing.T) {
+	err := runKubernetesUpgrade(context.Background(), kubernetesUpgradeOptions{version: "v1.36.1", cordon: true, timeout: time.Minute, output: "json"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--kubeconfig is required with --cordon") {
+		t.Fatalf("runKubernetesUpgrade() error = %v", err)
+	}
+}
+
+func TestKubernetesUpgradeCordonIsExplicitAndNonDraining(t *testing.T) {
+	runner := &fakeKubectlRunner{}
+	previous := operatorKubectlRunner
+	operatorKubectlRunner = runner
+	t.Cleanup(func() { operatorKubectlRunner = previous })
+	client := &fakeKatlcAgentClient{
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "upgrade-worker-1"},
+		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy"},
+	}
+	image, err := kubernetesbundle.ParseImageReference("ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runKubernetesUpgradeTarget(context.Background(), workstation.ResolvedTopology{}, kubernetesUpgradeOptions{cordon: true, kubeconfig: "/tmp/admin.conf", timeout: time.Minute}, kubernetesUpgradeTarget{
+		node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, role: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
+	}, image, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Result != operation.ResultSucceeded || report.Phase != "healthy" {
+		t.Fatalf("report = %#v", report)
+	}
+	want := [][]string{
+		{"kubectl", "--kubeconfig", "/tmp/admin.conf", "cordon", "worker-1"},
+		{"kubectl", "--kubeconfig", "/tmp/admin.conf", "uncordon", "worker-1"},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("kubectl calls = %#v, want %#v", runner.calls, want)
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(strings.Join(call, " "), "drain") {
+			t.Fatalf("cordon option invoked drain: %#v", runner.calls)
+		}
+	}
+}
+
 func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "katlctl.yaml")
@@ -147,12 +187,6 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 			submitAccepted: &agentapi.OperationAccepted{OperationId: "upgrade-" + node.name},
 			operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded,
 				Phase: "healthy"},
-		}
-		name := node.name
-		client.onReboot = func(req *agentapi.RebootRequest) {
-			client.nodeStatus.AgentStartId = "after-" + name
-			client.nodeStatus.CurrentGenerationId = req.TargetGenerationId
-			client.generation = &agentapi.Generation{GenerationId: req.TargetGenerationId, CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1"}}}
 		}
 		clients[node.endpoint] = client
 	}

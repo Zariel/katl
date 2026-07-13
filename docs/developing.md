@@ -359,9 +359,10 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
 
 The upgrade row pins the published source and target OCI references in the
 workflow matrix. It proves etcd snapshot capture, control-plane-first kubeadm
-upgrade, generation selection across reboot, worker upgrade, and final cluster
-health. Update those pins deliberately when promoting a newly published bundle
-pair into the compatibility gate.
+upgrade, live sysext replacement with a kubelet-only restart, durable generation
+promotion without reboot, worker upgrade, and final cluster health. Update those
+pins deliberately when promoting a newly published bundle pair into the
+compatibility gate.
 
 The runtime artifact set is intentionally limited to direct-runtime tests.
 Installed-runtime tests consume the KatlOS install image and reject
