@@ -5,9 +5,10 @@ with the task that matches the current node state; do not skip directly to a
 mutating command.
 
 KatlOS is experimental. Read the [support boundary](../support.md) before using
-these procedures. The current installer handoff and management API use bearer
-authentication over unencrypted HTTP/TCP and are suitable only on isolated
-evaluation networks.
+these procedures. The ephemeral installer handoff is intentionally
+unauthenticated HTTP, while the installed-node management API uses bearer
+authentication over unencrypted TCP. Keep both on isolated evaluation
+networks.
 
 ## Lifecycle Map
 
@@ -33,7 +34,7 @@ workstation, not inside the KatlOS image.
 Keep these artifacts together for the life of an evaluation:
 
 - the KatlOS release URL and assets used;
-- the source `ClusterConfig` and compiled `.katlcfg` bundle;
+- the source `ClusterConfig` and any `.katlcfg` produced for PXE or offline use;
 - the Kubernetes OCI reference;
 - one protected agent token file per node;
 - the kubeconfig, command results, generation IDs, and relevant timestamps; and
@@ -76,6 +77,6 @@ Normal configuration apply currently covers hostname, SSH authorized keys, and
 systemd-networkd files. Disk policy, system role, Kubernetes bundle selection,
 and kubeadm lifecycle changes require a named lifecycle operation or reinstall.
 
-There is no supported alpha workflow for automatic fleet rollout, Kubernetes
-version upgrades, etcd disaster recovery, failed control-plane replacement,
-agent-token rotation, or general cluster reconciliation.
+There is no supported alpha workflow for automatic host fleet rollout, etcd
+disaster recovery, failed control-plane replacement, agent-token rotation, or
+general cluster reconciliation.
