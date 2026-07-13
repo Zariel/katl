@@ -109,7 +109,7 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 			KubeletGateState:        "locked",
 			SourceKubeletPolicy:     "keep-running",
 		},
-		ActivationMode:         operation.ActivationModeNextBoot,
+		ActivationMode:         operation.ActivationModeLive,
 		ActivationState:        operation.ActivationStatePending,
 		GenerationCommitState:  operation.GenerationCommitAbandoned,
 		PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
@@ -282,7 +282,7 @@ func kubeadmUpgradePhasePlan(role string) []string {
 	} else {
 		plan = append(plan, "kubeadm-node-running")
 	}
-	return append(plan, "kubelet-restart-running", "health-check-running", "healthy")
+	return append(plan, "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy")
 }
 
 func validateKubernetesUpgradeVersions(source, target string) error {

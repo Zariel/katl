@@ -611,8 +611,12 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
 	}
+	bootIDs, err := captureNodeBootIDs(ctx, cpNode, workerNode)
+	if err != nil {
+		return err
+	}
 	if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, cniFixtures, kubeconfigPath, evidenceDir)
+		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, kubeconfigPath, evidenceDir, bootIDs)
 	}
 	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
 	metadataHost := targetHost + ".json"
@@ -681,12 +685,6 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if err := assertSuccessfulUpgradeStatus(cpStatus, "upgrade-v1361-cp"); err != nil {
 		return err
 	}
-	if err := rebootIntoGeneration(ctx, cpNode, cpStatus.CandidateGenerationId); err != nil {
-		return fmt.Errorf("reboot upgraded control plane: %w", err)
-	}
-	if err := activateNodeCNIFixture(ctx, cpNode, cniFixtures[cpNode.Name]); err != nil {
-		return fmt.Errorf("reactivate control-plane CNI fixture after upgrade reboot: %w", err)
-	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-control-plane-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return err
 	}
@@ -699,13 +697,10 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if err := assertSuccessfulUpgradeStatus(workerStatus, "upgrade-v1361-worker"); err != nil {
 		return err
 	}
-	if err := rebootIntoGeneration(ctx, workerNode, workerStatus.CandidateGenerationId); err != nil {
-		return fmt.Errorf("reboot upgraded worker: %w", err)
-	}
-	if err := activateNodeCNIFixture(ctx, workerNode, cniFixtures[workerNode.Name]); err != nil {
-		return fmt.Errorf("reactivate worker CNI fixture after upgrade reboot: %w", err)
-	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-worker-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
+	}
+	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
 	}
 	for _, item := range []struct {
@@ -734,7 +729,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	return nil
 }
 
-func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath string, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
+func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "katlctl-upgrade.yaml")
 	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        credentialRef: file:%s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        credentialRef: file:%s\n", cpAddress, cpAddress, cpTokenPath, workerAddress, workerTokenPath)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
@@ -773,16 +768,14 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		return fmt.Errorf("unexpected katlctl Kubernetes upgrade report: %+v", report)
 	}
 	for i, want := range []string{"cp-1", "worker-1"} {
-		if report.Nodes[i].Name != want || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "boot-healthy" {
+		if report.Nodes[i].Name != want || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "healthy" {
 			return fmt.Errorf("unexpected katlctl Kubernetes upgrade node report %d: %+v", i, report.Nodes[i])
 		}
 	}
-	for _, node := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
-		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
-			return fmt.Errorf("reactivate %s CNI fixture after upgrade reboot: %w", node.Name, err)
-		}
-	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
+	}
+	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
 	}
 	for _, item := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
@@ -890,10 +883,48 @@ func submitKubeadmUpgrade(ctx context.Context, address, token string, request ag
 }
 
 func assertSuccessfulUpgradeStatus(status *agentapi.OperationStatus, candidate string) error {
-	if status == nil || !status.Terminal || status.Result != operation.ResultSucceeded || status.RecoveryRequired || status.CandidateGenerationId != candidate || status.GenerationCommitState != operation.GenerationCommitCommitted || status.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !status.BootHealthPending {
+	if status == nil || !status.Terminal || status.Result != operation.ResultSucceeded || status.RecoveryRequired || status.CandidateGenerationId != candidate || status.GenerationCommitState != operation.GenerationCommitCommitted || status.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || status.BootHealthPending || status.ActivationState != operation.ActivationStateActiveLive {
 		return fmt.Errorf("upgrade operation did not commit healthy candidate %s: %+v", candidate, status)
 	}
 	return nil
+}
+
+func captureNodeBootIDs(ctx context.Context, nodes ...vmtest.RunningInstalledRuntimeNode) (map[string]string, error) {
+	result := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		bootID, err := nodeBootID(ctx, node)
+		if err != nil {
+			return nil, fmt.Errorf("read %s boot id before Kubernetes upgrade: %w", node.Name, err)
+		}
+		result[node.Name] = bootID
+	}
+	return result, nil
+}
+
+func assertNodeBootIDsUnchanged(ctx context.Context, before map[string]string, nodes ...vmtest.RunningInstalledRuntimeNode) error {
+	for _, node := range nodes {
+		after, err := nodeBootID(ctx, node)
+		if err != nil {
+			return fmt.Errorf("read %s boot id after Kubernetes upgrade: %w", node.Name, err)
+		}
+		if after == "" || after != before[node.Name] {
+			return fmt.Errorf("node %s rebooted during online Kubernetes upgrade: boot id %q -> %q", node.Name, before[node.Name], after)
+		}
+	}
+	return nil
+}
+
+func nodeBootID(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) (string, error) {
+	health, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
+		return client.Health(opCtx)
+	})
+	if err != nil {
+		return "", err
+	}
+	if bootID := strings.TrimSpace(health.BootId); bootID != "" {
+		return bootID, nil
+	}
+	return "", fmt.Errorf("vmtest agent returned an empty boot id")
 }
 
 func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, generationID string) error {

@@ -47,7 +47,7 @@ var runAgentBootstrap = cluster.RunAgentBootstrap
 var runAgentWorkerJoin = cluster.RunAgentWorkerJoin
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
-var wipeNodeKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
+var operatorKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
 var newWipeClusterConnector = func(token string) cluster.AgentConnector {
 	return cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode}
 }
@@ -1070,7 +1070,7 @@ func cleanupWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node 
 	}
 	run := func(name string, args ...string) bool {
 		argv := append([]string{"kubectl", "--kubeconfig", kubeconfigPath}, args...)
-		output, err := wipeNodeKubectlRunner.Run(ctx, argv)
+		output, err := operatorKubectlRunner.Run(ctx, argv)
 		if err != nil {
 			diagnostic("%s failed: %v", name, err)
 			return false

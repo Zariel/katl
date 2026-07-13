@@ -135,8 +135,9 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		}
 	}
 
-	if _, err := e.Store.Update(record.OperationID, "release-target-kubelet", "kubelet-restart-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.Phase = "kubelet-restart-running"
+	if _, err := e.Store.Update(record.OperationID, "stop-source-kubelet", "kubelet-stop-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "kubelet-stop-running"
+		current.ActivationState = operation.ActivationStateActivating
 		current.KubeadmUpgradeEvidence.KubeletGateState = "released"
 		current.UpdatedAt = e.clock()
 		return current, nil
@@ -144,12 +145,33 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(rootedRuntimePath(e.Root, gatePath)), 0o700); err != nil {
-		return e.failKubeadmUpgrade(record, "kubelet-restart-running", err, true)
+		return e.failKubeadmUpgrade(record, "kubelet-stop-running", err, true)
 	}
 	if err := os.WriteFile(rootedRuntimePath(e.Root, gatePath), []byte(record.OperationID+"\n"), 0o600); err != nil {
-		return e.failKubeadmUpgrade(record, "kubelet-restart-running", err, true)
+		return e.failKubeadmUpgrade(record, "kubelet-stop-running", err, true)
+	}
+	if result := e.toolRunner()(ctx, []string{"systemctl", "stop", "kubelet.service"}, nil); result.Err != nil || result.ExitStatus != 0 {
+		return e.failKubeadmUpgrade(record, "kubelet-stop-running", fmt.Errorf("stop source kubelet: %s", toolFailure(result)), true)
+	}
+	if _, err := e.Store.Update(record.OperationID, "refresh-kubernetes-sysext", "sysext-refresh-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "sysext-refresh-running"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return e.failKubeadmUpgrade(record, "sysext-refresh-running", err, true)
 	}
 	if err := e.activateKubernetesCandidate(ctx, currentRef, candidateRef); err != nil {
+		return e.failKubeadmUpgrade(record, "sysext-refresh-running", err, true)
+	}
+	if _, err := e.Store.Update(record.OperationID, "restart-target-kubelet", "kubelet-restart-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "kubelet-restart-running"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "sysext-refresh-running")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
 		return e.failKubeadmUpgrade(record, "kubelet-restart-running", err, true)
 	}
 	if result := e.toolRunner()(ctx, []string{"systemctl", "restart", "kubelet.service"}, nil); result.Err != nil || result.ExitStatus != 0 {
@@ -448,23 +470,33 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 	if err := e.removeKubeletGate(ctx, record); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
-	if err := e.commitCandidateGeneration(ctx, record, now, "Kubernetes upgrade passed local health checks"); err != nil {
+	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
+	}
+	if e.SetBootDefault == nil {
+		return e.failKubeadmUpgrade(record, "health-check-running", fmt.Errorf("persistent boot default updater is not configured"), true)
+	}
+	if _, err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{
+		Root: e.Root, GenerationID: record.CandidateGenerationID, OperationID: record.OperationID,
+		Reason: "Kubernetes sysext activated live and passed local health checks", Now: now,
+		SetBootDefault: func(root, entry string) error { return e.SetBootDefault(ctx, root, entry) },
+	}); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
 	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "healthy"
-		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-restart-running", "health-check-running", "healthy")
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy")
 		current.PhaseIndex = len(current.CompletedPhases)
 		current.KubeadmUpgradeEvidence.KubeletGateState = "target-observed"
 		current.ActivationState = operation.ActivationStateActiveLive
 		current.GenerationCommitState = operation.GenerationCommitCommitted
 		current.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
-		current.BootHealthPending = true
+		current.BootHealthPending = false
 		current.Terminal = true
 		current.Result = operation.ResultSucceeded
 		current.CompletedAt = &now
 		current.UpdatedAt = now
-		current.NextAction = "reboot into the committed candidate for boot health validation before continuing the serialized rollout"
+		current.NextAction = "continue the serialized online rollout"
 		return current, nil
 	})
 	return err
@@ -520,6 +552,7 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 
 func (e *Executor) restoreSourceKubernetesAfterFailure(record operation.OperationRecord) error {
 	var restoreErr error
+	restartKubelet := record.ActivationState == operation.ActivationStateActivating || record.ActivationState == operation.ActivationStateFailed
 	previous := strings.TrimSpace(record.PreviousGenerationID)
 	if previous != "" {
 		spec, _, err := generation.ReadGeneration(e.Root, previous)
@@ -560,6 +593,12 @@ func (e *Executor) restoreSourceKubernetesAfterFailure(record operation.Operatio
 	}
 	if record.KubeadmUpgradeEvidence != nil && strings.TrimSpace(record.KubeadmUpgradeEvidence.KubeletGateTokenPath) != "" {
 		_ = os.Remove(rootedRuntimePath(e.Root, record.KubeadmUpgradeEvidence.KubeletGateTokenPath))
+	}
+	if restartKubelet {
+		result := e.toolRunner()(context.Background(), []string{"systemctl", "restart", "kubelet.service"}, nil)
+		if result.Err != nil || result.ExitStatus != 0 {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restart source kubelet after failed live activation: %s", toolFailure(result)))
+		}
 	}
 	return restoreErr
 }

@@ -59,6 +59,7 @@ type Executor struct {
 	RunPostHealth        ToolRunner
 	MountBootRoot        BootRootMounter
 	SetBootOneshot       BootEntrySetter
+	SetBootDefault       BootEntrySetter
 	ConfigApplyRunner    configapply.CommandRunner
 	ConfigApplyActivator configapply.ConfextActivator
 	BundleClient         *http.Client
@@ -90,6 +91,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 	}
 	if runtimeRoot(executor.Root) == "/" {
 		executor.SetBootOneshot = setBootOneshot
+		executor.SetBootDefault = setBootDefault
 	}
 	return executor
 }
@@ -624,47 +626,9 @@ func (e *Executor) commitCandidateGeneration(ctx context.Context, record operati
 	if candidate == "" {
 		return fmt.Errorf("candidate generation id is required")
 	}
-	spec, status, err := generation.ReadGeneration(e.Root, candidate)
-	if err != nil {
-		return fmt.Errorf("read candidate generation: %w", err)
-	}
-	if status.CommitState != generation.CommitStateCandidate {
-		return fmt.Errorf("candidate generation %s commitState is %s, want candidate", candidate, status.CommitState)
-	}
-	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
-	if entry == "" {
-		return fmt.Errorf("candidate generation %s loader entry path is required", candidate)
-	}
-	machineID, err := runtimeMachineID(e.Root)
+	spec, status, entry, err := e.writeCandidateLoaderEntry(ctx, candidate)
 	if err != nil {
 		return err
-	}
-	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
-	entryPath, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{
-		Record:    generation.RecordFromSplit(spec, status),
-		MachineID: machineID,
-	})
-	if err != nil && errors.Is(err, syscall.EROFS) {
-		if e.MountBootRoot == nil {
-			return fmt.Errorf("write candidate loader entry: %w", err)
-		}
-		if mountErr := e.MountBootRoot(ctx, bootRoot); mountErr != nil {
-			return fmt.Errorf("write candidate loader entry: %w; mount boot root: %v", err, mountErr)
-		}
-		entryPath, err = generation.WriteEntry(bootRoot, generation.LoaderRequest{
-			Record:    generation.RecordFromSplit(spec, status),
-			MachineID: machineID,
-		})
-	}
-	if err != nil {
-		return fmt.Errorf("write candidate loader entry: %w", err)
-	}
-	relativeEntry, err := bootRelativePath(bootRoot, entryPath)
-	if err != nil {
-		return err
-	}
-	if relativeEntry != entry {
-		return fmt.Errorf("candidate loader entry %s does not match generation metadata %s", relativeEntry, entry)
 	}
 	committedAt := now.UTC()
 	selection, err := generation.ReadBootSelection(e.Root)
@@ -719,6 +683,46 @@ func (e *Executor) commitCandidateGeneration(ctx context.Context, record operati
 		return fmt.Errorf("commit candidate generation: %w", err)
 	}
 	return nil
+}
+
+func (e *Executor) writeCandidateLoaderEntry(ctx context.Context, candidate string) (generation.GenerationSpec, generation.GenerationStatus, string, error) {
+	spec, status, err := generation.ReadGeneration(e.Root, candidate)
+	if err != nil {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("read candidate generation: %w", err)
+	}
+	if status.CommitState != generation.CommitStateCandidate {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("candidate generation %s commitState is %s, want candidate", candidate, status.CommitState)
+	}
+	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
+	if entry == "" {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("candidate generation %s loader entry path is required", candidate)
+	}
+	machineID, err := runtimeMachineID(e.Root)
+	if err != nil {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", err
+	}
+	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
+	entryPath, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{Record: generation.RecordFromSplit(spec, status), MachineID: machineID})
+	if err != nil && errors.Is(err, syscall.EROFS) {
+		if e.MountBootRoot == nil {
+			return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("write candidate loader entry: %w", err)
+		}
+		if mountErr := e.MountBootRoot(ctx, bootRoot); mountErr != nil {
+			return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("write candidate loader entry: %w; mount boot root: %v", err, mountErr)
+		}
+		entryPath, err = generation.WriteEntry(bootRoot, generation.LoaderRequest{Record: generation.RecordFromSplit(spec, status), MachineID: machineID})
+	}
+	if err != nil {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("write candidate loader entry: %w", err)
+	}
+	relativeEntry, err := bootRelativePath(bootRoot, entryPath)
+	if err != nil {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", err
+	}
+	if relativeEntry != entry {
+		return generation.GenerationSpec{}, generation.GenerationStatus{}, "", fmt.Errorf("candidate loader entry %s does not match generation metadata %s", relativeEntry, entry)
+	}
+	return spec, status, entry, nil
 }
 
 func (e *Executor) operationStoreRoot() string {
@@ -1027,6 +1031,14 @@ func bootRootIsMountpoint(ctx context.Context, bootRoot string) (bool, error) {
 }
 
 func setBootOneshot(ctx context.Context, root string, bootEntry string) error {
+	return setBootEntry(ctx, root, "set-oneshot", bootEntry)
+}
+
+func setBootDefault(ctx context.Context, root string, bootEntry string) error {
+	return setBootEntry(ctx, root, "set-default", bootEntry)
+}
+
+func setBootEntry(ctx context.Context, root, verb, bootEntry string) error {
 	bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
 	if bootEntry == "." || bootEntry == "" {
 		return fmt.Errorf("boot entry is required")
@@ -1036,7 +1048,7 @@ func setBootOneshot(ctx context.Context, root string, bootEntry string) error {
 	if root != "/" {
 		args = append(args, "--esp-path="+filepath.Join(root, "efi"))
 	}
-	args = append(args, "set-oneshot", bootEntry)
+	args = append(args, verb, bootEntry)
 	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
 	defer cancel()
 	result := runChildProcess(bootCtx, args, nil)

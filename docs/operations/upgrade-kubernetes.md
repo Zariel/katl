@@ -1,9 +1,10 @@
 # Upgrade Kubernetes
 
 Katl upgrades Kubernetes as an explicit, non-interactive cluster rollout.
-`katlctl` validates every pending node, then upgrades and reboots control planes
-before workers, one node at a time. The first control plane runs `kubeadm
-upgrade apply`; remaining control planes and workers run `kubeadm upgrade node`.
+`katlctl` validates every pending node, then upgrades control planes before
+workers, one node at a time, without rebooting the host. The first control plane
+runs `kubeadm upgrade apply`; remaining control planes and workers run `kubeadm
+upgrade node`.
 
 ## Preconditions
 
@@ -56,15 +57,29 @@ prompt. It validates every pending operation, then processes every eligible
 node serially. Each node fetches and verifies the OCI bundle before mutation.
 Control-plane nodes capture a local pre-upgrade etcd snapshot and member-list
 digest. The target sysext is mounted privately so target `kubeadm` runs while
-the source kubelet remains active. Katl releases the target kubelet only after
-kubeadm succeeds, performs local health checks, and commits the candidate
-generation.
+the source kubelet remains active. After kubeadm succeeds, Katl stops kubelet,
+switches and refreshes the Kubernetes sysext, then restarts kubelet. Running pod
+containers remain owned by containerd during this short window. Katl checks the
+target kubelet and local API health, promotes the live candidate as the
+persistent boot default, and continues the rollout without rebooting.
 
-After each node-local operation succeeds, `katlctl` requests a reboot through
-the authenticated agent, waits for the agent to restart, and requires the
-target generation and Kubernetes payload to pass boot health before continuing.
-The command stops immediately on the first failed, rolled-back, or
-recovery-required node and does not touch the remaining nodes.
+The default path neither cordons nor drains nodes. To prevent new pods from
+being scheduled onto the node during its upgrade, opt into temporary cordoning:
+
+```sh
+katlctl kubernetes upgrade v1.36.1-katl.1 \
+  --cordon --kubeconfig ./kubeconfig
+```
+
+This flag cordons before the node operation and uncordons afterward; it does not
+evict running pods. [Kubernetes upstream recommends draining before minor
+kubelet upgrades](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/).
+Katl's no-drain default deliberately favors uninterrupted home-lab workloads;
+use an external maintenance workflow if your workloads or support policy
+require the conservative upstream procedure.
+
+The command stops immediately on the first failed or recovery-required node and
+does not touch the remaining nodes.
 
 After a successful rollout, check workload-level health with your normal
 Kubernetes tooling, for example `kubectl get nodes` and `kubectl get pods -A`.
