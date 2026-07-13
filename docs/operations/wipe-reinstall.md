@@ -12,8 +12,8 @@ before accepting the operation.
 
 - preserve any required external backups and recovery material;
 - confirm which cluster identity is being discarded;
-- save the inventory, release assets, config source, bundle, kubeconfig, and
-  operation evidence;
+- save the inventory, release assets, config source, any PXE bundle,
+  kubeconfig, and operation evidence;
 - ensure all selected nodes can boot the intended installer path; and
 - stop if a control-plane or etcd member is expected to remain part of the same
   cluster.
@@ -108,7 +108,7 @@ not implemented as a supported operation.
 After every selected wipe operation succeeds:
 
 1. boot the verified installer ISO or PXE path;
-2. submit the intended config bundle and node selection;
+2. apply the intended `ClusterConfig` source and node selection;
 3. inspect the target disk again before authorizing installer wipe;
 4. complete generation 0 handoff; and
 5. treat the result as a new cluster identity unless a future supported

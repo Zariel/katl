@@ -6,7 +6,7 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 ## Prerequisites
 
 - every intended node completed [generation 0 handoff](access.md);
-- the same `.katlcfg` bundle used for installation is available;
+- the same `ClusterConfig` source used for installation is available;
 - each node has a reachable address and protected per-node token file;
 - the Kubernetes bundle reference names a version compatible with the KatlOS
   runtime;
@@ -17,17 +17,13 @@ Katl fetches the Kubernetes bundle during this operation. Nodes need registry
 and CA access to `ghcr.io` unless the bundle is supplied through an explicitly
 supported local mechanism.
 
-## Rebuild Changed Intent
+## Review Changed Intent
 
-If the source changed before any node was installed, rebuild the bundle. Do not
-silently replace the bundle after installation:
+If the source changed after installation, review the diff before bootstrap and
+make sure it still describes the installed nodes. `katlctl` compiles the source
+internally; the normal path does not require a separate bundle file.
 
-```sh
-katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
-```
-
-Katl maintains the bundle's internal consistency metadata; it is not an
-operator input.
+Do not silently replace the cluster intent merely to make bootstrap proceed.
 
 ## Dry Run
 
@@ -35,9 +31,8 @@ Validate topology, node access, bundle selection, and bootstrap ordering without
 running kubeadm:
 
 ```sh
-katlctl cluster bootstrap \
+katlctl cluster bootstrap ./cluster.yaml \
   --dry-run \
-  --config-bundle ./katl-lab.katlcfg \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig
 ```
@@ -56,8 +51,7 @@ Kubernetes version, and bundle reference. A dry run must not create generation
 Run the same command without `--dry-run`:
 
 ```sh
-katlctl cluster bootstrap \
-  --config-bundle ./katl-lab.katlcfg \
+katlctl cluster bootstrap ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
@@ -86,8 +80,7 @@ management workflow, or explicitly include reviewed manifests and readiness
 conditions:
 
 ```sh
-katlctl cluster bootstrap \
-  --config-bundle ./katl-lab.katlcfg \
+katlctl cluster bootstrap ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --bootstrap-manifest ./cni.yaml \
