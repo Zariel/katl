@@ -228,13 +228,11 @@ files as assets on the matching GitHub Release.
 
 Release production uses a dependency-aware job graph. Runtime, installer, and
 `katlctl` builds start concurrently. The install and upgrade images are then
-packaged concurrently from the one verified runtime artifact, and a final job
+packaged concurrently from the one verified runtime build, and a final job
 assembles the installer ISO from those verified intermediates before staging
-and attesting the complete release set. The Fedora mkosi builder uses the
-GitHub Actions cache backend for reusable Docker layers; mkosi package and Go
-build caches remain scoped independently. Published-asset provenance checks
-use bounded concurrency because every release asset has an independent
-attestation.
+and attesting the complete release set. Mkosi package and Go build caches remain
+scoped independently. Published-asset provenance checks use bounded concurrency
+because every release asset has an independent attestation.
 
 KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,
 `-alpha.N`, `-beta.N`, and `-rc.N` prereleases. The first public alpha for the

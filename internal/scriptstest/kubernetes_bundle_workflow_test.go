@@ -103,13 +103,10 @@ func TestKatlReleaseWorkflowBuildGraph(t *testing.T) {
 		"  runtime:\n",
 		"  installer:\n",
 		"  katlctl:\n",
-		"  katlos-images:\n",
 		"  assemble:\n",
-		"docker/build-push-action@",
-		"cache-from: type=gha,scope=katl-mkosi-builder",
-		"name: katl-runtime-${{ github.sha }}",
+		"name: katl-runtime-images-${{ github.sha }}",
 		"name: katl-installer-${{ github.sha }}",
-		"name: katlos-images-${{ github.sha }}",
+		"_build/mkosi/katl-runtime.packages.tsv",
 		"scripts/build-katlos-install-image &",
 		"KATL_KATLOS_IMAGE_ROLE=upgrade scripts/build-katlos-install-image &",
 	} {
@@ -118,15 +115,13 @@ func TestKatlReleaseWorkflowBuildGraph(t *testing.T) {
 		}
 	}
 
-	images := workflow[strings.Index(workflow, "  katlos-images:\n"):strings.Index(workflow, "  assemble:\n")]
-	assertTextContains(t, images, "- runtime", "Download verified runtime")
 	assemble := workflow[strings.Index(workflow, "  assemble:\n"):strings.Index(workflow, "  publish-tag:\n")]
 	assertTextContains(t, assemble,
 		"- runtime",
 		"- installer",
 		"- katlctl",
-		"- katlos-images",
 		"scripts/build-installer-iso",
+		"write-installer-artifacts",
 		"actions/attest@v4",
 	)
 	if !regexp.MustCompile(`xargs[^\n]*-P[1-9][0-9]*`).MatchString(workflow) {

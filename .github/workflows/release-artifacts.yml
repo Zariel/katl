@@ -54,6 +54,8 @@ jobs:
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    outputs:
+      mkosi-version: ${{ steps.mkosi-version.outputs.version }}
 
     env:
       GOTOOLCHAIN: auto
@@ -107,22 +109,21 @@ jobs:
           restore-keys: |
             katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build cached mkosi builder
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Containerfile.mkosi
-          load: true
-          tags: ${{ env.KATL_MKOSI_IMAGE }}
-          cache-from: type=gha,scope=katl-mkosi-builder
-          cache-to: type=gha,mode=max,scope=katl-mkosi-builder
-
       - name: Build runtime
         shell: bash
         run: scripts/mkosi build-runtime
+
+      - name: Resolve mkosi version
+        id: mkosi-version
+        shell: bash
+        run: |
+          version="$(docker run --rm "$KATL_MKOSI_IMAGE" mkosi --version)"
+          version="${version#mkosi }"
+          if [[ ! "$version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "unexpected mkosi version from builder: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Verify runtime
         shell: bash
@@ -136,10 +137,29 @@ jobs:
               scripts/check-runtime-boot-asset
             '
 
-      - name: Upload runtime intermediates
+      - name: Package install and upgrade images concurrently
+        shell: bash
+        run: |
+          install_status=0
+          upgrade_status=0
+          scripts/build-katlos-install-image &
+          install_pid=$!
+          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/build-katlos-install-image &
+          upgrade_pid=$!
+          wait "$install_pid" || install_status=$?
+          wait "$upgrade_pid" || upgrade_status=$?
+          ((install_status == 0 && upgrade_status == 0))
+
+      - name: Verify KatlOS images
+        shell: bash
+        run: |
+          scripts/check-katlos-install-image
+          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
+
+      - name: Upload runtime and KatlOS image intermediates
         uses: actions/upload-artifact@v7
         with:
-          name: katl-runtime-${{ github.sha }}
+          name: katl-runtime-images-${{ github.sha }}
           path: |
             _build/mkosi/katl-runtime-root.squashfs
             _build/mkosi/katl-runtime-root.squashfs.json
@@ -147,6 +167,13 @@ jobs:
             _build/mkosi/katl-runtime.efi
             _build/mkosi/katl-runtime.efi.json
             _build/mkosi/katl-runtime.efi.sha256
+            _build/mkosi/katl-runtime.packages.tsv
+            _build/mkosi/katlos-install-*.squashfs
+            _build/mkosi/katlos-install-*.squashfs.json
+            _build/mkosi/katlos-install-*.squashfs.sha256
+            _build/mkosi/katlos-upgrade-*.squashfs
+            _build/mkosi/katlos-upgrade-*.squashfs.json
+            _build/mkosi/katlos-upgrade-*.squashfs.sha256
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -208,18 +235,6 @@ jobs:
           key: katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
           restore-keys: |
             katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Load cached mkosi builder
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Containerfile.mkosi
-          load: true
-          tags: ${{ env.KATL_MKOSI_IMAGE }}
-          cache-from: type=gha,scope=katl-mkosi-builder
 
       - name: Build installer
         shell: bash
@@ -286,69 +301,6 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  katlos-images:
-    name: Package And Verify KatlOS Images
-    needs:
-      - identity
-      - runtime
-    runs-on: ubuntu-24.04
-
-    env:
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download verified runtime
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-${{ github.sha }}
-          path: _build/mkosi
-
-      - name: Package install and upgrade images concurrently
-        shell: bash
-        run: |
-          install_status=0
-          upgrade_status=0
-          scripts/build-katlos-install-image &
-          install_pid=$!
-          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/build-katlos-install-image &
-          upgrade_pid=$!
-          wait "$install_pid" || install_status=$?
-          wait "$upgrade_pid" || upgrade_status=$?
-          ((install_status == 0 && upgrade_status == 0))
-
-      - name: Verify KatlOS images
-        shell: bash
-        run: |
-          scripts/check-katlos-install-image
-          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
-
-      - name: Upload KatlOS image intermediates
-        uses: actions/upload-artifact@v7
-        with:
-          name: katlos-images-${{ github.sha }}
-          path: |
-            _build/mkosi/katlos-install-*.squashfs
-            _build/mkosi/katlos-install-*.squashfs.json
-            _build/mkosi/katlos-install-*.squashfs.sha256
-            _build/mkosi/katlos-upgrade-*.squashfs
-            _build/mkosi/katlos-upgrade-*.squashfs.json
-            _build/mkosi/katlos-upgrade-*.squashfs.sha256
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
   assemble:
     name: Assemble And Verify Katl Release
     needs:
@@ -356,7 +308,6 @@ jobs:
       - runtime
       - installer
       - katlctl
-      - katlos-images
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -368,9 +319,7 @@ jobs:
       GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
       KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
 
     steps:
       - name: Check out repository
@@ -384,10 +333,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Download runtime intermediates
+      - name: Download runtime and KatlOS image intermediates
         uses: actions/download-artifact@v8
         with:
-          name: katl-runtime-${{ github.sha }}
+          name: katl-runtime-images-${{ github.sha }}
           path: _build/mkosi
 
       - name: Download installer intermediates
@@ -396,69 +345,37 @@ jobs:
           name: katl-installer-${{ github.sha }}
           path: _build/mkosi
 
-      - name: Download KatlOS image intermediates
-        uses: actions/download-artifact@v8
-        with:
-          name: katlos-images-${{ github.sha }}
-          path: _build/mkosi
-
       - name: Download katlctl intermediate
         uses: actions/download-artifact@v8
         with:
           name: katlctl-${{ github.sha }}
           path: _build/mkosi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Load cached mkosi builder
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Containerfile.mkosi
-          load: true
-          tags: ${{ env.KATL_MKOSI_IMAGE }}
-          cache-from: type=gha,scope=katl-mkosi-builder
-
-      - name: Assemble ISO and verify release artifacts
+      - name: Install ISO assembly tools
         shell: bash
         run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/work" \
-            --workdir /work \
-            --env KATL_REPO_ROOT=/work \
-            --env KATL_VERSION \
-            --env KATL_ARCHITECTURE \
-            --env KATL_BUILD_COMMIT \
-            --env KATL_VMTEST_IMAGE_SUPPORT \
-            "$KATL_MKOSI_IMAGE" \
-            bash -euo pipefail -c '
-              scripts/build-installer-iso >/dev/null
-              go run ./cmd/katl-mkosi-artifacts write >/dev/null
-              scripts/check-runtime-root
-              scripts/check-runtime-boot-asset
-              scripts/check-installer-image
-              scripts/check-installer-iso
-              scripts/check-katlos-install-image
-              KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
-            '
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes dosfstools mtools xorriso
+
+      - name: Assemble and verify installer ISO
+        shell: bash
+        run: |
+          scripts/build-installer-iso >/dev/null
+          go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null
+          scripts/check-installer-iso
 
       - name: Verify release resource lock
         shell: bash
+        env:
+          MKOSI_VERSION: ${{ needs.runtime.outputs.mkosi-version }}
         run: |
-          mkosi_version="$(docker run --rm "$KATL_MKOSI_IMAGE" mkosi --version)"
-          mkosi_version="${mkosi_version#mkosi }"
-          if [[ ! "$mkosi_version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-            echo "unexpected mkosi version from builder: $mkosi_version" >&2
-            exit 1
-          fi
           go run ./cmd/katl-resource-lock prepare-mkosi \
             -manifest _build/release-resource-test-manifest.json \
             -lock mkosi.profiles/resource-package-lock.json \
             -mode strict \
             -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
             -git-revision "$GITHUB_SHA" \
-            -mkosi-version "$mkosi_version" \
+            -mkosi-version "$MKOSI_VERSION" \
             -package-set installer-image \
             -package-set runtime \
             -package-set katlos-install-image
