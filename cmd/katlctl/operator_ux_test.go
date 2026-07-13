@@ -43,11 +43,48 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v\n%s", err, stdout.String())
 	}
-	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "192.0.2.11:6443" || len(source.Spec.Nodes) != 2 {
+	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || source.Spec.Kubernetes.Bundle != "" || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Access.CredentialRef; got != "agent/cp-1" {
-		t.Fatalf("credentialRef = %q", got)
+	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Access; got != (inventory.Access{}) {
+		t.Fatalf("generated access = %#v", got)
+	}
+	rendered := stdout.String()
+	for _, internalDefault := range []string{"katlosImage:", "wipeTarget:", "systemRoleDefaults:", "kubeadmConfigs:", "hostname:", "access:"} {
+		if strings.Contains(rendered, internalDefault) {
+			t.Fatalf("generated config contains internal default %q:\n%s", internalDefault, rendered)
+		}
+	}
+	for _, guidance := range []string{"# controlPlaneEndpoint:", "# bundle:", "# Nodes use DHCP by default"} {
+		if !strings.Contains(rendered, guidance) {
+			t.Fatalf("generated config is missing guidance %q:\n%s", guidance, rendered)
+		}
+	}
+}
+
+func TestConfigInitRendersExplicitOverrides(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519.pub")
+	if err := os.WriteFile(keyPath, []byte(uxTestSSHKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "init",
+		"--ssh-authorized-key", keyPath,
+		"--control-plane-endpoint", "api.home.arpa:6443",
+		"--kubernetes-bundle", configbundle.DefaultKubernetesBundle,
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
+	}
+	source, err := configbundle.DecodeSource(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Spec.ControlPlaneEndpoint != "api.home.arpa:6443" || source.Spec.Kubernetes.Bundle != configbundle.DefaultKubernetesBundle {
+		t.Fatalf("explicit overrides = %#v", source.Spec)
 	}
 }
 
@@ -112,6 +149,9 @@ func TestConfigInitWithoutSSHKeysWritesEditableConfig(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "generated ClusterConfig has no SSH authorized keys") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if !strings.Contains(string(data), "# defaults:") || !strings.Contains(string(data), "#             authorizedKeys:") {
+		t.Fatalf("generated config has no commented SSH key guidance:\n%s", data)
 	}
 }
 

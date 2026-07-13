@@ -88,6 +88,54 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveDefaultsMinimalSource(t *testing.T) {
+	sourcePath := writeSource(t, `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: lab
+spec:
+  kubernetes:
+    version: v1.36.1
+  defaults:
+    identity:
+      ssh:
+        authorizedKeys:
+          - `+testSSHKey+`
+  nodes:
+    - name: cp-1
+      systemRole: control-plane
+      overrides:
+        install:
+          targetDisk:
+            byID: /dev/disk/by-id/ata-cp-root
+        bootstrap:
+          address: 192.0.2.11
+`)
+	archive, result, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	if result.Manifest.Cluster.BootstrapInventory.ControlPlaneEndpoint != "192.0.2.11:6443" {
+		t.Fatalf("bootstrap inventory = %#v", result.Manifest.Cluster.BootstrapInventory)
+	}
+	if len(result.Manifest.Cluster.KubernetesPayloads) != 1 || result.Manifest.Cluster.KubernetesPayloads[0].Ref != DefaultKubernetesBundle {
+		t.Fatalf("Kubernetes payloads = %#v", result.Manifest.Cluster.KubernetesPayloads)
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	if selected.InstallManifest.Node.Identity.Hostname != "cp-1" || selected.InstallManifest.Node.Bootstrap.Access.CredentialRef != "agent/cp-1" {
+		t.Fatalf("defaulted install manifest = %#v", selected.InstallManifest)
+	}
+	if len(selected.InstallManifest.Node.Networkd.Files) != 1 || !strings.Contains(selected.InstallManifest.Node.Networkd.Files[0].Content, "DHCP=yes") {
+		t.Fatalf("defaulted networkd = %#v", selected.InstallManifest.Node.Networkd)
+	}
+	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
+		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
+	}
+}
+
 func TestBuildArchiveDefersKatlosImageToInstallMedia(t *testing.T) {
 	source := validSourceConfig()
 	start := strings.Index(source, "  katlosImage:\n")

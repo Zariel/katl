@@ -20,6 +20,8 @@ import (
 
 const validationActivationPath = "/run/extensions/katl-kubernetes.raw"
 
+const defaultNetworkdFile = "[Match]\nType=ether\n\n[Network]\nDHCP=yes\n"
+
 type selectedKubernetes struct {
 	version        string
 	catalogRef     string
@@ -104,6 +106,9 @@ func Compile(request CompileRequest) (Plan, error) {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
 		layer.Bootstrap.Access = portableBootstrapAccess(name, layer.Bootstrap.Access)
+		if len(layer.Networkd.Files) == 0 {
+			layer.Networkd.Files = []manifest.NetworkdFile{{Name: "10-lan.network", Content: defaultNetworkdFile}}
+		}
 		layer = applyTargetDiskDefaults(layer)
 		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint, endpointPlan)
 		if err != nil {
@@ -318,6 +323,9 @@ func portableBootstrapAccess(node string, access inventory.Access) inventory.Acc
 	access.Method = strings.TrimSpace(access.Method)
 	access.User = strings.TrimSpace(access.User)
 	access.CredentialRef = strings.TrimSpace(access.CredentialRef)
+	if access.Method == "" && access.User == "" && access.CredentialRef == "" {
+		return inventory.Access{Method: "agent", CredentialRef: "agent/" + node}
+	}
 	if access.Method == "agent" && strings.HasPrefix(access.CredentialRef, "file:") {
 		access.CredentialRef = "agent/" + node
 	}
