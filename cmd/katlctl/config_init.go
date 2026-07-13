@@ -16,7 +16,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -128,10 +127,6 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if len(opts.nodes) == 0 {
 		return fmt.Errorf("at least one --node or --installer is required")
 	}
-	configPath, err := workstation.ConfigPath()
-	if err != nil {
-		return err
-	}
 	sshKeys, notices, err := configSSHKeys(opts.sshKeyPath)
 	if err != nil {
 		return err
@@ -185,17 +180,13 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			return fmt.Errorf("duplicate node name %q", node.name)
 		}
 		seen[node.name] = struct{}{}
-		credentialPath, err := workstation.CredentialPath(configPath, source.Metadata.Name, node.name)
-		if err != nil {
-			return err
-		}
 		targetDisk := node.disk
 		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
 			Name: node.name, SystemRole: node.role,
 			Overrides: configbundle.SourceNodeLayer{
 				Identity:  configbundle.SourceIdentity{Hostname: node.name},
 				Install:   configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
-				Bootstrap: clusterplan.BootstrapLayer{Address: node.address, Access: inventory.Access{Method: "agent", CredentialRef: "file:" + credentialPath}},
+				Bootstrap: clusterplan.BootstrapLayer{Address: node.address, Access: inventory.Access{Method: "agent", CredentialRef: "agent/" + node.name}},
 			},
 		})
 	}
