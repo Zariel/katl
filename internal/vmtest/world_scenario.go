@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type NodeRole string
@@ -288,21 +290,25 @@ func lockLeaseFile(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
 	}
-	var lock *os.File
-	var err error
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
 	for i := 0; i < 100; i++ {
-		lock, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			return func() {
+				_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 				_ = lock.Close()
-				_ = os.Remove(lockPath)
 			}, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = lock.Close()
 			return nil, err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	_ = lock.Close()
 	return nil, fmt.Errorf("timed out waiting for lease lock %s", lockPath)
 }
 

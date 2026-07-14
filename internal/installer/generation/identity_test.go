@@ -63,24 +63,6 @@ func TestRenderSSH(t *testing.T) {
 	if strings.Count(assets.AuthorizedKeys, sshKey) != 1 {
 		t.Fatalf("authorized keys = %q", assets.AuthorizedKeys)
 	}
-	for _, want := range []string{
-		"PasswordAuthentication no",
-		"KbdInteractiveAuthentication no",
-		"PermitRootLogin no",
-		"AllowUsers katl",
-		"AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
-		"HostKey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-	} {
-		if !strings.Contains(assets.SSHDConfig, want) {
-			t.Fatalf("sshd config missing %q:\n%s", want, assets.SSHDConfig)
-		}
-	}
-	if !strings.Contains(assets.Sysusers, "u katl") || strings.Contains(assets.Sysusers, "root") {
-		t.Fatalf("sysusers = %q", assets.Sysusers)
-	}
-	if !strings.Contains(assets.HostKeyService, "ssh-keygen") || !strings.Contains(assets.SSHDUnitDropIn, "katl-ssh-host-keys.service") {
-		t.Fatalf("host key service/drop-in = %q / %q", assets.HostKeyService, assets.SSHDUnitDropIn)
-	}
 }
 
 func TestWriteIdentity(t *testing.T) {
@@ -93,13 +75,6 @@ func TestWriteIdentity(t *testing.T) {
 		t.Fatalf("WriteIdentity() error = %v", err)
 	}
 	assertFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), assets.MachineID+"\n")
-	assertFile(t, filepath.Join(root, "etc/ssh/authorized_keys/katl"), assets.AuthorizedKeys)
-	assertFile(t, filepath.Join(root, "etc/ssh/sshd_config.d/10-katl.conf"), assets.SSHDConfig)
-	assertFile(t, filepath.Join(root, "etc/sysusers.d/10-katl-users.conf"), assets.Sysusers)
-	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-ssh-host-keys.service"), assets.HostKeyService)
-	assertFile(t, filepath.Join(root, "etc/systemd/system/sshd.service.d/10-katl-host-keys.conf"), assets.SSHDUnitDropIn)
-	assertMode(t, filepath.Join(root, "etc/ssh/authorized_keys/katl"), 0o600)
-	assertMode(t, filepath.Join(root, "etc/ssh/sshd_config.d/10-katl.conf"), 0o600)
 }
 
 func TestRenderSSHRejectsKey(t *testing.T) {

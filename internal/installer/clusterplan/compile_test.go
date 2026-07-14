@@ -52,8 +52,11 @@ func TestCompileClusterPlan(t *testing.T) {
 	if len(cp.InstallManifest.Node.Networkd.Files) != 2 {
 		t.Fatalf("networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
 	}
-	if len(cp.NativeEtcFiles) != 3 {
+	if len(cp.NativeEtcFiles) != 4 {
 		t.Fatalf("native /etc files = %#v", cp.NativeEtcFiles)
+	}
+	if cp.NativeEtcFiles[1].Path != "/etc/ssh/authorized_keys/katl" || cp.NativeEtcFiles[1].Mode != 0o600 || cp.NativeEtcFiles[1].Content != sshKey+"\n" {
+		t.Fatalf("authorized keys confext = %#v", cp.NativeEtcFiles[1])
 	}
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("ssh keys were not de-duplicated: %#v", cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys)

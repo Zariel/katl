@@ -174,9 +174,49 @@ func TestInstallerConsoleAndVMGateContract(t *testing.T) {
 			t.Fatalf("installer dual-console journal routing missing %q", value)
 		}
 	}
-	for _, value := range []string{"Installer Boot Media VM", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"} {
+	for _, value := range []string{"Installer Media Install VM", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerISOFirstInstallSmoke"} {
 		if !strings.Contains(workflow, value) {
 			t.Fatalf("installer ISO VM workflow missing %q", value)
+		}
+	}
+}
+
+func TestVMWorkflowCoversReleaseCriticalJourneys(t *testing.T) {
+	repo := repoRoot(t)
+	workflow := string(mustReadFile(t, filepath.Join(repo, ".github/workflows/vmtest.yml")))
+	flake := string(mustReadFile(t, filepath.Join(repo, "flake.nix")))
+
+	for _, value := range []string{
+		"^TestInstalledRuntimeConfigApplyModesSmoke$",
+		"^TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke$",
+		"^TestInstalledRuntimeSysupdateRootUKITransfer$",
+	} {
+		if !strings.Contains(workflow, value) {
+			t.Fatalf("release-critical VM workflow missing %q", value)
+		}
+	}
+	for _, stale := range []string{
+		"TestInstalledRuntimeKubeadmReadySmoke",
+		"TestInstalledRuntimeTwoNodeKubeadmJoinSmoke",
+	} {
+		if strings.Contains(workflow, stale) {
+			t.Fatalf("VM workflow still selects stale pre-operation scenario %q", stale)
+		}
+	}
+	for _, dependency := range []string{"cpio", "dosfstools", "rpm", "squashfsTools", "systemdUkify", "xorriso", "zstd"} {
+		if !strings.Contains(flake, dependency) {
+			t.Fatalf("VM development shell does not provide %q", dependency)
+		}
+	}
+	for _, tool := range []string{"cpio", "mkfs.vfat", "mksquashfs", "rpm", "ukify", "unsquashfs", "xorriso", "zstd"} {
+		if !strings.Contains(workflow, tool) {
+			t.Fatalf("VM capable-host preflight does not require %q", tool)
+		}
+	}
+	runner := string(mustReadFile(t, filepath.Join(repo, "scripts/vmtest-run")))
+	for _, value := range []string{`scripts/mkosi" builder-version`, `-mkosi-version "$mkosi_version"`} {
+		if !strings.Contains(runner, value) {
+			t.Fatalf("VM resource lock does not record the containerized builder identity %q", value)
 		}
 	}
 }

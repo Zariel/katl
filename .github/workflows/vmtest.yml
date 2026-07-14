@@ -51,26 +51,33 @@ jobs:
             go_timeout: 35m
             timeout_minutes: 70
           - id: installer-boot-media
-            name: Installer Boot Media VM
+            name: Installer Media Install VM
             artifact_set: default
             package: ./internal/vmtest/scenarios
-            run: ^(TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke)$
-            go_timeout: 15m
-            timeout_minutes: 45
+            run: ^(TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerISOFirstInstallSmoke)$
+            go_timeout: 35m
+            timeout_minutes: 70
           - id: installed-runtime
-            name: Installed Runtime VM
+            name: Installed Runtime Config and Management VM
             artifact_set: default
             package: ./internal/vmtest
-            run: ^(TestInstalledRuntimeKubeadmReadySmoke|TestInstalledRuntimeConfigApplyModesSmoke)$
+            run: ^TestInstalledRuntimeConfigApplyModesSmoke$
             go_timeout: 45m
             timeout_minutes: 85
           - id: two-node-bootstrap
             name: Two-Node Bootstrap VM
             artifact_set: default
             package: ./internal/vmtest/scenarios
-            run: ^TestInstalledRuntimeTwoNodeKubeadmJoinSmoke$
+            run: ^TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke$
             go_timeout: 60m
             timeout_minutes: 110
+          - id: host-upgrade-rollback
+            name: KatlOS Upgrade and Rollback VM
+            artifact_set: default
+            package: ./internal/vmtest
+            run: ^TestInstalledRuntimeSysupdateRootUKITransfer$
+            go_timeout: 45m
+            timeout_minutes: 90
           - id: kubernetes-upgrade
             name: Kubernetes Bundle Upgrade VM
             artifact_set: default
@@ -129,7 +136,7 @@ jobs:
           nix develop .#vm -c bash -s <<'EOF'
           set -euo pipefail
           missing=()
-          for tool in jq virsh qemu-img mformat mcopy truncate sfdisk sha256sum awk realpath kubectl; do
+          for tool in jq virsh qemu-img cpio mformat mcopy mkfs.vfat mksquashfs rpm truncate sfdisk sha256sum awk realpath kubectl ukify unsquashfs xorriso zstd; do
             if ! command -v "$tool" >/dev/null 2>&1; then
               missing+=("command:$tool")
             fi

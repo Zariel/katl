@@ -129,6 +129,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		"--candidate-generation", candidateGeneration,
 		"--client-request-id", "vmtest-host-upgrade-"+candidateGeneration,
 		"--actor", "installed runtime host upgrade vmtest",
+		"--no-wait",
 	)
 	var accepted agentapi.OperationAccepted
 	mustUnmarshalProtoJSON(t, acceptedData, &accepted)

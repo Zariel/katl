@@ -2,6 +2,7 @@ package configdomain
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -41,6 +42,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	want := []string{
 		"/etc/katl/kubeadm/control-plane/config.yaml",
 		"/etc/katl/node.json",
+		"/etc/ssh/authorized_keys/katl",
 		"/etc/sysctl.d/90-katl.conf",
 		"/etc/systemd/network/10-lan.network",
 	}
@@ -51,7 +53,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		if files[i].Path != path {
 			t.Fatalf("files[%d].Path = %q, want %q", i, files[i].Path, path)
 		}
-		if files[i].Mode != 0o644 || files[i].UID != 0 || files[i].GID != 0 {
+		wantMode := os.FileMode(0o644)
+		if path == "/etc/ssh/authorized_keys/katl" {
+			wantMode = 0o600
+		}
+		if files[i].Mode != wantMode || files[i].UID != 0 || files[i].GID != 0 {
 			t.Fatalf("files[%d] mode/owner = %04o %d:%d", i, files[i].Mode, files[i].UID, files[i].GID)
 		}
 	}
@@ -70,8 +76,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	if kubernetes["payloadVersion"] != "v1.36.1" || kubernetes["activationPath"] != "/run/extensions/katl-kubernetes.raw" {
 		t.Fatalf("metadata kubernetes = %#v", kubernetes)
 	}
-	if !strings.Contains(files[2].Content, "net.ipv4.ip_forward = 1") {
-		t.Fatalf("sysctl content = %q", files[2].Content)
+	if files[2].Mode != 0o600 || !strings.Contains(files[2].Content, "ssh-ed25519") {
+		t.Fatalf("authorized keys file = %#v", files[2])
+	}
+	if !strings.Contains(files[3].Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("sysctl content = %q", files[3].Content)
 	}
 }
 

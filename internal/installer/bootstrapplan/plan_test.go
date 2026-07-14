@@ -228,6 +228,35 @@ func TestCreateFetchesKubernetesBundleFromStoredIntent(t *testing.T) {
 	assertNoKubeadmMutation(t, root)
 }
 
+func TestCreateAcceptsMirroredKubernetesBundle(t *testing.T) {
+	root := cleanRoot(t, "control-plane")
+	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "mirrored kubernetes sysext payload")
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
+	t.Cleanup(server.Close)
+	editIntent(t, root, func(intent *installer.ClusterIntent) {
+		intent.Kubernetes.BundleSource = "https://ghcr.io/v2/katl-dev/kubernetes"
+		intent.Kubernetes.BundleRef = "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1"
+	})
+	req := controlPlaneRequest()
+	req.KubernetesBundleSource = server.URL
+	req.KubernetesBundleRef = fixture.ref
+
+	plan, err := Create(Request{
+		Root:         root,
+		OperationID:  "bootstrap-init-mirrored-bundle",
+		Kind:         OperationKindInit,
+		Bootstrap:    req,
+		BundleClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	selected := plan.RuntimeInputs.SelectedKubernetesSysext
+	if selected.BundleSource != server.URL || selected.BundleRef != fixture.ref || selected.BundleManifestDigest != fixture.bundleDigest {
+		t.Fatalf("selected mirrored bundle = %#v", selected)
+	}
+}
+
 func TestCreateFetchesKubernetesBundleFromOperationWhenStoredIntentUnpinned(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
 	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "operation selected kubernetes sysext payload")

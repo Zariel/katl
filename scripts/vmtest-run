@@ -492,16 +492,22 @@ prepare_resource_manifest() {
         return 0
     fi
 
-    local revision
+	local revision mkosi_version
 	local -a lock_args
     revision="$(git_revision)"
+	mkosi_version="${KATL_VMTEST_MKOSI_VERSION:-}"
+	if [[ -z "$mkosi_version" ]] && ! mkosi_version="$("$repo_root/scripts/mkosi" builder-version)"; then
+		setup_failures+=("detect the containerized mkosi builder version")
+		return 1
+	fi
     printf 'vmtest validating current repo artifacts: katl-resource-lock prepare-mkosi --mode strict\n' >&2
 	lock_args=(prepare-mkosi \
         -manifest "$resource_manifest" \
         -lock "$package_lock" \
         -mode strict \
         -run-id "$run_id" \
-		-git-revision "$revision")
+		-git-revision "$revision" \
+		-mkosi-version "$mkosi_version")
 	if vmtest_requests_kubernetes_upgrade; then
 		# The committed lock names the selected release payload. Upgrade tests
 		# deliberately build a different source payload, so validate the KatlOS

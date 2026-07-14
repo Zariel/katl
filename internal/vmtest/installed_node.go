@@ -49,7 +49,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	}
 	vm := runtime.VM
 	vm.Phase = "runtime"
-	vm.Expect = first(vm.Expect, runtime.Expect, runtimeBootSignal)
+	vm.Expect = first(vm.Expect, runtime.Expect, runtimeKernelBootSignal)
 	vm.Boot = VMBoot{
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),

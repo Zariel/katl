@@ -109,6 +109,38 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	}
 }
 
+func TestMkosiBuilderVersionUsesContainer(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
+	}
+	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
+  exit 0
+fi
+if [[ "$*" == "run --rm localhost/katl-mkosi-builder:fedora-44-go-squashfs mkosi --version" ]]; then
+  printf 'mkosi 26\n'
+  exit 0
+fi
+exit 2
+`)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "builder-version")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_CONTAINER_RUNTIME=podman",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/mkosi builder-version failed: %v\n%s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != "26" {
+		t.Fatalf("builder version = %q, want 26", got)
+	}
+}
+
 func TestMkosiPodmanSkipsRecursiveBuildChown(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
