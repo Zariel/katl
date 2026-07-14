@@ -27,6 +27,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const installedRuntimeSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
+
 func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	options := DefaultOptions()
 	if !options.Enabled {
@@ -108,6 +110,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if err := RunKatlcSmoke(ctx, guest); err != nil {
 		t.Fatalf("katlc runtime smoke: %v", err)
 	}
+	assertInstalledSSHReady(t, ctx, guest)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {
@@ -367,6 +370,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if got := currentGenerationFromGuest(t, ctx, guest); got != stagedGeneration {
 		t.Fatalf("booted generation = %q, want staged networkd generation %q", got, stagedGeneration)
 	}
+	assertInstalledSSHReady(t, ctx, guest)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
@@ -378,6 +382,23 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint, token)
 	powerOffGuestForCleanSuccess(t, ctx, node, guest, client)
 	return guest, nil
+}
+
+func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestControl) {
+	t.Helper()
+	guestCommand(t, ctx, guest, "sshd-active", "systemctl", "is-active", "--quiet", "sshd.service")
+	guestCommand(t, ctx, guest, "persistent-ssh-host-key", "test", "-s", "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key")
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/katl", installedRuntimeSSHKey)
+	effective := strings.ToLower(guestCommandOutput(t, ctx, guest, "sshd-effective-config", "sshd", "-T"))
+	for _, want := range []string{
+		"authorizedkeysfile /etc/ssh/authorized_keys/%u",
+		"hostkey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
+		"allowusers katl",
+	} {
+		if !strings.Contains(effective, want) {
+			t.Fatalf("effective sshd configuration missing %q:\n%s", want, effective)
+		}
+	}
 }
 
 func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {

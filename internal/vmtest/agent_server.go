@@ -486,6 +486,7 @@ func defaultAgentCommands() map[string]bool {
 		"resolvectl":        true,
 		"sfdisk":            true,
 		"sha256sum":         true,
+		"sshd":              true,
 		"sysctl":            true,
 		"systemctl":         true,
 		"systemd-run":       true,
