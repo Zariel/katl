@@ -181,6 +181,7 @@ for path in \
     /usr/bin/resolvectl \
     /usr/bin/sshd \
     /usr/bin/ssh-keygen \
+	/etc/ssh/sshd_config.d/10-katl.conf \
     /usr/bin/conntrack \
     /usr/bin/iptables-nft \
     /usr/bin/ipset \
@@ -207,6 +208,10 @@ for path in \
     /usr/lib/systemd/systemd-import \
     /usr/lib/systemd/systemd-sysupdate \
     /usr/lib/systemd/system/sshd.service \
+	/usr/lib/systemd/system/katl-ssh-host-keys.service \
+	/usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf \
+	/usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf \
+	/usr/lib/sysusers.d/10-katl-users.conf \
     /usr/lib/systemd/system/containerd.service \
     /usr/lib/systemd/system/var.mount \
     /usr/lib/systemd/system/etc-kubernetes.mount \

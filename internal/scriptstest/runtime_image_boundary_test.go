@@ -112,6 +112,36 @@ func TestOperatorConsoleOwnsTTY1AndPreservesRecoveryAccess(t *testing.T) {
 	}
 }
 
+func TestRuntimeOwnsPersistentSSHIdentity(t *testing.T) {
+	repo := repoRoot(t)
+	extra := filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra")
+	sshd := string(mustReadFile(t, filepath.Join(extra, "etc", "ssh", "sshd_config.d", "10-katl.conf")))
+	assertTextContains(t, sshd,
+		"AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
+		"AllowUsers katl",
+		"HostKey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
+	)
+	hostKeys := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "systemd", "system", "katl-ssh-host-keys.service")))
+	assertTextContains(t, hostKeys,
+		"RequiresMountsFor=/var/lib/katl/ssh/host-keys",
+		"Before=sshd.service",
+		`ExecStart=/usr/bin/ssh-keygen -q -t ed25519 -N "" -f /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key`,
+	)
+	keygenDropIn := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "systemd", "system", "sshd-keygen@.service.d", "10-katl-persistent-host-key.conf")))
+	assertTextContains(t, keygenDropIn, "ConditionPathExists=/var/lib/katl/ssh/enable-distribution-host-key-generator")
+	sysusers := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "sysusers.d", "10-katl-users.conf")))
+	assertTextContains(t, sysusers, `u katl - "Katl operator" /var/lib/katl/home/katl /usr/bin/bash`)
+
+	runtimeCheck := string(mustReadFile(t, filepath.Join(repo, "scripts", "check-runtime-root")))
+	assertTextContains(t, runtimeCheck,
+		"/etc/ssh/sshd_config.d/10-katl.conf",
+		"/usr/lib/systemd/system/katl-ssh-host-keys.service",
+		"/usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf",
+		"/usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf",
+		"/usr/lib/sysusers.d/10-katl-users.conf",
+	)
+}
+
 func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build"))

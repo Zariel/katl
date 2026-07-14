@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
@@ -23,6 +24,17 @@ type RenderRequest struct {
 func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 	files := networkdFiles(request.Manifest.Node.Networkd)
 	files = append(files, sysctlFiles(request.Manifest.Node.Sysctl)...)
+	identity, err := generation.RenderSSH(request.Manifest.Node.Identity.SSH.AuthorizedKeys)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, confext.NativeEtcFile{
+		Path:    "/etc/ssh/authorized_keys/katl",
+		Content: identity.AuthorizedKeys,
+		Mode:    0o600,
+		UID:     0,
+		GID:     0,
+	})
 	ref := request.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
 	var kubeadm *kubeadmconfig.Plan
 	if ref != "" {

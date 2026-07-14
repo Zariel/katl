@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate Katl SSH host keys
+ConditionPathExists=!/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key
+RequiresMountsFor=/var/lib/katl/ssh/host-keys
+After=var.mount
+Before=sshd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -q -t ed25519 -N "" -f /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key

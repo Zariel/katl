@@ -17,11 +17,7 @@ type IdentityRequest struct {
 
 type IdentityAssets struct {
 	MachineID      string
-	SSHDConfig     string
 	AuthorizedKeys string
-	Sysusers       string
-	HostKeyService string
-	SSHDUnitDropIn string
 }
 
 func RenderSSH(keys []string) (IdentityAssets, error) {
@@ -31,40 +27,6 @@ func RenderSSH(keys []string) (IdentityAssets, error) {
 	}
 	return IdentityAssets{
 		AuthorizedKeys: strings.Join(append(cleaned, ""), "\n"),
-		SSHDConfig: strings.Join([]string{
-			"PasswordAuthentication no",
-			"KbdInteractiveAuthentication no",
-			"PubkeyAuthentication yes",
-			"PermitRootLogin no",
-			"AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
-			"AllowUsers katl",
-			"HostKey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-			"",
-		}, "\n"),
-		Sysusers: strings.Join([]string{
-			"# Katl-owned host accounts",
-			"u katl - \"Katl operator\" /home/katl /usr/bin/bash",
-			"",
-		}, "\n"),
-		HostKeyService: strings.Join([]string{
-			"[Unit]",
-			"Description=Generate Katl SSH host keys",
-			"ConditionPathExists=!/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-			"RequiresMountsFor=/var/lib/katl/ssh/host-keys",
-			"After=var.mount",
-			"Before=sshd.service",
-			"",
-			"[Service]",
-			"Type=oneshot",
-			"ExecStart=/usr/bin/ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-			"",
-		}, "\n"),
-		SSHDUnitDropIn: strings.Join([]string{
-			"[Unit]",
-			"Wants=katl-ssh-host-keys.service",
-			"After=katl-ssh-host-keys.service",
-			"",
-		}, "\n"),
 	}, nil
 }
 
@@ -81,25 +43,6 @@ func WriteIdentity(root string, request IdentityRequest) (IdentityAssets, error)
 		return IdentityAssets{}, err
 	}
 	assets.MachineID = machineID
-	files := []struct {
-		path    string
-		content string
-		mode    os.FileMode
-	}{
-		{path: "etc/ssh/authorized_keys/katl", content: assets.AuthorizedKeys, mode: 0o600},
-		{path: "etc/ssh/sshd_config.d/10-katl.conf", content: assets.SSHDConfig, mode: 0o600},
-		{path: "etc/sysusers.d/10-katl-users.conf", content: assets.Sysusers, mode: 0o644},
-		{path: "etc/systemd/system/katl-ssh-host-keys.service", content: assets.HostKeyService, mode: 0o644},
-		{path: "etc/systemd/system/sshd.service.d/10-katl-host-keys.conf", content: assets.SSHDUnitDropIn, mode: 0o644},
-	}
-	for _, file := range files {
-		if err := writeFile(root, file.path, file.content, file.mode); err != nil {
-			return IdentityAssets{}, err
-		}
-		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(file.path)), file.mode); err != nil {
-			return IdentityAssets{}, fmt.Errorf("chmod %s: %w", file.path, err)
-		}
-	}
 	return assets, nil
 }
 

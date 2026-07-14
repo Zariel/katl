@@ -49,7 +49,14 @@
                 mtools
                 OVMFFull
                 qemu_kvm
+                cpio
+                dosfstools
+                rpm
+                squashfsTools
+                systemdUkify
                 util-linux
+                xorriso
+                zstd
               ]
             );
 

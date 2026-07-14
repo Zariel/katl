@@ -300,14 +300,6 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if strings.TrimSpace(intent.Kubernetes.PayloadVersion) != "" && request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
 		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion %q does not match stored intent %q", request.KubernetesPayloadVersion, intent.Kubernetes.PayloadVersion)
 	}
-	if strings.TrimSpace(intent.Kubernetes.BundleSource) != "" || strings.TrimSpace(intent.Kubernetes.BundleRef) != "" {
-		if request.KubernetesBundleSource != intent.Kubernetes.BundleSource {
-			return fmt.Errorf("bootstrapRequest kubernetesBundleSource does not match stored intent")
-		}
-		if request.KubernetesBundleRef != intent.Kubernetes.BundleRef {
-			return fmt.Errorf("bootstrapRequest kubernetesBundleRef does not match stored intent")
-		}
-	}
 	if request.BootstrapProfileRef != intent.BootstrapProfile.Ref {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef %q does not match stored intent %q", request.BootstrapProfileRef, intent.BootstrapProfile.Ref)
 	}

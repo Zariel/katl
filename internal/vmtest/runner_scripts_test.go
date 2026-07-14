@@ -1780,6 +1780,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
+		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
 		"KATL_VMTEST_KEEP=always",

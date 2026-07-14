@@ -109,7 +109,7 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	}
 	_, vmConfig := vmFixture(t)
 	runner := VMRunner{
-		Executor: vmExec{write: runtimeBootSignal},
+		Executor: vmExec{write: runtimeKernelBootSignal},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,

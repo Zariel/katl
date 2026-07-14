@@ -529,6 +529,25 @@ if ! image_exists; then
     "$runtime" "${build_flags[@]}" "$repo_root"
 fi
 
+if [[ "${1:-}" == builder-version ]]; then
+    if [[ $# -ne 1 ]]; then
+        echo "error: builder-version does not accept arguments" >&2
+        exit 2
+    fi
+    if [[ "$runtime" == direct ]]; then
+        version="$(mkosi --version)"
+    else
+        version="$("$runtime" run --rm "$image" mkosi --version)"
+    fi
+    version="${version#mkosi }"
+    [[ -n "$version" ]] || {
+        echo "error: mkosi builder returned an empty version" >&2
+        exit 1
+    }
+    printf '%s\n' "$version"
+    exit 0
+fi
+
 if [[ $# -eq 0 ]]; then
     cache_target=installer
     prepare_cached_target "$cache_target"

@@ -35,6 +35,7 @@ var runtimeConsoleOptions = []string{
 var runtimeVMTestOptions = append([]string{"katl.vmtest_agent=1"}, runtimeConsoleOptions...)
 
 const runtimeBootSignal = "Katl runtime reached systemd userspace"
+const runtimeKernelBootSignal = "katl.generation="
 const runtimeDebugShellOption = "katl.vmtest_debug_shell=1"
 
 type installedRuntimeRecord struct {
@@ -81,7 +82,11 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 	}
 	vm := config.VM
 	vm.Phase = "runtime"
-	vm.Expect = first(vm.Expect, config.Expect, runtimeBootSignal)
+	defaultSignal := runtimeBootSignal
+	if config.RequireVMTestAgent || vm.Agent.RequireHealth {
+		defaultSignal = runtimeKernelBootSignal
+	}
+	vm.Expect = first(vm.Expect, config.Expect, defaultSignal)
 	vm.Boot = VMBoot{
 		Image:         config.Disk,
 		ImageFormat:   diskFormat(config.DiskFormat),

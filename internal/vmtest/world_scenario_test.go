@@ -95,6 +95,25 @@ func TestWorldScenarioRejectsReservedAndDuplicateAddresses(t *testing.T) {
 	}
 }
 
+func TestLeaseLockIgnoresStaleMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leases.json")
+	if err := os.WriteFile(path+".lock", nil, 0o600); err != nil {
+		t.Fatalf("write stale lock marker: %v", err)
+	}
+
+	unlock, err := lockLeaseFile(path)
+	if err != nil {
+		t.Fatalf("lockLeaseFile() with stale marker: %v", err)
+	}
+	unlock()
+
+	unlock, err = lockLeaseFile(path)
+	if err != nil {
+		t.Fatalf("lockLeaseFile() after release: %v", err)
+	}
+	unlock()
+}
+
 func TestWorldScenarioReportsExhaustedCIDR(t *testing.T) {
 	world := testWorld(t)
 	world.Network.CIDR = "10.77.0.1/32"

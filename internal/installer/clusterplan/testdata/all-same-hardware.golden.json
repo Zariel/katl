@@ -89,6 +89,11 @@
           "mode": 420
         },
         {
+          "path": "/etc/ssh/authorized_keys/katl",
+          "content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n",
+          "mode": 384
+        },
+        {
           "path": "/etc/systemd/network/10-common.network",
           "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
           "mode": 420
@@ -186,6 +191,11 @@
           "path": "/etc/katl/node.json",
           "content": "{\n  \"apiVersion\": \"katl.dev/v1alpha1\",\n  \"kind\": \"NodeMetadata\",\n  \"identity\": {\n    \"hostname\": \"worker-1\"\n  },\n  \"systemRole\": \"worker\",\n  \"kubeadm\": {\n    \"configRef\": \"worker\",\n    \"configPath\": \"/etc/katl/kubeadm/worker/config.yaml\",\n    \"intent\": \"worker\"\n  },\n  \"kubernetes\": {\n    \"payloadVersion\": \"v1.36.1\",\n    \"activationPath\": \"/run/extensions/katl-kubernetes.raw\"\n  }\n}\n",
           "mode": 420
+        },
+        {
+          "path": "/etc/ssh/authorized_keys/katl",
+          "content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n",
+          "mode": 384
         },
         {
           "path": "/etc/systemd/network/10-common.network",

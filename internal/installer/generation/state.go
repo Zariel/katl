@@ -468,6 +468,7 @@ func stateDirs() []StateDir {
 		{Path: KubernetesSource, Mode: 0o755},
 		{Path: "/var/lib/katl/ssh", Mode: 0o755},
 		{Path: "/var/lib/katl/ssh/host-keys", Mode: 0o700},
+		{Path: "/var/lib/katl/home/katl", Mode: 0o700},
 		{Path: "/var/lib/containerd", Mode: 0o755},
 		{Path: "/var/lib/etcd", Mode: 0o755},
 		{Path: "/var/lib/kubelet", Mode: 0o755},
@@ -479,11 +480,16 @@ func renderTmpfiles(dirs []StateDir) string {
 	lines := make([]string, 0, len(dirs)+1)
 	lines = append(lines, "# Katl writable state seed directories")
 	for _, dir := range dirs {
+		owner := "root"
 		group := "root"
-		if dir.Path == "/var/log/journal" {
+		switch dir.Path {
+		case "/var/lib/katl/home/katl":
+			owner = "katl"
+			group = "katl"
+		case "/var/log/journal":
 			group = "systemd-journal"
 		}
-		lines = append(lines, fmt.Sprintf("d %s %04o root %s -", dir.Path, dir.Mode, group))
+		lines = append(lines, fmt.Sprintf("d %s %04o %s %s -", dir.Path, dir.Mode, owner, group))
 	}
 	return strings.Join(append(lines, ""), "\n")
 }
