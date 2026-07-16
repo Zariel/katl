@@ -139,9 +139,18 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 		return
 	}
 	snapshot.Generation = id
-	_, status, err := generation.ReadGeneration(root, id)
+	spec, status, err := generation.ReadGeneration(root, id)
 	if err != nil {
 		return
+	}
+	if version := strings.TrimSpace(spec.RuntimeVersion); version != "" {
+		snapshot.Version = version
+	}
+	for _, extension := range spec.Sysexts {
+		if extension.Name == "kubernetes" {
+			snapshot.KubernetesVersion = strings.TrimSpace(extension.PayloadVersion)
+			break
+		}
 	}
 	snapshot.GenerationHealth = status.HealthState
 }

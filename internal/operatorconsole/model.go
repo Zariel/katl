@@ -14,6 +14,7 @@ const (
 type Snapshot struct {
 	Mode                Mode
 	Version             string
+	KubernetesVersion   string
 	Hostname            string
 	State               string
 	CurrentStep         string

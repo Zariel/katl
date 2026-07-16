@@ -265,10 +265,11 @@ create or operate DHCP, iPXE, or matchbox configuration.
 Boot the same `katl-installer.iso` on each node without preseed input. The
 installer mounts its embedded KatlOS image read-only and waits without mutating
 disks.
-The VGA console keeps a KatlOS dashboard on `tty1` showing installer state,
-active network addresses, the handoff URL, disk-mutation status, and a
-live tail of the boot journal. Press `Ctrl+Alt+F2` for a local recovery shell;
-the dashboard, serial journal, and SSH service operate independently.
+The VGA console keeps a KatlOS dashboard on `tty1` showing installer media
+version and state, active network addresses, the handoff URL, disk-mutation
+status, and a live tail of the boot journal. Press `Ctrl+Alt+F2` for a local
+recovery shell; the dashboard, serial journal, and SSH service operate
+independently.
 
 The handoff is intentionally unauthenticated HTTP for the trusted home-lab
 path. Use only the provisioning network and never expose port 8080 to an

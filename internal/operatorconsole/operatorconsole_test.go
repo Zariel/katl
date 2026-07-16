@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -87,6 +88,77 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 	}
 }
 
+func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
+	root := t.TempDir()
+	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
+		GenerationID:          "4",
+		RuntimeVersion:        "2026.7.0-alpha.12",
+		RuntimeInterface:      "katl-runtime-1",
+		RuntimeArchitecture:   "x86_64",
+		RootSlot:              "root-a",
+		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
+		RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		UKIPath:               "/efi/EFI/Linux/katl-4.efi",
+		Sysexts: []generation.ExtensionRef{{
+			Name:            "kubernetes",
+			Path:            "/var/lib/katl/generations/4/sysext/kubernetes.raw",
+			ActivationPath:  "/run/extensions/katl-kubernetes.raw",
+			SHA256:          strings.Repeat("b", 64),
+			ArtifactVersion: "v1.36.1-katl.1",
+			PayloadVersion:  "v1.36.1",
+			Architecture:    "x86_64",
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+		}},
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/4/confext",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("c", 64),
+			Compatibility: generation.ConfextCompatibility{
+				ID:           "katl",
+				VersionID:    "2026.7.0-alpha.12",
+				ConfextLevel: 1,
+			},
+		},
+		CreatedAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := generation.SpecFromRecord(record)
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Date(2026, 7, 16, 12, 5, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:          generation.APIVersion,
+		Kind:                generation.BootSelectionKind,
+		DefaultGenerationID: "4",
+		BootedGenerationID:  "4",
+		UpdatedAt:           time.Date(2026, 7, 16, 12, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	collector := Collector{
+		Mode:       ModeRuntime,
+		Version:    "stale-binary-version",
+		Root:       root,
+		Hostname:   func() (string, error) { return "cp-1", nil },
+		Interfaces: func() ([]net.Interface, error) { return nil, nil },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.Version != "2026.7.0-alpha.12" || snapshot.KubernetesVersion != "v1.36.1" {
+		t.Fatalf("installed versions = KatlOS %q, Kubernetes %q", snapshot.Version, snapshot.KubernetesVersion)
+	}
+}
+
 func TestRenderInstallerDashboard(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:                ModeInstaller,
@@ -102,9 +174,10 @@ func TestRenderInstallerDashboard(t *testing.T) {
 	var renderer Renderer
 	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 25)), &snapshot, journal, 80, 25))
 	for _, want := range []string{
-		"KatlOS Installer  2026.7.0-alpha.9",
+		"KatlOS Installer",
 		"State:        Installing",
 		"Network:      enp1s0: 192.0.2.10/24",
+		"Media:        2026.7.0-alpha.9",
 		"Disk changes: started - do not power off",
 		"Configure:    http://192.0.2.10:8080/v1/config-bundle",
 		"Run:          katlctl config init cluster.yaml --installer 192.0.2.10",
@@ -147,20 +220,21 @@ func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
 
 func TestRenderRuntimeFailure(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:             ModeRuntime,
-		Version:          "2026.7.0-alpha.9",
-		Hostname:         "cp-1",
-		State:            installstatus.StateRuntimeFailedNeedsRepair,
-		Generation:       "4",
-		GenerationHealth: "unhealthy",
-		LastError:        "boot health check failed",
-		RetryHint:        "inspect the previous generation",
-		SSHEnabled:       true,
-		Network:          []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
+		Mode:              ModeRuntime,
+		Version:           "2026.7.0-alpha.9",
+		KubernetesVersion: "v1.36.1",
+		Hostname:          "cp-1",
+		State:             installstatus.StateRuntimeFailedNeedsRepair,
+		Generation:        "4",
+		GenerationHealth:  "unhealthy",
+		LastError:         "boot health check failed",
+		RetryHint:         "inspect the previous generation",
+		SSHEnabled:        true,
+		Network:           []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	var renderer Renderer
 	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 20)), &snapshot, nil, 80, 20))
-	for _, want := range []string{"KatlOS needs repair", "Generation:   4  health=FAILED", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
+	for _, want := range []string{"KatlOS needs repair", "KatlOS:       2026.7.0-alpha.9", "Kubernetes:   v1.36.1", "Generation:   4  health=FAILED", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
