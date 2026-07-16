@@ -103,7 +103,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
 	previousSpec, previousStatus := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
 	previousSpec.KernelCommandLine = append(previousSpec.KernelCommandLine,
-		"console=ttyS0,115200n8", "systemd.log_target=console", "loglevel=6", "katl.vmtest_agent=1", "katl.vmtest_debug_shell=1")
+		"console=ttyS0,115200n8", "systemd.log_target=console", "loglevel=6", "katl.vmtest_agent=1")
 	digest, err := generation.CanonicalSpecDigest(previousSpec)
 	if err != nil {
 		t.Fatalf("digest vmtest-visible previous generation: %v", err)

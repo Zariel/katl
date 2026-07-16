@@ -96,6 +96,13 @@ func prepareDirectRuntime(result Result, config DirectRuntimeConfig) (DirectRunt
 }
 
 func discoverDirectRuntimeBootFiles(runtimeRoot string) (string, string, error) {
+	base := strings.TrimSuffix(runtimeRoot, ".squashfs")
+	kernel := base + ".vmlinuz"
+	initrd := base + ".initrd"
+	if requireRegularFile("direct runtime kernel", kernel) == nil && requireRegularFile("direct runtime initrd", initrd) == nil {
+		return kernel, initrd, nil
+	}
+
 	dir := filepath.Dir(runtimeRoot)
 	rootDir := strings.TrimSuffix(filepath.Base(runtimeRoot), ".squashfs")
 	candidates := []string{

@@ -112,6 +112,16 @@ func TestOperatorConsoleOwnsTTY1AndPreservesRecoveryAccess(t *testing.T) {
 	}
 }
 
+func TestRuntimeJournalRemainsVisibleOnSerialConsole(t *testing.T) {
+	repo := repoRoot(t)
+	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra", "etc", "systemd", "journald.conf.d", "10-katl-runtime-console.conf")))
+	assertTextContains(t, journal,
+		"ForwardToConsole=yes",
+		"TTYPath=/dev/ttyS0",
+		"MaxLevelConsole=info",
+	)
+}
+
 func TestRuntimeOwnsPersistentSSHIdentity(t *testing.T) {
 	repo := repoRoot(t)
 	extra := filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra")

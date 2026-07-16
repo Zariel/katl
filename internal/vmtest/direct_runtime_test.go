@@ -106,6 +106,26 @@ func TestDirectRuntimeRequiresRuntimeRoot(t *testing.T) {
 	}
 }
 
+func TestDirectRuntimeUsesPublishedSplitBootArtifacts(t *testing.T) {
+	root := t.TempDir()
+	runtimeRoot := filepath.Join(root, "katl-runtime-root.squashfs")
+	kernel := filepath.Join(root, "katl-runtime-root.vmlinuz")
+	initrd := filepath.Join(root, "katl-runtime-root.initrd")
+	for path, content := range map[string]string{runtimeRoot: "runtime", kernel: "kernel", initrd: "initrd"} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gotKernel, gotInitrd, err := discoverDirectRuntimeBootFiles(runtimeRoot)
+	if err != nil {
+		t.Fatalf("discoverDirectRuntimeBootFiles() error = %v", err)
+	}
+	if gotKernel != kernel || gotInitrd != initrd {
+		t.Fatalf("boot files = %q, %q; want %q, %q", gotKernel, gotInitrd, kernel, initrd)
+	}
+}
+
 func TestDirectRuntimeAddsDebugShellOptionWhenEnabled(t *testing.T) {
 	t.Setenv("KATL_VMTEST_DEBUG_ON_FAILURE", "1")
 	root := t.TempDir()

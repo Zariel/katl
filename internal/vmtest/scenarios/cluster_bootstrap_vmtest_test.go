@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -371,11 +373,21 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage test CNI fixtures: %v", err)
 	}
-	imageFixtures, err := stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
+	if err == nil && proveUpgrade {
+		var upgradeFixtures map[string][]nodeImageFixture
+		upgradeFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), "v1.36.1", nodes...)
+		mergeNodeImageFixtures(imageFixtures, upgradeFixtures)
+	}
+	if err == nil {
+		var workloadFixtures map[string][]nodeImageFixture
+		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+		mergeNodeImageFixtures(imageFixtures, workloadFixtures)
+	}
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("stage test workload images: %v", err)
+		t.Fatalf("stage bootstrap images: %v", err)
 	}
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -739,7 +751,11 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", image.ArtifactVersion, "--context-file", configPath, "--timeout", "25m")
+	targetVersion, err := publishedKubernetesUpgradeVersion(bundle)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", targetVersion, "--context-file", configPath, "--timeout", "25m")
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {
@@ -787,8 +803,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if err != nil {
 			return err
 		}
-		versionRef := image.Repository + ":" + image.Tag
-		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != versionRef || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
+		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != image.Value || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
 			return fmt.Errorf("%s upgrade did not resolve the published bundle internally: %+v", item.Name, record.KubernetesSysextUpdate)
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
@@ -796,6 +811,24 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		}
 	}
 	return nil
+}
+
+func publishedKubernetesUpgradeVersion(bundle string) (string, error) {
+	image, err := kubernetesbundle.ParseImageReference(bundle)
+	if err != nil {
+		return "", err
+	}
+	return image.PayloadVersion, nil
+}
+
+func TestPublishedKubernetesUpgradeUsesPayloadVersion(t *testing.T) {
+	version, err := publishedKubernetesUpgradeVersion("ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatalf("publishedKubernetesUpgradeVersion() error = %v", err)
+	}
+	if version != "v1.36.1" {
+		t.Fatalf("published Kubernetes upgrade version = %q, want payload version v1.36.1", version)
+	}
 }
 
 type upgradeSnapshotEvidence struct{ Ref, Digest, Revision, CreatedAt, MemberListDigest, EtcdVersion, Location string }
@@ -1007,19 +1040,6 @@ func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Resu
 	return bundle, server, nil
 }
 
-func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
-	if run, ok := twoNodeWorldSmokeRun(t); ok {
-		runTwoNodeKubeadmJoinSmoke(t, run)
-		return
-	}
-
-	options := vmtest.DefaultOptions()
-	if !options.Enabled {
-		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node kubeadm join smoke")
-	}
-	_ = vmtest.RequireWorld(t)
-}
-
 type twoNodeSmokeRun struct {
 	WorldScenario *vmtest.WorldScenario
 	Options       vmtest.Options
@@ -1215,11 +1235,16 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage test CNI fixtures: %v", err)
 	}
-	imageFixtures, err := stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
+	if err == nil {
+		var workloadFixtures map[string][]nodeImageFixture
+		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+		mergeNodeImageFixtures(imageFixtures, workloadFixtures)
+	}
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("stage test workload images: %v", err)
+		t.Fatalf("stage bootstrap images: %v", err)
 	}
 	if err := writeTwoNodeInventory(inventoryPath, inputs.KubernetesVersion, cpNode, workerNode); err != nil {
 		t.Fatal(err)
@@ -1332,7 +1357,7 @@ type multiNodeWorldProvenancePaths struct {
 func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) multiNodeWorldProvenancePaths {
 	provenance := multiNodeWorldProvenancePaths{
 		VMTestRun:              firstString(world.RunIndex, filepath.Join(world.RunDir, "run.json")),
-		WorldManifest:          firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
+		WorldManifest:          filepath.Join(world.RunDir, "world.json"),
 		HostCapabilities:       filepath.Join(world.RunDir, "host-capabilities.json"),
 		ResourceManifest:       world.ResourceManifest,
 		ResourceManifestSHA256: world.ResourceDigest,
@@ -1379,6 +1404,12 @@ func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.Miss
 		missing = append(missing, vmtest.MissingPrerequisite{
 			Name:   "kubectl",
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
+		})
+	}
+	if _, err := lookPath("podman"); err != nil {
+		missing = append(missing, vmtest.MissingPrerequisite{
+			Name:   "podman",
+			Detail: "required to cache Kubernetes VM image fixtures: " + err.Error(),
 		})
 	}
 	return missing
@@ -1970,6 +2001,194 @@ StandardError=append:%s
 	return nil
 }
 
+type kubernetesImageCacheManifest struct {
+	KubernetesVersion string   `json:"kubernetesVersion"`
+	Images            []string `json:"images"`
+	ArchiveSHA256     string   `json:"archiveSHA256"`
+	ArchiveSize       int64    `json:"archiveSize"`
+}
+
+func stageKubernetesImageFixtures(ctx context.Context, repo, kubernetesVersion string, nodes ...vmtest.RunningInstalledRuntimeNode) (map[string][]nodeImageFixture, error) {
+	fixture, err := ensureKubernetesImageFixture(ctx, repo, kubernetesVersion)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(fixture.Source)
+	if err != nil {
+		return nil, fmt.Errorf("read Kubernetes image fixture %s: %w", fixture.Source, err)
+	}
+	staged := map[string][]nodeImageFixture{}
+	for _, node := range nodes {
+		nodeFixture := fixture
+		nodeFixture.GuestPath = filepath.Join("/var/lib/katl/test-artifacts/bootstrap-images", filepath.Base(fixture.Source))
+		if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
+			return nil, fmt.Errorf("stage Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
+		}
+		result, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 128<<10)
+		if err != nil {
+			return nil, fmt.Errorf("import Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
+		}
+		if result.ExitStatus != 0 {
+			return nil, fmt.Errorf("import Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, commandErrorDetail(result))
+		}
+		if err := writeNodeFile(ctx, node, nodeFixture.GuestPath, nil, 0o644, true); err != nil {
+			return nil, fmt.Errorf("truncate imported Kubernetes image fixture on %s: %w", node.Name, err)
+		}
+		staged[node.Name] = append(staged[node.Name], nodeFixture)
+	}
+	return staged, nil
+}
+
+func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion string) (nodeImageFixture, error) {
+	images, err := kubernetesImageReferences(kubernetesVersion)
+	if err != nil {
+		return nodeImageFixture{}, err
+	}
+	cacheDir := filepath.Join(repo, "_build", "vmtest", "kubernetes-images", strings.TrimPrefix(kubernetesVersion, "v"))
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return nodeImageFixture{}, err
+	}
+	lock, err := os.OpenFile(filepath.Join(cacheDir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nodeImageFixture{}, err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return nodeImageFixture{}, fmt.Errorf("lock Kubernetes image fixture cache: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	archivePath := filepath.Join(cacheDir, "kubernetes-images.tar")
+	manifestPath := filepath.Join(cacheDir, "manifest.json")
+	if valid, err := validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion, images); err != nil {
+		return nodeImageFixture{}, err
+	} else if !valid {
+		if err := buildKubernetesImageFixture(ctx, archivePath, manifestPath, kubernetesVersion, images); err != nil {
+			return nodeImageFixture{}, err
+		}
+	}
+	return nodeImageFixture{Image: "kubeadm-required-images:" + kubernetesVersion, Source: archivePath}, nil
+}
+
+func kubernetesImageReferences(kubernetesVersion string) ([]string, error) {
+	switch kubernetesVersion {
+	case "v1.36.0", "v1.36.1":
+	default:
+		return nil, fmt.Errorf("Kubernetes VM image fixtures do not define kubeadm images for %s", kubernetesVersion)
+	}
+	return []string{
+		"registry.k8s.io/kube-apiserver:" + kubernetesVersion,
+		"registry.k8s.io/kube-controller-manager:" + kubernetesVersion,
+		"registry.k8s.io/kube-scheduler:" + kubernetesVersion,
+		"registry.k8s.io/kube-proxy:" + kubernetesVersion,
+		"registry.k8s.io/coredns/coredns:v1.14.2",
+		"registry.k8s.io/pause:3.10.2",
+		"registry.k8s.io/etcd:3.6.8-0",
+	}, nil
+}
+
+func validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion string, images []string) (bool, error) {
+	data, err := os.ReadFile(manifestPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var manifest kubernetesImageCacheManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false, nil
+	}
+	if manifest.KubernetesVersion != kubernetesVersion || strings.Join(manifest.Images, "\n") != strings.Join(images, "\n") {
+		return false, nil
+	}
+	info, err := os.Stat(archivePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Size() == 0 || info.Size() != manifest.ArchiveSize {
+		return false, nil
+	}
+	digest, err := fileSHA256Hex(archivePath)
+	if err != nil {
+		return false, err
+	}
+	return digest == manifest.ArchiveSHA256, nil
+}
+
+func buildKubernetesImageFixture(ctx context.Context, archivePath, manifestPath, kubernetesVersion string, images []string) error {
+	podman, err := exec.LookPath("podman")
+	if err != nil {
+		return fmt.Errorf("find podman for Kubernetes image fixtures: %w", err)
+	}
+	for _, image := range images {
+		cmd := exec.CommandContext(ctx, podman, "pull", "--quiet", image)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("cache Kubernetes image %s: %w\n%s", image, err, output)
+		}
+	}
+	temporaryArchive := archivePath + ".tmp-" + strconv.Itoa(os.Getpid())
+	defer os.Remove(temporaryArchive)
+	args := append([]string{"save", "--quiet", "--multi-image-archive", "--output", temporaryArchive}, images...)
+	cmd := exec.CommandContext(ctx, podman, args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("save Kubernetes %s image fixture: %w\n%s", kubernetesVersion, err, output)
+	}
+	if err := os.Chmod(temporaryArchive, 0o644); err != nil {
+		return err
+	}
+	info, err := os.Stat(temporaryArchive)
+	if err != nil {
+		return err
+	}
+	digest, err := fileSHA256Hex(temporaryArchive)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryArchive, archivePath); err != nil {
+		return err
+	}
+	manifest := kubernetesImageCacheManifest{
+		KubernetesVersion: kubernetesVersion,
+		Images:            images,
+		ArchiveSHA256:     digest,
+		ArchiveSize:       info.Size(),
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	temporaryManifest := manifestPath + ".tmp-" + strconv.Itoa(os.Getpid())
+	defer os.Remove(temporaryManifest)
+	if err := os.WriteFile(temporaryManifest, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temporaryManifest, manifestPath)
+}
+
+func fileSHA256Hex(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func mergeNodeImageFixtures(target, source map[string][]nodeImageFixture) {
+	for node, fixtures := range source {
+		target[node] = append(target[node], fixtures...)
+	}
+}
+
 func stageTwoNodeImageFixtures(ctx context.Context, repo, workDir string, nodes ...vmtest.RunningInstalledRuntimeNode) (map[string][]nodeImageFixture, error) {
 	fixtures, err := buildBootstrapImageFixtures(ctx, repo, filepath.Join(workDir, "bootstrap-images"))
 	if err != nil {
@@ -2380,36 +2599,27 @@ func retryDirectAgentOp[T any](ctx context.Context, node vmtest.RunningInstalled
 
 func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32) error {
 	const chunkSize = 512 << 10
-	if result, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-d", "-m", "0755", filepath.Dir(path)}, 16<<10); err != nil {
-		return fmt.Errorf("create parent: %w", err)
-	} else if result.ExitStatus != 0 {
-		return fmt.Errorf("create parent: %w", commandErrorDetail(result))
-	}
-	if result, err := runNodeCommandWithRetry(ctx, node, []string{"dd", "if=/dev/null", "of=" + path, "bs=1", "count=0"}, 16<<10); err != nil {
-		return fmt.Errorf("create target: %w", err)
-	} else if result.ExitStatus != 0 {
-		return fmt.Errorf("create target: %w", commandErrorDetail(result))
-	}
 	for offset := 0; offset < len(content); offset += chunkSize {
 		end := offset + chunkSize
 		if end > len(content) {
 			end = len(content)
 		}
-		part := fmt.Sprintf("%s.part-%06d", path, offset/chunkSize)
-		if err := writeNodeFile(ctx, node, part, content[offset:end], 0o644, true); err != nil {
-			return fmt.Errorf("write part %d: %w", offset/chunkSize, err)
-		}
-		argv := []string{"dd", "if=" + part, "of=" + path, fmt.Sprintf("bs=%d", chunkSize), "seek=" + strconv.Itoa(offset/chunkSize), "conv=notrunc"}
-		if result, err := runNodeCommandWithRetry(ctx, node, argv, 16<<10); err != nil {
-			return fmt.Errorf("append part %d: %w", offset/chunkSize, err)
-		} else if result.ExitStatus != 0 {
-			return fmt.Errorf("append part %d: %w", offset/chunkSize, commandErrorDetail(result))
+		_, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
+			return client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
+				Path:      path,
+				Content:   content[offset:end],
+				Mode:      mode,
+				Sensitive: true,
+				Offset:    uint64(offset),
+				Truncate:  offset == 0,
+			})
+		})
+		if err != nil {
+			return fmt.Errorf("write chunk %d: %w", offset/chunkSize, err)
 		}
 	}
-	if result, err := runNodeCommandWithRetry(ctx, node, []string{"chmod", fmt.Sprintf("%04o", mode), path}, 16<<10); err != nil {
-		return fmt.Errorf("chmod target: %w", err)
-	} else if result.ExitStatus != 0 {
-		return fmt.Errorf("chmod target: %w", commandErrorDetail(result))
+	if len(content) == 0 {
+		return writeNodeFile(ctx, node, path, nil, mode, true)
 	}
 	return nil
 }
@@ -3965,16 +4175,70 @@ func twoNodeTestWorld(t *testing.T) vmtest.World {
 
 func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 	t.Setenv("KATL_VMTEST_KUBECTL", "/tmp/selected-kubectl")
-	var checked string
+	var checked []string
 	missing := twoNodeHostToolPrereqs(func(name string) (string, error) {
-		checked = name
+		checked = append(checked, name)
 		return name, nil
 	})
 	if len(missing) != 0 {
 		t.Fatalf("missing prereqs = %#v", missing)
 	}
-	if checked != "/tmp/selected-kubectl" {
-		t.Fatalf("checked kubectl = %q, want selected binary", checked)
+	if strings.Join(checked, ",") != "/tmp/selected-kubectl,podman" {
+		t.Fatalf("checked tools = %q", checked)
+	}
+}
+
+func TestKubernetesImageReferencesMatchSupportedKubeadmVersions(t *testing.T) {
+	for _, version := range []string{"v1.36.0", "v1.36.1"} {
+		images, err := kubernetesImageReferences(version)
+		if err != nil {
+			t.Fatalf("kubernetesImageReferences(%q) error = %v", version, err)
+		}
+		if len(images) != 7 || images[0] != "registry.k8s.io/kube-apiserver:"+version || images[3] != "registry.k8s.io/kube-proxy:"+version {
+			t.Fatalf("kubernetesImageReferences(%q) = %#v", version, images)
+		}
+	}
+	if _, err := kubernetesImageReferences("v1.37.0"); err == nil {
+		t.Fatal("kubernetesImageReferences(v1.37.0) error = nil")
+	}
+}
+
+func TestValidKubernetesImageFixtureRejectsChangedArchive(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "images.tar")
+	manifestPath := filepath.Join(dir, "manifest.json")
+	images, err := kubernetesImageReferences("v1.36.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := []byte("complete image archive")
+	if err := os.WriteFile(archivePath, archive, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	manifest := kubernetesImageCacheManifest{
+		KubernetesVersion: "v1.36.0",
+		Images:            images,
+		ArchiveSHA256:     hex.EncodeToString(digest[:]),
+		ArchiveSize:       int64(len(archive)),
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valid, err := validKubernetesImageFixture(archivePath, manifestPath, "v1.36.0", images)
+	if err != nil || !valid {
+		t.Fatalf("valid fixture = %t, error = %v", valid, err)
+	}
+	if err := os.WriteFile(archivePath, []byte("truncated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = validKubernetesImageFixture(archivePath, manifestPath, "v1.36.0", images)
+	if err != nil || valid {
+		t.Fatalf("changed fixture = %t, error = %v", valid, err)
 	}
 }
 

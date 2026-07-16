@@ -468,6 +468,7 @@ func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
 		filepath.Join(buildDir, "artifacts.json"),
 		filepath.Join(buildDir, "katl-runtime-root"),
 		filepath.Join(buildDir, "katl-runtime.packages.tsv"),
+		filepath.Join(buildDir, "katl-runtime-root.initrd"),
 		filepath.Join(buildDir, "katl-runtime-root.vmlinuz"),
 	}
 	for _, path := range paths {

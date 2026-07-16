@@ -721,9 +721,14 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 	if err != nil {
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test CNI fixtures: %w", err)
 	}
-	imageFixtures, err := stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), roundDir, nodes...)
+	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), run.Inputs.KubernetesVersion, nodes...)
+	if err == nil {
+		var workloadFixtures map[string][]nodeImageFixture
+		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), roundDir, nodes...)
+		mergeNodeImageFixtures(imageFixtures, workloadFixtures)
+	}
 	if err != nil {
-		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test workload images: %w", err)
+		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage bootstrap images: %w", err)
 	}
 	bootSelectionsBefore := map[string]string{}
 	for _, node := range nodes {
