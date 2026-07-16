@@ -69,10 +69,6 @@ func (render *Renderer) append(dst []byte, snapshot *Snapshot, journal Journal, 
 	if snapshot.Mode == ModeInstaller {
 		line.appendString(" Installer")
 	}
-	if snapshot.Version != "" {
-		line.appendString("  ")
-		line.appendString(snapshot.Version)
-	}
 	line.resetStyle()
 	line.finish()
 
@@ -93,6 +89,16 @@ func (render *Renderer) append(dst []byte, snapshot *Snapshot, journal Journal, 
 		render.wrappedField("Node").appendString(snapshot.Hostname).finish()
 	}
 	appendNetwork(render, snapshot.Network)
+	if snapshot.Version != "" {
+		label := "KatlOS"
+		if snapshot.Mode == ModeInstaller {
+			label = "Media"
+		}
+		render.wrappedField(label).appendString(snapshot.Version).finish()
+	}
+	if snapshot.Mode == ModeRuntime && snapshot.KubernetesVersion != "" {
+		render.wrappedField("Kubernetes").appendString(snapshot.KubernetesVersion).finish()
+	}
 	if snapshot.State == "running" && snapshot.CurrentStep != "" {
 		render.wrappedField("Progress").appendString(snapshot.CurrentStep).finish()
 	}
