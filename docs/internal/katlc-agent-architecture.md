@@ -96,7 +96,6 @@ katlctl on workstation
 ```text
 katlc version
 katlc agent serve
-katlc agent init-token
 katlc debug validate-config, when needed
 katlc debug show-operation, when needed
 katlc debug rebuild-projection, when needed
@@ -147,9 +146,9 @@ The target package layout is:
 
 | Path | Owner | Responsibility |
 | --- | --- | --- |
-| `cmd/katlc` | node binary | Small CLI parser for `version`, `agent serve`, token setup, and explicit `debug` commands. It must delegate product logic to `internal/katlc/...`. |
+| `cmd/katlc` | node binary | Small CLI parser for `version`, `agent serve`, and explicit `debug` commands. It must delegate product logic to `internal/katlc/...`. |
 | `internal/katlc/agentapi` | API contract | Protobuf service, request, response, and event types for the TCP gRPC management API. Generated code remains package-local to Katl. |
-| `internal/katlc/agent` | agent runtime | gRPC handlers, auth, startup audit, operation acceptance, lock checks, dispatch, watch delivery, and redacted API projections. |
+| `internal/katlc/agent` | agent runtime | gRPC handlers, startup audit, operation acceptance, lock checks, dispatch, watch delivery, and redacted API projections. |
 | `internal/katlc/config` | shared validation | User-supplied Katl YAML/config decoding, normalization, deterministic diagnostics, and validation result types accepted by generation planning. |
 | `internal/katlc/generation` | shared generation planning | Compile validated config plus selected runtime inputs into generation specs, sysext/confext intent, apply matrices, and status seed data. |
 | `internal/katlc/runtime` | shared runtime helpers | Runtime status records, generation load/read helpers, boot selection reads, activation request helpers, and redaction helpers used by the agent and workstation status views. |

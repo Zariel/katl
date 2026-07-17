@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -369,12 +368,7 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 		}
 	}
 	for _, node := range nodes {
-		token, err := tokenForTopologyNode(node)
-		if err != nil {
-			closeTargets()
-			return nil, err
-		}
-		conn, err := dialKatlcAgent(ctx, node.ManagementEndpoint, token)
+		conn, err := dialKatlcAgent(ctx, node.ManagementEndpoint)
 		if err != nil {
 			closeTargets()
 			return nil, fmt.Errorf("connect node %s: %w", node.Name, err)
@@ -477,19 +471,6 @@ func targetVersion(image kubernetesbundle.ImageReference) string { return image.
 func kubernetesUpgradeCandidate(version, node, runID string) string {
 	version = strings.NewReplacer("v", "", ".", "-").Replace(strings.TrimSpace(version))
 	return "kubernetes-" + version + "-" + node + "-" + runID
-}
-
-func tokenForTopologyNode(node workstation.TopologyNode) (string, error) {
-	ref := strings.TrimSpace(node.CredentialRef)
-	path, ok := strings.CutPrefix(ref, "file:")
-	if !ok || strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("node %s credentialRef must be a file reference", node.Name)
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("read node %s credential: %w", node.Name, err)
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 func writeKubernetesUpgradeReport(stdout io.Writer, report kubernetesUpgradeReport) error {

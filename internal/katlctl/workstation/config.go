@@ -15,8 +15,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const credentialsDirName = "credentials"
-
 type Config struct {
 	CurrentContext string    `json:"currentContext" yaml:"currentContext"`
 	Contexts       []Context `json:"contexts" yaml:"contexts"`
@@ -38,7 +36,6 @@ type Node struct {
 	Name               string               `json:"name" yaml:"name"`
 	ManagementEndpoint string               `json:"managementEndpoint" yaml:"managementEndpoint"`
 	SystemRole         inventory.SystemRole `json:"systemRole" yaml:"systemRole"`
-	CredentialRef      string               `json:"credentialRef" yaml:"credentialRef"`
 }
 
 type Source string
@@ -60,7 +57,6 @@ type TopologyNode struct {
 	Name               string               `json:"name"`
 	ManagementEndpoint string               `json:"managementEndpoint"`
 	SystemRole         inventory.SystemRole `json:"systemRole"`
-	CredentialRef      string               `json:"credentialRef"`
 }
 
 type ResolvedTopology struct {
@@ -116,9 +112,7 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// Save writes a workstation configuration atomically. The containing
-// directory and file are private because the configuration points at local
-// credential material even though it does not contain the credentials itself.
+// Save writes a workstation configuration atomically.
 func Save(path string, cfg Config) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -156,26 +150,6 @@ func Save(path string, cfg Config) error {
 		return fmt.Errorf("replace katlctl config: %w", err)
 	}
 	return nil
-}
-
-// CredentialPath returns the private token location managed by katlctl for a
-// node. It intentionally lives beside, rather than inside, katlctl.yaml.
-func CredentialPath(configPath, clusterName, nodeName string) (string, error) {
-	if err := validateName("cluster", clusterName); err != nil {
-		return "", err
-	}
-	if err := validateName("node", nodeName); err != nil {
-		return "", err
-	}
-	configPath = strings.TrimSpace(configPath)
-	if configPath == "" {
-		var err error
-		configPath, err = ConfigPath()
-		if err != nil {
-			return "", err
-		}
-	}
-	return filepath.Join(filepath.Dir(configPath), credentialsDirName, clusterName, nodeName+".token"), nil
 }
 
 // UpsertCluster installs or replaces one cluster and its context while
@@ -334,7 +308,6 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 			Name:               strings.TrimSpace(node.Name),
 			ManagementEndpoint: strings.TrimSpace(node.ManagementEndpoint),
 			SystemRole:         inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))),
-			CredentialRef:      strings.TrimSpace(node.CredentialRef),
 		})
 	}
 	return topology, nil
@@ -351,7 +324,6 @@ func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 			Name:               node.Name,
 			ManagementEndpoint: managementEndpoint(node.Address),
 			SystemRole:         node.SystemRole,
-			CredentialRef:      node.Access.CredentialRef,
 		})
 	}
 	return topologyFromCluster("", cluster)
@@ -368,7 +340,6 @@ func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 			Name:               node.Name,
 			ManagementEndpoint: managementEndpoint(node.Address),
 			SystemRole:         node.SystemRole,
-			CredentialRef:      node.Access.CredentialRef,
 		})
 	}
 	return topologyFromCluster("", cluster)
@@ -409,16 +380,6 @@ func validateCluster(cluster Cluster) error {
 		default:
 			return fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
 		}
-		credentialRef := strings.TrimSpace(node.CredentialRef)
-		if credentialRef == "" {
-			return fmt.Errorf("node %q credentialRef is required", name)
-		}
-		if strings.ContainsAny(credentialRef, "\n\r") {
-			return fmt.Errorf("node %q credentialRef must be a single line", name)
-		}
-		if containsInlineSecret(credentialRef) {
-			return fmt.Errorf("node %q credentialRef must reference credentials, not inline secret material", name)
-		}
 	}
 	if controlPlanes == 0 {
 		return fmt.Errorf("cluster %q must contain at least one control-plane node", strings.TrimSpace(cluster.Name))
@@ -453,13 +414,6 @@ func validateEndpoint(field, endpoint string) error {
 	return nil
 }
 
-func containsInlineSecret(value string) bool {
-	return strings.Contains(value, "-----BEGIN ") ||
-		bootstrapTokenPattern.MatchString(value) ||
-		bearerTokenPattern.MatchString(value) ||
-		kubeconfigDataPattern.MatchString(value)
-}
-
 func managementEndpoint(address string) string {
 	address = strings.TrimSpace(address)
 	if address == "" {
@@ -471,11 +425,6 @@ func managementEndpoint(address string) string {
 	return net.JoinHostPort(address, defaultAgentPort)
 }
 
-var (
-	namePattern           = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	bootstrapTokenPattern = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
-	bearerTokenPattern    = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
-	kubeconfigDataPattern = regexp.MustCompile(`(?i)client-(certificate|key)-data:\s*\S+`)
-)
+var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 const defaultAgentPort = "9443"

@@ -201,15 +201,8 @@ activation. Kubernetes bootstrap is a separate operator action.
 
 ### 4. Bootstrap Kubernetes
 
-Once all installed nodes are reachable over SSH, enroll them from the same
-cluster source. This retrieves each distinct agent token, stores it privately,
-verifies the management API, and creates the current workstation context:
-
-```sh
-katlctl cluster enroll --config ./cluster.yaml
-```
-
-Then bootstrap without repeating endpoints or credential files:
+Once all installed nodes are reachable on the trusted home network, bootstrap
+directly from the same cluster source:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
@@ -233,14 +226,15 @@ katlctl node apply --config ./cluster.yaml --node cp-1 --plan
 ```
 
 Run the command without `--plan` to apply it. `katlctl` derives config versions,
-generation names, validation, credentials, and operation tracking internally.
+generation names, validation, and operation tracking internally.
 Supported changes compile into generation-scoped confext/sysext state and are
 applied live or on next boot according to the domain policy. See
 [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
-Routine host management uses the enrolled workstation context. The current
-context selects a single-node lab automatically; pass a node name in a larger
-cluster:
+Routine host management can use an optional workstation context created with
+`katlctl context save --config ./cluster.yaml`. The command records and checks
+topology only; it does not retrieve credentials. The current context selects a
+single-node lab automatically; pass a node name in a larger cluster:
 
 ```sh
 katlctl node status cp-1

@@ -32,7 +32,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -50,8 +49,8 @@ var runAgentWorkerJoin = cluster.RunAgentWorkerJoin
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
 var operatorKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
-var newWipeClusterConnector = func(token string) cluster.AgentConnector {
-	return cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode}
+var newWipeClusterConnector = func() cluster.AgentConnector {
+	return cluster.TCPAgentConnector{}
 }
 
 const (
@@ -80,7 +79,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 		Long: `katlctl installs and manages KatlOS nodes and their Kubernetes cluster.
 
 Start with "katlctl install discover" for a waiting installer or
-"katlctl context show" to inspect the currently enrolled cluster.`,
+"katlctl context show" to inspect the current saved cluster.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		CompletionOptions: cobra.CompletionOptions{
@@ -105,7 +104,6 @@ Start with "katlctl install discover" for a waiting installer or
 	})
 
 	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
-	clusterCmd.AddCommand(newClusterEnrollCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe"))
 	cmd.AddCommand(clusterCmd)
@@ -125,7 +123,8 @@ Start with "katlctl install discover" for a waiting installer or
 	configCmd.AddCommand(renderNodeCmd)
 	cmd.AddCommand(configCmd)
 
-	contextCmd := &cobra.Command{Use: "context", Short: "Inspect enrolled workstation context"}
+	contextCmd := &cobra.Command{Use: "context", Short: "Save and inspect workstation contexts"}
+	contextCmd.AddCommand(newContextSaveCommand(ctx, stdout, stderr))
 	contextCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	topologyCmd := newConfigTopologyCommand(stdout, stderr)
 	topologyCmd.Use = "show"
@@ -153,7 +152,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl":                         "katlctl install discover",
 		"katlctl version":                 "katlctl version",
 		"katlctl cluster":                 "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster enroll":          "katlctl cluster enroll --config cluster.yaml",
+		"katlctl context save":            "katlctl context save --config cluster.yaml",
 		"katlctl cluster bootstrap":       "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster wipe":            "katlctl cluster wipe --all",
 		"katlctl kubernetes":              "katlctl kubernetes upgrade v1.36.1",
@@ -197,7 +196,6 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 type hostUpgradeOptions struct {
 	version             string
 	endpoint            string
-	agentTokenFile      string
 	workstationConfig   string
 	contextName         string
 	nodeName            string
@@ -237,7 +235,6 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 		},
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
@@ -294,12 +291,12 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+		endpoint: opts.endpoint,
 	})
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
+	conn, err := dialKatlcAgent(ctx, target.endpoint)
 	if err != nil {
 		return err
 	}
@@ -374,7 +371,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		_ = conn.Close()
 		bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-		verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, target.token, agentStart, request.CandidateGenerationID, stderr)
+		verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
 		cancel()
 		if err != nil {
 			report.Result = "failed"
@@ -443,7 +440,6 @@ type wipeClusterOptions struct {
 	all               bool
 	allowPartial      bool
 	clientRequestID   string
-	agentTokenFile    string
 	planOnly          bool
 	noWait            bool
 	timeout           string
@@ -469,7 +465,6 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 	cmd.Flags().BoolVar(&opts.allowPartial, "allow-partial-cluster", false, "allow a partial cluster target set")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after nodes accept their operations")
 	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
@@ -509,11 +504,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return fmt.Errorf("partial cluster wipe requires --allow-partial-cluster")
 	}
 
-	token, err := readAgentToken(opts.agentTokenFile)
-	if err != nil {
-		return err
-	}
-	connector := newWipeClusterConnector(token)
+	connector := newWipeClusterConnector()
 	if connector == nil {
 		return fmt.Errorf("katlc agent connector is required")
 	}
@@ -554,7 +545,7 @@ func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode
 				Name:       node.Name,
 				Address:    host,
 				SystemRole: node.SystemRole,
-				Access:     inventory.Access{Method: "agent", CredentialRef: node.CredentialRef},
+				Access:     inventory.Access{Method: "agent"},
 			})
 		}
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
@@ -584,7 +575,6 @@ type wipeNodeOptions struct {
 	contextName       string
 	kubeconfigPath    string
 	clientRequestID   string
-	agentTokenFile    string
 	planOnly          bool
 	noWait            bool
 	timeout           string
@@ -610,7 +600,6 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
 	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
@@ -653,11 +642,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return fmt.Errorf("single control-plane wipe requires etcd membership coordination")
 	}
 
-	token, err := readAgentToken(opts.agentTokenFile)
-	if err != nil {
-		return err
-	}
-	connector := newWipeClusterConnector(token)
+	connector := newWipeClusterConnector()
 	if connector == nil {
 		return fmt.Errorf("katlc agent connector is required")
 	}
@@ -714,7 +699,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 				Name:       node.Name,
 				Address:    host,
 				SystemRole: node.SystemRole,
-				Access:     inventory.Access{Method: "agent", CredentialRef: node.CredentialRef},
+				Access:     inventory.Access{Method: "agent"},
 			}, len(topology.Nodes) > 1, nil
 		}
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
@@ -781,7 +766,7 @@ func overlayWipeContext(inv inventory.Inventory, configPath, contextName string)
 			return inventory.Inventory{}, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
 		}
 		inv.Nodes[index].Address = host
-		inv.Nodes[index].Access = inventory.Access{Method: "agent", CredentialRef: node.CredentialRef}
+		inv.Nodes[index].Access = inventory.Access{Method: "agent"}
 	}
 	return inv, nil
 }
@@ -1524,7 +1509,6 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 
 type configApplyOptions struct {
 	endpoint            string
-	agentTokenFile      string
 	workstationConfig   string
 	contextName         string
 	nodeConfig          nodeConfigInputOptions
@@ -1577,7 +1561,6 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 		opts.waitTimeout = 30 * time.Minute
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	addNodeConfigInputFlags(cmd, &opts.nodeConfig)
@@ -1613,7 +1596,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.workstationConfig, contextName: opts.contextName,
-		nodeName: opts.nodeConfig.nodeName, endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+		nodeName: opts.nodeConfig.nodeName, endpoint: opts.endpoint,
 	})
 	if err != nil {
 		return err
@@ -1633,7 +1616,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			return fmt.Errorf("--source-id and --desired-version cannot be used with a pre-rendered NodeConfigurationChange")
 		}
 	}
-	conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
+	conn, err := dialKatlcAgent(ctx, target.endpoint)
 	if err != nil {
 		return err
 	}
@@ -1758,7 +1741,6 @@ func configApplyOperationKind(acceptedMode string) (string, error) {
 type configApplyStatusOptions struct {
 	root               string
 	endpoint           string
-	agentTokenFile     string
 	workstationConfig  string
 	contextName        string
 	nodeName           string
@@ -1780,7 +1762,6 @@ func newConfigApplyStatusCommand(ctx context.Context, stdout, stderr io.Writer) 
 	}
 	cmd.Flags().StringVar(&opts.root, "root", "/", "runtime root to inspect")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
@@ -1800,12 +1781,12 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 	if remote {
 		target, err := resolveManagementTarget(managementTargetOptions{
 			configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
-			endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+			endpoint: opts.endpoint,
 		})
 		if err != nil {
 			return err
 		}
-		conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
+		conn, err := dialKatlcAgent(ctx, target.endpoint)
 		if err != nil {
 			return err
 		}
@@ -1993,7 +1974,6 @@ type clusterBootstrapOptions struct {
 	overwriteKubeconfig                    bool
 	dryRun                                 bool
 	vmtestTranscriptDir                    string
-	agentTokenFile                         string
 	bootstrapManifestPaths                 stringList
 	bootstrapPreWaitValues                 stringList
 	bootstrapWaitValues                    stringList
@@ -2023,7 +2003,6 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
 	cmd.Flags().StringVar(&opts.vmtestTranscriptDir, "vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().Var(&opts.addresses, "node-address", "node address override in node=address form")
 	cmd.Flags().Var(&opts.bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
 	cmd.Flags().Var(&opts.bootstrapPreWaitValues, "bootstrap-pre-wait", "pre-manifest wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
@@ -2065,12 +2044,7 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 			return fmt.Errorf("--join-worker requires katlc agent transport")
 		}
-		var token string
-		token, err = readAgentToken(opts.agentTokenFile)
-		if err != nil {
-			return err
-		}
-		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), agentBootstrapDependencies(token))
+		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), agentBootstrapDependencies())
 		printBootstrapResult(stdout, result)
 		return err
 	}
@@ -2078,12 +2052,7 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 		result, err = runBootstrap(ctx, request, bootstrapDependencies(opts.vmtestTranscriptDir))
 	} else {
-		var token string
-		token, err = readAgentToken(opts.agentTokenFile)
-		if err != nil {
-			return err
-		}
-		result, err = runAgentBootstrap(ctx, request, agentBootstrapDependencies(token))
+		result, err = runAgentBootstrap(ctx, request, agentBootstrapDependencies())
 	}
 	printBootstrapResult(stdout, result)
 	return err
@@ -2126,40 +2095,12 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 	}
 }
 
-func agentBootstrapDependencies(token string) cluster.AgentBootstrapDependencies {
+func agentBootstrapDependencies() cluster.AgentBootstrapDependencies {
 	return cluster.AgentBootstrapDependencies{
-		Connector:       cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode},
+		Connector:       cluster.TCPAgentConnector{},
 		Actor:           "katlctl cluster bootstrap",
 		BootstrapRunner: cluster.KubectlBootstrapRunner{},
 	}
-}
-
-func agentTokenForNode(node inventory.PlannedNode) (string, error) {
-	ref := strings.TrimSpace(node.Access.CredentialRef)
-	if ref == "" {
-		return "", nil
-	}
-	path, ok := strings.CutPrefix(ref, "file:")
-	if !ok {
-		return "", nil
-	}
-	return readAgentToken(path)
-}
-
-func readAgentToken(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read agent token file: %w", err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("agent token file is empty: %s", path)
-	}
-	return token, nil
 }
 
 type katlcAgentConnection struct {
@@ -2167,12 +2108,12 @@ type katlcAgentConnection struct {
 	Close  func() error
 }
 
-func dialKatlcAgentTCP(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return katlcAgentConnection{}, fmt.Errorf("katlc agent endpoint is required")
 	}
-	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(token)...)
+	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions()...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}
@@ -2182,22 +2123,8 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string, token string) (katl
 	}, nil
 }
 
-func katlcAgentDialOptions(token string) []grpc.DialOption {
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
-	if strings.TrimSpace(token) != "" {
-		authorization := "Bearer " + strings.TrimSpace(token)
-		opts = append(opts,
-			grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-				return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", authorization), method, req, reply, cc, opts...)
-			}),
-			grpc.WithStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-				return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", authorization), desc, cc, method, opts...)
-			}),
-		)
-	}
-	return opts
+func katlcAgentDialOptions() []grpc.DialOption {
+	return []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 }
 
 func printBootstrapResult(stdout io.Writer, result cluster.Result) {

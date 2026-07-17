@@ -307,8 +307,7 @@ RequiresMountsFor=/var/lib/katl
 
 [Service]
 Type=simple
-ExecStartPre=/usr/bin/katlc agent init-token --path /var/lib/katl/agent/token
-ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443 --auth-token-file /var/lib/katl/agent/token
+ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal

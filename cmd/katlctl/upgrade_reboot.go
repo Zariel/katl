@@ -35,10 +35,10 @@ func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, ac
 	return nil
 }
 
-func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, token, previousAgentStart, targetGeneration string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	lastState := ""
 	for {
-		conn, err := dialKatlcAgent(ctx, endpoint, token)
+		conn, err := dialKatlcAgent(ctx, endpoint)
 		if err == nil {
 			status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 			if statusErr == nil {

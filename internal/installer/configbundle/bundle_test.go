@@ -210,7 +210,7 @@ spec:
 	if err != nil {
 		t.Fatalf("ReadSelectedNode() error = %v", err)
 	}
-	if selected.InstallManifest.Node.Identity.Hostname != "cp-1" || selected.InstallManifest.Node.Bootstrap.Access.CredentialRef != "agent/cp-1" {
+	if selected.InstallManifest.Node.Identity.Hostname != "cp-1" || selected.InstallManifest.Node.Bootstrap.Access.CredentialRef != "" {
 		t.Fatalf("defaulted install manifest = %#v", selected.InstallManifest)
 	}
 	if len(selected.InstallManifest.Node.Networkd.Files) != 1 || !strings.Contains(selected.InstallManifest.Node.Networkd.Files[0].Content, "DHCP=yes") {

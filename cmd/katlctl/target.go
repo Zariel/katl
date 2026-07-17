@@ -9,17 +9,15 @@ import (
 )
 
 type managementTargetOptions struct {
-	configPath     string
-	contextName    string
-	nodeName       string
-	endpoint       string
-	agentTokenFile string
+	configPath  string
+	contextName string
+	nodeName    string
+	endpoint    string
 }
 
 type managementTarget struct {
 	nodeName string
 	endpoint string
-	token    string
 }
 
 func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions) {
@@ -27,7 +25,6 @@ func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions)
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "explicit katlc agent endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "explicit katlc agent bearer token file")
 }
 
 func resolveManagementTarget(opts managementTargetOptions) (managementTarget, error) {
@@ -35,11 +32,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" {
 			return managementTarget{}, fmt.Errorf("--endpoint cannot be combined with --context-file or --context")
 		}
-		token, err := readAgentToken(opts.agentTokenFile)
-		if err != nil {
-			return managementTarget{}, err
-		}
-		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint, token: token}, nil
+		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint}, nil
 	}
 
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
@@ -60,20 +53,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 		if node.Name != nodeName {
 			continue
 		}
-		tokenPath := strings.TrimSpace(opts.agentTokenFile)
-		if tokenPath == "" {
-			ref := strings.TrimSpace(node.CredentialRef)
-			var ok bool
-			tokenPath, ok = strings.CutPrefix(ref, "file:")
-			if !ok {
-				return managementTarget{}, fmt.Errorf("node %q credentialRef must use file: for katlc management", nodeName)
-			}
-		}
-		token, err := readAgentToken(tokenPath)
-		if err != nil {
-			return managementTarget{}, err
-		}
-		return managementTarget{nodeName: nodeName, endpoint: node.ManagementEndpoint, token: token}, nil
+		return managementTarget{nodeName: nodeName, endpoint: node.ManagementEndpoint}, nil
 	}
 	return managementTarget{}, fmt.Errorf("node %q was not found in context %q", nodeName, topology.ContextName)
 }

@@ -507,7 +507,6 @@ func defaultAgentFilePaths() []string {
 		"/run/confexts/",
 		"/proc/cmdline",
 		"/run/katl/",
-		"/var/lib/katl/agent/token",
 		"/var/lib/katl/boot/",
 		"/var/lib/katl/config-requests/",
 		"/var/lib/katl/identity/",

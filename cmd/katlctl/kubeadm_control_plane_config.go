@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
@@ -66,11 +65,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 		}
 	}()
 	for _, node := range nodes {
-		token, err := tokenForInventoryNode(node)
-		if err != nil {
-			return err
-		}
-		conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"), token)
+		conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
 		if err != nil {
 			return fmt.Errorf("connect %s: %w", node.Name, err)
 		}
@@ -173,13 +168,4 @@ func waitKubeadmControlPlaneConfig(ctx context.Context, client agentapi.KatlcAge
 		case <-ticker.C:
 		}
 	}
-}
-
-func tokenForInventoryNode(node inventory.Node) (string, error) {
-	ref := strings.TrimSpace(node.Access.CredentialRef)
-	path, ok := strings.CutPrefix(ref, "file:")
-	if !ok {
-		return "", nil
-	}
-	return readAgentToken(path)
 }

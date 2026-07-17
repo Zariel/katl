@@ -101,10 +101,10 @@ spec:
 part of the contract.
 
 `bootstrap.address` is the operator-reachable address used for installation,
-enrollment, initial Kubernetes bootstrap, and the initial workstation context.
+initial Kubernetes bootstrap, and an optional initial workstation context.
 It need not be a permanent node identity, but it must remain reachable through
 those steps. For DHCP nodes, use a reservation or update the workstation
-context after enrollment when the address changes.
+saved context when the address changes.
 
 `controlPlane: true` is the only public role choice. Omission or `false` means
 worker, and at least one node must set it to true. Katl derives its internal

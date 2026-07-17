@@ -276,21 +276,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tokenFiles := map[string]string{}
-	for _, node := range nodes {
-		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, 2*time.Minute)
-		if err != nil {
-			collectTwoNodeDiagnostics("", nodes...)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("read %s katlc agent token: %v", node.Name, err)
-		}
-		tokenPath := filepath.Join(result.RunDir, node.Name+"-katlc-agent.token")
-		if err := os.WriteFile(tokenPath, token, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		tokenFiles[node.Name] = tokenPath
-	}
-	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses, tokenFiles); err != nil {
+	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, nil); err != nil {
@@ -391,7 +377,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("write etcd report: %v", err)
 	}
 	if smoke.WorkloadProof {
-		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, tokenFiles, bootstrapGenerations, inventoryPath, kubeconfigPath, kubernetesBundle, cniFixtures, etcdReport); err != nil {
+		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, bootstrapGenerations, inventoryPath, kubeconfigPath, kubernetesBundle, cniFixtures, etcdReport); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -413,7 +399,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses, tokenFiles, bootstrapGenerations map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, snapshot threeControlPlaneEtcdReport) error {
+func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses, bootstrapGenerations map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, snapshot threeControlPlaneEtcdReport) error {
 	t.Helper()
 	const generationID = "2026.07.11-vmtest-control-plane-config"
 	const configName = "control-plane-profiled"
@@ -463,14 +449,14 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
-			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--agent-token-file", tokenFiles[node.Name], "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
+			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
 		if err != nil {
 			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
 		}
 		if err := decodeGenerationStageResult(stdout, generationID); err != nil {
 			return fmt.Errorf("decode %s staged generation result: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, false); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], generationID, configName, false); err != nil {
 			return err
 		}
 	}
@@ -481,7 +467,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
 			return fmt.Errorf("reactivate %s CNI fixture: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, true); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], generationID, configName, true); err != nil {
 			return err
 		}
 		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-reboot-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
@@ -623,11 +609,11 @@ func decodeGenerationStageResult(data []byte, generationID string) error {
 	return nil
 }
 
-func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, configName string, healthy bool) error {
+func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, generationID, configName string, healthy bool) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	var last string
 	for time.Now().Before(deadline) {
-		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "node", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--agent-token-file", tokenFile, "--generation", generationID)
+		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "node", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--generation", generationID)
 		last = stderr
 		if err == nil {
 			var generation agentapi.Generation
@@ -1081,7 +1067,7 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, tokenFiles map[string]string) error {
+func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string) error {
 	if len(nodes) != 3 {
 		return fmt.Errorf("three control-plane inventory requires three nodes, got %d", len(nodes))
 	}
@@ -1099,7 +1085,6 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 		b.WriteString("  systemRole: control-plane\n")
 		b.WriteString("  access:\n")
 		b.WriteString("    method: agent\n")
-		b.WriteString("    credentialRef: " + strconv.Quote("file:"+tokenFiles[node.Name]) + "\n")
 		b.WriteString("  kubeadmConfig:\n")
 		b.WriteString("    ref: control-plane\n")
 		b.WriteString("    path: /etc/katl/kubeadm/control-plane/config.yaml\n")
@@ -2230,17 +2215,12 @@ func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *tes
 		"cp-2": "192.0.2.22",
 		"cp-3": "192.0.2.23",
 	}
-	tokenFiles := map[string]string{
-		"cp-1": filepath.Join(t.TempDir(), "cp-1.token"),
-		"cp-2": filepath.Join(t.TempDir(), "cp-2.token"),
-		"cp-3": filepath.Join(t.TempDir(), "cp-3.token"),
-	}
 	bundle := threeControlPlaneKubernetesPayloadBundle{
 		Source: "https://192.0.2.1:9443",
 		Ref:    "192.0.2.1:9443/katl-vmtest/kubernetes:v1.36.1-katl.0@sha256:" + strings.Repeat("a", 64),
 	}
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
-	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses, tokenFiles); err != nil {
+	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses); err != nil {
 		t.Fatalf("writeThreeControlPlaneOperationBackedInventory() error = %v", err)
 	}
 	data, err := os.ReadFile(path)

@@ -119,12 +119,10 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	localRef := filepath.ToSlash(filepath.Join("updates", filepath.Base(upgrade.Path)))
 	uploadGuestFile(t, ctx, guest, upgrade.Path, "/var/lib/katl/artifacts/"+localRef, 4<<20)
 	endpoint := katlcEndpoint(t, node, "")
-	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
 	acceptedData := runKatlctl(t, ctx, result, katlctl, "host-upgrade-submit",
 		"node", "upgrade",
 		"--endpoint", endpoint,
-		"--agent-token-file", tokenFile,
 		"--image-local-ref", localRef,
 		"--candidate-generation", candidateGeneration,
 		"--client-request-id", "vmtest-host-upgrade-"+candidateGeneration,
@@ -133,7 +131,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	)
 	var accepted agentapi.OperationAccepted
 	mustUnmarshalProtoJSON(t, acceptedData, &accepted)
-	status := waitKatlcOperationTerminal(t, ctx, endpoint, token, accepted.OperationId)
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}

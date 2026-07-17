@@ -12,8 +12,7 @@ orchestrate availability across several hosts.
 - the selected upgrade SquashFS is from the intended KatlOS release;
 - the upgrade declares a compatible architecture and runtime interface;
 - the node can fetch release artifacts from GitHub;
-- the current workstation context contains the node and its enrolled agent
-  credential;
+- the current workstation context contains the node management endpoint;
 - the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
@@ -37,7 +36,7 @@ Run the command without `--plan`:
 katlctl node upgrade v2026.7.0-alpha.9 --node cp-1
 ```
 
-`katlctl` follows staging progress, asks the authenticated node agent to reboot,
+`katlctl` follows staging progress, asks the node agent to reboot,
 waits for the agent to restart, and requires the selected generation to be
 committed, booted, and healthy. A successful JSON result has `rebooted: true`
 and `bootHealth: healthy`. Check workload availability before upgrading another

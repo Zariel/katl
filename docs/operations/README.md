@@ -5,9 +5,9 @@ with the task that matches the current node state; do not skip directly to a
 mutating command.
 
 KatlOS is experimental. Read the [support boundary](../support.md) before using
-these procedures. The ephemeral installer handoff is intentionally
-unauthenticated HTTP, while the installed-node management API uses bearer
-authentication over unencrypted TCP. Keep both on isolated evaluation
+these procedures. The installer handoff and installed-node management API are
+intentionally unauthenticated and unencrypted for the trusted home-lab
+network. Keep ports 8080 and 9443 off the Internet and untrusted shared
 networks.
 
 ## Lifecycle Map
@@ -37,7 +37,7 @@ Keep these artifacts together for the life of an evaluation:
 - the KatlOS release URL and assets used;
 - the source `ClusterConfig` and any `.katlcfg` produced for PXE or offline use;
 - the Kubernetes OCI reference;
-- one enrolled workstation context with a protected agent token per node;
+- the retained cluster config and any optional workstation topology context;
 - the kubeconfig, command results, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
 

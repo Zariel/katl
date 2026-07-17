@@ -86,7 +86,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
-		layer.Bootstrap.Access = portableBootstrapAccess(name, layer.Bootstrap.Access)
+		layer.Bootstrap.Access = portableBootstrapAccess(layer.Bootstrap.Access)
 		if len(layer.Networkd.Files) == 0 {
 			layer.Networkd.Files = []manifest.NetworkdFile{{Name: "10-lan.network", Content: defaultNetworkdFile}}
 		}
@@ -270,15 +270,15 @@ func manifestAccess(access inventory.Access) manifest.BootstrapAccess {
 	}
 }
 
-func portableBootstrapAccess(node string, access inventory.Access) inventory.Access {
+func portableBootstrapAccess(access inventory.Access) inventory.Access {
 	access.Method = strings.TrimSpace(access.Method)
 	access.User = strings.TrimSpace(access.User)
 	access.CredentialRef = strings.TrimSpace(access.CredentialRef)
 	if access.Method == "" && access.User == "" && access.CredentialRef == "" {
-		return inventory.Access{Method: "agent", CredentialRef: "agent/" + node}
+		return inventory.Access{Method: "agent"}
 	}
-	if access.Method == "agent" && strings.HasPrefix(access.CredentialRef, "file:") {
-		access.CredentialRef = "agent/" + node
+	if access.Method == "agent" && !strings.HasPrefix(access.CredentialRef, "vsock:") {
+		access.CredentialRef = ""
 	}
 	return access
 }

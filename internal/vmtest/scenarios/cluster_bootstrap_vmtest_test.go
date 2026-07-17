@@ -265,8 +265,6 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		KVM:     options.KVM,
 	})
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
-	cpTokenPath := filepath.Join(result.RunDir, "cp-1-katlc-agent.token")
-	workerTokenPath := filepath.Join(result.RunDir, "worker-1-katlc-agent.token")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
 	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
@@ -411,19 +409,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		assertGeneration0Selection(t, beforeSelection)
 		bootSelectionsBefore[node.Name] = beforeSelectionPath
 	}
-	tokenFiles := map[string]string{"cp-1": cpTokenPath, "worker-1": workerTokenPath}
-	for _, node := range nodes {
-		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, 2*time.Minute)
-		if err != nil {
-			collectTwoNodeDiagnostics("", nodes...)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("read %s katlc agent token: %v", node.Name, err)
-		}
-		if err := os.WriteFile(tokenFiles[node.Name], token, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, tokenFiles); err != nil {
+	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress); err != nil {
 		t.Fatal(err)
 	}
 	for _, endpoint := range []struct {
@@ -589,7 +575,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
 	if proveUpgrade {
-		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, cpRecord, workerRecord, cniFixtures, kubeconfigPath, evidenceDir); err != nil {
+		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, cpRecord, workerRecord, cniFixtures, kubeconfigPath, evidenceDir); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -603,7 +589,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath string, cpBootstrap, workerBootstrap operation.OperationRecord, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
+func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress string, cpBootstrap, workerBootstrap operation.OperationRecord, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
 	t.Helper()
 	const targetVersion = "v1.36.1"
 	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
@@ -628,7 +614,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 		return err
 	}
 	if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, kubeconfigPath, evidenceDir, bootIDs)
+		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
 	}
 	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
 	metadataHost := targetHost + ".json"
@@ -679,15 +665,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if err != nil {
 		return err
 	}
-	cpToken, err := os.ReadFile(cpTokenPath)
-	if err != nil {
-		return err
-	}
-	workerToken, err := os.ReadFile(workerTokenPath)
-	if err != nil {
-		return err
-	}
-	cpStatus, err := submitKubeadmUpgrade(ctx, cpAddress, strings.TrimSpace(string(cpToken)), agentapi.KubernetesSysextUpdateOperationRequest{
+	cpStatus, err := submitKubeadmUpgrade(ctx, cpAddress, agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-cp", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.0",
 		SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest, SnapshotRevision: snapshot.Revision, SnapshotCreatedAt: snapshot.CreatedAt, CapturedMemberListDigest: snapshot.MemberListDigest, SourceEtcdVersion: snapshot.EtcdVersion, SnapshotStorageLocation: snapshot.Location, SnapshotOperatorIdentity: "vmtest:kubeadm-upgrade",
 	})
@@ -700,7 +678,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-control-plane-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return err
 	}
-	workerStatus, err := submitKubeadmUpgrade(ctx, workerAddress, strings.TrimSpace(string(workerToken)), agentapi.KubernetesSysextUpdateOperationRequest{
+	workerStatus, err := submitKubeadmUpgrade(ctx, workerAddress, agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-worker", UpgradeRole: "worker", SourcePayloadVersion: "v1.36.0", SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest,
 	})
 	if err != nil {
@@ -741,9 +719,9 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	return nil
 }
 
-func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
+func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "katlctl-upgrade.yaml")
-	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        credentialRef: file:%s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        credentialRef: file:%s\n", cpAddress, cpAddress, cpTokenPath, workerAddress, workerTokenPath)
+	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n", cpAddress, cpAddress, workerAddress)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
@@ -880,8 +858,8 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	return upgradeSnapshotEvidence{Ref: "vmtest-cp1-v1360-before-v1361", Digest: digest[0], CreatedAt: time.Now().UTC().Format(time.RFC3339), MemberListDigest: hex.EncodeToString(memberDigest[:]), Location: location}, nil
 }
 
-func submitKubeadmUpgrade(ctx context.Context, address, token string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
-	connector := cluster.TCPAgentConnector{AuthToken: token, DialTimeout: 10 * time.Second}
+func submitKubeadmUpgrade(ctx context.Context, address string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
+	connector := cluster.TCPAgentConnector{DialTimeout: 10 * time.Second}
 	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: address, Address: address, Access: inventory.Access{Method: "agent"}})
 	if err != nil {
 		return nil, err
@@ -1517,7 +1495,7 @@ nodes:
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
-func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, tokenFiles map[string]string) error {
+func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1530,7 +1508,6 @@ nodes:
   systemRole: control-plane
   access:
     method: agent
-    credentialRef: ` + strconv.Quote("file:"+tokenFiles["cp-1"]) + `
   kubeadmConfig:
     ref: control-plane
     path: /etc/katl/kubeadm/control-plane/config.yaml
@@ -1541,7 +1518,6 @@ nodes:
   systemRole: worker
   access:
     method: agent
-    credentialRef: ` + strconv.Quote("file:"+tokenFiles["worker-1"]) + `
   kubeadmConfig:
     ref: worker
     path: /etc/katl/kubeadm/worker/config.yaml

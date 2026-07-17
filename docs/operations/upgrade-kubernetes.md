@@ -11,7 +11,6 @@ upgrade node`.
 - every node is reachable through the selected `katlctl` workstation context;
 - every node reports either the common source version or the selected target
   version on a committed, healthy generation;
-- per-node `credentialRef` values point to protected token files;
 - no other mutating Katl operation is active;
 - workloads tolerate a serial control-plane-first rollout; and
 - the selected Kubernetes version represents a newer patch or the next minor.

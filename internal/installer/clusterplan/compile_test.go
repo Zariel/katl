@@ -90,7 +90,7 @@ func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFi
 	return nil
 }
 
-func TestCompileMakesWorkstationCredentialRefPortable(t *testing.T) {
+func TestCompileRemovesManagementCredentialReference(t *testing.T) {
 	config := validConfig()
 	config.Spec.Nodes[0].Overrides.Bootstrap.Access = inventory.Access{
 		Method:        "agent",
@@ -100,10 +100,10 @@ func TestCompileMakesWorkstationCredentialRefPortable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if got := plan.Nodes[0].InstallManifest.Node.Bootstrap.Access.CredentialRef; got != "agent/cp-1" {
+	if got := plan.Nodes[0].InstallManifest.Node.Bootstrap.Access.CredentialRef; got != "" {
 		t.Fatalf("install credentialRef = %q", got)
 	}
-	if got := plan.BootstrapInventory.Nodes[0].Access.CredentialRef; got != "agent/cp-1" {
+	if got := plan.BootstrapInventory.Nodes[0].Access.CredentialRef; got != "" {
 		t.Fatalf("inventory credentialRef = %q", got)
 	}
 }

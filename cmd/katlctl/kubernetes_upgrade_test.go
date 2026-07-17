@@ -22,11 +22,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	configPath := filepath.Join(root, "katlctl.yaml")
 	var nodes strings.Builder
 	for _, node := range []struct{ name, endpoint, role string }{{"worker-1", "192.0.2.4:9443", "worker"}, {"cp-2", "192.0.2.2:9443", "control-plane"}, {"cp-1", "192.0.2.1:9443", "control-plane"}} {
-		token := filepath.Join(root, node.name+".token")
-		if err := os.WriteFile(token, []byte("token-"+node.name+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n        credentialRef: file:" + token + "\n")
+		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n")
 	}
 	config := "currentContext: lab\ncontexts:\n  - name: lab\n    cluster: home\nclusters:\n  - name: home\n    controlPlaneEndpoint: 192.0.2.10:6443\n    nodes:\n" + nodes.String()
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
@@ -58,7 +54,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 		kubernetesUpgradeNow = previousNow
 		dialKubernetesEndpoint = previousEndpointDial
 	}()
-	dialKatlcAgent = func(_ context.Context, endpoint, token string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: byEndpoint[endpoint], Close: func() error { return nil }}, nil
 	}
 	kubernetesUpgradeNow = func() time.Time { return time.Unix(42, 0).UTC() }
@@ -117,18 +113,14 @@ func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
 
 func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 	root := t.TempDir()
-	token := filepath.Join(root, "token")
-	if err := os.WriteFile(token, []byte("token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	inv := filepath.Join(root, "inventory.yaml")
-	if err := os.WriteFile(inv, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n      credentialRef: file:"+token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(inv, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	client := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine", CurrentGenerationId: "gen-1"}, generation: &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}}}
 	previous := dialKatlcAgent
 	defer func() { dialKatlcAgent = previous }()
-	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	var stdout bytes.Buffer
@@ -189,11 +181,7 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 	var nodes strings.Builder
 	clients := map[string]*fakeKatlcAgentClient{}
 	for _, node := range []struct{ name, endpoint, role string }{{"cp-1", "192.0.2.1:9443", "control-plane"}, {"cp-2", "192.0.2.2:9443", "control-plane"}, {"worker-1", "192.0.2.3:9443", "worker"}} {
-		token := filepath.Join(root, node.name+".token")
-		if err := os.WriteFile(token, []byte("token\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n        credentialRef: file:" + token + "\n")
+		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n")
 		client := &fakeKatlcAgentClient{
 			nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-" + node.name, AgentStartId: "before-" + node.name, CurrentGenerationId: "gen-1"},
 			generation:     &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}},
@@ -210,7 +198,7 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 	}
 	oldDial := dialKatlcAgent
 	oldEndpointDial := dialKubernetesEndpoint
-	dialKatlcAgent = func(_ context.Context, endpoint, _ string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: clients[endpoint], Close: func() error { return nil }}, nil
 	}
 	dialKubernetesEndpoint = func(context.Context, string) error { return nil }

@@ -38,29 +38,27 @@ type operationClient interface {
 }
 
 type operationStatusOptions struct {
-	endpoint       string
-	agentTokenFile string
-	configPath     string
-	contextName    string
-	nodeName       string
-	operationID    string
-	diagnostics    string
-	watch          bool
-	timeout        time.Duration
-	output         string
+	endpoint    string
+	configPath  string
+	contextName string
+	nodeName    string
+	operationID string
+	diagnostics string
+	watch       bool
+	timeout     time.Duration
+	output      string
 }
 
 type operationListOptions struct {
-	endpoint       string
-	agentTokenFile string
-	configPath     string
-	contextName    string
-	nodeName       string
-	activeOnly     bool
-	limit          int32
-	diagnostics    string
-	timeout        time.Duration
-	output         string
+	endpoint    string
+	configPath  string
+	contextName string
+	nodeName    string
+	activeOnly  bool
+	limit       int32
+	diagnostics string
+	timeout     time.Duration
+	output      string
 }
 
 func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -81,7 +79,6 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 		},
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
@@ -104,7 +101,6 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 		},
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
@@ -132,14 +128,14 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+		endpoint: opts.endpoint,
 	})
 	if err != nil {
 		return err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint, target.token)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return err
 	}
@@ -178,14 +174,14 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+		endpoint: opts.endpoint,
 	})
 	if err != nil {
 		return err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint, target.token)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return err
 	}
