@@ -168,15 +168,24 @@ installer reports exactly one safe selectable disk; ambiguous disks produce an
 error instead of a guess. Review the generated node names, roles, addresses,
 disk identities, and Kubernetes selection before applying it.
 
-When exactly one installer is waiting, no URL needs to be copied from the
-console:
+Select the node to install by its configured name or bootstrap address. A
+single-node config infers the node, so `--node` can be omitted:
 
 ```sh
 katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
-With multiple waiting installers, select the intended URL from discovery with
-`--endpoint`.
+Katl contacts the selected node's configured bootstrap address. If the
+installer is temporarily reachable somewhere else—for example, it booted with
+DHCP before applying a static address—override only the connection target:
+
+```sh
+katlctl install apply --config ./cluster.yaml --node cp-1 --endpoint 192.0.2.42
+```
+
+`--endpoint` accepts an IP, hostname, host and port, or complete HTTP(S) base
+URL. When the selected node has no bootstrap address and no override is given,
+Katl discovers a unique waiting installer.
 
 The command validates and compiles the source locally, confirms the installer
 is waiting, submits the selected configuration once, and waits for reboot-ready

@@ -238,7 +238,7 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	defer ts.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"install", "status", "--endpoint", ts.URL}, &stdout, &stderr)
+	err := run(context.Background(), []string{"install", "status", "--endpoint", strings.TrimPrefix(ts.URL, "http://")}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
 	}
@@ -252,7 +252,6 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 }
 
 func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
-	sourcePath := writeClusterConfig(t)
 	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
 		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
 		SHA256:           strings.Repeat("a", 64),
@@ -264,11 +263,19 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
+	sourcePath := writeClusterConfig(t)
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source = bytes.ReplaceAll(source, []byte("10.0.0.11"), []byte(strings.TrimPrefix(ts.URL, "http://")))
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
+	err = run(context.Background(), []string{
 		"install", "apply", "--config", sourcePath,
-		"--endpoint", ts.URL,
 		"--no-wait",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -318,7 +325,7 @@ func TestInstallApplyAcceptsGeneratedConfigByAddress(t *testing.T) {
 	stderr.Reset()
 	if err := run(context.Background(), []string{
 		"install", "apply", "--config", outputPath,
-		"--endpoint", ts.URL,
+		"--endpoint", strings.TrimPrefix(ts.URL, "http://"),
 		"--node", "192.0.2.11",
 		"--no-wait",
 	}, &stdout, &stderr); err != nil {
@@ -375,30 +382,27 @@ func TestSelectInstallNode(t *testing.T) {
 
 func TestInstallEndpointHint(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		endpoint string
-		selector string
-		nodeName string
-		want     string
+		name             string
+		endpoint         string
+		bootstrapAddress string
+		want             string
 	}{
-		{name: "explicit endpoint", endpoint: "http://installer.test:8080", selector: "192.0.2.11", nodeName: "cp-1", want: "http://installer.test:8080"},
-		{name: "IPv4 address selector", selector: "192.0.2.11", nodeName: "cp-1", want: "http://192.0.2.11:8080"},
-		{name: "IPv6 address selector", selector: "2001:db8::11", nodeName: "cp-1", want: "http://[2001:db8::11]:8080"},
-		{name: "hostname selector", selector: "installer.home.arpa", nodeName: "cp-1", want: "http://installer.home.arpa:8080"},
-		{name: "address with port selector", selector: "192.0.2.11:9080", nodeName: "cp-1", want: "http://192.0.2.11:9080"},
-		{name: "node name discovers", selector: "cp-1", nodeName: "cp-1"},
-		{name: "inferred node discovers", nodeName: "cp-1"},
+		{name: "configured IPv4", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.11:8080"},
+		{name: "configured IPv6", bootstrapAddress: "2001:db8::11", want: "http://[2001:db8::11]:8080"},
+		{name: "configured hostname", bootstrapAddress: "installer.home.arpa", want: "http://installer.home.arpa:8080"},
+		{name: "configured address with port", bootstrapAddress: "192.0.2.11:9080", want: "http://192.0.2.11:9080"},
+		{name: "explicit bare IP overrides configured address", endpoint: "192.0.2.42", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.42:8080"},
+		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:9080"},
+		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:8080"},
+		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", bootstrapAddress: "192.0.2.11", want: "https://installer.test:8443"},
+		{name: "missing address discovers"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := installEndpointHint(test.endpoint, test.selector, test.nodeName)
+			got, err := installEndpointHint(test.endpoint, test.bootstrapAddress)
 			if err != nil || got != test.want {
 				t.Fatalf("installEndpointHint() = %q, %v, want %q", got, err, test.want)
 			}
 		})
-	}
-
-	if _, err := installEndpointHint("installer.test:8080", "192.0.2.11", "cp-1"); err == nil || !strings.Contains(err.Error(), "scheme must be http or https") {
-		t.Fatalf("bare explicit endpoint error = %v", err)
 	}
 }
 
@@ -411,6 +415,11 @@ func TestInstallApplyHelpKeepsBundleInternal(t *testing.T) {
 	help := stdout.String()
 	if !strings.Contains(help, "katlctl install apply --config cluster.yaml") || !strings.Contains(help, "--config string") {
 		t.Fatalf("help does not advertise unified config input:\n%s", help)
+	}
+	for _, guidance := range []string{"configured node name or bootstrap address", "overrides the selected node's bootstrap address"} {
+		if !strings.Contains(help, guidance) {
+			t.Fatalf("help does not explain %q:\n%s", guidance, help)
+		}
 	}
 	for _, hiddenDetail := range []string{"--config-bundle", "--source", "--token", "--token-file"} {
 		if strings.Contains(help, hiddenDetail) {

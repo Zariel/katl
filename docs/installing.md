@@ -323,9 +323,19 @@ Apply the cluster source directly:
 katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
-`katlctl` selects the endpoint automatically when exactly one installer is
-waiting. If multiple installers are present, choose the intended discovery
-result with `--endpoint URL`.
+`--node` selects the logical config entry by its configured name or bootstrap
+address and is optional only for a single-node config. `katlctl` contacts that
+node's bootstrap address by default. If the installer is currently using a
+different address, such as a DHCP lease before the configured static network
+is installed, override only the connection target:
+
+```sh
+katlctl install apply --config ./cluster.yaml --node cp-1 --endpoint 192.0.2.42
+```
+
+The endpoint override accepts a bare IP or hostname, `host:port`, or a complete
+HTTP(S) base URL. If the selected node has no bootstrap address and no override
+is supplied, `katlctl` falls back to discovering one waiting installer.
 
 For the worker, boot the same ISO and apply the same source with
 `--node worker-1`. `katlctl install apply` compiles and validates the source and
