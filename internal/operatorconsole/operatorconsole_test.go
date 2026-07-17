@@ -1,6 +1,7 @@
 package operatorconsole
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
@@ -177,8 +178,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		Network:             []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
 	}
 	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
-	var renderer Renderer
-	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 25)), &snapshot, journal, 80, 25))
+	got := string(renderDashboard(&snapshot, journal, 80, 25, false))
 	for _, want := range []string{
 		"KatlOS Installer",
 		"State:        Installing",
@@ -216,8 +216,7 @@ func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
 		Handoff: Handoff{URL: "http://[2001:db8::10]:8080/v1/config-bundle"},
 		Network: []NetworkInterface{{Name: "enp1s0", Addresses: []string{"2001:db8::10/64"}}},
 	}
-	var renderer Renderer
-	got := string(renderer.Append(make([]byte, 0, RenderCapacity(100, 18)), &snapshot, nil, 100, 18))
+	got := string(renderDashboard(&snapshot, nil, 100, 18, false))
 	want := "Run:          katlctl config init cluster.yaml --installer http://[2001:db8::10]:8080"
 	if !strings.Contains(got, want) {
 		t.Fatalf("render missing %q:\n%s", want, got)
@@ -238,8 +237,7 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		SSHEnabled:        true,
 		Network:           []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
-	var renderer Renderer
-	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 20)), &snapshot, nil, 80, 20))
+	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
 	for _, want := range []string{"Status", "Host", "Kubernetes", "Needs repair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation: 4", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
@@ -255,8 +253,7 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 		GenerationHealth: "healthy",
 		CurrentStep:      "Reboot",
 	}
-	var renderer Renderer
-	plain := string(renderer.Append(nil, &snapshot, nil, 80, 15))
+	plain := string(renderDashboard(&snapshot, nil, 80, 15, false))
 	for _, want := range []string{"KatlOS\n", "Status\n", "State:      OK", "Generation: 0", "Journal"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("plain render missing %q:\n%s", want, plain)
@@ -267,7 +264,7 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 			t.Fatalf("plain render contains %q:\n%s", unwanted, plain)
 		}
 	}
-	colored := string(renderer.AppendColor(nil, &snapshot, nil, 80, 15))
+	colored := string(renderDashboard(&snapshot, nil, 80, 15, true))
 	if !strings.Contains(colored, styleTitle) || !strings.Contains(colored, styleGood) {
 		t.Fatalf("coloured render lacks semantic styles: %q", colored)
 	}
@@ -284,8 +281,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		Generation:             "4",
 		GenerationHealth:       "healthy",
 	}
-	var renderer Renderer
-	got := string(renderer.Append(nil, &snapshot, testJournal{[]byte("latest journal event")}, 80, 18))
+	got := string(renderDashboard(&snapshot, testJournal{[]byte("latest journal event")}, 80, 18, false))
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
 	statusRow := lineIndex(lines, "Status")
 	splitRow := lineIndexContaining(lines, "Host")
@@ -323,9 +319,8 @@ func TestRenderRuntimeSubPanesWrapOverflowIndependently(t *testing.T) {
 		Generation:             generationID,
 		GenerationHealth:       "healthy",
 	}
-	var renderer Renderer
-	plain := string(renderer.Append(nil, &snapshot, nil, 40, 40))
-	colored := string(renderer.AppendColor(nil, &snapshot, nil, 40, 40))
+	plain := string(renderDashboard(&snapshot, nil, 40, 40, false))
+	colored := string(renderDashboard(&snapshot, nil, 40, 40, true))
 	for name, output := range map[string]string{"plain": plain, "colored": colored} {
 		if strings.Contains(output, "~") {
 			t.Fatalf("%s render truncated overflow:\n%s", name, output)
@@ -384,8 +379,7 @@ func TestRenderRebootHidesRedundantProgress(t *testing.T) {
 		State:       installstatus.StateRebootRequested,
 		CurrentStep: "Reboot",
 	}
-	var renderer Renderer
-	got := string(renderer.Append(nil, &snapshot, nil, 80, 15))
+	got := string(renderDashboard(&snapshot, nil, 80, 15, false))
 	if !strings.Contains(got, "Installation complete; rebooting") || strings.Contains(got, "Progress:") {
 		t.Fatalf("reboot dashboard =\n%s", got)
 	}
@@ -402,8 +396,7 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
 		}},
 	}
-	var renderer Renderer
-	got := string(renderer.Append(nil, &snapshot, nil, 40, 40))
+	got := string(renderDashboard(&snapshot, nil, 40, 40, false))
 	joined := strings.ReplaceAll(got, "\n"+strings.Repeat(" ", fieldWidth), "")
 	for _, want := range []string{"tail-marker", "config-bundle", "192.0.2.10/24"} {
 		if !strings.Contains(joined, want) {
@@ -422,9 +415,11 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 
 func TestJournalLineWrapsAndStripsANSI(t *testing.T) {
 	value := []byte("2026-07-14T00:01:02+01:00 host service[1]: " + strings.Repeat("payload", 8) + "\x1b[31m")
-	got, rows := AppendJournalLine(nil, value, 40, 10)
+	writer := NewJournalWriter(NewRenderTarget(make([]byte, RenderCapacity(40, 10)), 40, 10))
+	writer.WriteLine(value)
+	got, rows := writer.Bytes(), writer.RowsWritten()
 	if rows < 2 || strings.Contains(string(got), "\x1b") || strings.Contains(string(got), "[31m") || strings.Contains(string(got), "~") {
-		t.Fatalf("AppendJournalLine() = %q, rows=%d", got, rows)
+		t.Fatalf("JournalWriter.WriteLine() = %q, rows=%d", got, rows)
 	}
 	for number, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
 		if len([]rune(line)) > 40 {
@@ -438,36 +433,78 @@ func TestJournalLineWrapsAndStripsANSI(t *testing.T) {
 
 func TestRendererReusesBuffer(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:       ModeRuntime,
-		State:      installstatus.StateKubeadmReady,
-		SSHEnabled: true,
+		Mode:                   ModeRuntime,
+		State:                  installstatus.StateKubeadmReady,
+		Hostname:               "cp-1",
+		Version:                "2026.7.0-alpha.15",
+		Generation:             "4",
+		GenerationHealth:       "healthy",
+		KubernetesVersion:      "v1.36.1",
+		KubernetesBootstrapped: true,
+		SSHEnabled:             true,
+		Network: []NetworkInterface{{
+			Name:      "enp1s0",
+			Addresses: []string{"10.1.2.254/24", "fd00::254/64"},
+		}},
 	}
 	journal := testJournal{[]byte("journal line")}
-	var renderer Renderer
-	buffer := make([]byte, 0, RenderCapacity(80, 25))
-	buffer = renderer.Append(buffer, &snapshot, &journal, 80, 25)
-	start := &buffer[0]
+	for _, color := range []bool{false, true} {
+		name := "plain"
+		if color {
+			name = "color"
+		}
+		t.Run(name, func(t *testing.T) {
+			storage := make([]byte, RenderCapacity(80, 25))
+			renderer := NewRenderer(NewRenderTarget(storage, 80, 25), color)
+			buffer := renderer.Render(&snapshot, &journal)
+			start := &buffer[0]
 
-	allocations := testing.AllocsPerRun(1000, func() {
-		buffer = renderer.Append(buffer[:0], &snapshot, &journal, 80, 25)
-	})
-	if allocations != 0 {
-		t.Fatalf("Renderer.Append() allocations = %v, want 0", allocations)
+			allocations := testing.AllocsPerRun(1000, func() {
+				buffer = renderer.Render(&snapshot, &journal)
+			})
+			if allocations != 0 {
+				t.Fatalf("Renderer.Render() allocations = %v, want 0", allocations)
+			}
+			if &buffer[0] != start {
+				t.Fatal("Renderer.Render() replaced owned storage")
+			}
+		})
 	}
-	if &buffer[0] != start {
-		t.Fatal("Renderer.Append() replaced caller-owned buffer")
+}
+
+func TestRendererStartsAtTopLeft(t *testing.T) {
+	snapshot := Snapshot{Mode: ModeRuntime}
+	for _, test := range []struct {
+		name   string
+		color  bool
+		prefix []byte
+	}{
+		{name: "plain", prefix: []byte("KatlOS")},
+		{name: "terminal", color: true, prefix: []byte(clearScreen + styleTitle + "KatlOS")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := bytes.Repeat([]byte{'x'}, RenderCapacity(80, 25))
+			renderer := NewRenderer(NewRenderTarget(storage, 80, 25), test.color)
+			if got := renderer.Render(&snapshot, nil); !bytes.HasPrefix(got, test.prefix) {
+				t.Fatalf("render prefix = %q, want %q", got[:min(len(got), len(test.prefix))], test.prefix)
+			}
+		})
 	}
 }
 
 type testJournal [][]byte
 
-func (j testJournal) AppendTail(dst []byte, rows, width int) ([]byte, int) {
-	rows = min(rows, len(j))
-	written := 0
+func (j testJournal) WriteTail(writer *JournalWriter) {
+	rows := min(writer.RowsRemaining(), len(j))
 	for _, line := range j[len(j)-rows:] {
-		var lineRows int
-		dst, lineRows = AppendJournalLine(dst, line, width, rows-written)
-		written += lineRows
+		if !writer.WriteLine(line) {
+			break
+		}
 	}
-	return dst, written
+}
+
+func renderDashboard(snapshot *Snapshot, journal Journal, width, height int, color bool) []byte {
+	target := NewRenderTarget(make([]byte, RenderCapacity(width, height)), width, height)
+	renderer := NewRenderer(target, color)
+	return renderer.Render(snapshot, journal)
 }
