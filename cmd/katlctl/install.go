@@ -67,8 +67,8 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 		},
 	}
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name or configured address; inferred when the config contains one node")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer address or HTTP(S) base URL; overrides the selected node's bootstrap address")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
@@ -85,7 +85,7 @@ func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 			return runInstallStatus(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer IP, host, host:port, or HTTP(S) base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "status request timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
 	return cmd
@@ -118,7 +118,11 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return fmt.Errorf("select node from compiled cluster config: %w", err)
 	}
-	endpointHint, err := installEndpointHint(opts.endpoint, opts.nodeName, nodeName)
+	bootstrapAddress := ""
+	if selected.InstallManifest.Node.Bootstrap != nil {
+		bootstrapAddress = selected.InstallManifest.Node.Bootstrap.NodeAddress
+	}
+	endpointHint, err := installEndpointHint(opts.endpoint, bootstrapAddress)
 	if err != nil {
 		return err
 	}
@@ -160,13 +164,12 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	return nil
 }
 
-func installEndpointHint(endpoint, selector, nodeName string) (string, error) {
+func installEndpointHint(endpoint, bootstrapAddress string) (string, error) {
 	if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
-		return normalizeInstallerEndpoint(endpoint)
+		return normalizeInstallerAddress(endpoint)
 	}
-	selector = strings.TrimSpace(selector)
-	if selector != "" && selector != nodeName {
-		return normalizeInstallerAddress(selector)
+	if bootstrapAddress = strings.TrimSpace(bootstrapAddress); bootstrapAddress != "" {
+		return normalizeInstallerAddress(bootstrapAddress)
 	}
 	return "", nil
 }
@@ -205,7 +208,7 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 		sort.Strings(matches)
 		return "", fmt.Errorf("--node address %q matches multiple nodes (%s); use a node name", selector, strings.Join(matches, ", "))
 	}
-	return "", fmt.Errorf("--node %q does not match a configured node name or address; choose %s", selector, installNodeChoices(manifest))
+	return "", fmt.Errorf("--node %q does not match a configured node name or bootstrap address; choose %s; use --endpoint to override the selected installer's current address", selector, installNodeChoices(manifest))
 }
 
 func installNodeChoices(manifest configbundle.BundleManifest) string {

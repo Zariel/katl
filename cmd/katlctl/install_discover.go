@@ -156,7 +156,7 @@ func discoveredTargetDisk(installer discoveredInstaller) (manifest.DiskSelector,
 
 func resolveInstallerEndpoint(ctx context.Context, value string, timeout time.Duration) (string, error) {
 	if strings.TrimSpace(value) != "" {
-		return normalizeInstallerEndpoint(value)
+		return normalizeInstallerAddress(value)
 	}
 	if timeout <= 0 || timeout > 3*time.Second {
 		timeout = 3 * time.Second
