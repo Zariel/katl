@@ -386,6 +386,7 @@ target_outputs() {
                 "$build_dir/katl-runtime-root.squashfs.json" \
                 "$build_dir/katl-runtime-root.squashfs.sha256" \
                 "$build_dir/katl-runtime.packages.tsv" \
+                "$build_dir/katl-runtime-root.initrd" \
                 "$build_dir/katl-runtime-root.vmlinuz" \
                 "$build_dir/katl-runtime.efi" \
                 "$build_dir/katl-runtime.efi.json" \
@@ -855,7 +856,9 @@ set +e
             echo "error: ukify is required to package the runtime UKI" >&2
             status=1
         else
-            rm -f "$artifact" "$artifact.sha256" "$artifact.json" "$boot_artifact" "$boot_artifact.sha256" "$boot_artifact.json"
+            runtime_kernel=_build/mkosi/katl-runtime-root.vmlinuz
+            runtime_initrd=_build/mkosi/katl-runtime-root.initrd
+            rm -f "$artifact" "$artifact.sha256" "$artifact.json" "$boot_artifact" "$boot_artifact.sha256" "$boot_artifact.json" "$runtime_kernel" "$runtime_initrd"
             kernel_dir=$(find "$root/boot" -type f -name linux -printf "%h\n" | sort | head -n 1)
             if [[ -z "$kernel_dir" ]]; then
                 echo "error: runtime kernel not found under $root/boot" >&2
@@ -872,6 +875,10 @@ set +e
                     echo "error: runtime os-release not found: $os_release" >&2
                     status=1
                 else
+                    if ! cp --reflink=auto "$kernel" "$runtime_kernel" || ! cp --reflink=auto "$initrd" "$runtime_initrd"; then
+                        echo "error: publish runtime direct-boot kernel and initrd" >&2
+                        status=1
+                    fi
                     ukify_args=(
                         build
                         --linux "$kernel"
@@ -884,7 +891,7 @@ set +e
                     if [[ -f /usr/lib/systemd/boot/efi/linuxx64.efi.stub ]]; then
                         ukify_args+=(--stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub)
                     fi
-                    if ! ukify "${ukify_args[@]}"; then
+                    if [[ "$status" -eq 0 ]] && ! ukify "${ukify_args[@]}"; then
                         status=1
                     fi
                 fi

@@ -145,7 +145,7 @@ fixture environment files or invoking `scripts/vmtest-exec` directly:
 scripts/vmtest-run ./internal/vmtest \
   -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply' -count=1
 scripts/vmtest-run ./internal/vmtest/scenarios \
-  -run 'TwoNodeKubeadmJoin|ThreeControlPlaneStackedEtcd' \
+  -run 'TwoNodeOperationBackedBootstrap|ThreeControlPlaneStackedEtcd' \
   -timeout 60m -count=1
 ```
 
@@ -166,7 +166,9 @@ host capabilities, records `world.json`, `host-capabilities.json`, `run.json`,
 and `go-test.log`, exports the world environment, and then executes `go test`
 with the caller's package patterns and flags. Argument meaning belongs to
 `go test`; `scripts/vmtest-run` only adds the harness execution needed to route
-compiled package test binaries through `scripts/vmtest-exec`.
+compiled package test binaries through `scripts/vmtest-exec`. VM test package
+binaries are serialized by default because they share world fixtures and host
+resource pools; pass an explicit `-p` value to override that policy.
 
 The runner keeps terminal output minimal: it prints the world paths, writes the
 full `go test` stream to `go-test.log`, and reports a concise final outcome.

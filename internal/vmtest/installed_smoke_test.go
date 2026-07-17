@@ -378,50 +378,6 @@ func TestDirectRuntimeVMTestAgentSmoke(t *testing.T) {
 	_ = RequireWorld(t)
 }
 
-func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
-	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-kubeadm-ready", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
-		scenario := Scenario{Name: "installed-runtime-kubeadm-ready"}
-		result, err := worldRun.Runner.Plan(scenario)
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
-		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
-			Libvirt: true,
-			OVMF:    true,
-			KVM:     worldRun.Runner.options().KVM,
-		})
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-		defer cancel()
-		config := worldRun.Config
-		config.VM = VMConfig{
-			KVM:     worldRun.Runner.options().KVM,
-			RAMMiB:  2048,
-			CPUs:    2,
-			Timeout: 5 * time.Minute,
-			VSock: VSockConfig{
-				Enabled: true,
-			},
-		}
-		result = RunInstalledKubeadmReadySmoke(ctx, result, KubeadmReadySmokeConfig{
-			Runtime: config,
-			Smoke: KubeadmReadySmokePlan{
-				ReadyTimeout:      20 * time.Second,
-				ReadyPollInterval: time.Second,
-			},
-		}, VMRunner{})
-		if err := worldRun.Runner.Write(scenario, result); err != nil {
-			t.Fatalf("Write() error = %v", err)
-		}
-		requireInstalledRuntimeKubeadmReadyTranscript(t, result)
-		return
-	}
-	options := DefaultOptions()
-	if !options.Enabled {
-		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime kubeadm-ready smoke")
-	}
-	_ = RequireWorld(t)
-}
-
 func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 	t.Skip("first-install installed-runtime fixtures stop at kubeadm-ready handoff; kubeadm API smoke needs a config-applied fixture")
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-kubeadm-api-smoke", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {

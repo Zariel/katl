@@ -117,6 +117,8 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		"test",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-p",
+		"1",
 		"./internal/vmtest/scenarios",
 		"-run",
 		"^TestTwoNode$",
@@ -191,6 +193,36 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		t.Fatalf("go-test.log missing go test output:\n%s", goLog)
 	}
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
+}
+
+func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=3")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_RUN_ID=run-package-parallelism",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	goArgs := readLines(t, goArgsPath)
+	joined := "\n" + strings.Join(goArgs, "\n") + "\n"
+	if strings.Count(joined, "-p") != 1 || !strings.Contains(joined, "\n-p=3\n") {
+		t.Fatalf("go args do not preserve the sole caller parallelism override: %#v", goArgs)
+	}
 }
 
 func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
@@ -351,6 +383,9 @@ func TestVMTestRunRejectsExplicitInstallerArtifacts(t *testing.T) {
 }
 
 func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
+	t.Setenv("KATL_VMTEST_KUBERNETES_BUNDLE", "ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE", "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:"+strings.Repeat("b", 64))
+
 	realRepo := scriptTestRepoRoot(t)
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
@@ -414,6 +449,8 @@ exec "$@"
 		"test",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-p",
+		"1",
 		"-timeout",
 		"90m",
 		"./internal/vmtest",
@@ -674,6 +711,8 @@ exec "$@"
 		"test",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-p",
+		"1",
 		"-timeout",
 		"90m",
 		"./internal/vmtest",
@@ -772,6 +811,8 @@ func TestVMTestRunPreservesArbitraryGoTestArgs(t *testing.T) {
 		"test",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-p",
+		"1",
 		"-timeout",
 		"90m",
 		"-json",
@@ -901,6 +942,8 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 				"test",
 				"-exec",
 				filepath.Join(repo, "scripts", "vmtest-exec"),
+				"-p",
+				"1",
 				"-timeout",
 				"90m",
 				"./internal/vmtest",
@@ -970,6 +1013,8 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 		"test",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-p",
+		"1",
 		"-run",
 		"^TestDoesNotNeedLibvirt$",
 		"-timeout",
@@ -1768,6 +1813,15 @@ printf 'manifest: %s\nmode: strict\nartifacts: 1\npackageSets: 1\nlockSHA256: %s
 }
 
 func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string {
+	// Runner tests must not silently inherit artifact selection from a parent
+	// vmtest-run invocation. Tests that need published bundles can add them back
+	// explicitly through extra.
+	for _, name := range []string{
+		"KATL_VMTEST_KUBERNETES_BUNDLE",
+		"KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE",
+	} {
+		env = removeEnv(env, name)
+	}
 	env = append(env,
 		"KATL_VMTEST_IMAGE_TOOL="+tools.imageTool,
 		"KATL_VMTEST_VIRSH="+tools.virsh,

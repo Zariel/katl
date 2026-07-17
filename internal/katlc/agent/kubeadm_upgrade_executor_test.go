@@ -257,6 +257,13 @@ func TestExecutorResolvesUpgradeBundleInsideNode(t *testing.T) {
 	if err := verifyFileDigest(rootedRuntimePath(root, request.TargetSysextPath), request.TargetSysextSHA256, request.TargetSysextSize); err != nil {
 		t.Fatalf("resolved payload: %v", err)
 	}
+	events, err := store.EventsAfter(record.OperationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[1].EventType != "target-resolving" || events[1].Record.Phase != "target-resolving" || events[2].EventType != "target-resolved" {
+		t.Fatalf("resolution events = %#v", events)
+	}
 }
 
 func TestExecutorCapturesUpgradeSnapshotInsideNode(t *testing.T) {

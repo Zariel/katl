@@ -198,6 +198,16 @@ func (e *Executor) resolveKubernetesUpgradePayload(ctx context.Context, record o
 	if strings.TrimSpace(request.KubernetesBundleSource) == "" || strings.TrimSpace(request.KubernetesBundleRef) == "" {
 		return record, fmt.Errorf("Kubernetes bundle reference is missing")
 	}
+	record, err := e.Store.Update(record.OperationID, "kubernetes-upgrade-target-resolving", "target-resolving", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "target-resolving"
+		current.UpdatedAt = e.clock()
+		current.NextAction = "download and verify the target Kubernetes bundle"
+		return current, nil
+	})
+	if err != nil {
+		return record, err
+	}
+	request = record.KubernetesSysextUpdate
 	cacheDir := rootedRuntimePath(e.Root, filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts/kubernetes-upgrades", record.OperationID)))
 	staged, err := kubernetesbundle.FetchAndStage(ctx, kubernetesbundle.Request{
 		Source:           request.KubernetesBundleSource,

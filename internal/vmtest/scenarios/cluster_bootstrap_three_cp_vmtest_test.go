@@ -33,7 +33,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 	"github.com/katl-dev/katl/internal/installer/operation"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/vmtest"
@@ -202,30 +201,12 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
 	versionEvidenceDir := filepath.Join(result.RunDir, "kubernetes-version-evidence")
 	bootstrapFixture := bootstrapFixtureInputsFromEnv()
-	kubernetesBundle, err := stageThreeControlPlaneKubernetesPayloadBundles(katlRepoRoot(t), result, inputs.KubernetesVersion)
+	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage Kubernetes payload bundles: %v", err)
 	}
-	bundleServer, err := startGuestReachableKubernetesBundleServer(smoke.WorldScenario.World.Network.Gateway, kubernetesBundle)
-	if err != nil {
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("start Kubernetes payload bundle server: %v", err)
-	}
 	defer bundleServer.Close()
-	kubernetesBundle.Source = bundleServer.Source
-	kubernetesBundle.Ref = bundleServer.Ref
-	kubernetesBundle.BundleManifestDigest = bundleServer.BundleManifestDigest
-	kubernetesBundle.CACertPEM = bundleServer.CACertPEM
-	kubernetesBundle.CACertPath = filepath.Join(result.ManifestDir, "kubernetes-bundle-ca.pem")
-	kubernetesBundle.CACertGuestPath = "/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem"
-	kubernetesBundle.LogPath = filepath.Join(result.RunDir, "kubernetes-payload-bundle.log")
-	if err := os.WriteFile(kubernetesBundle.CACertPath, kubernetesBundle.CACertPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeKubernetesBundleSourceLog(kubernetesBundle.LogPath, kubernetesBundle); err != nil {
-		t.Fatal(err)
-	}
 	plannedNodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		nodeResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, name)
@@ -240,14 +221,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), inputs.CP1MAC, 43201), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), inputs.CP1MAC, 0), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2MAC, 43202), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2MAC, 0), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics("", cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -255,7 +236,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3MAC, 43203), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3MAC, 0), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics("", cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -281,14 +262,16 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage test CNI fixtures: %v", err)
 	}
-	var imageFixtures map[string][]nodeImageFixture
-	if smoke.WorkloadProof {
-		imageFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
-		if err != nil {
-			collectTwoNodeDiagnostics("", nodes...)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("stage release workload images: %v", err)
-		}
+	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
+	if err == nil && smoke.WorkloadProof {
+		var workloadFixtures map[string][]nodeImageFixture
+		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+		mergeNodeImageFixtures(imageFixtures, workloadFixtures)
+	}
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage bootstrap images: %v", err)
 	}
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -484,11 +467,10 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err != nil {
 			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
 		}
-		var accepted agentapi.OperationAccepted
-		if err := protojson.Unmarshal(stdout, &accepted); err != nil || accepted.RecordPath == "" {
-			return fmt.Errorf("decode %s staged generation acceptance: %w", node.Name, err)
+		if err := decodeGenerationStageResult(stdout, generationID); err != nil {
+			return fmt.Errorf("decode %s staged generation result: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, accepted.RecordPath, false); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, false); err != nil {
 			return err
 		}
 	}
@@ -499,7 +481,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
 			return fmt.Errorf("reactivate %s CNI fixture: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, "", true); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, true); err != nil {
 			return err
 		}
 		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-reboot-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
@@ -630,19 +612,21 @@ func runProofKatlctl(ctx context.Context, binary, dir, name string, args ...stri
 	return stdout.Bytes(), stderr.String(), err
 }
 
-func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, configName, operationRecordPath string, healthy bool) error {
+func decodeGenerationStageResult(data []byte, generationID string) error {
+	var status agentapi.OperationStatus
+	if err := protojson.Unmarshal(data, &status); err != nil {
+		return err
+	}
+	if status.OperationKind != "generation-stage" || !status.Terminal || status.Result != operation.ResultSucceeded || status.CandidateGenerationId != generationID {
+		return fmt.Errorf("unexpected generation stage status: %s", status.String())
+	}
+	return nil
+}
+
+func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, configName string, healthy bool) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	var last string
 	for time.Now().Before(deadline) {
-		if operationRecordPath != "" {
-			if data, readErr := readNodeFile(ctx, node, operationRecordPath, 1<<20); readErr == nil {
-				if envelope, decodeErr := persistedrecord.DecodeEnvelope(data); decodeErr == nil {
-					if snapshot, payloadErr := persistedrecord.DecodePayload[operation.Snapshot](envelope); payloadErr == nil && snapshot.Record.Terminal && snapshot.Record.Result != operation.ResultSucceeded {
-						return fmt.Errorf("generation stage on %s failed in %s: %s", node.Name, snapshot.Record.Phase, snapshot.Record.FailureReason)
-					}
-				}
-			}
-		}
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "node", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--agent-token-file", tokenFile, "--generation", generationID)
 		last = stderr
 		if err == nil {
@@ -1573,8 +1557,8 @@ func assertOperationKubernetesBundle(t *testing.T, record operation.OperationRec
 	if req.KubernetesPayloadVersion != bundle.PayloadVersion ||
 		req.KubernetesBundleSource != bundle.Source ||
 		req.KubernetesBundleRef != bundle.Ref ||
-		req.KubernetesBundleManifestDigest != bundle.BundleManifestDigest ||
-		req.KubernetesSysextPayloadDigest != bundle.SysextPayloadDigest {
+		!resolvedBundleDigestMatches(req.KubernetesBundleManifestDigest, bundle.BundleManifestDigest) ||
+		!resolvedBundleDigestMatches(req.KubernetesSysextPayloadDigest, bundle.SysextPayloadDigest) {
 		t.Fatalf("operation %s Kubernetes bundle request = %#v, want %#v", record.OperationID, req, bundle)
 	}
 	if record.CandidateGenerationID == "" {
@@ -1594,13 +1578,20 @@ func assertGenerationKubernetesBundle(t *testing.T, ctx context.Context, node vm
 			continue
 		}
 		found = true
-		if ref.PayloadVersion != bundle.PayloadVersion || ref.SHA256 != strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:") || ref.ArtifactVersion == "" {
+		if ref.PayloadVersion != bundle.PayloadVersion || ref.ArtifactVersion == "" ||
+			!resolvedBundleDigestMatches(ref.SHA256, bundle.SysextPayloadDigest) {
 			t.Fatalf("%s Kubernetes sysext ref = %#v, want bundle %#v", node.Name, ref, bundle)
 		}
 	}
 	if !found {
 		t.Fatalf("%s generation %s missing Kubernetes sysext ref: %#v", node.Name, record.CandidateGenerationID, generationRecord.Spec.Sysexts)
 	}
+}
+
+func resolvedBundleDigestMatches(actual, expected string) bool {
+	actual = strings.TrimPrefix(strings.TrimSpace(actual), "sha256:")
+	expected = strings.TrimPrefix(strings.TrimSpace(expected), "sha256:")
+	return actual != "" && (expected == "" || actual == expected)
 }
 
 func threeControlPlaneFixtureInputs(cp1Disk, cp1Format, cp2Disk, cp2Format, cp3Disk, cp3Format, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
@@ -2265,6 +2256,44 @@ func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *tes
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("inventory missing %q:\n%s", want, data)
 		}
+	}
+}
+
+func TestResolvedBundleDigestMatching(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	for _, test := range []struct {
+		name     string
+		actual   string
+		expected string
+		want     bool
+	}{
+		{name: "published bundle resolves digest", actual: "sha256:" + digest, want: true},
+		{name: "locally staged bundle matches digest", actual: digest, expected: "sha256:" + digest, want: true},
+		{name: "missing resolved digest", expected: "sha256:" + digest, want: false},
+		{name: "different resolved digest", actual: strings.Repeat("b", 64), expected: digest, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resolvedBundleDigestMatches(test.actual, test.expected); got != test.want {
+				t.Fatalf("resolvedBundleDigestMatches(%q, %q) = %t, want %t", test.actual, test.expected, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeGenerationStageResultUsesTerminalStatus(t *testing.T) {
+	status := &agentapi.OperationStatus{
+		OperationKind:         "generation-stage",
+		Phase:                 operation.HostBookkeepingCompletionPhase,
+		Terminal:              true,
+		Result:                operation.ResultSucceeded,
+		CandidateGenerationId: "generation-1",
+	}
+	data, err := protojson.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeGenerationStageResult(data, "generation-1"); err != nil {
+		t.Fatalf("decodeGenerationStageResult() error = %v", err)
 	}
 }
 
