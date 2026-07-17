@@ -77,14 +77,13 @@ func run(ctx context.Context, args []string) error {
 	}
 	snapshotPathValue := strings.TrimSpace(*snapshotPath)
 	var snapshot operatorconsole.Snapshot
-	var renderBuffer []byte
-	var snapshotBuffer []byte
 	var dashboard operatorconsole.Renderer
+	var plainDashboard operatorconsole.Renderer
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
 	for {
 		collector.Collect(&snapshot)
-		if err := render(tty, snapshotPathValue, &snapshot, ring, &dashboard, &renderBuffer, &snapshotBuffer); err != nil {
+		if err := render(tty, snapshotPathValue, &snapshot, ring, &dashboard, &plainDashboard); err != nil {
 			return err
 		}
 		select {
@@ -95,27 +94,24 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard *operatorconsole.Renderer, buffer, snapshotBuffer *[]byte) error {
+func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard, plainDashboard *operatorconsole.Renderer) error {
 	width, height := terminalSize(tty)
-	required := len("\x1b[H\x1b[2J") + operatorconsole.RenderCapacity(width, height)
-	if cap(*buffer) < required {
-		*buffer = make([]byte, 0, required)
+	if !dashboard.MatchesDimensions(width, height) {
+		target := operatorconsole.NewRenderTarget(make([]byte, operatorconsole.RenderCapacity(width, height)), width, height)
+		*dashboard = operatorconsole.NewRenderer(target, true)
 	}
-	data := (*buffer)[:0]
-	data = append(data, "\x1b[H\x1b[2J"...)
-	data = dashboard.AppendColor(data, snapshot, journal, width, height)
-	*buffer = data
+	data := dashboard.Render(snapshot, journal)
 	if written, err := tty.Write(data); err != nil {
 		return fmt.Errorf("render dashboard: %w", err)
 	} else if written != len(data) {
 		return fmt.Errorf("render dashboard: %w", io.ErrShortWrite)
 	}
 	if snapshotPath != "" {
-		if cap(*snapshotBuffer) < required {
-			*snapshotBuffer = make([]byte, 0, required)
+		if !plainDashboard.MatchesDimensions(width, height) {
+			target := operatorconsole.NewRenderTarget(make([]byte, operatorconsole.RenderCapacity(width, height)), width, height)
+			*plainDashboard = operatorconsole.NewRenderer(target, false)
 		}
-		plain := dashboard.Append((*snapshotBuffer)[:0], snapshot, journal, width, height)
-		*snapshotBuffer = plain
+		plain := plainDashboard.Render(snapshot, journal)
 		if err := writeSnapshot(snapshotPath, plain); err != nil {
 			return err
 		}
@@ -183,7 +179,9 @@ func (r *journalRing) Add(line []byte) {
 		return
 	}
 	r.mu.Lock()
-	copy(r.nextLineLocked(len(line)), line)
+	index, target := r.nextLineLocked(len(line))
+	copy(target, line)
+	r.lines[index] = compactJournalTimestamp(target)
 	r.mu.Unlock()
 }
 
@@ -193,11 +191,12 @@ func (r *journalRing) AddString(line string) {
 		return
 	}
 	r.mu.Lock()
-	copy(r.nextLineLocked(len(line)), line)
+	_, target := r.nextLineLocked(len(line))
+	copy(target, line)
 	r.mu.Unlock()
 }
 
-func (r *journalRing) nextLineLocked(length int) []byte {
+func (r *journalRing) nextLineLocked(length int) (int, []byte) {
 	index := (r.start + r.count) % len(r.lines)
 	if r.count == len(r.lines) {
 		index = r.start
@@ -210,32 +209,103 @@ func (r *journalRing) nextLineLocked(length int) []byte {
 	} else {
 		r.lines[index] = r.lines[index][:length]
 	}
-	return r.lines[index]
+	return index, r.lines[index]
 }
 
-func (r *journalRing) AppendTail(dst []byte, rows, width int) ([]byte, int) {
+func compactJournalTimestamp(line []byte) []byte {
+	if !journalDateTimePrefix(line) {
+		return line
+	}
+
+	position := len("2006-01-02T15:04:05")
+	fractionEnd := position
+	if position < len(line) && line[position] == '.' {
+		fractionEnd++
+		for fractionEnd < len(line) && isDigit(line[fractionEnd]) {
+			fractionEnd++
+		}
+		if fractionEnd == position+1 {
+			return line
+		}
+		position = fractionEnd
+	}
+
+	timestampEnd := position
+	switch {
+	case position < len(line) && line[position] == 'Z':
+		timestampEnd++
+	case validJournalTimezone(line, position):
+		if position+3 < len(line) && line[position+3] == ':' {
+			timestampEnd += len("+00:00")
+		} else {
+			timestampEnd += len("+0000")
+		}
+	}
+	if timestampEnd >= len(line) || line[timestampEnd] != ' ' {
+		return line
+	}
+
+	line[10] = ' '
+	keepEnd := len("2006-01-02T15:04:05")
+	if fractionEnd > keepEnd {
+		fractionDigits := fractionEnd - keepEnd - 1
+		if fractionDigits > 3 {
+			fractionDigits = 3
+		}
+		keepEnd += 1 + fractionDigits
+	}
+	return line[:keepEnd+copy(line[keepEnd:], line[timestampEnd:])]
+}
+
+func journalDateTimePrefix(line []byte) bool {
+	if len(line) < len("2006-01-02T15:04:05") {
+		return false
+	}
+	for _, position := range [...]int{0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18} {
+		if !isDigit(line[position]) {
+			return false
+		}
+	}
+	return line[4] == '-' && line[7] == '-' && line[10] == 'T' && line[13] == ':' && line[16] == ':'
+}
+
+func validJournalTimezone(line []byte, position int) bool {
+	if position >= len(line) || (line[position] != '+' && line[position] != '-') {
+		return false
+	}
+	if position+5 < len(line) && line[position+3] == ':' {
+		return isDigit(line[position+1]) && isDigit(line[position+2]) &&
+			isDigit(line[position+4]) && isDigit(line[position+5])
+	}
+	return position+4 < len(line) && isDigit(line[position+1]) && isDigit(line[position+2]) &&
+		isDigit(line[position+3]) && isDigit(line[position+4])
+}
+
+func isDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func (r *journalRing) WriteTail(writer *operatorconsole.JournalWriter) {
 	r.mu.Lock()
 	selected := 0
 	selectedRows := 0
-	for selected < r.count && selectedRows < rows {
+	for selected < r.count && selectedRows < writer.RowsRemaining() {
 		index := (r.start + r.count - selected - 1) % len(r.lines)
-		lineRows := operatorconsole.JournalLineRows(r.lines[index], width)
-		if selected > 0 && selectedRows+lineRows > rows {
+		lineRows := writer.LineRows(r.lines[index])
+		if selected > 0 && selectedRows+lineRows > writer.RowsRemaining() {
 			break
 		}
 		selected++
 		selectedRows += lineRows
 	}
 	first := r.count - selected
-	written := 0
 	for offset := range selected {
 		index := (r.start + first + offset) % len(r.lines)
-		var lineRows int
-		dst, lineRows = operatorconsole.AppendJournalLine(dst, r.lines[index], width, rows-written)
-		written += lineRows
+		if !writer.WriteLine(r.lines[index]) {
+			break
+		}
 	}
 	r.mu.Unlock()
-	return dst, written
 }
 
 func followJournal(ctx context.Context, ring *journalRing) {
