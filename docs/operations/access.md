@@ -5,16 +5,12 @@ configuration, node upgrade, or wipe operations.
 
 ## Security Boundary
 
-The alpha `katlc` agent listens on TCP port `9443` and authenticates a bearer
-token, but its gRPC transport is not encrypted. Do not expose it to the public
-Internet, an untrusted LAN, or a shared production network. Use an isolated
-evaluation management network and restrict port `9443` at the surrounding
-firewall.
-
-`katlctl cluster enroll` uses SSH once to retrieve each initial per-node token,
-stores it with mode `0600`, and creates a workstation context. Treat the managed
-files like private keys: never commit them, never put token values in
-`ClusterConfig`, and redact them from logs and issues.
+The alpha `katlc` agent listens on TCP port `9443` without authentication or
+transport encryption. This is deliberate for Katl's trusted home-lab network:
+routine management must not require credential enrollment. Do not expose it to
+the public Internet, an untrusted LAN, or a shared production network. Restrict
+port `9443` at the surrounding firewall when the network boundary is broader
+than the supported path.
 
 The installed system keeps an operator dashboard on VGA `tty1`. It reports the
 KatlOS and Kubernetes versions from the booted generation, node addresses,
@@ -40,21 +36,17 @@ Expected state before Kubernetes bootstrap:
 - runtime handoff reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
-## Enroll the Cluster
+## Save a Workstation Context (Optional)
 
 Use the same source used for installation:
 
 ```sh
-katlctl cluster enroll --config ./cluster.yaml
+katlctl context save --config ./cluster.yaml
 ```
 
-The command connects as `root` using the workstation's normal SSH agent. Use
-`--identity-file PATH` or `--ssh-user USER` when needed. For every node it:
-
-- reads `/var/lib/katl/agent/token` without printing it;
-- writes the configured `file:` credential with mode `0600`;
-- verifies authenticated access to TCP port `9443`; and
-- writes or updates the selected cluster in `katlctl.yaml`.
+For every node, the command verifies access to TCP port `9443` and writes or
+updates the selected cluster topology in `katlctl.yaml`. It does not use SSH,
+retrieve secrets, or alter the node.
 
 `katlctl config init` and `katlctl install discover CLUSTER_CONFIG` also read
 supported public keys from the active SSH agent when creating the initial SSH
@@ -62,26 +54,22 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 `--ssh-authorized-key PATH` remains available when only one key should be
 authorized.
 
-ClusterConfig contains node addresses but never credentials or workstation
-paths. Enrollment creates and maintains those references in the workstation
-context instead.
-
-Each freshly installed node generates its own token. Do not assume one fallback
-token authenticates to the entire cluster. Enrollment refuses to overwrite a
-different local token unless `--force` is explicit.
+`ClusterConfig` remains sufficient for installation and Kubernetes bootstrap;
+saving a context is only a convenience for repeated day-two commands.
 
 ## Connectivity Check
 
-Inspect the resolved context after enrollment:
+Inspect the resolved context after saving it:
 
 ```sh
 katlctl context show
 katlctl node status cp-1
 ```
 
-Enrollment has already performed the authenticated agent health check. Normal
-management commands now need only `--node`; `--context` selects a non-current
-cluster. Explicit `--endpoint` and `--agent-token-file` remain expert overrides.
+The save command has already performed the agent health check. Normal management
+commands now need only `--node`; `--context` selects a non-current cluster.
+An explicit `--endpoint` remains available when operating without a saved
+context.
 
 ## Routine Host Management
 
@@ -109,6 +97,6 @@ Use SSH for an interactive shell and arbitrary system administration. The
 KatlOS management API intentionally exposes bounded lifecycle operations rather
 than remote command execution.
 
-There is no supported alpha token-rotation workflow. If a token is exposed,
-isolate the node and treat the evaluation identity as compromised; do not
-silently replace the file and assume recovery is complete.
+There is no node credential to rotate in the alpha management path. If the
+trusted management network is exposed, isolate the node and restore the network
+boundary before resuming lifecycle operations.

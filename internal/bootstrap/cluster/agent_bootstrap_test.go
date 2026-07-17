@@ -50,7 +50,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		Name:              "cp-2",
 		Address:           "10.0.0.12",
 		SystemRole:        inventory.RoleControlPlane,
-		Access:            inventory.Access{Method: "agent", CredentialRef: "agent/cp-2"},
+		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 		KubernetesVersion: "v1.36.1",
 	})

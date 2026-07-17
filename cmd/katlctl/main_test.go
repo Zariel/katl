@@ -72,7 +72,7 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 		"katlctl installs and manages KatlOS nodes",
 		"cluster     Cluster lifecycle operations",
 		"config      Create and compile ClusterConfig",
-		"context     Inspect enrolled workstation context",
+		"context     Save and inspect workstation contexts",
 		"node        Manage individual KatlOS nodes",
 	} {
 		if !strings.Contains(out, want) {
@@ -153,7 +153,7 @@ func TestClusterBootstrapHelpLeadsWithUnifiedConfigInput(t *testing.T) {
 
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
-		"katlctl cluster enroll":      true,
+		"katlctl context save":        true,
 		"katlctl cluster bootstrap":   true,
 		"katlctl cluster wipe":        true,
 		"katlctl config render-node":  true,
@@ -194,10 +194,10 @@ func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
 		forbidden []string
 	}{
 		{group: "node", required: []string{"apply", "reboot", "status", "upgrade", "wipe"}},
-		{group: "cluster", required: []string{"bootstrap", "enroll", "wipe"}, forbidden: []string{"kubeadm-control-plane-config"}},
+		{group: "cluster", required: []string{"bootstrap", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
 		{group: "kubernetes", required: []string{"apply-config", "upgrade"}},
 		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
-		{group: "context", required: []string{"path", "show"}},
+		{group: "context", required: []string{"path", "save", "show"}},
 	}
 	for _, test := range tests {
 		t.Run(test.group, func(t *testing.T) {
@@ -533,7 +533,6 @@ nodes:
   access:
     method: katlc-agent
     user: root
-    credentialRef: file:/tmp/token
   kubeadmConfig:
     ref: control-plane
     path: /etc/katl/kubeadm/control-plane/config.yaml
@@ -564,13 +563,11 @@ clusters:
   - name: cp-1
     managementEndpoint: cp-1.prod.test:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/cp-1.token
 - name: katl-stage
   nodes:
   - name: stage-cp
     managementEndpoint: stage-cp.test:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/stage-cp.token
 `)
 	t.Setenv("KATLCTL_CONFIG", configPath)
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
@@ -592,9 +589,6 @@ clusters:
 	}
 	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Name != "stage-cp" || resolved.Nodes[0].ManagementEndpoint != "stage-cp.test:9443" {
 		t.Fatalf("nodes = %#v", resolved.Nodes)
-	}
-	if resolved.Nodes[0].CredentialRef != "file:/secure/katl/stage-cp.token" {
-		t.Fatalf("credential ref = %q", resolved.Nodes[0].CredentialRef)
 	}
 }
 
@@ -654,7 +648,7 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint != "api.override.test:6443" || got.KubeconfigOut != "out.conf" || !got.OverwriteKubeconfig || !got.DryRun {
 		t.Fatalf("request = %#v", got)
 	}
-	if got.Inventory.Nodes[1].Access.CredentialRef != "agent/worker-1" {
+	if got.Inventory.Nodes[1].Access.CredentialRef != "" {
 		t.Fatalf("inventory = %#v", got.Inventory)
 	}
 	if got.AddressOverrides["worker-1"] != "10.0.0.22" {
@@ -715,10 +709,6 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 
 func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	inventoryPath := writeInventory(t)
-	tokenPath := filepath.Join(t.TempDir(), "agent.token")
-	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	var got cluster.Request
 	var gotDeps cluster.AgentBootstrapDependencies
 	old := runAgentBootstrap
@@ -741,7 +731,6 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--agent-token-file", tokenPath,
 		"--node-address", "cp-1=cp-1.override.test",
 		"--control-plane-endpoint", "api.override.test:6443",
 		"--dry-run",
@@ -759,26 +748,7 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	if !ok {
 		t.Fatalf("Connector = %T", gotDeps.Connector)
 	}
-	if connector.AuthToken != "test-token" {
-		t.Fatalf("AuthToken = %q", connector.AuthToken)
-	}
-	nodeTokenPath := filepath.Join(t.TempDir(), "node-agent.token")
-	if err := os.WriteFile(nodeTokenPath, []byte("node-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	token, err := connector.AuthTokenForNode(inventory.PlannedNode{
-		Name: "worker-1",
-		Access: inventory.Access{
-			Method:        "agent",
-			CredentialRef: "file:" + nodeTokenPath,
-		},
-	})
-	if err != nil {
-		t.Fatalf("AuthTokenForNode() error = %v", err)
-	}
-	if token != "node-token" {
-		t.Fatalf("AuthTokenForNode() = %q", token)
-	}
+	_ = connector
 	if gotDeps.Actor != "katlctl cluster bootstrap" {
 		t.Fatalf("Actor = %q", gotDeps.Actor)
 	}
@@ -903,7 +873,7 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 	if got.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
 		t.Fatalf("bundle inventory = %#v", got.Inventory)
 	}
-	if got.Inventory.KubernetesBundleRef == "" || got.Inventory.Nodes[0].Access.CredentialRef != "agent/cp-1" {
+	if got.Inventory.KubernetesBundleRef == "" || got.Inventory.Nodes[0].Access.CredentialRef != "" {
 		t.Fatalf("bundle selection = %#v", got.Inventory)
 	}
 }
@@ -981,7 +951,6 @@ nodes:
   systemRole: control-plane
   access:
     method: agent
-    credentialRef: agent/cp-1
   kubeadmConfig:
     ref: control-plane
     path: /etc/katl/kubeadm/control-plane/config.yaml
@@ -1064,10 +1033,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	old := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
-		if token != "" {
-			t.Fatalf("token = %q, want empty", token)
-		}
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	t.Cleanup(func() { newWipeClusterConnector = old })
@@ -1109,7 +1075,7 @@ func TestWipeClusterPlanAcceptsClusterConfig(t *testing.T) {
 		"cp-1": readyWipeClusterClient("cp-machine"),
 	})
 	old := newWipeClusterConnector
-	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
 	t.Cleanup(func() { newWipeClusterConnector = old })
 
 	var stdout, stderr bytes.Buffer
@@ -1142,18 +1108,16 @@ clusters:
   - name: cp-1
     managementEndpoint: 192.0.2.11:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/cp-1.token
   - name: worker-1
     managementEndpoint: 192.0.2.21:9443
     systemRole: worker
-    credentialRef: file:/secure/katl/worker-1.token
 `)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"cp-1":     readyWipeClusterClient("cp-machine"),
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
 	t.Cleanup(func() { newWipeClusterConnector = oldConnector })
 
 	var stdout, stderr bytes.Buffer
@@ -1182,7 +1146,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	old := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	t.Cleanup(func() { newWipeClusterConnector = old })
@@ -1251,7 +1215,7 @@ func TestNodeWipeSubmitsWithNodeActor(t *testing.T) {
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	oldKubectl := operatorKubectlRunner
@@ -1295,7 +1259,7 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	oldKubectl := operatorKubectlRunner
@@ -1346,17 +1310,15 @@ clusters:
   - name: cp-1
     managementEndpoint: 192.0.2.11:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/cp-1.token
   - name: worker-1
     managementEndpoint: 192.0.2.21:9443
     systemRole: worker
-    credentialRef: file:/secure/katl/worker-1.token
 `)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
 	t.Cleanup(func() { newWipeClusterConnector = oldConnector })
 
 	var stdout, stderr bytes.Buffer
@@ -1383,7 +1345,7 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	oldKubectl := operatorKubectlRunner
@@ -1439,7 +1401,7 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 		"worker-1": readyWipeClusterClient("worker-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	oldKubectl := operatorKubectlRunner
@@ -1486,7 +1448,7 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 		"cp-1": readyWipeClusterClient("cp-machine"),
 	})
 	oldConnector := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+	newWipeClusterConnector = func() cluster.AgentConnector {
 		return connector
 	}
 	oldKubectl := operatorKubectlRunner
@@ -1578,9 +1540,9 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" || token != "" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
@@ -1614,9 +1576,9 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint string, token string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" || token != "" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
@@ -1658,7 +1620,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 		fake.generation = &agentapi.Generation{GenerationId: req.TargetGenerationId, CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
@@ -1701,9 +1663,9 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" || token != "" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
@@ -1746,7 +1708,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 		if endpoint != "node-a.example.test:9443" {
 			t.Fatalf("dial endpoint=%q", endpoint)
 		}
@@ -1798,9 +1760,9 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint string, token string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" || token != "" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
@@ -1859,7 +1821,7 @@ func TestConfigApplyStatusQueriesGenerationFromAgent(t *testing.T) {
 		},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 		if endpoint != "node-a.example.test:9443" {
 			t.Fatalf("dial endpoint=%q", endpoint)
 		}
@@ -2429,7 +2391,6 @@ nodes:
   systemRole: control-plane
   access:
     method: agent
-    credentialRef: agent/cp-1
   kubeadmConfig:
     ref: control-plane
     path: /etc/katl/kubeadm/control-plane/config.yaml
@@ -2440,7 +2401,6 @@ nodes:
   systemRole: worker
   access:
     method: agent
-    credentialRef: agent/worker-1
   kubeadmConfig:
     ref: worker
     path: /etc/katl/kubeadm/worker/config.yaml

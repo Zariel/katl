@@ -172,31 +172,22 @@ func TestConfigInitExplicitSSHKeyDoesNotFallBack(t *testing.T) {
 	}
 }
 
-func TestClusterEnrollCreatesContextAndPrivateTokens(t *testing.T) {
+func TestContextSaveCreatesReachableContext(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	sourcePath := writeClusterConfig(t)
-	token := "node-token-value"
-	oldSSH := runEnrollmentSSH
-	runEnrollmentSSH = func(_ context.Context, user, address, identityFile string) ([]byte, error) {
-		if user != "root" || address != "10.0.0.11" || identityFile != "" {
-			t.Fatalf("SSH user=%q address=%q identity=%q", user, address, identityFile)
-		}
-		return []byte(token + "\n"), nil
-	}
-	t.Cleanup(func() { runEnrollmentSSH = oldSSH })
 	fake := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1"}}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint, gotToken string) (katlcAgentConnection, error) {
-		if endpoint != "10.0.0.11:9443" || gotToken != token {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, gotToken)
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"cluster", "enroll", "--config", sourcePath, "--context-file", configPath}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
 	}
 	cfg, err := workstation.Load(configPath)
@@ -210,32 +201,13 @@ func TestClusterEnrollCreatesContextAndPrivateTokens(t *testing.T) {
 	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
 	}
-	credentialPath := strings.TrimPrefix(topology.Nodes[0].CredentialRef, "file:")
-	data, err := os.ReadFile(credentialPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(data)) != token {
-		t.Fatalf("stored token = %q", data)
-	}
-	info, err := os.Stat(credentialPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("token mode = %v", info.Mode().Perm())
-	}
 }
 
 func TestConfigApplyUsesContextAndDerivesBookkeeping(t *testing.T) {
 	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "cp-1.token")
-	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	cfg := workstation.Config{CurrentContext: "lab", Contexts: []workstation.Context{{Name: "lab", Cluster: "lab"}}, Clusters: []workstation.Cluster{{
-		Name: "lab", Nodes: []workstation.Node{{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, CredentialRef: "file:" + tokenPath}},
+		Name: "lab", Nodes: []workstation.Node{{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane}},
 	}}}
 	if err := workstation.Save(configPath, cfg); err != nil {
 		t.Fatal(err)
@@ -245,9 +217,9 @@ func TestConfigApplyUsesContextAndDerivesBookkeeping(t *testing.T) {
 		stageAccepted:  &agentapi.OperationAccepted{OperationId: "apply-1", OperationKind: "generation-apply", InitialStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded}},
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint, token string) (katlcAgentConnection, error) {
-		if endpoint != "10.0.0.11:9443" || token != "token" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}

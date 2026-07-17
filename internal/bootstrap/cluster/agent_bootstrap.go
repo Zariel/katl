@@ -17,7 +17,6 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -58,10 +57,8 @@ type AgentClient interface {
 }
 
 type TCPAgentConnector struct {
-	AuthToken        string
-	AuthTokenForNode func(inventory.PlannedNode) (string, error)
-	DefaultPort      string
-	DialTimeout      time.Duration
+	DefaultPort string
+	DialTimeout time.Duration
 }
 
 func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNode) (AgentConnection, error) {
@@ -69,25 +66,7 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 		return AgentConnection{}, fmt.Errorf("node %q access method %q is not supported by katlc agent transport", node.Name, node.Access.Method)
 	}
 	endpoint := AgentEndpoint(node.Address, valueOrDefault(c.DefaultPort, defaultAgentPort))
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
-	token := strings.TrimSpace(c.AuthToken)
-	if c.AuthTokenForNode != nil {
-		resolved, err := c.AuthTokenForNode(node)
-		if err != nil {
-			return AgentConnection{}, fmt.Errorf("resolve katlc agent token for %s: %w", node.Name, err)
-		}
-		if strings.TrimSpace(resolved) != "" {
-			token = strings.TrimSpace(resolved)
-		}
-	}
-	if token != "" {
-		opts = append(opts,
-			grpc.WithUnaryInterceptor(bearerUnaryInterceptor(token)),
-			grpc.WithStreamInterceptor(bearerStreamInterceptor(token)),
-		)
-	}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	dialCtx := ctx
 	if c.DialTimeout > 0 {
 		var cancel context.CancelFunc
@@ -104,18 +83,6 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 		Client:   agentapi.NewKatlcAgentClient(conn),
 		Close:    conn.Close,
 	}, nil
-}
-
-func bearerUnaryInterceptor(token string) grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token), method, req, reply, cc, opts...)
-	}
-}
-
-func bearerStreamInterceptor(token string) grpc.StreamClientInterceptor {
-	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token), desc, cc, method, opts...)
-	}
 }
 
 func AgentEndpoint(address, defaultPort string) string {

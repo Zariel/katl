@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +13,7 @@ import (
 )
 
 func TestHostStatusUsesContextAndPrintsOperatorView(t *testing.T) {
-	tokenPath := filepath.Join(t.TempDir(), "cp-1.token")
-	if err := os.WriteFile(tokenPath, []byte("node-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := writeKatlctlConfig(t, fmt.Sprintf(`currentContext: lab
+	configPath := writeKatlctlConfig(t, `currentContext: lab
 contexts:
 - name: lab
   cluster: homelab
@@ -30,16 +23,15 @@ clusters:
   - name: cp-1
     managementEndpoint: 192.0.2.10:9443
     systemRole: control-plane
-    credentialRef: file:%s
-`, tokenPath))
+`)
 	fake := healthyHostClient("machine-secret", "agent-secret", "generation-0")
 	fake.nodeStatus.OperationLockHeld = true
 	fake.nodeStatus.ActiveOperationIds = []string{"operation-secret"}
 	fake.nodeStatus.BootTargetGenerationId = "generation-staged"
 	fake.generation.RuntimeVersion = "2026.7.0-alpha.10"
-	installKatlcDial(t, func(endpoint, token string) {
-		if endpoint != "192.0.2.10:9443" || token != "node-token" {
-			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+	installKatlcDial(t, func(endpoint string) {
+		if endpoint != "192.0.2.10:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 	}, fake)
 
@@ -173,12 +165,12 @@ func healthyHostClient(machineID, agentStartID, generationID string) *fakeKatlcA
 	}
 }
 
-func installKatlcDial(t *testing.T, inspect func(endpoint, token string), client agentapi.KatlcAgentClient) {
+func installKatlcDial(t *testing.T, inspect func(endpoint string), client agentapi.KatlcAgentClient) {
 	t.Helper()
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint, token string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
 		if inspect != nil {
-			inspect(endpoint, token)
+			inspect(endpoint)
 		}
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}

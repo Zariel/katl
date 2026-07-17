@@ -353,7 +353,7 @@ func validateBootstrapAccess(access BootstrapAccess) error {
 	default:
 		return fmt.Errorf("node.bootstrap.access.method %q is unsupported", access.Method)
 	}
-	if access.CredentialRef == "" {
+	if access.Method != "agent" && access.CredentialRef == "" {
 		return fmt.Errorf("node.bootstrap.access.credentialRef is required")
 	}
 	if strings.ContainsAny(access.CredentialRef, "\n\r") {

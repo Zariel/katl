@@ -21,7 +21,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -119,8 +118,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
 	endpoint := katlcEndpoint(t, node, plannedAddress)
-	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
-	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, tokenFile, token, currentGeneration)
+	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -224,52 +222,7 @@ func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddres
 	return net.JoinHostPort(address, "9443")
 }
 
-func writeKatlcAgentTokenFile(t *testing.T, ctx context.Context, guest *GuestControl, runDir string) (string, string) {
-	t.Helper()
-	tokenArtifact := "/var/lib/katl/test-artifacts/config-apply/agent-token"
-	deadline := time.Now().Add(30 * time.Second)
-	var last GuestCommandArtifact
-	var lastErr error
-	for time.Now().Before(deadline) {
-		record, err := guest.RunCommand(ctx, GuestCommandRequest{
-			Name:         "stage-katlc-agent-token",
-			Argv:         []string{"install", "-D", "-m", "0600", "/var/lib/katl/agent/token", tokenArtifact},
-			AllowFailure: true,
-		})
-		last, lastErr = record, err
-		if err == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if lastErr != nil {
-		t.Fatalf("stage katlc agent token for vmtest harness: %v %#v", lastErr, last)
-	}
-	record, err := guest.ReadFile(ctx, GuestFileRequest{
-		Name:         "katlc-agent-token",
-		Path:         tokenArtifact,
-		MaxBytes:     4 << 10,
-		StoreContent: true,
-	})
-	if err != nil {
-		t.Fatalf("read katlc agent token: %v", err)
-	}
-	token := strings.TrimSpace(readFile(t, record.Artifact))
-	if token == "" {
-		t.Fatal("katlc agent token is empty")
-	}
-	dir := filepath.Join(runDir, "katlctl")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("create katlctl artifact dir: %v", err)
-	}
-	path := filepath.Join(dir, "agent-token")
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatalf("write host katlc agent token file: %v", err)
-	}
-	return path, token
-}
-
-func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, tokenFile, token, currentGeneration string) (*GuestControl, *AgentClient) {
+func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
@@ -285,7 +238,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected",
 		"node", "apply", "validate",
 		"--endpoint", endpoint,
-		"--agent-token-file", tokenFile,
 		"--file", configApplyFixture(t, "rejected-live-without-preflight.yaml"),
 		"--mode", "live",
 		"--candidate-generation", rejectedGeneration,
@@ -302,8 +254,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 
 	rejectedApplyGeneration := "2026.06.06-vmtest-rejected-apply"
-	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-rejected", "live", rejectedApplyGeneration, configApplyFixture(t, "rejected-live-without-preflight.yaml"), true)
-	rejectedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, rejectedAccepted.OperationId)
+	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-rejected", "live", rejectedApplyGeneration, configApplyFixture(t, "rejected-live-without-preflight.yaml"), true)
+	rejectedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, rejectedAccepted.OperationId)
 	if rejectedStatus.Result == operation.ResultSucceeded ||
 		rejectedStatus.GetExternalMutationStarted() ||
 		len(rejectedStatus.GetMutationScopes()) != 0 ||
@@ -315,12 +267,12 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
-	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-sysctl.yaml"), false)
-	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, liveAccepted.OperationId)
+	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-sysctl.yaml"), false)
+	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
 	}
-	liveGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, tokenFile, "status-live", liveGeneration)
+	liveGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-live", liveGeneration)
 	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetRequestedApplyMode() != "auto" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
 		t.Fatalf("live katlctl generation status = %+v, want active auto->live config apply", liveGenerationStatus.GetConfigApply())
 	}
@@ -336,12 +288,12 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	assertGuestNonLoopbackLink(t, ctx, guest)
-	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-staged-networkd", "next-boot", stagedGeneration, configApplyFixture(t, "next-boot-networkd.yaml"), false)
-	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, stagedAccepted.OperationId)
+	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-staged-networkd", "next-boot", stagedGeneration, configApplyFixture(t, "next-boot-networkd.yaml"), false)
+	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, stagedAccepted.OperationId)
 	if stagedStatus.Result != operation.ResultSucceeded || stagedStatus.ConfigApplyPhase != "next-boot" {
 		t.Fatalf("staged operation status = %+v, want succeeded next-boot config apply", stagedStatus)
 	}
-	stagedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, tokenFile, "status-staged", stagedGeneration)
+	stagedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-staged", stagedGeneration)
 	if stagedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || stagedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("staged katlctl generation status = %+v, want next-boot config apply", stagedGenerationStatus.GetConfigApply())
 	}
@@ -362,7 +314,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	runKatlctl(t, ctx, result, katlctl, "host-reboot-staged-generation",
 		"node", "reboot", "cp-1",
 		"--endpoint", endpoint,
-		"--agent-token-file", tokenFile,
 		"--timeout", "3m",
 	)
 	_ = client.Close()
@@ -375,11 +326,11 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+stagedGeneration+`"`, `"bootedGenerationID": "`+stagedGeneration+`"`, `"pendingHealthValidation": false`)
-	bootedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, tokenFile, "status-booted-networkd", stagedGeneration)
+	bootedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-booted-networkd", stagedGeneration)
 	if bootedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("booted networkd katlctl generation status = %+v, want next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
-	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint, token)
+	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	powerOffGuestForCleanSuccess(t, ctx, node, guest, client)
 	return guest, nil
 }
@@ -401,12 +352,11 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 }
 
-func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
+func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
 	t.Helper()
 	args := []string{
 		"node", "apply",
 		"--endpoint", endpoint,
-		"--agent-token-file", tokenFile,
 		"--file", fixture,
 		"--candidate-generation", generationID,
 		"--actor", "installed-runtime config apply vmtest",
@@ -427,7 +377,7 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 		t.Fatalf("%s terminal result = %+v", name, &terminal)
 	}
 	listOutput := runKatlctl(t, ctx, result, katlctl, name+"-operations",
-		"operations", "list", "--endpoint", endpoint, "--agent-token-file", tokenFile, "--limit", "20")
+		"operations", "list", "--endpoint", endpoint, "--limit", "20")
 	var listed agentapi.ListOperationsResponse
 	mustUnmarshalProtoJSON(t, listOutput, &listed)
 	for _, status := range listed.Operations {
@@ -443,12 +393,11 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 	return agentapi.OperationAccepted{}
 }
 
-func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, generationID string) agentapi.Generation {
+func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, generationID string) agentapi.Generation {
 	t.Helper()
 	output := runKatlctl(t, ctx, result, katlctl, name,
 		"node", "apply", "status",
 		"--endpoint", endpoint,
-		"--agent-token-file", tokenFile,
 		"--generation", generationID,
 	)
 	var gen agentapi.Generation
@@ -650,14 +599,14 @@ func mustUnmarshalProtoJSON(t *testing.T, data []byte, msg proto.Message) {
 	}
 }
 
-func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, token, operationID string) *agentapi.OperationStatus {
+func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, operationID string) *agentapi.OperationStatus {
 	t.Helper()
 	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
 	defer conn.Close()
 	deadline := time.Now().Add(2 * time.Minute)
 	var last *agentapi.OperationStatus
 	for time.Now().Before(deadline) {
-		status, err := client.GetOperation(authContext(ctx, token), &agentapi.GetOperationRequest{
+		status, err := client.GetOperation(ctx, &agentapi.GetOperationRequest{
 			OperationId:        operationID,
 			IncludeDiagnostics: "verbose",
 		})
@@ -674,7 +623,7 @@ func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, tok
 	return nil
 }
 
-func assertBootstrappedKubernetesSysextChangeRejected(t *testing.T, ctx context.Context, guest *GuestControl, endpoint, token string) {
+func assertBootstrappedKubernetesSysextChangeRejected(t *testing.T, ctx context.Context, guest *GuestControl, endpoint string) {
 	t.Helper()
 	const kubeletConf = "/etc/kubernetes/kubelet.conf"
 	const kubeletMarker = `apiVersion: v1
@@ -708,7 +657,7 @@ users: []
 
 	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
 	defer conn.Close()
-	accepted, err := client.SubmitOperation(authContext(ctx, token), &agentapi.SubmitOperationRequest{
+	accepted, err := client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:      operation.APIVersion,
 		Kind:            agent.RequestKind,
 		ClientRequestId: "vmtest-kubeadm-upgrade-refused",
@@ -736,7 +685,7 @@ users: []
 	}
 	status := accepted.GetInitialStatus()
 	if !status.GetTerminal() {
-		status = waitKatlcOperationTerminal(t, ctx, endpoint, token, accepted.OperationId)
+		status = waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
 	}
 	if status.GetOperationKind() != agent.OperationKindKubeadmUpgrade ||
 		status.GetPhase() != "execution-refused-unsupported" ||
@@ -770,10 +719,6 @@ func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string)
 		t.Fatalf("dial katlc agent %s: %v", endpoint, err)
 	}
 	return conn, agentapi.NewKatlcAgentClient(conn)
-}
-
-func authContext(ctx context.Context, token string) context.Context {
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+strings.TrimSpace(token))
 }
 
 func collectConfigApplyFailureEvidence(ctx context.Context, guest *GuestControl) {

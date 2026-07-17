@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,20 +32,17 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 				ExternalMutationStarted: true,
 			}}
 			oldDial := dialKatlcAgent
-			dialKatlcAgent = func(_ context.Context, endpoint, token string) (katlcAgentConnection, error) {
-				if endpoint != "node.test:9443" || token != "agent-token" {
-					t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+			dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+				if endpoint != "node.test:9443" {
+					t.Fatalf("dial endpoint=%q", endpoint)
 				}
 				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 			}
 			t.Cleanup(func() { dialKatlcAgent = oldDial })
-			tokenPath := writeOperationToken(t)
-
 			var stdout, stderr bytes.Buffer
 			err := run(context.Background(), []string{
 				"operations", "status",
 				"--endpoint", "node.test:9443",
-				"--agent-token-file", tokenPath,
 				"--operation-id", "operation-1",
 				"--diagnostics", "verbose",
 			}, &stdout, &stderr)
@@ -76,7 +72,7 @@ func TestOperationsListDiscoversRecentWork(t *testing.T) {
 		{OperationId: "done-1", OperationKind: "generation-apply", RequestDigest: strings.Repeat("b", 64), Phase: "complete", Terminal: true, Result: "succeeded"},
 	}}}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
@@ -180,7 +176,7 @@ func TestOperationWatchReturnsFailureAfterStatus(t *testing.T) {
 		OperationId: "operation-1", Terminal: true, Result: "failed", FailureReason: "disk mutation requires recovery",
 	}}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
@@ -196,7 +192,7 @@ func TestOperationWatchReturnsFailureAfterStatus(t *testing.T) {
 	}
 }
 
-func TestKatlcAgentDialOptionsAuthenticateWatchStream(t *testing.T) {
+func TestKatlcAgentDialOptionsDoNotSendAuthorization(t *testing.T) {
 	listener := bufconn.Listen(1 << 20)
 	server := grpc.NewServer()
 	capture := &streamAuthorizationServer{authorization: make(chan string, 1)}
@@ -206,7 +202,7 @@ func TestKatlcAgentDialOptionsAuthenticateWatchStream(t *testing.T) {
 		server.Stop()
 		_ = listener.Close()
 	})
-	opts := append(katlcAgentDialOptions("stream-token"), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	opts := append(katlcAgentDialOptions(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return listener.Dial()
 	}))
 	conn, err := grpc.DialContext(context.Background(), "passthrough:///bufnet", opts...)
@@ -223,7 +219,7 @@ func TestKatlcAgentDialOptionsAuthenticateWatchStream(t *testing.T) {
 	}
 	select {
 	case got := <-capture.authorization:
-		if got != "Bearer stream-token" {
+		if got != "" {
 			t.Fatalf("authorization = %q", got)
 		}
 	case <-time.After(time.Second):
@@ -290,15 +286,6 @@ func (s *fakeOperationStream) Recv() (*agentapi.OperationEvent, error) {
 	return event, nil
 }
 
-func writeOperationToken(t *testing.T) string {
-	t.Helper()
-	path := t.TempDir() + "/agent.token"
-	if err := os.WriteFile(path, []byte("agent-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 type streamAuthorizationServer struct {
 	agentapi.UnimplementedKatlcAgentServer
 	authorization chan string
@@ -306,8 +293,10 @@ type streamAuthorizationServer struct {
 
 func (s *streamAuthorizationServer) WatchOperation(_ *agentapi.WatchOperationRequest, stream agentapi.KatlcAgent_WatchOperationServer) error {
 	values := metadata.ValueFromIncomingContext(stream.Context(), "authorization")
+	value := ""
 	if len(values) > 0 {
-		s.authorization <- values[0]
+		value = values[0]
 	}
+	s.authorization <- value
 	return stream.Send(&agentapi.OperationEvent{OperationId: "operation-1", Terminal: true, Status: &agentapi.OperationStatus{OperationId: "operation-1", Terminal: true, Result: "succeeded"}})
 }

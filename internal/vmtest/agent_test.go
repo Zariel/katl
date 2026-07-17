@@ -244,7 +244,6 @@ func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 		"/etc/machine-id",
 		"/etc/kubernetes/admin.conf",
 		"/etc/kubernetes/kubelet.conf",
-		"/var/lib/katl/agent/token",
 		"/var/lib/katl/boot/selection.json",
 		"/var/lib/katl/identity/machine-id",
 		"/var/lib/katl/install/status.json",

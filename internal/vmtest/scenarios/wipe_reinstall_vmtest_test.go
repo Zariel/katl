@@ -356,18 +356,8 @@ func runReinstalledWorkerJoin(t *testing.T, ctx context.Context, run operationBa
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tokenFiles := map[string]string{"cp-1": filepath.Join(dir, "cp-1.token"), "worker-1": filepath.Join(dir, "worker-1.token")}
-	for _, node := range nodes {
-		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, time.Minute)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(tokenFiles[node.Name], token, 0o600); err != nil {
-			return err
-		}
-	}
 	inventoryPath := filepath.Join(dir, "bootstrap-inventory.yaml")
-	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress, tokenFiles); err != nil {
+	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress); err != nil {
 		return err
 	}
 	var stdout, stderr bytes.Buffer
@@ -745,19 +735,6 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		assertGeneration0Selection(t, beforeSelection)
 		bootSelectionsBefore[node.Name] = beforeSelectionPath
 	}
-	tokenFiles := map[string]string{
-		"cp-1":     filepath.Join(roundDir, "cp-1-katlc-agent.token"),
-		"worker-1": filepath.Join(roundDir, "worker-1-katlc-agent.token"),
-	}
-	for _, node := range nodes {
-		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, 2*time.Minute)
-		if err != nil {
-			return wipeReinstallBootstrapEvidence{}, fmt.Errorf("read %s katlc agent token: %w", node.Name, err)
-		}
-		if err := os.WriteFile(tokenFiles[node.Name], token, 0o600); err != nil {
-			return wipeReinstallBootstrapEvidence{}, err
-		}
-	}
 	for _, endpoint := range []struct {
 		name    string
 		address string
@@ -769,7 +746,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 			return wipeReinstallBootstrapEvidence{}, fmt.Errorf("wait for %s katlc agent TCP endpoint: %w", endpoint.name, err)
 		}
 	}
-	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, tokenFiles); err != nil {
+	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress); err != nil {
 		return wipeReinstallBootstrapEvidence{}, err
 	}
 	var stdout, stderr bytes.Buffer

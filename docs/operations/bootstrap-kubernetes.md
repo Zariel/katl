@@ -7,7 +7,8 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
-- `katlctl cluster enroll --config ./cluster.yaml` completed successfully;
+- every intended node is reachable on TCP port `9443` from the operator
+  workstation;
 - `spec.kubernetes.version` is available in this Katl release's compatibility
   catalog;
 - the control-plane endpoint resolves or routes as designed; and
@@ -37,9 +38,9 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --kubeconfig-out ./kubeconfig
 ```
 
-The enrolled `file:` credential references are read automatically. Use
-`--node-address node=address` only for an observed address that differs from the
-compiled source.
+No enrollment or management credential is required. Use `--node-address
+node=address` only for an observed address that differs from the compiled
+source.
 
 Review the plan, selected init node, node order, control-plane endpoint, and
 Kubernetes version. Katl records the resolved bundle identity internally. A dry

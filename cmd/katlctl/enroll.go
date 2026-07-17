@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,8 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -19,72 +16,45 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type enrollOptions struct {
-	configInput  string
-	contextPath  string
-	contextName  string
-	sshUser      string
-	identityFile string
-	force        bool
+type contextSaveOptions struct {
+	configInput string
+	contextPath string
+	contextName string
 }
 
-type enrollNodeReport struct {
+type contextSaveNodeReport struct {
 	Name               string `json:"name"`
 	ManagementEndpoint string `json:"managementEndpoint"`
-	CredentialRef      string `json:"credentialRef"`
 	Connected          bool   `json:"connected"`
 }
 
-type enrollReport struct {
-	APIVersion string             `json:"apiVersion"`
-	Kind       string             `json:"kind"`
-	Context    string             `json:"context"`
-	ConfigPath string             `json:"configPath"`
-	Nodes      []enrollNodeReport `json:"nodes"`
+type contextSaveReport struct {
+	APIVersion string                  `json:"apiVersion"`
+	Kind       string                  `json:"kind"`
+	Context    string                  `json:"context"`
+	ConfigPath string                  `json:"configPath"`
+	Nodes      []contextSaveNodeReport `json:"nodes"`
 }
 
-var runEnrollmentSSH = func(ctx context.Context, user, address, identityFile string) ([]byte, error) {
-	args := []string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"}
-	if strings.TrimSpace(identityFile) != "" {
-		args = append(args, "-i", strings.TrimSpace(identityFile))
-	}
-	args = append(args, strings.TrimSpace(user)+"@"+strings.TrimSpace(address), "cat", "/var/lib/katl/agent/token")
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	data, err := cmd.Output()
-	if err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message != "" {
-			return nil, fmt.Errorf("%w: %s", err, message)
-		}
-		return nil, err
-	}
-	return data, nil
-}
-
-func newClusterEnrollCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := enrollOptions{sshUser: "root"}
+func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := contextSaveOptions{}
 	cmd := &cobra.Command{
-		Use:   "enroll",
-		Short: "Set up workstation access to installed KatlOS nodes",
+		Use:   "save",
+		Short: "Save installed KatlOS nodes as the current workstation context",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runClusterEnroll(ctx, opts, stdout, stderr)
+			return runContextSave(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.configInput, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.contextPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
-	cmd.Flags().StringVar(&opts.sshUser, "ssh-user", opts.sshUser, "installed-node SSH user")
-	cmd.Flags().StringVar(&opts.identityFile, "identity-file", "", "SSH private key file")
-	cmd.Flags().BoolVar(&opts.force, "force", false, "replace a different locally stored node token")
 	return cmd
 }
 
-func runClusterEnroll(ctx context.Context, opts enrollOptions, stdout, stderr io.Writer) error {
+func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr io.Writer) error {
 	_ = stderr
-	config, err := loadKatlConfig(opts.configInput, "katlctl cluster enroll", configbundle.PlanningInputs{})
+	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{})
 	if err != nil {
 		return err
 	}
@@ -102,29 +72,11 @@ func runClusterEnroll(ctx context.Context, opts enrollOptions, stdout, stderr io
 		contextName = bundle.Manifest.ClusterName
 	}
 	clusterProfile := workstation.Cluster{Name: bundle.Manifest.ClusterName, ControlPlaneEndpoint: inv.ControlPlaneEndpoint}
-	report := enrollReport{APIVersion: "katl.dev/v1alpha1", Kind: "EnrollmentReport", Context: contextName, ConfigPath: configPath}
+	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
 
 	for _, node := range inv.Nodes {
-		credentialPath, ok := strings.CutPrefix(strings.TrimSpace(node.Access.CredentialRef), "file:")
-		if !ok || strings.TrimSpace(credentialPath) == "" {
-			credentialPath, err = workstation.CredentialPath(configPath, bundle.Manifest.ClusterName, node.Name)
-			if err != nil {
-				return err
-			}
-		}
-		tokenData, err := runEnrollmentSSH(ctx, opts.sshUser, node.Address, opts.identityFile)
-		if err != nil {
-			return fmt.Errorf("enroll node %s over SSH: %w", node.Name, err)
-		}
-		token := strings.TrimSpace(string(tokenData))
-		if token == "" || strings.ContainsAny(token, "\r\n") {
-			return fmt.Errorf("enroll node %s: installed agent token is empty or malformed", node.Name)
-		}
-		if err := writeManagedToken(credentialPath, token, opts.force); err != nil {
-			return fmt.Errorf("enroll node %s: %w", node.Name, err)
-		}
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
-		conn, err := dialKatlcAgent(ctx, endpoint, token)
+		conn, err := dialKatlcAgent(ctx, endpoint)
 		if err != nil {
 			return fmt.Errorf("verify node %s management endpoint: %w", node.Name, err)
 		}
@@ -139,11 +91,10 @@ func runClusterEnroll(ctx context.Context, opts enrollOptions, stdout, stderr io
 		if strings.TrimSpace(status.GetMachineId()) == "" {
 			return fmt.Errorf("verify node %s management endpoint: agent did not report a machine identity", node.Name)
 		}
-		credentialRef := "file:" + credentialPath
 		clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
-			Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole, CredentialRef: credentialRef,
+			Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
 		})
-		report.Nodes = append(report.Nodes, enrollNodeReport{Name: node.Name, ManagementEndpoint: endpoint, CredentialRef: credentialRef, Connected: true})
+		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true})
 	}
 
 	cfg := workstation.Config{}
@@ -158,25 +109,8 @@ func runClusterEnroll(ctx context.Context, opts enrollOptions, stdout, stderr io
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode enrollment report: %w", err)
+		return fmt.Errorf("encode context save report: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
-}
-
-func writeManagedToken(path, token string, force bool) error {
-	if existing, err := os.ReadFile(path); err == nil {
-		if strings.TrimSpace(string(existing)) == token {
-			return os.Chmod(path, 0o600)
-		}
-		if !force {
-			return fmt.Errorf("credential file %s contains a different token; use --force to replace it", path)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read credential file %s: %w", path, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create credential directory: %w", err)
-	}
-	return os.WriteFile(path, []byte(token+"\n"), 0o600)
 }

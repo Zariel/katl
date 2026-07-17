@@ -74,7 +74,7 @@ type Node struct {
 type Access struct {
 	Method        string `json:"method" yaml:"method"`
 	User          string `json:"user,omitempty" yaml:"user"`
-	CredentialRef string `json:"credentialRef" yaml:"credentialRef"`
+	CredentialRef string `json:"credentialRef,omitempty" yaml:"credentialRef,omitempty"`
 }
 
 type KubeadmConfig struct {
@@ -309,8 +309,11 @@ func normalizeAccess(node string, access Access) (Access, error) {
 	}
 	access.User = strings.TrimSpace(access.User)
 	access.CredentialRef = strings.TrimSpace(access.CredentialRef)
-	if access.CredentialRef == "" {
+	if access.Method != "agent" && access.CredentialRef == "" {
 		return Access{}, fmt.Errorf("node %q access credentialRef is required", node)
+	}
+	if access.Method == "agent" && !strings.HasPrefix(access.CredentialRef, "vsock:") {
+		access.CredentialRef = ""
 	}
 	if strings.ContainsAny(access.CredentialRef, "\n\r") {
 		return Access{}, fmt.Errorf("node %q access credentialRef must be a single line", node)

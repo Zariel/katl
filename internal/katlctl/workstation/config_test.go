@@ -64,7 +64,7 @@ func TestLoadSelectedTopology(t *testing.T) {
 	if len(resolved.Nodes) != 3 {
 		t.Fatalf("nodes = %#v", resolved.Nodes)
 	}
-	if got := resolved.Nodes[0]; got.Name != "cp-1" || got.ManagementEndpoint != "cp-1.prod.test:9443" || got.SystemRole != inventory.RoleControlPlane || got.CredentialRef != "file:/secure/katl/cp-1.token" {
+	if got := resolved.Nodes[0]; got.Name != "cp-1" || got.ManagementEndpoint != "cp-1.prod.test:9443" || got.SystemRole != inventory.RoleControlPlane {
 		t.Fatalf("first node = %#v", got)
 	}
 	controlPlanes := resolved.ControlPlaneNodes()
@@ -144,21 +144,6 @@ func TestValidateRejectsSchemaErrors(t *testing.T) {
 			want: "port must be a number",
 		},
 		{
-			name: "inline secret material",
-			yaml: strings.Replace(validConfigYAML(), "credentialRef: file:/secure/katl/worker-1.token", "credentialRef: abcdef.0123456789abcdef", 1),
-			want: "inline secret material",
-		},
-		{
-			name: "inline bearer token",
-			yaml: strings.Replace(validConfigYAML(), "credentialRef: file:/secure/katl/worker-1.token", "credentialRef: Bearer secret-token", 1),
-			want: "inline secret material",
-		},
-		{
-			name: "inline kubeconfig data",
-			yaml: strings.Replace(validConfigYAML(), "credentialRef: file:/secure/katl/worker-1.token", `credentialRef: "client-key-data: LS0tKEY"`, 1),
-			want: "inline secret material",
-		},
-		{
 			name: "unknown field",
 			yaml: strings.Replace(validConfigYAML(), "clusters:", "unknownField: true\nclusters:", 1),
 			want: "field unknownField not found",
@@ -197,28 +182,6 @@ func TestSameNodeNameAcrossClustersIsAllowed(t *testing.T) {
 	}
 }
 
-func TestCredentialReferenceCanNameKeyFile(t *testing.T) {
-	data := strings.Replace(validConfigYAML(), "credentialRef: file:/secure/katl/worker-1.token", "credentialRef: file:/secure/katl/worker-1.private-key", 1)
-	if _, err := Load(writeConfig(t, data)); err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-}
-
-func TestRejectsInlineSecretWithoutLeakingValue(t *testing.T) {
-	secret := "abcdef.0123456789abcdef"
-	data := strings.Replace(validConfigYAML(), "credentialRef: file:/secure/katl/worker-1.token", "credentialRef: "+secret, 1)
-	_, err := Load(writeConfig(t, data))
-	if err == nil {
-		t.Fatal("Load() error = nil, want inline secret rejection")
-	}
-	if strings.Contains(err.Error(), secret) {
-		t.Fatalf("error leaked secret: %v", err)
-	}
-	if !strings.Contains(err.Error(), "inline secret material") {
-		t.Fatalf("Load() error = %v, want inline secret material", err)
-	}
-}
-
 func TestResolveTopologyPrecedence(t *testing.T) {
 	missingConfigPath := filepath.Join(t.TempDir(), "missing.yaml")
 	inv := inventory.Inventory{
@@ -227,7 +190,7 @@ func TestResolveTopologyPrecedence(t *testing.T) {
 			Name:       "inventory-cp",
 			Address:    "inventory-cp.test",
 			SystemRole: inventory.RoleControlPlane,
-			Access:     inventory.Access{CredentialRef: "file:/secure/inventory-cp.token"},
+			Access:     inventory.Access{Method: "agent"},
 		}},
 	}
 	plan := inventory.Plan{
@@ -236,7 +199,7 @@ func TestResolveTopologyPrecedence(t *testing.T) {
 			Name:       "plan-cp",
 			Address:    "plan-cp.test:9443",
 			SystemRole: inventory.RoleControlPlane,
-			Access:     inventory.Access{CredentialRef: "file:/secure/plan-cp.token"},
+			Access:     inventory.Access{Method: "agent"},
 		}},
 	}
 	resolved, err := ResolveTopology(ResolveRequest{
@@ -266,31 +229,11 @@ func TestResolveTopologyPrecedence(t *testing.T) {
 	}
 }
 
-func TestExplicitInventoryDoesNotBorrowFromConfig(t *testing.T) {
-	path := writeConfig(t, validConfigYAML())
-	inv := inventory.Inventory{
-		ControlPlaneEndpoint: "api.inventory.test:6443",
-		Nodes: []inventory.Node{{
-			Name:       "inventory-cp",
-			Address:    "inventory-cp.test",
-			SystemRole: inventory.RoleControlPlane,
-			Access:     inventory.Access{},
-		}},
-	}
-	_, err := ResolveTopology(ResolveRequest{
-		ConfigPath:        path,
-		ExplicitInventory: &inv,
-	})
-	if err == nil || !strings.Contains(err.Error(), "credentialRef is required") {
-		t.Fatalf("ResolveTopology() error = %v, want explicit inventory credential failure", err)
-	}
-}
-
 func TestSaveAndUpsertClusterPreservePrivateConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "katlctl.yaml")
 	cfg := Config{}.UpsertCluster("lab", Cluster{
 		Name:  "lab",
-		Nodes: []Node{{Name: "cp-1", ManagementEndpoint: "cp-1.test:9443", SystemRole: inventory.RoleControlPlane, CredentialRef: "file:/secure/cp-1.token"}},
+		Nodes: []Node{{Name: "cp-1", ManagementEndpoint: "cp-1.test:9443", SystemRole: inventory.RoleControlPlane}},
 	})
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
@@ -308,16 +251,6 @@ func TestSaveAndUpsertClusterPreservePrivateConfig(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v", info.Mode().Perm())
-	}
-}
-
-func TestCredentialPathLivesBesideConfig(t *testing.T) {
-	path, err := CredentialPath("/tmp/katl/katlctl.yaml", "lab", "cp-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path != "/tmp/katl/credentials/lab/cp-1.token" {
-		t.Fatalf("CredentialPath() = %q", path)
 	}
 }
 
@@ -344,20 +277,16 @@ clusters:
   - name: cp-1
     managementEndpoint: cp-1.prod.test:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/cp-1.token
   - name: cp-2
     managementEndpoint: cp-2.prod.test:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/cp-2.token
   - name: worker-1
     managementEndpoint: worker-1.prod.test:9443
     systemRole: worker
-    credentialRef: file:/secure/katl/worker-1.token
 - name: katl-stage
   nodes:
   - name: stage-cp
     managementEndpoint: stage-cp.test:9443
     systemRole: control-plane
-    credentialRef: file:/secure/katl/stage-cp.token
 `
 }

@@ -223,7 +223,7 @@ node entry includes:
 name
 address
 systemRole
-access method and credentials reference, not inline secret values
+management transport method
 cluster intent reference for the node's bootstrap profile
 requested Kubernetes payload version
 ```
@@ -532,7 +532,7 @@ uses the existing operation result vocabulary such as `timed-out` or
 bootstrap mutation happened. Generation 0 remains the persistent boot target. A
 re-attempt is allowed after operator action fixes the cause, such as updating
 config, cluster intent, artifacts, network reachability, bootstrap profile
-input, or agent credentials. The re-attempt is a new operation with its own
+input. The re-attempt is a new operation with its own
 operation id and request digest unless the exact same request digest is being
 retried.
 

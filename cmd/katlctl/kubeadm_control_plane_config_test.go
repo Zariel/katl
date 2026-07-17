@@ -40,7 +40,7 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 	byEndpoint := map[string]*fakeKatlcAgentClient{"192.0.2.1:9443": clients["cp-1"], "192.0.2.2:9443": clients["cp-2"], "192.0.2.3:9443": clients["cp-3"]}
 	previous := dialKatlcAgent
 	defer func() { dialKatlcAgent = previous }()
-	dialKatlcAgent = func(_ context.Context, endpoint, token string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
 		client := byEndpoint[endpoint]
 		if client == nil {
 			return katlcAgentConnection{}, os.ErrNotExist

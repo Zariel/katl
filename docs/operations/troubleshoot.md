@@ -41,8 +41,7 @@ First discover current and recent durable operations through the agent:
 
 ```sh
 katlctl operations list \
-  --endpoint affected-node.example.test:9443 \
-  --agent-token-file ./tokens/affected-node.token
+  --endpoint affected-node.example.test:9443
 ```
 
 Use `katlctl operations status --operation-id ID --diagnostics verbose` when an
@@ -95,12 +94,10 @@ Confirm the service and listener on the isolated management network:
 ```sh
 systemctl status katlc-agent.service --no-pager
 ss -lntp | grep ':9443'
-stat -c '%a %U:%G %n' /var/lib/katl/agent/token
 ```
 
-Then confirm the workstation is using the token from that exact node. Do not
-print the token into diagnostics. The alpha agent transport is unencrypted; do
-not solve reachability by exposing port `9443` to an untrusted network.
+The alpha agent transport is unauthenticated and unencrypted; do not solve
+reachability by exposing port `9443` to an untrusted network.
 
 ## Reporting
 

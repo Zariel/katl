@@ -14,16 +14,15 @@ Normal input:
 
 ```text
 workstation context
-  The enrolled current context supplies node names, management endpoints,
-  roles, and credential references.
+  The saved current context supplies node names, management endpoints, and
+  roles.
 
 --config PATH
   Optional retained ClusterConfig YAML or compiled Katl config bundle when no
-  enrolled context is available. --inventory remains an expert alternative.
+  saved context is available. --inventory remains an expert alternative.
 
 --context NAME
-  Optional workstation context override for management addresses and
-  credential references.
+  Optional workstation context override for management addresses.
 ```
 
 Execution behavior:
@@ -41,7 +40,7 @@ Optional common flags:
 
 ```text
 --plan
-  Validate targets, credentials, and visible cluster state, then print the
+  Validate targets and visible cluster state, then print the
   planned per-node actions without accepting node-local operations.
 
 --timeout DURATION
@@ -56,10 +55,10 @@ Optional common flags:
   Optional advanced override for the automatically generated idempotency key.
 ```
 
-Authentication and authorization:
+Trust boundary and authorization:
 
-- `katlctl` authenticates to each node-local `katlc` agent using the inventory
-  access material for that node.
+- `katlctl` connects directly to each node-local `katlc` agent on the trusted
+  home-lab network; the alpha management transport has no client authentication.
 - `katlc` is the node-local authority for accepting and executing the wipe
   operation. It revalidates node identity, request identity, target disk
   identity, and operation locks before mutation.
@@ -129,8 +128,8 @@ Target selection:
 - Exactly one positional node name is required.
 - The node name must exist in the inventory and resolve to one node-local katlc
   endpoint.
-- `--config` may be omitted when an enrolled workstation context supplies the
-  topology and node credential reference.
+- `--config` may be omitted when a saved workstation context supplies the
+  topology.
 
 Graceful Kubernetes cleanup:
 

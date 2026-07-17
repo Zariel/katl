@@ -435,16 +435,11 @@ topology, roles, kubeadm references, Kubernetes version, and OCI bundle
 selection. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
 
-Each freshly installed node generates a distinct agent token. Enroll the
-installed nodes before bootstrap:
-
-```text
-katlctl cluster enroll --config ./cluster.yaml
-```
-
-`katlctl` retrieves the tokens over SSH, stores them at the `file:` credential
-references with mode `0600`, verifies every management endpoint, and creates a
-workstation context. Do not put token values in `ClusterConfig`.
+The management API is intentionally credential-free on Katl's supported
+trusted home-lab network. Bootstrap requires no enrollment or token exchange.
+`katlctl context save --config ./cluster.yaml` is optional shorthand that
+checks the management endpoints and saves their topology as the current
+workstation context for later node operations.
 
 `katlctl` is a bounded client. Node-local `katlc` validates and records the
 authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and
@@ -469,8 +464,8 @@ Optionally plan the exact per-node runtime request through the node agent:
 katlctl node apply --config ./cluster.yaml --node cp-1 --plan
 ```
 
-`katlctl` derives the source version, candidate generation, authenticated
-endpoint, validation request, and operation tracking. These are internal
+`katlctl` derives the source version, candidate generation, management endpoint,
+validation request, and operation tracking. These are internal
 replay and lifecycle details, not operator inputs.
 
 If the source has already been compiled, use the bundle instead of
