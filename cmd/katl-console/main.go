@@ -183,7 +183,9 @@ func (r *journalRing) Add(line []byte) {
 		return
 	}
 	r.mu.Lock()
-	copy(r.nextLineLocked(len(line)), line)
+	index, target := r.nextLineLocked(len(line))
+	copy(target, line)
+	r.lines[index] = compactJournalTimestamp(target)
 	r.mu.Unlock()
 }
 
@@ -193,11 +195,12 @@ func (r *journalRing) AddString(line string) {
 		return
 	}
 	r.mu.Lock()
-	copy(r.nextLineLocked(len(line)), line)
+	_, target := r.nextLineLocked(len(line))
+	copy(target, line)
 	r.mu.Unlock()
 }
 
-func (r *journalRing) nextLineLocked(length int) []byte {
+func (r *journalRing) nextLineLocked(length int) (int, []byte) {
 	index := (r.start + r.count) % len(r.lines)
 	if r.count == len(r.lines) {
 		index = r.start
@@ -210,7 +213,80 @@ func (r *journalRing) nextLineLocked(length int) []byte {
 	} else {
 		r.lines[index] = r.lines[index][:length]
 	}
-	return r.lines[index]
+	return index, r.lines[index]
+}
+
+func compactJournalTimestamp(line []byte) []byte {
+	if !journalDateTimePrefix(line) {
+		return line
+	}
+
+	position := len("2006-01-02T15:04:05")
+	fractionEnd := position
+	if position < len(line) && line[position] == '.' {
+		fractionEnd++
+		for fractionEnd < len(line) && isDigit(line[fractionEnd]) {
+			fractionEnd++
+		}
+		if fractionEnd == position+1 {
+			return line
+		}
+		position = fractionEnd
+	}
+
+	timestampEnd := position
+	switch {
+	case position < len(line) && line[position] == 'Z':
+		timestampEnd++
+	case validJournalTimezone(line, position):
+		if position+3 < len(line) && line[position+3] == ':' {
+			timestampEnd += len("+00:00")
+		} else {
+			timestampEnd += len("+0000")
+		}
+	}
+	if timestampEnd >= len(line) || line[timestampEnd] != ' ' {
+		return line
+	}
+
+	line[10] = ' '
+	keepEnd := len("2006-01-02T15:04:05")
+	if fractionEnd > keepEnd {
+		fractionDigits := fractionEnd - keepEnd - 1
+		if fractionDigits > 3 {
+			fractionDigits = 3
+		}
+		keepEnd += 1 + fractionDigits
+	}
+	return line[:keepEnd+copy(line[keepEnd:], line[timestampEnd:])]
+}
+
+func journalDateTimePrefix(line []byte) bool {
+	if len(line) < len("2006-01-02T15:04:05") {
+		return false
+	}
+	for _, position := range [...]int{0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18} {
+		if !isDigit(line[position]) {
+			return false
+		}
+	}
+	return line[4] == '-' && line[7] == '-' && line[10] == 'T' && line[13] == ':' && line[16] == ':'
+}
+
+func validJournalTimezone(line []byte, position int) bool {
+	if position >= len(line) || (line[position] != '+' && line[position] != '-') {
+		return false
+	}
+	if position+5 < len(line) && line[position+3] == ':' {
+		return isDigit(line[position+1]) && isDigit(line[position+2]) &&
+			isDigit(line[position+4]) && isDigit(line[position+5])
+	}
+	return position+4 < len(line) && isDigit(line[position+1]) && isDigit(line[position+2]) &&
+		isDigit(line[position+3]) && isDigit(line[position+4])
+}
+
+func isDigit(value byte) bool {
+	return value >= '0' && value <= '9'
 }
 
 func (r *journalRing) AppendTail(dst []byte, rows, width int) ([]byte, int) {
