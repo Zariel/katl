@@ -89,11 +89,12 @@ Use `direnv` plus `nix-direnv` if you want the flake shell loaded
 automatically when entering the repository.
 
 That shell provides the Go and protobuf toolchain, Git, OpenSSH, `jq`, `curl`,
-and Podman. Image construction stays behind `scripts/mkosi`; mkosi, Fedora
-package tools, UKI tooling, filesystem tools, and compression tools run inside
-its builder container instead of being installed on the host.
+Podman, libvirt clients, QEMU image tooling, OVMF firmware, and the filesystem
+and artifact-inspection tools used by VM tests. Image construction stays behind
+`scripts/mkosi`; mkosi and Fedora package installation run inside its builder
+container.
 
-`katlctl` is also available in both development shells. It runs from the current
+`katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:
 
 ```sh
@@ -106,16 +107,9 @@ Build current artifacts through the supported container wrapper:
 nix develop --command scripts/mkosi build-installer
 ```
 
-For manual VM work and VM tests, use the optional VM shell:
-
-```sh
-nix develop .#vm
-```
-
-The VM shell adds libvirt client tools, QEMU image tooling, and OVMF firmware
-packages. It does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`,
-networks, storage pools, or polkit access; keep those in the NixOS host
-configuration.
+The development shell includes the complete supported VM test toolchain. It
+does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`, networks, storage
+pools, or polkit access; keep those in the host configuration.
 
 The host must provide:
 
@@ -415,13 +409,13 @@ is done.
 
 ### Capable-Host Proof
 
-Run the full enabled world suite from the Nix VM shell on a host with readable
-OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
+Run the full enabled world suite from the Nix development shell on a host with
+readable OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
 libvirt system access, an active libvirt network, and an active libvirt storage
 pool:
 
 ```sh
-nix develop .#vm -c env \
+nix develop -c env \
   KATL_VMTEST_RUN_ID=capable-host-$(date -u +%Y%m%dT%H%M%SZ) \
   scripts/vmtest-run ./... -count=1
 ```

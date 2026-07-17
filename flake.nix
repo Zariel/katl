@@ -24,46 +24,39 @@
           exec ${pkgs.go}/bin/go run "$repo_root/cmd/katlctl" "$@"
         '';
       shellFor =
-        pkgs: vmTools:
+        pkgs:
         pkgs.mkShell {
           packages =
             (with pkgs; [
               bashInteractive
               cacert
+              cpio
               curl
+              dosfstools
               git
               go
               jq
+              kubectl
+              libvirt
+              mtools
+              OVMFFull
               openssh
               podman
               protobuf
               protoc-gen-go
               protoc-gen-go-grpc
+              qemu_kvm
+              rpm
+              squashfsTools
+              systemdUkify
+              util-linux
+              xorriso
+              zstd
             ])
-            ++ [ (katlctlFor pkgs) ]
-            ++ pkgs.lib.optionals vmTools (
-              with pkgs;
-              [
-                kubectl
-                libvirt
-                mtools
-                OVMFFull
-                qemu_kvm
-                cpio
-                dosfstools
-                rpm
-                squashfsTools
-                systemdUkify
-                util-linux
-                xorriso
-                zstd
-              ]
-            );
+            ++ [ (katlctlFor pkgs) ];
 
           shellHook = ''
             export TMPDIR="''${TMPDIR:-/tmp}"
-          ''
-          + pkgs.lib.optionalString vmTools ''
             export KATL_OVMF_CODE="''${KATL_OVMF_CODE:-${pkgs.OVMFFull.fd}/FV/OVMF_CODE.fd}"
             export KATL_OVMF_VARS="''${KATL_OVMF_VARS:-${pkgs.OVMFFull.fd}/FV/OVMF_VARS.fd}"
             export KATL_VMTEST_IMAGE_TOOL="''${KATL_VMTEST_IMAGE_TOOL:-${pkgs.qemu_kvm}/bin/qemu-img}"
@@ -81,8 +74,7 @@
           pkgs = pkgsFor system;
         in
         {
-          default = shellFor pkgs false;
-          vm = shellFor pkgs true;
+          default = shellFor pkgs;
         }
       );
     };
