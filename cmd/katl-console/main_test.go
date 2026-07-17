@@ -25,9 +25,48 @@ func TestJournalUsesDateTimeTimestamps(t *testing.T) {
 	}
 }
 
+func TestJournalRingCompactsDateTimeTimestamps(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "seconds",
+			line: "2026-07-17T18:02:03+0100 host service[1]: ready",
+			want: "2026-07-17 18:02:03 host service[1]: ready\n",
+		},
+		{
+			name: "milliseconds",
+			line: "2026-07-17T18:02:03.123456+01:00 host service[1]: ready",
+			want: "2026-07-17 18:02:03.123 host service[1]: ready\n",
+		},
+		{
+			name: "short fraction",
+			line: "2026-07-17T18:02:03.1Z host service[1]: ready",
+			want: "2026-07-17 18:02:03.1 host service[1]: ready\n",
+		},
+		{
+			name: "non timestamp",
+			line: "journal stream unavailable: disconnected",
+			want: "journal stream unavailable: disconnected\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ring := newJournalRing(1)
+			ring.Add([]byte(test.line))
+			got, _ := ring.AppendTail(make([]byte, 0, 128), 1, 128)
+			if string(got) != test.want {
+				t.Fatalf("journal line = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestJournalRingReusesPreallocatedLines(t *testing.T) {
 	ring := newJournalRing(2)
-	line := []byte(strings.Repeat("x", journalLineCapacity))
+	line := []byte("2026-07-17T18:02:03.123456+01:00 " + strings.Repeat("x", journalLineCapacity-39))
 	buffer := make([]byte, 0, 4096)
 	allocations := testing.AllocsPerRun(1000, func() {
 		ring.Add(line)
