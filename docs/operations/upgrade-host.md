@@ -47,6 +47,14 @@ committed, booted, and healthy. The default result is concise text; use
 `--output json` when automation needs the structured `rebooted` and
 `bootHealth` fields. Check workload availability before upgrading another host.
 
+During the reboot, the console may show a containerd stop-job
+countdown after the containerd daemon has exited. Containerd deliberately keeps
+its shim processes across ordinary daemon restarts; a full host shutdown lets
+systemd finish the remaining workload and shim cleanup. Allow that shutdown to
+complete rather than forcing power off, which can increase the risk of
+workload data loss. If it repeatedly reaches the systemd timeout, preserve the
+previous-boot journal before retrying the upgrade.
+
 ## Failure Boundary
 
 Boot health may select the previous known-good host generation. `katlctl`
