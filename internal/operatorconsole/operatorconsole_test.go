@@ -41,6 +41,16 @@ func TestWriteAndReadHandoff(t *testing.T) {
 	}
 }
 
+func TestReadHandoffRejectsSemanticallyCorruptRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "handoff.json")
+	if err := os.WriteFile(path, []byte(`{"url":"file:///tmp/config"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadHandoff(path); err == nil || !strings.Contains(err.Error(), "absolute HTTP or HTTPS") {
+		t.Fatalf("ReadHandoff() error = %v", err)
+	}
+}
+
 func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 	root := t.TempDir()
 	statusPath := filepath.Join(root, "status.json")
