@@ -370,7 +370,7 @@ func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
 }
 
 func TestRequiredArgumentCommandsPrintHelpWhenEmpty(t *testing.T) {
-	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}, {"operations", "status"}} {
+	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}} {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
 			t.Errorf("katlctl %s: %v", strings.Join(args, " "), err)
@@ -2231,6 +2231,7 @@ type fakeKatlcAgentClient struct {
 	operationStatus   *agentapi.OperationStatus
 	operationRequest  *agentapi.GetOperationRequest
 	operations        *agentapi.ListOperationsResponse
+	operationLists    []*agentapi.ListOperationsResponse
 	operationsRequest *agentapi.ListOperationsRequest
 	onSubmit          func(*agentapi.SubmitOperationRequest)
 	rebootRequests    []*agentapi.RebootRequest
@@ -2362,6 +2363,11 @@ func (c *fakeKatlcAgentClient) GetOperation(_ context.Context, req *agentapi.Get
 
 func (c *fakeKatlcAgentClient) ListOperations(_ context.Context, req *agentapi.ListOperationsRequest, _ ...grpc.CallOption) (*agentapi.ListOperationsResponse, error) {
 	c.operationsRequest = req
+	if len(c.operationLists) > 0 {
+		response := c.operationLists[0]
+		c.operationLists = c.operationLists[1:]
+		return response, nil
+	}
 	if c.operations == nil {
 		return &agentapi.ListOperationsResponse{}, nil
 	}
