@@ -85,6 +85,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunReadiness:  runReadinessCommand,
 		RunPostHealth: runPostKubeadmHealthCommand,
 		MountBootRoot: mountRuntimeBootRoot,
+		BundleClient:  http.DefaultClient,
 		Async:         true,
 		workerCtx:     workerCtx,
 		workerCancel:  workerCancel,

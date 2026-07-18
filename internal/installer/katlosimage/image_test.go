@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -475,6 +476,31 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	}
 	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
 		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
+	}
+}
+
+func TestRemoteResolverTreatsTypedNilHTTPClientAsDefault(t *testing.T) {
+	imageBytes := []byte("remote squashfs image")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	}))
+	t.Cleanup(server.Close)
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = server.URL
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
+	mounter := &fixtureMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+	var client *http.Client
+
+	if _, err := (RemoteResolver{
+		WorkDir:  filepath.Join(t.TempDir(), "work"),
+		Commands: mounter,
+		Client:   client,
+	}).ResolveKatlosImage(context.Background(), expected); err != nil {
+		t.Fatalf("ResolveKatlosImage() error = %v", err)
 	}
 }
 

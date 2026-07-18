@@ -132,6 +132,13 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	}
 }
 
+func TestNewExecutorProvidesBundleHTTPClient(t *testing.T) {
+	executor := NewExecutor(t.TempDir(), operation.Store{}, "agent-test")
+	if executor.BundleClient == nil {
+		t.Fatal("BundleClient = nil, want default HTTP client")
+	}
+}
+
 func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	writeResetGenerationZero(t, server.Root)
