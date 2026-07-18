@@ -73,7 +73,7 @@ func ReadHandoff(path string) (Handoff, error) {
 
 func validateHandoff(record Handoff) error {
 	parsed, err := url.Parse(strings.TrimSpace(record.URL))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("handoff URL must be an absolute HTTP or HTTPS endpoint")
 	}
 	if !strings.HasSuffix(parsed.Path, "/v1/config-bundle") {

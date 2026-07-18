@@ -51,6 +51,16 @@ func TestReadHandoffRejectsSemanticallyCorruptRecord(t *testing.T) {
 	}
 }
 
+func TestValidateHandoffRejectsHostlessURL(t *testing.T) {
+	record := Handoff{
+		URL:       "http://:8080/v1/config-bundle",
+		UpdatedAt: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC),
+	}
+	if err := validateHandoff(record); err == nil || !strings.Contains(err.Error(), "absolute HTTP or HTTPS") {
+		t.Fatalf("validateHandoff() error = %v", err)
+	}
+}
+
 func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 	root := t.TempDir()
 	statusPath := filepath.Join(root, "status.json")
