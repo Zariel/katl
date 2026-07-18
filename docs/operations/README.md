@@ -1,6 +1,6 @@
 # KatlOS Operator Guide
 
-These runbooks describe the implemented KatlOS alpha operating surface. Start
+These runbooks describe the implemented KatlOS beta operating surface. Start
 with the task that matches the current node state; do not skip directly to a
 mutating command.
 
@@ -79,6 +79,6 @@ the planner so they produce an explicit lifecycle action instead of being
 silently ignored. Disk policy and Kubernetes version selection use their named
 install or upgrade workflows.
 
-There is no supported alpha workflow for automatic host fleet rollout, etcd
+There is no supported beta workflow for automatic host fleet rollout, etcd
 disaster recovery, failed control-plane replacement, agent-token rotation, or
 general cluster reconciliation.

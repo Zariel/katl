@@ -1,10 +1,16 @@
 # KatlOS Alpha Release Readiness
 
-Status: active release checklist for the first public alpha.
+Status: historical alpha checklist, superseded by the `2026.7.0-beta.1`
+home-lab evaluation boundary after `2026.7.0-alpha.17`.
 
 ## Release Decision
 
-The next non-development release should be `2026.7.0-alpha.1`, not a beta.
+The next release is `2026.7.0-beta.1`. In this project, beta means the normal
+home-lab install, bootstrap, upgrade, and management journeys are coherent
+enough for broader evaluation. It does not mean production support, a stable
+API or persisted-state contract, authenticated management, or a general
+hardware compatibility promise. Those limits remain explicit in
+[`../support.md`](../support.md).
 
 The v0.1 implementation has proved the intended lifecycle: reusable release
 artifacts, installation to generation 0, multi-node Kubernetes bootstrap,
@@ -15,10 +21,9 @@ configuration must drive the documented journey, the release must carry honest
 maturity metadata, and the release-built path must be repeated with retained
 evidence.
 
-Beta would imply that users can depend on stable authoring and persisted-state
-contracts, routine upgrade and recovery policy, enforced artifact trust, and a
-continuously exercised capable-host matrix. Katl does not make those promises
-yet.
+Stable authoring and persisted-state contracts, production recovery policy,
+enforced artifact trust, and a continuously exercised capable-host matrix are
+post-beta maturity work. Katl does not make those promises yet.
 
 ## Intended Alpha User Journey
 
@@ -99,10 +104,10 @@ summary, the alpha may ship with these explicit boundaries:
 - readable Kubernetes bundle tags on the normal path, with immutable digest
   pins available as an optional reproducibility control.
 
-## Beta Blockers
+## Post-Beta Maturity Work
 
-The following work is deliberately not required to publish an alpha, but blocks
-a beta:
+The following work is not required for the home-lab beta boundary, but blocks a
+production-support or stable-contract claim:
 
 - stable source, runtime-change, config-bundle, operation, and persisted-state
   compatibility policy beyond `v1alpha1`;
@@ -119,10 +124,10 @@ a beta:
 - an explicit hardware support and compatibility matrix rather than
   evidence-only experimental coverage.
 
-## Ship Rule
+## Historical Alpha Ship Rule
 
-Publish `v2026.7.0-alpha.1` only when every alpha blocker above is closed or its
-external capability gap is named in the release notes, the public user-journey
-gate has passed against the exact release commit and artifacts, and the release
-is still marked as a GitHub prerelease. Do not rename incomplete alpha evidence
-as beta readiness.
+The first alpha required every alpha blocker above to be closed or its external
+capability gap named in the release notes, a public user-journey gate against
+the exact release commit and artifacts, and GitHub prerelease metadata. Beta
+releases remain GitHub prereleases and continue to ship the explicit support
+boundary with every release.

@@ -1,13 +1,13 @@
 # KatlOS Support Boundary
 
-KatlOS is experimental alpha software for evaluation and development. It is not
-supported for production clusters, security-sensitive workloads, compliance
-environments, or systems whose availability depends on KatlOS. There is no
-support SLA, security-response SLA, or compatibility guarantee.
+KatlOS is experimental beta software for home-lab evaluation and development.
+It is not supported for production clusters, security-sensitive workloads,
+compliance environments, or systems whose availability depends on KatlOS.
+There is no support SLA, security-response SLA, or compatibility guarantee.
 
 ## Supported Evaluation Surface
 
-The first alpha release surface is deliberately narrow:
+The beta release surface is deliberately narrow:
 
 - x86-64 machines booted with UEFI;
 - the self-contained installer ISO, or the matching loose UEFI/PXE artifacts;
@@ -60,8 +60,8 @@ This proves which repository workflow produced the bytes. It does not provide:
 ## Compatibility Promise
 
 All `v1alpha1` source, bundle, operation, API, and persisted-state formats are
-experimental. They may change incompatibly between alpha releases. Katl does
-not promise forward or backward compatibility with another alpha, automatic
+experimental. They may change incompatibly between beta releases. Katl does
+not promise forward or backward compatibility with another beta, automatic
 state migration, or an upgrade path from every development build. Preserve the
 source `ClusterConfig`, exact release assets, checksums, OCI digests, and
 recovery data. Reinstall may be required after an incompatible change.
@@ -88,7 +88,7 @@ rollback as a cluster backup.
 
 ## Explicitly Unsupported
 
-Do not use the alpha as the basis for:
+Do not use the beta as the basis for:
 
 - production, regulated, multi-tenant, or security-critical clusters;
 - an availability or disaster-recovery commitment;

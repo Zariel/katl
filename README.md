@@ -14,9 +14,10 @@ uses standard Linux interfaces—systemd-boot, UKIs, `systemd-sysext`,
 them behind a new cluster API.
 
 > [!WARNING]
-> KatlOS is experimental alpha software. Do not use it for production,
-> security-sensitive, regulated, or availability-critical clusters. Alpha
-> formats and workflows may change incompatibly and reinstall may be required.
+> KatlOS is experimental beta software for home-lab evaluation. Do not use it
+> for production, security-sensitive, regulated, or availability-critical
+> clusters. Beta formats and workflows may change incompatibly and reinstall
+> may be required.
 > Read the [support boundary](docs/support.md) before evaluating a release.
 
 ## What Katl provides
@@ -84,7 +85,7 @@ trusted-home-network path; see [Verify release artifacts](docs/operations/verify
 Install the matching operator CLI and confirm its embedded identity:
 
 ```sh
-VERSION=2026.7.0-alpha.2
+VERSION=2026.7.0-beta.1
 install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
 katlctl version
 ```
@@ -252,7 +253,7 @@ Host upgrades take a release version and select the node from `ClusterConfig`.
 for the new generation to pass boot health:
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 cp-1 --config ./cluster.yaml
+katlctl node upgrade v2026.7.0-beta.1 cp-1 --config ./cluster.yaml
 ```
 
 Add `--plan` to check the upgrade without changing or rebooting the node. The

@@ -119,4 +119,4 @@ operation: if kubeadm or API mutation began, host generation rollback does not
 erase it. Preserve the command result and follow [Troubleshoot
 KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
 [Upgrade Kubernetes](upgrade-kubernetes.md) workflow. Additional-control-plane
-repair and general reconciliation remain unsupported alpha operations.
+repair and general reconciliation remain unsupported beta operations.
