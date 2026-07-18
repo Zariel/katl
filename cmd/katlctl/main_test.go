@@ -1772,6 +1772,24 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestWipeTextLabelsRefusedNodes(t *testing.T) {
+	report := wipeClusterReport{
+		Plan:    true,
+		Targets: []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes:   []wipeClusterNodeResult{{Node: "cp-1", Result: "refused", Diagnostics: []string{"operation lock is held"}}},
+		Refusals: []string{
+			"node-local preflight failed for: cp-1",
+		},
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "cp-1") || !strings.Contains(stdout.String(), "refused") || strings.Contains(stdout.String(), "planned") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyFixture(t, root, configApplyFixture{

@@ -668,6 +668,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	report.Command = opts.command
 	if target.SystemRole == inventory.RoleControlPlane {
 		report.KubernetesCleanup = "refused"
+		report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
 		report.Refusals = append(report.Refusals, "single control-plane wipe requires etcd membership coordination before node-local reset")
 		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 			return printErr
@@ -931,12 +932,14 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
 		if strings.TrimSpace(node.Address) == "" {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, "inventory node address is required")
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
 			continue
 		}
 		if node.Access.Method != "agent" {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("inventory access method %q is not supported", node.Access.Method))
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
@@ -944,6 +947,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 		}
 		conn, err := connector.Connect(ctx, node)
 		if err != nil {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
@@ -961,6 +965,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(closeErr.Error()))
 		}
 		if len(result.Diagnostics) > 0 {
+			result.Result = "refused"
 			failures = append(failures, node.Name)
 		}
 		report.Nodes = append(report.Nodes, result)
