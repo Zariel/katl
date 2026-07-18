@@ -137,7 +137,7 @@ func writeSnapshot(path string, data []byte) error {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o644); err != nil {
+	if err := temporary.Chmod(0o600); err != nil {
 		temporary.Close()
 		return err
 	}
