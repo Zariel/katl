@@ -3,6 +3,7 @@ package operatorconsole
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,9 @@ func WriteHandoff(path, url string) error {
 	}
 	if strings.TrimSpace(url) == "" {
 		return fmt.Errorf("handoff URL is required")
+	}
+	if err := validateHandoff(record); err != nil {
+		return err
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -61,5 +65,22 @@ func ReadHandoff(path string) (Handoff, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return Handoff{}, fmt.Errorf("decode handoff projection: %w", err)
 	}
+	if err := validateHandoff(record); err != nil {
+		return Handoff{}, fmt.Errorf("validate handoff projection: %w", err)
+	}
 	return record, nil
+}
+
+func validateHandoff(record Handoff) error {
+	parsed, err := url.Parse(strings.TrimSpace(record.URL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("handoff URL must be an absolute HTTP or HTTPS endpoint")
+	}
+	if !strings.HasSuffix(parsed.Path, "/v1/config-bundle") {
+		return fmt.Errorf("handoff URL must identify the config-bundle endpoint")
+	}
+	if record.UpdatedAt.IsZero() {
+		return fmt.Errorf("handoff updatedAt is required")
+	}
+	return nil
 }
