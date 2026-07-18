@@ -513,7 +513,8 @@ func ValidateBootTransition(from string, to string) error {
 		BootStatePending + "->" + BootStateGood,
 		BootStateTrying + "->" + BootStateGood,
 		BootStatePending + "->" + BootStateFailed,
-		BootStateTrying + "->" + BootStateFailed:
+		BootStateTrying + "->" + BootStateFailed,
+		BootStateGood + "->" + BootStateFailed:
 		return nil
 	default:
 		return fmt.Errorf("invalid bootState transition %s -> %s", from, to)

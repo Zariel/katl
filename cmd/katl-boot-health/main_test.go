@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 )
 
 func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
+	stubSystemdFailedUnits(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 16, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
@@ -54,6 +56,7 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 }
 
 func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
+	stubSystemdFailedUnits(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
@@ -96,6 +99,46 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "generation=gen1") || !strings.Contains(stdout.String(), "promoted=true") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunRejectsFailedSystemdUnits(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-30*time.Minute))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:          generation.APIVersion,
+		Kind:                generation.BootSelectionKind,
+		DefaultGenerationID: "gen0",
+		BootedGenerationID:  "gen0",
+		DefaultBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:     "loader/entries/katl-gen0.conf",
+		UpdatedAt:           now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("WriteBootSelection() error = %v", err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+	oldCheck := systemdFailedUnits
+	systemdFailedUnits = func(context.Context) ([]string, error) {
+		return []string{"boot.automount", "example.service"}, nil
+	}
+	t.Cleanup(func() { systemdFailedUnits = oldCheck })
+
+	var stdout bytes.Buffer
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "boot.automount, example.service") {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "failed=true") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	_, status, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatalf("ReadGeneration(gen0) error = %v", err)
+	}
+	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy {
+		t.Fatalf("status = %#v, want failed/unhealthy", status)
 	}
 }
 
@@ -186,4 +229,11 @@ func writeCommandLine(t *testing.T, root string, commandLine string) string {
 		t.Fatal(err)
 	}
 	return cmdline
+}
+
+func stubSystemdFailedUnits(t *testing.T) {
+	t.Helper()
+	oldCheck := systemdFailedUnits
+	systemdFailedUnits = func(context.Context) ([]string, error) { return nil, nil }
+	t.Cleanup(func() { systemdFailedUnits = oldCheck })
 }
