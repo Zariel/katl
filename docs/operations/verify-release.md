@@ -9,7 +9,7 @@ release; never mix files from different tags.
 
 ## Inputs
 
-- exact KatlOS tag, such as `v2026.7.0-alpha.2`;
+- exact KatlOS tag, such as `v2026.7.0-beta.1`;
 - assets required for the chosen operation;
 - `SHA256SUMS`; and
 - `PROVENANCE.md`.
@@ -53,7 +53,7 @@ Authenticate each executable or image asset against the exact tag and Katl
 release workflow:
 
 ```sh
-TAG=v2026.7.0-alpha.2
+TAG=v2026.7.0-beta.1
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
@@ -69,7 +69,7 @@ attestation verification passed.
 Install the matching CLI under its stable name and inspect its identity:
 
 ```sh
-VERSION=2026.7.0-alpha.2
+VERSION=2026.7.0-beta.1
 install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
 katlctl version
 ```

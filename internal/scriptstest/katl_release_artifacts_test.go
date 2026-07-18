@@ -96,6 +96,7 @@ func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
 	}
 	notes := string(output)
 	for _, value := range []string{
+		"experimental beta release for home-lab evaluation",
 		"publish first beta",
 		"v2026.7.0-alpha.1...v2026.7.0-beta.1",
 	} {

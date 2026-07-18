@@ -96,7 +96,7 @@ systemctl status katlc-agent.service --no-pager
 ss -lntp | grep ':9443'
 ```
 
-The alpha agent transport is unauthenticated and unencrypted; do not solve
+The beta agent transport is unauthenticated and unencrypted; do not solve
 reachability by exposing port `9443` to an untrusted network.
 
 ## Reporting

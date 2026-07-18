@@ -65,6 +65,8 @@ generate_release_notes() {
     printf '## Support boundary\n\n'
     if [[ "$version" == *-alpha.* ]]; then
         printf 'This is an experimental alpha release, not a production-supported release. '
+    elif [[ "$version" == *-beta.* ]]; then
+        printf 'This is an experimental beta release for home-lab evaluation, not a production-supported release. '
     fi
     printf 'Read SUPPORT.md before installation for the tested surface, trust and compatibility limits, recovery scope, and required issue evidence.\n\n'
 

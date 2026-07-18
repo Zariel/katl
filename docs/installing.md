@@ -1,6 +1,6 @@
 # Installing KatlOS
 
-Status: early user-facing guide. KatlOS is experimental alpha software; read
+Status: early user-facing guide. KatlOS is experimental beta software; read
 the [support boundary](support.md) before installing it.
 
 This document is the installation reference for ISO and PXE paths. After
@@ -50,7 +50,7 @@ Install it under the stable command name and confirm that its embedded release
 identity matches the KatlOS release:
 
 ```sh
-VERSION=2026.7.0-alpha.2
+VERSION=2026.7.0-beta.1
 install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
 katlctl version
 ```
@@ -117,7 +117,7 @@ Then authenticate each asset against the keyless GitHub attestation issued to
 the Katl release workflow. Pin the expected tag in the verification policy:
 
 ```sh
-TAG=v2026.7.0-alpha.2
+TAG=v2026.7.0-beta.1
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \

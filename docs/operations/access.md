@@ -5,7 +5,7 @@ configuration, node upgrade, or wipe operations.
 
 ## Security Boundary
 
-The alpha `katlc` agent listens on TCP port `9443` without authentication or
+The beta `katlc` agent listens on TCP port `9443` without authentication or
 transport encryption. This is deliberate for Katl's trusted home-lab network:
 routine management must not require credential enrollment. Do not expose it to
 the public Internet, an untrusted LAN, or a shared production network. Restrict
@@ -111,6 +111,6 @@ Use SSH for an interactive shell and arbitrary system administration. The
 KatlOS management API intentionally exposes bounded lifecycle operations rather
 than remote command execution.
 
-There is no node credential to rotate in the alpha management path. If the
+There is no node credential to rotate in the beta management path. If the
 trusted management network is exposed, isolate the node and restore the network
 boundary before resuming lifecycle operations.
