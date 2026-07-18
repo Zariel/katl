@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -2011,6 +2012,40 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	}
 	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plan=%t", plan), func(t *testing.T) {
+			fake := &fakeKatlcAgentClient{validateResult: &agentapi.ConfigValidationResult{
+				Accepted:  true,
+				NoChanges: true,
+			}}
+			oldDial := dialKatlcAgent
+			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+				return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+			}
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			args := []string{"node", "apply", "--endpoint", "node-a.example.test:9443", "--config", configPath}
+			if plan {
+				args = append(args, "--plan")
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "configuration already matches") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			if fake.submitRequest != nil || fake.stageRequest != nil || fake.applyRequest != nil {
+				t.Fatalf("no-op submitted mutation: submit=%+v stage=%+v apply=%+v", fake.submitRequest, fake.stageRequest, fake.applyRequest)
+			}
+		})
 	}
 }
 

@@ -127,6 +127,17 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	decoded.GenerationID = candidateID
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
+		if errors.Is(err, configapply.ErrNoChanges) {
+			return &agentapi.ConfigValidationResult{
+				ApiVersion:            APIVersion,
+				Kind:                  "ConfigValidationResult",
+				Accepted:              true,
+				RequestDigest:         requestDigest,
+				RequestedApplyMode:    applyMode,
+				CandidateGenerationId: candidateID,
+				NoChanges:             true,
+			}, nil
+		}
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
 	}
 	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)

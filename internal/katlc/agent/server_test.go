@@ -708,6 +708,47 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAcceptsDesiredStateThatAlreadyMatches(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-no-change",
+		Actor:                 "test-actor",
+		ApplyMode:             generation.ApplyModeAuto,
+		CandidateGenerationId: "generation-no-change",
+		ConfigYaml: strings.Join([]string{
+			"apiVersion: katl.dev/v1alpha1",
+			"kind: NodeConfigurationChange",
+			"metadata:",
+			"  sourceID: operator",
+			"  desiredVersion: \"4\"",
+			"apply:",
+			"  mode: auto",
+			"spec:",
+			"  clusterDefaults:",
+			"    identity:",
+			"      hostname: node-a",
+			"      authorizedKeys:",
+			"        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl",
+			"    systemRole: control-plane",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.GetAccepted() || !result.GetNoChanges() || len(result.GetChangedDomains()) != 0 {
+		t.Fatalf("validation result = %+v, want accepted no-op", result)
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record", len(entries))
+	}
+}
+
 func TestValidateConfigRejectsMissingKubeadmConfigRefWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)

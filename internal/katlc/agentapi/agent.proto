@@ -99,6 +99,7 @@ message ConfigValidationResult {
   repeated string changed_domains = 8;
   repeated string diagnostics = 9;
   string failure_reason = 10;
+  bool no_changes = 11;
 }
 
 message GenerationApplyRequest {

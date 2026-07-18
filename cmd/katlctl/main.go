@@ -1757,6 +1757,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			if !result.Accepted {
 				return fmt.Errorf("configuration for %s was rejected: %s", opts.nodeConfig.nodeName, firstNonEmpty(result.FailureReason, strings.Join(result.Diagnostics, "; ")))
 			}
+			if result.GetNoChanges() {
+				fmt.Fprintf(stdout, "%s configuration already matches\n", opts.nodeConfig.nodeName)
+				return nil
+			}
 			fmt.Fprintf(stdout, "%s configuration is valid; apply mode %s\n", opts.nodeConfig.nodeName, result.AcceptedApplyMode)
 			for _, diagnostic := range result.Diagnostics {
 				fmt.Fprintf(stdout, "- %s\n", diagnostic)
@@ -1807,6 +1811,20 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 				return fmt.Errorf("config validation rejected: %s", result.FailureReason)
 			}
 			return fmt.Errorf("config validation rejected: %s", strings.Join(result.Diagnostics, "; "))
+		}
+		if result.GetNoChanges() {
+			if opts.output == "json" {
+				publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
+				publicResult.RequestDigest = ""
+				data, marshalErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicResult)
+				if marshalErr != nil {
+					return fmt.Errorf("marshal validation result: %w", marshalErr)
+				}
+				_, err = stdout.Write(append(data, '\n'))
+				return err
+			}
+			fmt.Fprintf(stdout, "%s configuration already matches\n", opts.nodeConfig.nodeName)
+			return nil
 		}
 		operationKind, err := configApplyOperationKind(result.AcceptedApplyMode)
 		if err != nil {
