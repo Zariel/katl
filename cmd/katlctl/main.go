@@ -1182,18 +1182,26 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 	results := make(map[string]string, len(report.Nodes))
 	for _, node := range report.Nodes {
 		result := node.Result
-		if result == "" && node.Accepted {
-			result = "accepted"
-		}
 		if result == "" {
-			result = "planned"
+			switch {
+			case report.Plan:
+				result = "planned"
+			case node.Accepted:
+				result = "accepted"
+			default:
+				result = "failed"
+			}
 		}
 		results[node.Node] = result
 	}
 	for _, target := range report.Targets {
 		result := results[target.Name]
 		if result == "" {
-			result = "planned"
+			if report.Plan {
+				result = "planned"
+			} else {
+				result = "failed"
+			}
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", target.Name, target.SystemRole, target.Address, result)
 	}
@@ -1202,6 +1210,11 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 	}
 	for _, refusal := range report.Refusals {
 		fmt.Fprintf(stdout, "Refused: %s\n", refusal)
+	}
+	for _, node := range report.Nodes {
+		for _, diagnostic := range node.Diagnostics {
+			fmt.Fprintf(stdout, "%s: %s\n", node.Node, diagnostic)
+		}
 	}
 	return nil
 }

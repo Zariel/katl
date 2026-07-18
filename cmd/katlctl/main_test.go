@@ -1801,8 +1801,25 @@ func TestWipeTextLabelsRefusedNodes(t *testing.T) {
 	if err := printWipeText(&stdout, report); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "cp-1") || !strings.Contains(stdout.String(), "refused") || strings.Contains(stdout.String(), "planned") {
+	if !strings.Contains(stdout.String(), "cp-1") || !strings.Contains(stdout.String(), "refused") || !strings.Contains(stdout.String(), "operation lock is held") || strings.Contains(stdout.String(), "planned") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestWipeTextReportsSubmissionFailures(t *testing.T) {
+	report := wipeClusterReport{
+		Targets: []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes: []wipeClusterNodeResult{{
+			Node:        "cp-1",
+			Diagnostics: []string{"operationTimeout must not exceed 25m0s"},
+		}},
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "failed") || !strings.Contains(output, "cp-1: operationTimeout must not exceed 25m0s") || strings.Contains(output, "planned") {
+		t.Fatalf("stdout = %q", output)
 	}
 }
 
