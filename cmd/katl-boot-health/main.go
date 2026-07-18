@@ -21,7 +21,7 @@ func main() {
 	}
 }
 
-func run(_ context.Context, args []string, stdout io.Writer) error {
+func run(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("katl-boot-health", flag.ContinueOnError)
 	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
 	generationID := flags.String("generation", "", "selected generation id; defaults to katl.generation from cmdline")
@@ -47,15 +47,31 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	bootHealthClockValue := bootHealthClock()
+	requestedResult := strings.TrimSpace(*result)
+	requestedReason := strings.TrimSpace(*reason)
+	forceFailure := false
+	var failedUnits []string
+	if requestedResult == generation.BootHealthSuccess {
+		failedUnits, err = systemdFailedUnits(ctx)
+		if err != nil {
+			return fmt.Errorf("inspect systemd failed units: %w", err)
+		}
+		if len(failedUnits) > 0 {
+			requestedResult = generation.BootHealthFailure
+			requestedReason = "systemd failed units: " + strings.Join(failedUnits, ", ")
+			forceFailure = true
+		}
+	}
 	record, err := generation.RecordBootHealth(generation.BootHealthRequest{
 		Root:               *root,
 		GenerationID:       selected,
-		Result:             *result,
-		Reason:             *reason,
+		Result:             requestedResult,
+		Reason:             requestedReason,
 		Now:                bootHealthClockValue,
 		CommandLine:        commandLine,
 		RebootRequestPath:  *rebootRequestPath,
 		WriteRebootRequest: *requestReboot,
+		ForceFailure:       forceFailure,
 		SetBootDefault:     bootDefaultCommand,
 	})
 	if err != nil {
@@ -72,7 +88,27 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 			record.RebootRequested,
 		)
 	}
+	if len(failedUnits) > 0 {
+		return fmt.Errorf("systemd has failed units: %s", strings.Join(failedUnits, ", "))
+	}
 	return nil
+}
+
+var systemdFailedUnits = func(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "systemctl", "list-units", "--failed", "--no-legend", "--plain", "--no-pager")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("systemctl list-units --failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	var units []string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		units = append(units, fields[0])
+	}
+	return units, nil
 }
 
 var bootHealthClock = func() time.Time {

@@ -23,6 +23,7 @@ type BootHealthRequest struct {
 	Now                time.Time
 	RebootRequestPath  string
 	WriteRebootRequest bool
+	ForceFailure       bool
 	SetBootDefault     BootDefaultSetter
 }
 
@@ -166,7 +167,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
 	}
-	if status.BootState == BootStateGood && status.HealthState == HealthStateHealthy {
+	if status.BootState == BootStateGood && status.HealthState == HealthStateHealthy && !request.ForceFailure {
 		return BootHealthResult{
 			GenerationID:      generationID,
 			Result:            request.Result,
