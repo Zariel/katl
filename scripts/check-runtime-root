@@ -162,6 +162,7 @@ for path in \
     /usr/lib/os-release \
     /usr/bin/katlc \
     /usr/bin/katl-console \
+    /usr/bin/mount.nfs \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
