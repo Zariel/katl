@@ -9,9 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,10 +140,7 @@ type FileStatusWriter struct {
 }
 
 type HTTPHealthChecker struct {
-	Client   *http.Client
-	Resolver interface {
-		LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
-	}
+	Client *http.Client
 }
 
 type AlwaysReadyInterface struct{}
@@ -272,10 +267,6 @@ func (c *Controller) Stop(ctx context.Context) (Status, error) {
 }
 
 func (h HTTPHealthChecker) Check(ctx context.Context, health Health) HealthResult {
-	target := healthTarget(health)
-	if err := h.checkEndpointDNS(ctx, target, health.TLSServerName); err != nil {
-		return HealthResult{Healthy: false, Error: err.Error(), CheckedAt: time.Now().UTC()}
-	}
 	client := h.Client
 	if client == nil {
 		ca, err := os.ReadFile("/etc/kubernetes/pki/ca.crt")
@@ -299,6 +290,7 @@ func (h HTTPHealthChecker) Check(ctx context.Context, health Health) HealthResul
 			}},
 		}
 	}
+	target := healthTarget(health)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return HealthResult{Healthy: false, Error: err.Error(), CheckedAt: time.Now().UTC()}
@@ -309,35 +301,6 @@ func (h HTTPHealthChecker) Check(ctx context.Context, health Health) HealthResul
 	}
 	defer resp.Body.Close()
 	return HealthResult{Healthy: resp.StatusCode >= 200 && resp.StatusCode < 300, StatusCode: resp.StatusCode, CheckedAt: time.Now().UTC()}
-}
-
-func (h HTTPHealthChecker) checkEndpointDNS(ctx context.Context, target, serverName string) error {
-	serverName = strings.TrimSpace(serverName)
-	if serverName == "" || net.ParseIP(serverName) != nil {
-		return nil
-	}
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return fmt.Errorf("parse endpoint health target: %w", err)
-	}
-	vip := net.ParseIP(parsed.Hostname())
-	if vip == nil {
-		return fmt.Errorf("endpoint health target does not contain the managed VIP")
-	}
-	resolver := h.Resolver
-	if resolver == nil {
-		resolver = net.DefaultResolver
-	}
-	addresses, err := resolver.LookupIPAddr(ctx, serverName)
-	if err != nil {
-		return fmt.Errorf("resolve endpoint host %s: %w", serverName, err)
-	}
-	for _, address := range addresses {
-		if address.IP.Equal(vip) {
-			return nil
-		}
-	}
-	return fmt.Errorf("endpoint host %s does not resolve to managed VIP %s", serverName, vip)
 }
 
 func (AlwaysReadyInterface) Ready(context.Context, Config) (bool, error) {
