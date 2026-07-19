@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -206,6 +208,35 @@ func TestControllerWithdrawsWhenDependencyNotReady(t *testing.T) {
 	}
 }
 
+func TestHTTPHealthCheckerRequiresDNSNameToResolveToManagedVIP(t *testing.T) {
+	config, err := Normalize(minimalConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := config.Health
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})}
+	tests := []struct {
+		name      string
+		addresses []net.IPAddr
+		healthy   bool
+		wantError string
+	}{
+		{name: "managed VIP present", addresses: []net.IPAddr{{IP: net.ParseIP("10.40.0.10")}}, healthy: true},
+		{name: "managed VIP absent", addresses: []net.IPAddr{{IP: net.ParseIP("10.40.0.11")}}, wantError: "does not resolve to managed VIP"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := HTTPHealthChecker{Client: client, Resolver: fakeResolver{addresses: tt.addresses}}
+			result := checker.Check(context.Background(), health)
+			if result.Healthy != tt.healthy || !strings.Contains(result.Error, tt.wantError) {
+				t.Fatalf("Check() = %#v", result)
+			}
+		})
+	}
+}
+
 func testController(bird *fakeBird, health HealthChecker) *Controller {
 	return &Controller{
 		Config:            minimalConfig(),
@@ -278,6 +309,21 @@ func (h *sequenceHealth) Check(context.Context, Health) HealthResult {
 type fakeInterface struct {
 	ready bool
 	err   error
+}
+
+type fakeResolver struct {
+	addresses []net.IPAddr
+	err       error
+}
+
+func (r fakeResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return r.addresses, r.err
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func (i fakeInterface) Ready(context.Context, Config) (bool, error) {

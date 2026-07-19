@@ -584,10 +584,11 @@ TLS server name: controlPlaneEndpoint.host
 trust root: /etc/kubernetes/pki/ca.crt
 ```
 
-Probing the VIP verifies local address delivery, API listening, TLS identity,
-etcd-dependent API readiness and the endpoint port. A `200` response is
-healthy. Probe timing and thresholds are Katl-owned constants and are not
-configuration fields.
+When the endpoint host is a DNS name, the controller first requires local DNS
+to resolve it to the managed VIP. Probing the VIP then verifies local address
+delivery, API listening, TLS identity, etcd-dependent API readiness and the
+endpoint port. A `200` response is healthy. Probe timing and thresholds are
+Katl-owned constants and are not configuration fields.
 
 State transitions are:
 
