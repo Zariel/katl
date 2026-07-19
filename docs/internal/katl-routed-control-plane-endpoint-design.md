@@ -584,11 +584,12 @@ TLS server name: controlPlaneEndpoint.host
 trust root: /etc/kubernetes/pki/ca.crt
 ```
 
-When the endpoint host is a DNS name, the controller first requires local DNS
-to resolve it to the managed VIP. Probing the VIP then verifies local address
-delivery, API listening, TLS identity, etcd-dependent API readiness and the
-endpoint port. A `200` response is healthy. Probe timing and thresholds are
-Katl-owned constants and are not configuration fields.
+The endpoint host may be either an IP literal or a DNS name. Katl does not use
+DNS resolution as an advertisement health signal: a transient or deliberately
+external DNS view must not withdraw an otherwise healthy route. Probing the VIP
+verifies local address delivery, API listening, TLS identity, etcd-dependent
+API readiness and the endpoint port. A `200` response is healthy. Probe timing
+and thresholds are Katl-owned constants and are not configuration fields.
 
 State transitions are:
 

@@ -16,6 +16,18 @@ func TestNormalizeExternalEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizeAcceptsIPLiteralHost(t *testing.T) {
+	config := managedConfig()
+	config.Host = config.Advertisement.VIP
+	plan, err := Normalize(config)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if plan.Endpoint != "10.40.0.10:6443" || plan.Config.Host != "10.40.0.10" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
 func TestNormalizeManagedEndpoint(t *testing.T) {
 	length := 32
 	plan, err := Normalize(Config{
