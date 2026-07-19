@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,6 +70,7 @@ type BirdRuntimeStatus struct {
 	ControlSocketReady bool
 	ControlSocketPath  string
 	ReadinessState     string
+	RouterID           string
 	Peers              []PeerRuntimeStatus
 	FailureReason      string
 }
@@ -79,7 +81,10 @@ type PeerRuntimeStatus struct {
 	AddressFamily   string `json:"addressFamily"`
 	SessionState    string `json:"sessionState"`
 	AdminState      string `json:"adminState"`
+	ASN             uint32 `json:"asn,omitempty"`
 	LocalAddress    string `json:"localAddress,omitempty"`
+	AcceptedRoutes  uint64 `json:"acceptedRoutes,omitempty"`
+	ExportedRoutes  uint64 `json:"exportedRoutes,omitempty"`
 	LastTransition  string `json:"lastTransition,omitempty"`
 	AuthConfigured  bool   `json:"authConfigured,omitempty"`
 	FailureCategory string `json:"failureCategory,omitempty"`
@@ -334,6 +339,28 @@ func MarshalStatus(status Status) ([]byte, error) {
 		return nil, fmt.Errorf("marshal BGP API VIP status: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+func DecodeStatus(reader io.Reader) (Status, error) {
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	var status Status
+	if err := decoder.Decode(&status); err != nil {
+		return Status{}, fmt.Errorf("decode BGP API VIP status: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return Status{}, fmt.Errorf("decode BGP API VIP status: multiple JSON values")
+		}
+		return Status{}, fmt.Errorf("decode BGP API VIP status: %w", err)
+	}
+	if status.APIVersion != StatusAPIVersion {
+		return Status{}, fmt.Errorf("status apiVersion must be %s", StatusAPIVersion)
+	}
+	if status.Kind != StatusKind {
+		return Status{}, fmt.Errorf("status kind must be %s", StatusKind)
+	}
+	return status, nil
 }
 
 func (c *Controller) status(config Config, health HealthResult, bird BirdRuntimeStatus, interfaceReady bool, withdrawReason string, failure string, now time.Time) Status {

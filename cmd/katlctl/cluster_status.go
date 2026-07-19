@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -26,20 +27,24 @@ type clusterStatusOptions struct {
 }
 
 type clusterNodeStatus struct {
-	Node          string `json:"node"`
-	Role          string `json:"role"`
-	Endpoint      string `json:"endpoint"`
-	Reachable     bool   `json:"reachable"`
-	Health        string `json:"health,omitempty"`
-	KatlOSVersion string `json:"katlosVersion,omitempty"`
-	Generation    string `json:"generation,omitempty"`
-	Activity      string `json:"activity,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Node                 string                      `json:"node"`
+	Role                 string                      `json:"role"`
+	Endpoint             string                      `json:"endpoint"`
+	Reachable            bool                        `json:"reachable"`
+	Health               string                      `json:"health,omitempty"`
+	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
+	Generation           string                      `json:"generation,omitempty"`
+	Activity             string                      `json:"activity,omitempty"`
+	Error                string                      `json:"error,omitempty"`
+	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
 }
 
 type clusterStatusReport struct {
-	Cluster string              `json:"cluster"`
-	Nodes   []clusterNodeStatus `json:"nodes"`
+	Cluster                     string              `json:"cluster"`
+	ControlPlaneEndpoint        string              `json:"controlPlaneEndpoint,omitempty"`
+	StableEndpointReachable     bool                `json:"stableEndpointReachable"`
+	StableEndpointFailureReason string              `json:"stableEndpointFailureReason,omitempty"`
+	Nodes                       []clusterNodeStatus `json:"nodes"`
 }
 
 func newClusterStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -82,8 +87,18 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	report := clusterStatusReport{Cluster: topology.ClusterName, Nodes: make([]clusterNodeStatus, len(topology.Nodes))}
+	report := clusterStatusReport{Cluster: topology.ClusterName, ControlPlaneEndpoint: topology.ControlPlaneEndpoint, Nodes: make([]clusterNodeStatus, len(topology.Nodes))}
 	var wg sync.WaitGroup
+	if topology.ControlPlaneEndpoint != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			probeCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+			defer cancel()
+			report.StableEndpointFailureReason = stableEndpointFailure(probeCtx, topology.ControlPlaneEndpoint)
+			report.StableEndpointReachable = report.StableEndpointFailureReason == ""
+		}()
+	}
 	for i, node := range topology.Nodes {
 		wg.Add(1)
 		go func(i int, node workstation.TopologyNode) {
@@ -110,6 +125,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.KatlOSVersion = host.KatlOSVersion
 			result.Generation = host.Generation
 			result.Activity = host.Activity
+			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
 			report.Nodes[i] = result
 		}(i, node)
 	}
@@ -119,6 +135,14 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		return json.NewEncoder(stdout).Encode(report)
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	if report.ControlPlaneEndpoint != "" {
+		fmt.Fprintln(w, "CONTROL PLANE ENDPOINT\tREACHABLE")
+		fmt.Fprintf(w, "%s\t%s\n", report.ControlPlaneEndpoint, yesNo(report.StableEndpointReachable))
+		if report.StableEndpointFailureReason != "" {
+			fmt.Fprintf(w, "\t%s\n", report.StableEndpointFailureReason)
+		}
+		fmt.Fprintln(w)
+	}
 	fmt.Fprintln(w, "NODE\tROLE\tREACHABLE\tHEALTH\tKATLOS\tGENERATION\tACTIVITY")
 	for _, node := range report.Nodes {
 		reachable := "no"
@@ -133,4 +157,13 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		}
 	}
 	return w.Flush()
+}
+
+func stableEndpointFailure(ctx context.Context, endpoint string) string {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", endpoint)
+	if err != nil {
+		return err.Error()
+	}
+	_ = conn.Close()
+	return ""
 }
