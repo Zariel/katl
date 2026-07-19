@@ -19,6 +19,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | Agent cannot be reached | network path to TCP 9443; `katlc-agent.service`; token file mapping |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
 | Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
+| Routed API endpoint is unavailable | `katlctl cluster status`; per-node local API, route, peer, and exchange state |
 | Host upgrade does not stage or boot | host-upgrade operation; boot selection; boot-health journal |
 | Wipe is refused | wipe JSON refusals; selected topology; Kubernetes cleanup diagnostics |
 

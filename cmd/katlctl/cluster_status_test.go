@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -60,5 +61,24 @@ func TestClusterStatusResolvesClusterConfigWithoutContext(t *testing.T) {
 	}
 	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
+	}
+}
+
+func TestStableEndpointReachabilityUsesOperatorNetworkPath(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	if failure := stableEndpointFailure(context.Background(), listener.Addr().String()); failure != "" {
+		t.Fatalf("reachable endpoint failure = %q", failure)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if failure := stableEndpointFailure(context.Background(), address); failure == "" {
+		t.Fatal("closed stable endpoint reported reachable")
 	}
 }

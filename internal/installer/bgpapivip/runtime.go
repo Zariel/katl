@@ -28,7 +28,7 @@ type CommandBirdClient struct {
 }
 
 func (c CommandBirdClient) Status(ctx context.Context) (BirdRuntimeStatus, error) {
-	output, err := c.run(ctx, "show", "protocols")
+	output, err := c.run(ctx, "show", "protocols", "all")
 	status := BirdRuntimeStatus{
 		ProcessActive:      err == nil,
 		ControlSocketReady: err == nil,
@@ -41,6 +41,14 @@ func (c CommandBirdClient) Status(ctx context.Context) (BirdRuntimeStatus, error
 	}
 	status.ReadinessState = "ready"
 	status.Peers = parseProtocolStatus(string(output), c.Config)
+	for _, peer := range status.Peers {
+		if status.RouterID == "" && peer.LocalAddress != "" {
+			status.RouterID = peer.LocalAddress
+		}
+	}
+	if c.Config.Routing.RouterID != "" {
+		status.RouterID = c.Config.Routing.RouterID
+	}
 	return status, nil
 }
 
@@ -102,6 +110,7 @@ func parseProtocolStatus(output string, config Config) []PeerRuntimeStatus {
 	for _, peer := range config.FabricPeers {
 		known[protocolName(peer)] = PeerRuntimeStatus{
 			Name:          peer.Address,
+			ASN:           peer.ASN,
 			Kind:          "fabric",
 			AddressFamily: config.Endpoint.AddressFamily,
 			AdminState:    "unknown",
@@ -116,19 +125,48 @@ func parseProtocolStatus(output string, config Config) []PeerRuntimeStatus {
 			AdminState:    "unknown",
 			SessionState:  "unknown",
 		}
+		known["katl_exchange_"+safeSymbol(exchange.Name)+"_to_fabric"] = PeerRuntimeStatus{
+			Name:          exchange.Name,
+			Kind:          "route-exchange-export",
+			AddressFamily: "ipv4",
+			AdminState:    "unknown",
+			SessionState:  "unknown",
+		}
 	}
+	current := ""
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 6 {
+		topLevel := len(line) > 0 && line[0] != ' ' && line[0] != '\t'
+		if topLevel && len(fields) >= 5 {
+			if peer, ok := known[fields[0]]; ok {
+				peer.AdminState = strings.ToLower(fields[3])
+				peer.SessionState = peer.AdminState
+				if len(fields) > 5 {
+					peer.SessionState = strings.ToLower(strings.Join(fields[5:], "-"))
+				}
+				known[fields[0]] = peer
+				current = fields[0]
+				continue
+			}
+			current = ""
 			continue
 		}
-		peer, ok := known[fields[0]]
+		peer, ok := known[current]
 		if !ok {
 			continue
 		}
-		peer.AdminState = strings.ToLower(fields[3])
-		peer.SessionState = strings.ToLower(strings.Join(fields[5:], "-"))
-		known[fields[0]] = peer
+		trimmed := strings.TrimSpace(line)
+		if value, ok := strings.CutPrefix(trimmed, "Local address: "); ok {
+			if values := strings.Fields(value); len(values) > 0 {
+				peer.LocalAddress = values[0]
+			}
+		}
+		var accepted, exported uint64
+		if _, err := fmt.Sscanf(trimmed, "Routes: %d imported, %d exported", &accepted, &exported); err == nil {
+			peer.AcceptedRoutes = accepted
+			peer.ExportedRoutes = exported
+		}
+		known[current] = peer
 	}
 	out := make([]PeerRuntimeStatus, 0, len(known))
 	for _, peer := range config.FabricPeers {
@@ -136,6 +174,7 @@ func parseProtocolStatus(output string, config Config) []PeerRuntimeStatus {
 	}
 	for _, exchange := range config.RouteExchange {
 		out = append(out, known["katl_exchange_"+safeSymbol(exchange.Name)])
+		out = append(out, known["katl_exchange_"+safeSymbol(exchange.Name)+"_to_fabric"])
 	}
 	return out
 }

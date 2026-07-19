@@ -34,16 +34,30 @@ func TestCommandBirdClientReportsBoundedPeerState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.RouteExchange = []RouteExchange{{Name: "cilium"}}
 	runner := &recordingCommandRunner{outputs: [][]byte{[]byte(`Name Proto Table State Since Info
 katl_fabric_router_a BGP katl_fabric up 12:00:00 Established
+	Local address: 10.0.0.11
+	Routes: 0 imported, 1 exported, 0 preferred
+katl_exchange_cilium BGP katl_exchange_cilium_table up 12:00:00 Established
+	Routes: 3 imported, 0 exported, 3 preferred
+katl_exchange_cilium_to_fabric Pipe katl_exchange_cilium_table up 12:00:00
+	Routes: 0 imported, 3 exported, 3 preferred
 `)}}
 	client := CommandBirdClient{Runner: runner, Config: config}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.ControlSocketReady || len(status.Peers) != 1 || status.Peers[0].SessionState != "established" {
+	if !status.ControlSocketReady || len(status.Peers) != 3 || status.Peers[0].SessionState != "established" || status.Peers[0].ExportedRoutes != 1 || status.RouterID != "10.0.0.11" {
 		t.Fatalf("status = %#v", status)
+	}
+	if status.Peers[1].AcceptedRoutes != 3 || status.Peers[2].ExportedRoutes != 3 {
+		t.Fatalf("route exchange status = %#v", status.Peers[1:])
+	}
+	want := [][]string{{"birdc", "-s", BirdControlSocketPath, "show", "protocols", "all"}}
+	if !reflect.DeepEqual(runner.commands, want) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, want)
 	}
 }
 

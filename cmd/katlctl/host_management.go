@@ -39,13 +39,45 @@ type hostShutdownOptions struct {
 }
 
 type hostStatusReport struct {
-	Node          string `json:"node"`
-	Endpoint      string `json:"endpoint"`
-	Health        string `json:"health"`
-	Generation    string `json:"generation"`
-	KatlOSVersion string `json:"katlosVersion,omitempty"`
-	NextBoot      string `json:"nextBoot,omitempty"`
-	Activity      string `json:"activity"`
+	Node                 string                      `json:"node"`
+	Endpoint             string                      `json:"endpoint"`
+	Health               string                      `json:"health"`
+	Generation           string                      `json:"generation"`
+	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
+	NextBoot             string                      `json:"nextBoot,omitempty"`
+	Activity             string                      `json:"activity"`
+	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
+}
+
+type controlPlaneEndpointReport struct {
+	Endpoint              string                               `json:"endpoint"`
+	VIP                   string                               `json:"vip"`
+	State                 string                               `json:"state"`
+	LocalAPIReady         bool                                 `json:"localAPIReady"`
+	RouteOriginated       bool                                 `json:"routeOriginated"`
+	SelectedSourceAddress string                               `json:"selectedSourceAddress,omitempty"`
+	RouterID              string                               `json:"routerID,omitempty"`
+	Peers                 []controlPlaneEndpointPeerReport     `json:"peers,omitempty"`
+	RouteExchange         []controlPlaneEndpointExchangeReport `json:"routeExchange,omitempty"`
+	LastTransitionTime    string                               `json:"lastTransitionTime,omitempty"`
+	FailureReason         string                               `json:"failureReason,omitempty"`
+}
+
+type controlPlaneEndpointPeerReport struct {
+	Address       string `json:"address"`
+	ASN           uint32 `json:"asn"`
+	State         string `json:"state"`
+	RouteExported bool   `json:"routeExported"`
+}
+
+type controlPlaneEndpointExchangeReport struct {
+	Name           string `json:"name"`
+	ListenAddress  string `json:"listenAddress"`
+	ListenPort     uint32 `json:"listenPort"`
+	PeerASN        uint32 `json:"peerASN"`
+	State          string `json:"state"`
+	AcceptedRoutes uint64 `json:"acceptedRoutes"`
+	ExportedRoutes uint64 `json:"exportedRoutes"`
 }
 
 type hostRebootReport struct {
@@ -318,15 +350,44 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		activity = "busy"
 	}
 	report := hostStatusReport{
-		Node:          node,
-		Endpoint:      endpoint,
-		Health:        displayHostHealth(current),
-		Generation:    current.GetGenerationId(),
-		KatlOSVersion: strings.TrimSpace(current.GetRuntimeVersion()),
-		Activity:      activity,
+		Node:                 node,
+		Endpoint:             endpoint,
+		Health:               displayHostHealth(current),
+		Generation:           current.GetGenerationId(),
+		KatlOSVersion:        strings.TrimSpace(current.GetRuntimeVersion()),
+		Activity:             activity,
+		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 	}
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
 		report.NextBoot = target
+	}
+	return report
+}
+
+func newControlPlaneEndpointReport(status *agentapi.ControlPlaneEndpointStatus) *controlPlaneEndpointReport {
+	if status == nil {
+		return nil
+	}
+	report := &controlPlaneEndpointReport{
+		Endpoint:              status.GetEndpoint(),
+		VIP:                   status.GetVip(),
+		State:                 status.GetState(),
+		LocalAPIReady:         status.GetLocalApiReady(),
+		RouteOriginated:       status.GetRouteOriginated(),
+		SelectedSourceAddress: status.GetSelectedSourceAddress(),
+		RouterID:              status.GetRouterId(),
+		LastTransitionTime:    status.GetLastTransitionTime(),
+		FailureReason:         status.GetFailureReason(),
+	}
+	for _, peer := range status.GetPeers() {
+		report.Peers = append(report.Peers, controlPlaneEndpointPeerReport{
+			Address: peer.GetAddress(), ASN: peer.GetAsn(), State: peer.GetState(), RouteExported: peer.GetRouteExported(),
+		})
+	}
+	for _, exchange := range status.GetRouteExchange() {
+		report.RouteExchange = append(report.RouteExchange, controlPlaneEndpointExchangeReport{
+			Name: exchange.GetName(), ListenAddress: exchange.GetListenAddress(), ListenPort: exchange.GetListenPort(), PeerASN: exchange.GetPeerAsn(), State: exchange.GetState(), AcceptedRoutes: exchange.GetAcceptedRoutes(), ExportedRoutes: exchange.GetExportedRoutes(),
+		})
 	}
 	return report
 }
@@ -360,7 +421,34 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", report.Node, report.Health, version, report.Generation, nextBoot, report.Activity); err != nil {
 		return err
 	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if report.ControlPlaneEndpoint == nil {
+		return nil
+	}
+	endpoint := report.ControlPlaneEndpoint
+	established := 0
+	for _, peer := range endpoint.Peers {
+		if strings.EqualFold(peer.State, "established") {
+			established++
+		}
+	}
+	w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(w, "\nCONTROL PLANE ENDPOINT\tVIP\tSTATE\tLOCAL API\tROUTE\tPEERS\tEXCHANGES"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d/%d\t%d\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.RouteOriginated), established, len(endpoint.Peers), len(endpoint.RouteExchange)); err != nil {
+		return err
+	}
 	return w.Flush()
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) error {
