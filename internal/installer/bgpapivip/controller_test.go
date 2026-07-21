@@ -187,6 +187,73 @@ func TestControllerReturnsAdvertisementFailureAndKeepsWithdrawn(t *testing.T) {
 	}
 }
 
+func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
+	bird := &fakeBird{
+		status: BirdRuntimeStatus{
+			ReadinessState: "not-ready",
+			FailureReason:  "dial /run/katl-bird/bird.ctl: no such file or directory",
+		},
+		statusErr: errors.New("query endpoint routing status: control socket unavailable"),
+		setErr:    errors.New("disable endpoint route: control socket unavailable"),
+	}
+	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
+	controller.Config.Health.SuccessThreshold = 1
+
+	status, err := controller.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("startup RunOnce() error = %v, want dependency wait", err)
+	}
+	if status.AdvertisementState != AdvertisementWithdrawn || status.WithdrawReason != "dependency-not-ready" {
+		t.Fatalf("startup status = %#v", status)
+	}
+	if status.RecoveryRequired || status.FailureReason != "" {
+		t.Fatalf("startup socket wait requires recovery: %#v", status)
+	}
+	if got, want := bird.advertisements, []bool{false}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("startup advertisements = %#v, want %#v", got, want)
+	}
+
+	bird.status = readyBirdStatus()
+	bird.statusErr = nil
+	bird.setErr = nil
+	status, err = controller.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ready RunOnce() error = %v", err)
+	}
+	if status.AdvertisementState != AdvertisementAdvertised {
+		t.Fatalf("ready status = %#v", status)
+	}
+	if got, want := bird.advertisements, []bool{false, true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("recovered advertisements = %#v, want %#v", got, want)
+	}
+}
+
+func TestControllerFailsWhenAdvertisedRouteCannotBeWithdrawn(t *testing.T) {
+	bird := &fakeBird{status: readyBirdStatus()}
+	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
+	controller.Config.Health.SuccessThreshold = 1
+	if _, err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatalf("advertise RunOnce() error = %v", err)
+	}
+
+	bird.status = BirdRuntimeStatus{
+		ReadinessState: "not-ready",
+		FailureReason:  "dial /run/katl-bird/bird.ctl: connection refused",
+	}
+	bird.statusErr = errors.New("query endpoint routing status: control socket unavailable")
+	bird.setErr = errors.New("disable endpoint route: control socket unavailable")
+	status, err := controller.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "control socket unavailable") {
+		t.Fatalf("withdraw RunOnce() error = %v", err)
+	}
+	if !status.RecoveryRequired || status.FailureReason == "" {
+		t.Fatalf("withdraw status = %#v", status)
+	}
+	if got, want := bird.advertisements, []bool{false, true, false}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("withdraw advertisements = %#v, want %#v", got, want)
+	}
+}
+
 func TestControllerWithdrawsWhenDependencyNotReady(t *testing.T) {
 	bird := &fakeBird{status: readyBirdStatus()}
 	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})

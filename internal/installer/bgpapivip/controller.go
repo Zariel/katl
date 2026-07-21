@@ -159,9 +159,10 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	}
 	now := c.now()
 	var failure string
+	var startWithdrawFailure string
 	if !c.started {
 		if err := c.Bird.SetAdvertisement(ctx, false); err != nil {
-			failure = "start withdrawn: " + inventory.Redact(err.Error())
+			startWithdrawFailure = "start withdrawn: " + inventory.Redact(err.Error())
 		}
 		c.started = true
 		c.advertised = false
@@ -169,10 +170,18 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	}
 
 	bird, err := c.Bird.Status(ctx)
-	if err != nil && failure == "" {
+	birdReady := bird.ProcessActive && bird.ControlSocketReady
+	// The generated BIRD configuration starts the API route disabled. While the
+	// controller has never advertised it, an unavailable startup socket is a
+	// safe dependency-wait state that can be retried. Once BIRD is ready, a
+	// failed explicit withdrawal is a real controller failure.
+	if startWithdrawFailure != "" && birdReady {
+		failure = startWithdrawFailure
+	}
+	if err != nil && (c.advertised || birdReady) && failure == "" {
 		failure = inventory.Redact(err.Error())
 	}
-	if bird.FailureReason != "" && failure == "" {
+	if bird.FailureReason != "" && (c.advertised || birdReady) && failure == "" {
 		failure = inventory.Redact(bird.FailureReason)
 	}
 	interfaceReady := true

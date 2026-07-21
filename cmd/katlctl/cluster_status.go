@@ -155,6 +155,9 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		if node.Error != "" {
 			fmt.Fprintf(w, "\t\t\t%s\n", node.Error)
 		}
+		if node.ControlPlaneEndpoint != nil && node.ControlPlaneEndpoint.FailureReason != "" {
+			fmt.Fprintf(w, "\t\t\tcontrol-plane endpoint: %s\n", node.ControlPlaneEndpoint.FailureReason)
+		}
 	}
 	return w.Flush()
 }

@@ -441,6 +441,11 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d/%d\t%d\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.RouteOriginated), established, len(endpoint.Peers), len(endpoint.RouteExchange)); err != nil {
 		return err
 	}
+	if endpoint.FailureReason != "" {
+		if _, err := fmt.Fprintf(w, "\t%s\n", endpoint.FailureReason); err != nil {
+			return err
+		}
+	}
 	return w.Flush()
 }
 
