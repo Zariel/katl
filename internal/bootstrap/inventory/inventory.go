@@ -118,6 +118,22 @@ type AddressOverride struct {
 	Address string `json:"address"`
 }
 
+// ValidateInventory validates durable cluster inventory without requiring an
+// operator-scoped kubeadm init choice. The first declared control-plane node is
+// used only to exercise the planner's complete validation path; the resulting
+// action ordering is discarded.
+func ValidateInventory(inv Inventory) error {
+	initNode := ""
+	for _, node := range inv.Nodes {
+		if SystemRole(strings.TrimSpace(string(node.SystemRole))) == RoleControlPlane {
+			initNode = strings.TrimSpace(node.Name)
+			break
+		}
+	}
+	_, err := PlanInventory(PlanRequest{Inventory: inv, InitNode: initNode})
+	return err
+}
+
 func PlanInventory(request PlanRequest) (Plan, error) {
 	if len(request.Inventory.Nodes) == 0 {
 		return Plan{}, fmt.Errorf("inventory must contain at least one node")

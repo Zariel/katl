@@ -42,6 +42,21 @@ func TestPlanInventoryDefaultsSingleControlPlaneInit(t *testing.T) {
 	}
 }
 
+func TestValidateInventoryAcceptsMultipleControlPlanesWithoutInitNode(t *testing.T) {
+	inv := validInventory()
+	inv.Nodes = append(inv.Nodes, Node{
+		Name:              "cp-2",
+		Address:           "10.0.0.12",
+		SystemRole:        RoleControlPlane,
+		Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/cp-2"},
+		KubeadmConfig:     KubeadmConfig{Ref: "control-plane", Intent: IntentControlPlane},
+		KubernetesVersion: "v1.36.1",
+	})
+	if err := ValidateInventory(inv); err != nil {
+		t.Fatalf("ValidateInventory() error = %v", err)
+	}
+}
+
 func TestPlanInventoryClassifiesAdditionalControlPlaneJoin(t *testing.T) {
 	inv := validInventory()
 	inv.Nodes = append(inv.Nodes, Node{
