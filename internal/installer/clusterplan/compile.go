@@ -493,7 +493,7 @@ func validateBootstrapInventory(bootstrapInventory inventory.Inventory) error {
 			validationInventory.Nodes[i].Address = "127.0.0.1"
 		}
 	}
-	if _, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: validationInventory}); err != nil {
+	if err := inventory.ValidateInventory(validationInventory); err != nil {
 		return err
 	}
 	return nil

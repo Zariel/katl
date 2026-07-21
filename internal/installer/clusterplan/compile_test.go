@@ -353,6 +353,24 @@ spec:
 	}
 }
 
+func TestCompileAcceptsMultipleControlPlanesWithoutBootstrapOrdering(t *testing.T) {
+	config := validConfig()
+	config.Spec.Nodes[1].SystemRole = inventory.RoleControlPlane
+	config.Spec.Nodes[1].Overrides.Kubernetes.KubeadmConfigRef = "control-plane"
+
+	plan, err := Compile(CompileRequest{
+		Config:                     config,
+		KubeadmConfigs:             validKubeadmConfigs("v1.36.1"),
+		KubernetesArtifactBasePath: "/var/lib/katl/artifacts",
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if got := plan.BootstrapInventory.Nodes[1].SystemRole; got != inventory.RoleControlPlane {
+		t.Fatalf("second node role = %q", got)
+	}
+}
+
 func TestCompileRejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name string
