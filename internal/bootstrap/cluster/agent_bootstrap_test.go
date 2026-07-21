@@ -131,6 +131,15 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if cp2Req.Bootstrap.JoinMaterialRef != "operation:bootstrap-init-1/control-plane:cp-2" {
 		t.Fatalf("join material ref = %q", cp2Req.Bootstrap.JoinMaterialRef)
 	}
+	if got := cp2Req.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
+		t.Fatalf("control-plane join discovery endpoint = %q, want init-node endpoint", got)
+	}
+	if got := cp2Req.Bootstrap.ControlPlaneEndpoint; got != "api.katl.test:6443" {
+		t.Fatalf("control-plane endpoint = %q, want stable cluster endpoint", got)
+	}
+	if got := cpClient.createMaterial.GetWorkerJoinMaterial().GetJoinArgv()[2]; got != "api.katl.test:6443" {
+		t.Fatalf("source join material endpoint = %q, want unmodified agent response", got)
+	}
 }
 
 func TestRunAgentBootstrapPreservesFailedOperationReference(t *testing.T) {
@@ -525,6 +534,9 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 	}
 	if workerReq.Bootstrap.WorkerJoinMaterial == nil || workerReq.Bootstrap.WorkerJoinMaterial.ExpiresAt != "2026-06-16T13:00:00Z" {
 		t.Fatalf("worker join material = %#v", workerReq.Bootstrap.WorkerJoinMaterial)
+	}
+	if got := workerReq.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
+		t.Fatalf("worker join discovery endpoint = %q, want init-node endpoint", got)
 	}
 }
 
