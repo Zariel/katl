@@ -470,11 +470,31 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 	if strings.TrimSpace(material.GetExpiresAt()) == "" {
 		return workerJoinMaterial{}, fmt.Errorf("agent returned %s join material without expiry", role)
 	}
+	material, err = joinMaterialWithDiscoveryEndpoint(material, endpointForNode(initNode))
+	if err != nil {
+		return workerJoinMaterial{}, fmt.Errorf("prepare %s join material: %w", role, err)
+	}
 	ref := strings.TrimSpace(response.GetMaterialRef())
 	if ref == "" {
 		ref = requestRef
 	}
 	return workerJoinMaterial{Ref: ref, Material: material}, nil
+}
+
+func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, endpoint string) (*agentapi.WorkerJoinMaterial, error) {
+	argv := append([]string(nil), material.GetJoinArgv()...)
+	if len(argv) < 3 || argv[0] != "kubeadm" || argv[1] != "join" {
+		return nil, errors.New("join material must start with kubeadm join and an API endpoint")
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if err := validateEndpointLike(endpoint); err != nil {
+		return nil, fmt.Errorf("init-node discovery endpoint: %w", err)
+	}
+	argv[2] = endpoint
+	return &agentapi.WorkerJoinMaterial{
+		JoinArgv:  argv,
+		ExpiresAt: material.GetExpiresAt(),
+	}, nil
 }
 
 func submitAndWaitControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) (operationReference, error) {

@@ -322,8 +322,8 @@ The bootstrap command runs phases in this order:
 
 These are control-client phases. Phases that run `kubeadm init` or
 `kubeadm join` are executed by node-local `katlc` and must update the
-corresponding `bootstrap-init` or `bootstrap-join-worker` `OperationRecord`.
-Additional control-plane joins are not part of the day-one operation set.
+corresponding `bootstrap-init`, `bootstrap-join-control-plane`, or
+`bootstrap-join-worker` `OperationRecord`.
 
 ```text
 1. load and validate inventory or compiled plan
@@ -336,8 +336,8 @@ Additional control-plane joins are not part of the day-one operation set.
    katl-kubeadm-ready.target on nodes before their kubeadm phase
 7. ask katlc to run kubeadm init only on the selected init node
 8. collect or create join material
-9. ask katlc to join remaining worker nodes
-10. join additional control-plane nodes later, when that path is implemented
+9. ask katlc to join remaining control-plane nodes serially
+10. ask katlc to join remaining worker nodes
 11. wait for API readiness using the init or declared endpoint
 12. katlc runs post-kubeadm health checks and commits each successful candidate
     generation
@@ -347,12 +347,9 @@ Additional control-plane joins are not part of the day-one operation set.
 15. print next steps and exit
 ```
 
-Worker joins must not start until init succeeds and join material exists.
-Additional control-plane joins require certificate-key handling and may be
-implemented after worker joins. The durable contract is that every non-init
-control-plane node is classified for a later control-plane join from
-`systemRole`; until that implementation exists, multi-control-plane plans fail
-with a clear unsupported message after init-node selection validation.
+Joins must not start until init succeeds and join material exists. Additional
+control-plane joins use short-lived uploaded certificate material and complete
+before worker joins.
 
 The greenfield multi-control-plane target is kubeadm stacked etcd. Its data
 ownership, quorum, join ordering, and rollback limits are defined in
@@ -406,14 +403,21 @@ The command supports two endpoint shapes:
 
 ```text
 initial kubeadm endpoint
-  single-node bootstrap may use the selected init node address
+  join discovery uses the selected init node address
   multi-node bootstrap requires an explicit --control-plane-endpoint or an
-  equivalent endpoint from the compiled plan
+  equivalent endpoint from the compiled plan for ClusterConfiguration
 
 stable endpoint verification
   use a user-declared VIP, DNS name, routed endpoint, or load balancer as the
   stable operator-facing API endpoint
 ```
+
+The discovery endpoint and the cluster control-plane endpoint deliberately have
+different jobs. Katl rewrites the short-lived join material to discover through
+the already initialized node. The uploaded kubeadm `ClusterConfiguration` and
+the final operator kubeconfig retain the declared stable endpoint. This avoids
+capturing discovery traffic on a joining control-plane node which has already
+configured the managed VIP but does not yet run a local API server.
 
 Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
 as part of this command. The command may verify a declared stable endpoint before
