@@ -218,17 +218,17 @@ an interrupted bootstrap.
 
 ## Configuration and upgrades
 
-`ClusterConfig` remains the user-authored source after installation. An
-optional plan contacts the selected node but does not accept an operation:
+`ClusterConfig` remains the user-authored source after installation. Apply the
+complete retained configuration to the cluster with one command:
 
 ```sh
-katlctl node apply cp-1 --config ./cluster.yaml --plan
+katlctl cluster apply --config ./cluster.yaml
 ```
 
-Run the command without `--plan` to apply it. `katlctl` derives config versions,
-generation names, validation, and operation tracking internally.
-Supported changes compile into generation-scoped confext/sysext state and are
-applied live or on next boot according to the domain policy. See
+`katlctl` derives per-node generations, validates every node before mutation,
+and coordinates operation tracking internally. Kubeadm-produced component
+configuration is reconciled online as part of the same apply and never causes
+a node reboot. See
 [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
 Routine host management uses the same `ClusterConfig` as installation and

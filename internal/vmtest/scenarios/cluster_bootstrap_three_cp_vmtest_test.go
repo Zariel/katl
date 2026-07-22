@@ -322,7 +322,6 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	assertOperationKubernetesBundle(t, cp1Record, kubernetesBundle)
 	assertGenerationKubernetesBundle(t, ctx, cp1Node, filepath.Join(evidenceDir, "cp-1"), cp1Record, kubernetesBundle)
-	bootstrapGenerations := map[string]string{"cp-1": cp1Record.CandidateGenerationID}
 	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
 		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(evidenceDir, node.Name), "bootstrap-join-control-plane")
 		if err != nil {
@@ -335,7 +334,6 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 		assertOperationKubernetesBundle(t, record, kubernetesBundle)
 		assertGenerationKubernetesBundle(t, ctx, node, filepath.Join(evidenceDir, node.Name), record, kubernetesBundle)
-		bootstrapGenerations[node.Name] = record.CandidateGenerationID
 	}
 
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3")
@@ -382,7 +380,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("write etcd report: %v", err)
 	}
 	if smoke.WorkloadProof {
-		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, bootstrapGenerations, inventoryPath, kubeconfigPath, kubernetesBundle, cniFixtures, etcdReport); err != nil {
+		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, inventoryPath, kubeconfigPath, kubernetesBundle, etcdReport); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -443,28 +441,13 @@ func assertCNISysctls(ctx context.Context, node vmtest.RunningInstalledRuntimeNo
 	return nil
 }
 
-func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses, bootstrapGenerations map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, snapshot threeControlPlaneEtcdReport) error {
+func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, snapshot threeControlPlaneEtcdReport) error {
 	t.Helper()
 	const generationID = "2026.07.11-vmtest-control-plane-config"
 	const configName = "control-plane-profiled"
 	proofDir := filepath.Join(result.RunDir, "kubeadm-control-plane-config")
 	if err := os.MkdirAll(proofDir, 0o755); err != nil {
 		return err
-	}
-	for _, node := range nodes {
-		bootstrapGeneration := bootstrapGenerations[node.Name]
-		if bootstrapGeneration == "" {
-			return fmt.Errorf("bootstrap generation for %s is missing", node.Name)
-		}
-		if err := rebootIntoGeneration(ctx, node, bootstrapGeneration); err != nil {
-			return fmt.Errorf("boot %s into committed bootstrap generation: %w", node.Name, err)
-		}
-		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
-			return fmt.Errorf("reactivate %s CNI fixture after bootstrap generation boot: %w", node.Name, err)
-		}
-		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-bootstrap-generation-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
-			return fmt.Errorf("wait for cluster readiness after booting %s bootstrap generation: %w", node.Name, err)
-		}
 	}
 	liveConfig, err := kubectlOutput(ctx, kubeconfigPath, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
 	if err != nil {
@@ -481,61 +464,62 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if err != nil {
 		return err
 	}
+	liveKubeletConfig, err := kubectlOutput(ctx, kubeconfigPath, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
+	if err != nil {
+		return fmt.Errorf("collect live kubelet config: %w", err)
+	}
+	desiredKubeletConfig, err := kubeletMaxPodsConfig(liveKubeletConfig, 120)
+	if err != nil {
+		return err
+	}
+	desiredKubeletDigest, err := kubeadmplan.CanonicalKubeletConfigurationSHA256(desiredKubeletConfig)
+	if err != nil {
+		return err
+	}
+	desiredConfig = append(bytes.TrimSpace(desiredConfig), []byte("\n---\n")...)
+	desiredConfig = append(desiredConfig, desiredKubeletConfig...)
 	if err := os.WriteFile(filepath.Join(proofDir, "desired-config.yaml"), desiredConfig, 0o600); err != nil {
 		return err
 	}
 	requestPath := filepath.Join(proofDir, "config-apply.yaml")
 	inlineConfig := strings.ReplaceAll(strings.TrimSuffix(string(desiredConfig), "\n"), "\n", "\n        ")
-	request := fmt.Appendf(nil, "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  kubeadmConfigs:\n    %s:\n      config: |\n        %s\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: %s\n", configName, inlineConfig, configName)
+	request := fmt.Appendf(nil, "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: live\nspec:\n  kubeadmConfigs:\n    %s:\n      config: |\n        %s\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: %s\n", configName, inlineConfig, configName)
 	if err := os.WriteFile(requestPath, request, 0o600); err != nil {
 		return err
 	}
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
-			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--config", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
+			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--config", requestPath, "--mode", "live", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
 		if err != nil {
-			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
+			return fmt.Errorf("activate desired generation on %s: %w: %s", node.Name, err, stderr)
 		}
-		if err := decodeGenerationStageResult(stdout, generationID); err != nil {
-			return fmt.Errorf("decode %s staged generation result: %w", node.Name, err)
-		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], generationID, configName, false); err != nil {
-			return err
-		}
-	}
-	for _, node := range nodes {
-		if err := rebootIntoGeneration(ctx, node, generationID); err != nil {
-			return err
-		}
-		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
-			return fmt.Errorf("reactivate %s CNI fixture: %w", node.Name, err)
+		if err := decodeGenerationApplyResult(stdout, generationID); err != nil {
+			return fmt.Errorf("decode %s activated generation result: %w", node.Name, err)
 		}
 		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], generationID, configName, true); err != nil {
 			return err
-		}
-		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-reboot-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
-			return fmt.Errorf("wait for cluster readiness after rebooting %s: %w", node.Name, err)
 		}
 	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-before-operation.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
 		return err
 	}
-	args := []string{"kubernetes", "apply-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", "2026.07.11-vmtest-control-plane-config"}
+	const rolloutID = "2026.07.11-vmtest-cluster-config"
+	args := []string{"cluster", "apply", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", rolloutID}
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "rollout", args...)
 	if err != nil {
 		return fmt.Errorf("run serial control-plane config rollout: %w: %s", err, stderr)
 	}
-	if !bytes.Contains(stdout, []byte(`"automaticRollback":false`)) {
+	if !bytes.Contains(stdout, []byte(`"automaticRollback":false`)) || !bytes.Contains(stdout, []byte(`"result":"succeeded"`)) {
 		return fmt.Errorf("rollout summary did not record automaticRollback=false: %s", stdout)
 	}
 	for position, node := range nodes {
-		_, record, err := collectOperationEvidence(ctx, node, filepath.Join(proofDir, node.Name), "kubeadm-control-plane-config")
+		_, record, err := collectOperationEvidenceForRollout(ctx, node, filepath.Join(proofDir, node.Name), "kubeadm-control-plane-config", rolloutID+"-control-plane")
 		if err != nil {
 			return fmt.Errorf("collect %s config operation evidence: %w", node.Name, err)
 		}
 		body := record.KubeadmControlPlaneConfig
-		if body == nil || body.NodePosition != uint32(position+1) || body.CoordinatorUpload != (node.Name == "cp-3") || record.Result != operation.ResultSucceeded || body.DesiredConfigSHA256 != desiredDigest || len(body.BeforeManifestSHA256) != 3 || len(body.AfterManifestSHA256) != 3 {
+		if body == nil || body.Component != "control-plane" || body.NodePosition != uint32(position+1) || body.CoordinatorUpload != (node.Name == "cp-3") || record.Result != operation.ResultSucceeded || body.DesiredConfigSHA256 != desiredDigest || len(body.BeforeManifestSHA256) != 3 || len(body.AfterManifestSHA256) != 3 {
 			return fmt.Errorf("%s control-plane config operation evidence is incomplete: %#v", node.Name, record)
 		}
 	}
@@ -555,7 +539,48 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 			}
 		}
 	}
+	expectedPosition := map[string]uint32{"cp-3": 1, "cp-1": 2, "cp-2": 3}
+	for _, node := range nodes {
+		_, record, err := collectOperationEvidenceForRollout(ctx, node, filepath.Join(proofDir, node.Name+"-kubelet"), "kubeadm-control-plane-config", rolloutID+"-kubelet")
+		if err != nil {
+			return fmt.Errorf("collect %s kubelet config operation evidence: %w", node.Name, err)
+		}
+		body := record.KubeadmControlPlaneConfig
+		if body == nil || body.Component != "kubelet" || body.NodePosition != expectedPosition[node.Name] || body.CoordinatorUpload != (node.Name == "cp-3") || body.ConfigUploadRan != (node.Name == "cp-3") || record.Result != operation.ResultSucceeded || body.DesiredConfigSHA256 != desiredKubeletDigest {
+			return fmt.Errorf("%s kubelet config operation evidence is incomplete: %#v", node.Name, record)
+		}
+		actual, err := readNodeFileWithRetry(ctx, node, "/var/lib/kubelet/config.yaml", 2<<20, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("read %s kubelet config: %w", node.Name, err)
+		}
+		if err := kubeadmplan.KubeletConfigurationContains(actual, desiredKubeletConfig); err != nil {
+			return fmt.Errorf("verify %s kubelet config: %w", node.Name, err)
+		}
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-cluster-apply.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func kubeletMaxPodsConfig(live []byte, maxPods int) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(live, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("live KubeletConfiguration must be one YAML mapping")
+	}
+	root := document.Content[0]
+	value := yamlMappingValue(root, "maxPods")
+	if value == nil {
+		value = &yaml.Node{}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "maxPods"}, value)
+	}
+	value.Kind = yaml.ScalarNode
+	value.Tag = "!!int"
+	value.Value = strconv.Itoa(maxPods)
+	return yaml.Marshal(&document)
 }
 
 func waitForKubectlOutputContains(ctx context.Context, kubeconfigPath string, timeout time.Duration, needle []byte, args ...string) ([]byte, error) {
@@ -642,13 +667,13 @@ func runProofKatlctl(ctx context.Context, binary, dir, name string, args ...stri
 	return stdout.Bytes(), stderr.String(), err
 }
 
-func decodeGenerationStageResult(data []byte, generationID string) error {
+func decodeGenerationApplyResult(data []byte, generationID string) error {
 	var status agentapi.OperationStatus
 	if err := protojson.Unmarshal(data, &status); err != nil {
 		return err
 	}
-	if status.OperationKind != "generation-stage" || !status.Terminal || status.Result != operation.ResultSucceeded || status.CandidateGenerationId != generationID {
-		return fmt.Errorf("unexpected generation stage status: %s", status.String())
+	if status.OperationKind != "generation-apply" || !status.Terminal || status.Result != operation.ResultSucceeded || status.CandidateGenerationId != generationID || status.ActivationState != operation.ActivationStateActiveLive {
+		return fmt.Errorf("unexpected live generation apply status: %s", status.String())
 	}
 	return nil
 }
@@ -2304,20 +2329,21 @@ func TestResolvedBundleDigestMatching(t *testing.T) {
 	}
 }
 
-func TestDecodeGenerationStageResultUsesTerminalStatus(t *testing.T) {
+func TestDecodeGenerationApplyResultUsesTerminalStatus(t *testing.T) {
 	status := &agentapi.OperationStatus{
-		OperationKind:         "generation-stage",
+		OperationKind:         "generation-apply",
 		Phase:                 operation.HostBookkeepingCompletionPhase,
 		Terminal:              true,
 		Result:                operation.ResultSucceeded,
 		CandidateGenerationId: "generation-1",
+		ActivationState:       operation.ActivationStateActiveLive,
 	}
 	data, err := protojson.Marshal(status)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := decodeGenerationStageResult(data, "generation-1"); err != nil {
-		t.Fatalf("decodeGenerationStageResult() error = %v", err)
+	if err := decodeGenerationApplyResult(data, "generation-1"); err != nil {
+		t.Fatalf("decodeGenerationApplyResult() error = %v", err)
 	}
 }
 

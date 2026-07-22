@@ -163,7 +163,7 @@ kind: KubeadmConfig
 
 func TestResolveRejectsUnsafeInputs(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "kubeadm", "bad.yaml"), strings.Replace(initConfig(), "cgroupDriver: systemd", "staticPodPath: /etc/kubernetes/manifests", 1))
+	writeFile(t, filepath.Join(repo, "kubeadm", "bad.yaml"), strings.Replace(initConfig(), "cgroupDriver: systemd", "staticPodPath: /etc/kubernetes/other", 1))
 	writeFile(t, filepath.Join(repo, "kubeadm", "usr.yaml"), strings.Replace(initConfig(), "cgroupDriver: systemd", "staticPodPath: /usr/lib/kubernetes/manifests", 1))
 	writeFile(t, filepath.Join(repo, "kubeadm", "unknown.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
 kind: ResetConfiguration
@@ -217,7 +217,7 @@ kind: ResetConfiguration
 		{
 			name:   "denied host path",
 			object: kubeadmObject("control-plane", "kubeadm/bad.yaml"),
-			want:   "host path /etc/kubernetes/manifests is denied",
+			want:   "host path /etc/kubernetes/other is denied",
 		},
 		{
 			name:   "other denied host path",
@@ -323,6 +323,57 @@ func TestPlanFromRenderedFilesAllowsStandardCertificatesDirectory(t *testing.T) 
 	}})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPlanFromRenderedFilesAllowsStandardKubeletPaths(t *testing.T) {
+	_, err := PlanFromRenderedFiles("control-plane", []File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content: []byte(`apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  x509:
+    clientCAFile: /etc/kubernetes/pki/ca.crt
+resolvConf: /run/systemd/resolve/resolv.conf
+staticPodPath: /etc/kubernetes/manifests
+volumePluginDir: /var/lib/kubelet/plugins/volume/exec
+`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlanFromRenderedFilesRejectsOtherKubeletPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{
+			name: "client CA file",
+			config: `authentication:
+  x509:
+    clientCAFile: /etc/kubernetes/admin.conf
+`,
+			want: "host path /etc/kubernetes/admin.conf is denied",
+		},
+		{
+			name:   "static pod path",
+			config: "staticPodPath: /etc/kubernetes/other\n",
+			want:   "host path /etc/kubernetes/other is denied",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := PlanFromRenderedFiles("control-plane", []File{{
+				RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+				Content:    []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n" + tt.config),
+			}})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("PlanFromRenderedFiles() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

@@ -163,14 +163,19 @@ func domainActions(acceptedMode string, domains []string) []generation.ConfigApp
 		action := generation.ConfigApplyDomainAction{
 			Domain: domain,
 		}
-		if acceptedMode == generation.ApplyModeNextBoot {
-			if domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig {
-				action.Action = "kubeadm-operation-required"
-				action.Diagnostic = "desired kubeadm input staged; live state requires an explicit kubeadm-aware operation"
+		if domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig {
+			if acceptedMode == generation.ApplyModeLive {
+				action.Action = "kubelet-config-watcher-rebind"
+				action.Diagnostic = "kubelet will be restarted if active so it observes the refreshed /etc mount tree; live kubeadm state still requires an explicit kubeadm-aware operation"
+				action.Status = generation.ConfigApplyActionPlanned
 			} else {
-				action.Action = "stage-next-boot"
-				action.Diagnostic = "domain staged into next boot generation"
+				action.Action = "kubeadm-operation-required"
+				action.Diagnostic = "desired kubeadm input activated; live state requires an explicit kubeadm-aware operation"
+				action.Status = generation.ConfigApplyActionSkipped
 			}
+		} else if acceptedMode == generation.ApplyModeNextBoot {
+			action.Action = "stage-next-boot"
+			action.Diagnostic = "domain staged into next boot generation"
 			action.Status = generation.ConfigApplyActionSkipped
 		} else {
 			action.Action = liveAction(domain)

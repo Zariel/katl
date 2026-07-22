@@ -482,41 +482,35 @@ distribution or add-on manager.
 node runtime configuration. `katlctl` compiles and submits the node-agent
 request internally; operators do not maintain a second configuration schema.
 
-Optionally plan the exact per-node runtime request through the node agent:
+Apply the complete retained cluster configuration:
 
 ```text
-katlctl node apply cp-1 --config ./cluster.yaml --plan
+katlctl cluster apply --config ./cluster.yaml
 ```
 
-`katlctl` derives the source version, candidate generation, management endpoint,
-validation request, and operation tracking. These are internal
-replay and lifecycle details, not operator inputs.
+`katlctl` derives per-node generations, management endpoints, validation
+requests, Kubernetes component phases, and operation tracking. These are
+internal replay and lifecycle details, not operator inputs. Every node is
+validated before mutation begins.
 
 If the source has already been compiled, use the bundle instead of
 recompiling it:
 
 ```text
-katlctl node apply cp-1 \
-	--config ./katl-lab.katlcfg \
-	--plan
+katlctl cluster apply --config ./katl-lab.katlcfg
 ```
 
-Remove `--plan` to submit the accepted plan. The default `--mode auto` uses
-the agent's domain matrix to choose live apply or next boot; `--mode live` and
-`--mode next-boot` request an explicit policy and are rejected when unsafe.
-Keep the same configuration inputs when submitting. `katlctl` generates the
-idempotency key and follows the accepted operation to its terminal result.
+Katl applies ordinary node domains and all affected kubeadm-produced component
+configuration as one coordinated workflow. Kubernetes configuration changes
+are online-only and never require rebooting a node.
 
-The renderer carries the node's desired identity and systemd-networkd files as
-well as operation-only system role and role-dependent Kubernetes bootstrap state. The
-planner applies runtime-safe changes and reports when a lifecycle operation is
-required; it does not silently discard operation-only differences. Disk install
-selection and Kubernetes version changes use their dedicated install and
-upgrade workflows. A change to bounded native kubeadm input records that a
-kubeadm-aware action is required; normal config apply does not mutate
-kubeadm-owned cluster state. Use the dedicated operation for a supported live
-change. The node-agent request envelope is an internal API and is documented
-separately from the operator installation flow.
+The renderer carries node identity, systemd-networkd files, system role, and
+role-dependent Kubernetes intent. The planner does not silently discard
+operation-owned differences: cluster apply invokes the required internal
+kubeadm-aware phases and verifies the live result. Disk install selection and
+Kubernetes version changes keep their dedicated install and upgrade workflows.
+The node-agent request envelope remains an internal API documented separately
+from the operator installation flow.
 
 ## Upgrades
 

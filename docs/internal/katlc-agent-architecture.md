@@ -109,12 +109,9 @@ a separate local CLI contract.
 Target `katlctl` commands own workstation orchestration:
 
 ```text
-katlctl node apply
-katlctl node apply status
-katlctl bootstrap init
-katlctl bootstrap join-control-plane
-katlctl bootstrap join-worker
-katlctl kubeconfig get
+katlctl cluster apply
+katlctl cluster bootstrap
+katlctl cluster status
 katlctl operations list
 katlctl operations status
 ```

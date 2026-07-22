@@ -1,8 +1,8 @@
-# ADR-010: Control-plane configuration changes use a narrow rolling kubeadm operation
+# ADR-010: Kubeadm configuration changes use component-scoped live operations
 
 Status: accepted.
 
-Date: 2026-07-11.
+Date: 2026-07-11; expanded 2026-07-22.
 
 ## Context
 
@@ -21,51 +21,55 @@ manifests, while `kubeadm init phase upload-config kubeadm --config` uploads the
 Those phases can be composed safely only for a bounded field set and a serial
 multi-node rollout.
 
-The first KatlOS release needs one real control-plane configuration change. It
-does not need a general wrapper over every kubeadm field. Broad support would
-silently include endpoint, certificate, etcd, admission, feature-gate, host
-volume, and networking changes whose safety and rollback procedures differ.
+Katl must also apply cluster-wide `KubeletConfiguration` changes without a
+reinstall. This uses a different kubeadm phase sequence and restarts kubelet one
+node at a time. A single arbitrary-YAML transaction would hide those different
+mutation and recovery boundaries.
 
 Upstream command references used by this decision:
 
 - <https://kubernetes.io/docs/reference/setup-tools/kubeadm/generated/kubeadm_init/kubeadm_init_phase_control-plane_all/>
 - <https://kubernetes.io/docs/reference/setup-tools/kubeadm/generated/kubeadm_init/kubeadm_init_phase_upload-config_kubeadm/>
 - <https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-config/>
+- <https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/>
 - <https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/>
 - <https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/>
 - <https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/>
 
 ## Decision
 
-Katl supports a distinct `kubeadm-control-plane-config` operation. It is the
-only v0.1 path that may make a desired control-plane configuration change live.
-It is separate from normal confext apply and from `kubeadm-upgrade`.
+Katl reconciles kubeadm-owned state as part of the same cluster-wide config
+apply that reconciles KatlOS node configuration. Component scopes are internal
+execution phases, not operator-selected commands.
 
-The v0.1 operation supports only setting `profiling` to `false` in these
-`ClusterConfiguration` fields:
+Cluster apply activates a generation containing changed desired kubeadm input
+live. Generation activation first changes the selected immutable input
+under `/etc/katl/kubeadm`; it records `kubeadm action required` and never invokes
+kubeadm or writes kubeadm-owned live state. After refreshing the confext overlay,
+Katl uses `systemctl try-restart kubelet.service` so an already-active kubelet
+rebinds its static-pod watcher to the restored `/etc/kubernetes` mount. This is a
+no-op before kubelet is active. Cluster apply then runs every affected
+kubeadm-aware phase online before it reports success.
+Live generation activation refreshes the systemd confext overlay after moving
+the generation link, and does the same after a pre-mutation rollback. A
+generation is not reported active-live while `/etc` still exposes the previous
+confext contents.
 
-```yaml
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-apiServer:
-  extraArgs:
-    - name: profiling
-      value: "false"
-controllerManager:
-  extraArgs:
-    - name: profiling
-      value: "false"
-scheduler:
-  extraArgs:
-    - name: profiling
-      value: "false"
-```
+The internal operation supports three component phases:
 
-An operation may change any non-empty subset of those three fields. Adding the
-explicit false value is supported; removing it, setting it to true, repeating
-the argument, or changing any other live kubeadm field is unsupported in v0.1.
-This narrow allowlist proves rolling static-Pod reconfiguration without adding
-new certificates, files, sockets, volumes, API dependencies, or etcd behavior.
+- `control-plane`: changes to `extraArgs`, `extraEnvs`, or `extraVolumes` under
+  `apiServer`, `controllerManager`, or `scheduler`. Katl regenerates only the
+  affected static Pod when one component changed, or all three when several
+  changed, then uploads the shared `ClusterConfiguration` after the serial
+  rollout.
+- `kubelet`: a cluster-wide `KubeletConfiguration`. Katl uploads the desired
+  configuration once from a control-plane coordinator, downloads it through
+  `kubeadm upgrade node phase kubelet-config` on each intended node, restarts
+  kubelet, and verifies that the resulting local config contains the desired
+  fields.
+- `kube-proxy`: a cluster-wide `KubeProxyConfiguration`. The control-plane
+  coordinator runs the bounded kubeadm addon phase, verifies the resulting
+  ConfigMap, and waits for the kube-proxy DaemonSet rollout online.
 
 The selected kubeadm API must be `kubeadm.k8s.io/v1beta4`. The active
 Kubernetes payload version and digest remain unchanged for this operation. A
@@ -91,41 +95,50 @@ documents and patches.
 
 The operation accepts only a config selected by the active generation. It does
 not accept an arbitrary path or inline replacement YAML. Every participating
-control-plane node must report the same cluster-wide desired
-`ClusterConfiguration` digest after excluding node-local `InitConfiguration`
-fields.
+node must select the role-appropriate config, and all nodes in one component
+rollout must agree on that component's cluster-wide desired document.
 
 Live state is collected read-only from:
 
 ```text
 kube-system/kubeadm-config ConfigMap
+kube-system/kubelet-config ConfigMap
 /etc/kubernetes/manifests/kube-apiserver.yaml
 /etc/kubernetes/manifests/kube-controller-manager.yaml
 /etc/kubernetes/manifests/kube-scheduler.yaml
 active Kubernetes sysext metadata
 running static Pod and component health
+/var/lib/kubelet/config.yaml and kubelet health
 ```
 
-Katl canonicalizes the live ConfigMap and desired `ClusterConfiguration`
-before comparing them. The planner must show the exact three supported field
-paths that differ. Any other difference is `unsupported/manual`, not a partial
-apply.
+Katl canonicalizes the selected desired document and the relevant live state.
+Control-plane planning reports changed component field groups. Kubelet
+verification treats kubeadm-defaulted live fields as additional state but
+requires every explicitly desired field and value. Unsupported differences are
+`unsupported/manual`, not a partial apply.
+
+Before a control-plane phase runs, Katl writes an operation-private effective
+kubeadm input. It starts from the live `ClusterConfiguration`, preserving
+runtime-derived values such as the stable endpoint, cluster networking, and
+certificate state, then overlays only the supported desired component fields.
+The immutable generated input remains the desired source of truth; the
+effective file is bounded execution material and is never activated as node
+configuration.
 
 ## Validation And Refusal Rules
 
 Before accepting a rollout, `katlctl` and node-local `katlc` validate:
 
 ```text
-exactly three intended control-plane nodes are present in explicit inventory
+at least one intended control-plane node is present
 all nodes agree on cluster identity and stable control-plane endpoint
 all nodes run the same Kubernetes payload version and digest
 the desired generation is active and committed on every target node
 the selected KubeadmConfig name and cluster-wide digest agree on every node
 katlc derives the live kubeadm ConfigMap identity immediately before mutation
-the internally observed desired/live differences are supported profiling=false
-  additions only
-all three nodes are Ready and the stable API endpoint is healthy
-all three stacked-etcd members are healthy and voting
+the internally observed desired/live differences belong to the selected component
+all intended nodes are Ready and the stable API endpoint is healthy
+all stacked-etcd members are healthy and voting before control-plane mutation
 no concurrent kubeadm-state operation owns a target node
 stacked-etcd and API health pass before and after each bounded node mutation
 ```
@@ -137,22 +150,34 @@ controlPlaneEndpoint, networking, kubernetesVersion, certificates, certSANs,
   certificate directories, image repository, DNS, proxy, encryption, or
   feature-gate changes
 any etcd local/external setting or etcd static Pod patch
-apiServer, controllerManager, or scheduler arguments other than profiling=false
-extraEnvs, extraVolumes, arbitrary static Pod patches, or host-path changes
-InitConfiguration, JoinConfiguration, KubeletConfiguration, or
-  KubeProxyConfiguration changes
+control-plane fields outside extraArgs, extraEnvs, and extraVolumes
+arbitrary static Pod patches or denied host-path changes
+InitConfiguration or JoinConfiguration changes after bootstrap
 adding, removing, or replacing a control-plane or etcd member
 combined Kubernetes payload and control-plane configuration changes
-one-node or two-node execution presented as the three-control-plane release path
 parallel node mutation, unknown quorum, an unhealthy API, or desired state that
   changed after operation acceptance
 ```
 
-Katl may later expand the allowlist one field at a time with an explicit phase,
-failure contract, and VM gate. Native kubeadm passthrough remains available as
-desired input, but passthrough does not imply live-operation support.
+Katl may add further component scopes only with an explicit phase, failure
+contract, and VM gate. Native kubeadm passthrough remains available as desired
+input, but passthrough does not imply live-operation support.
 
 ## Plan And Command Surface
+
+The only supported operator entry point is:
+
+```text
+katlctl cluster apply --config cluster.yaml
+```
+
+Katl renders the complete desired configuration for every node, validates the
+whole cluster before mutation, activates each node's desired generation, and
+then runs all affected Kubernetes component phases in dependency order. A
+Kubernetes configuration change is online-only: it is never accepted as a
+next-boot change and never asks the operator to reboot. If a field lacks a safe
+online reconciler, preflight rejects the whole cluster plan before mutation and
+names that field.
 
 Planning is read-only. The explicit plan reports:
 
@@ -161,7 +186,7 @@ config name and desired generation
 internally derived desired and live canonical identities
 internally observed supported field-level delta
 active Kubernetes payload version and identity
-three-node order and coordinator
+component-specific node order and coordinator
 etcd member and API health preconditions
 static manifest digests before mutation
 commands that would run
@@ -177,56 +202,71 @@ Execution uses the kubeadm binary from the active Kubernetes sysext. Target
 kubeadm private-mount access is unnecessary because the Kubernetes version is
 unchanged.
 
-On each node, the node-local mutating phase is:
+For a control-plane component, the node-local mutating phase is:
 
 ```text
-kubeadm init phase control-plane all \
-  --config /etc/katl/kubeadm/<name>/config.yaml
+kubeadm init phase control-plane <apiserver|controller-manager|scheduler|all> \
+  --config /var/lib/katl/operations/<operation>/effective-kubeadm.yaml
 ```
 
 After every node succeeds, the coordinator runs once:
 
 ```text
 kubeadm init phase upload-config kubeadm \
-  --config /etc/katl/kubeadm/<name>/config.yaml
+  --config /var/lib/katl/operations/<operation>/effective-kubeadm.yaml
 ```
 
-Dry-run or rendered-output inspection must occur before the first mutation and
-must prove that only the three control-plane manifests can change. Katl does not
-run the `etcd local`, certificate, kubeconfig, kubelet, addon, bootstrap-token,
-or upgrade phases for this operation.
+For kubelet configuration, the coordinator first runs
+`kubeadm init phase upload-config kubelet --config ...`. Each node then runs
+`kubeadm upgrade node phase kubelet-config --config ...` followed by
+`systemctl restart kubelet.service`. Every supported kubeadm phase is dry-run
+before the first mutation on that node.
 
-## Three-Control-Plane Ordering
+Katl does not run the `etcd local`, certificate, kubeconfig, CoreDNS addon, or
+bootstrap-token phases for this operation.
+
+## Rollout Ordering
 
 `katlctl` is the rollout coordinator; each node's `katlc` remains the authority
 for its local mutation and `OperationRecord`. The explicit inventory identifies
-one coordinator. The coordinator node is changed last:
+one coordinator. For control-plane configuration the coordinator is changed
+last:
 
 ```text
 1. acquire the rollout plan and verify all cluster-wide preconditions
 2. create and verify the required etcd snapshot evidence
 3. mutate the first non-coordinator control plane
-4. wait for its three static Pods, local API, node Ready state, stable API VIP,
+4. wait for the affected static Pods, local API, node Ready state, stable API VIP,
    and etcd health
 5. mutate the second non-coordinator and repeat every health check
 6. mutate the coordinator and repeat every health check
 7. upload the shared kubeadm ClusterConfiguration from the coordinator
-8. verify the live ConfigMap digest, all manifest digests, three Ready nodes,
-   stable API VIP, and three healthy etcd members
+8. verify the live ConfigMap digest, manifest digests, all intended Ready nodes,
+   stable API VIP, and healthy etcd members
 ```
 
 Only one node may own the mutating phase at a time. The coordinator stops at the
 first refusal, timeout, failed command, or failed health check. It never moves
 to the next node after an ambiguous result.
 
-Katl cordons a node before its manifest mutation and restores its original
-schedulability only after local and cluster health pass. The v0.1 operation does
-not drain: the node is not rebooted, kubelet is not restarted, and evicting
-ordinary workloads would add disruption unrelated to the three static Pods.
+Katl cordons a node before a control-plane manifest mutation and restores its
+original schedulability only after local and cluster health pass. It does not
+drain or reboot the node.
 
-Regenerating a node's three manifests causes kubelet to restart those static
-Pods. The rollout must observe new container identities and `profiling=false`
-arguments for all three components before declaring that node complete.
+Kubelet configuration starts at the coordinator so the shared ConfigMap is
+uploaded before any other node downloads it. Nodes are then updated serially;
+each local config backup, restart, Ready transition, and post-health result is
+recorded before proceeding.
+
+Reconciliation is idempotent. A control-plane node whose supported fields
+already match performs no kubeadm phase or cordon. A node whose local kubelet
+config already contains the desired fields is not restarted, and the
+coordinator uploads the shared kubelet ConfigMap only when its canonical
+configuration differs.
+
+Kube-proxy configuration runs once on the coordinator. Katl performs the
+kubeadm addon dry-run, applies the desired ConfigMap and DaemonSet, and waits
+for the DaemonSet rollout. It does not reboot a host or restart kubelet.
 
 ## Etcd And Static Pod Safety
 
@@ -246,9 +286,10 @@ claim that live kubeadm state was restored.
 
 ## Online, Generation, And Rollback Semantics
 
-This is an online live-state operation. It does not create or select another
-generation and does not require a reboot. The desired configuration must
-already be selected by the active committed generation.
+This is an online live-state operation and does not require a reboot. The
+operator command first activates a kubeadm-input-only generation when desired
+input changed; the node-local kubeadm operation itself requires that committed
+generation and never changes generation selection.
 
 Normal `katlc apply` may render and select a different desired kubeadm config,
 but it only records `action-required`. It must not invoke kubeadm, kubectl,
@@ -258,7 +299,7 @@ Rolling a Katl generation backward changes desired input only. It does not
 reverse static manifests or the kubeadm ConfigMap. Reversing a completed live
 change requires a new explicit `kubeadm-control-plane-config` rollout whose
 desired and expected-live digests describe that reverse transition. There is no
-automatic post-mutation rollback in v0.1.
+automatic post-mutation rollback.
 
 Failure before the first pre-exec mutation marker abandons the attempt without
 claiming live change. Failure after any manifest write or ConfigMap upload stops
@@ -273,6 +314,7 @@ Each node writes an `OperationRecord` with:
 
 ```text
 operationKind: kubeadm-control-plane-config
+internal component phase: control-plane, kubelet, or kube-proxy
 scope and resource lock: kubeadm-state
 rollout ID, node position, node count, and coordinator identity
 actor, expected machine ID, cluster identity, and stable endpoint
@@ -285,6 +327,7 @@ snapshot reference, digest, revision, member-list digest, source etcd version,
   creation time, storage location, and operator identity
 original node schedulability
 before/after SHA-256 for all three control-plane manifests
+before/after SHA-256 for local kubelet config when selected
 before/after static Pod container identities and component health
 API VIP, node Ready, and etcd member/endpoint health evidence
 pre-exec mutation markers and redacted kubeadm invocations
@@ -292,7 +335,7 @@ whether the coordinator ConfigMap upload ran
 terminal result, recoveryRequired, and next action
 ```
 
-The node phase plan is:
+The control-plane phase plan is:
 
 ```text
 accepted
@@ -315,17 +358,21 @@ kubeadm-config-upload-complete
 post-upload-health-complete
 ```
 
-`katlctl` retains a non-authoritative rollout summary that references every
-node-local operation ID. Node-local journals retain internally derived request,
-desired-state, live-state, payload, and manifest identities and remain the
-mutation authority.
+The kubelet phase plan replaces the manifest phases with kubelet config backup,
+optional coordinator upload, local kubelet-config download, kubelet restart,
+and post-kubelet health phases.
+
+The public `katlctl` summary reports node outcomes without exposing operation
+IDs or integrity plumbing. Node-local journals retain internally derived
+request, desired-state, live-state, payload, and manifest identities and remain
+the mutation authority.
 
 ## Consequences
 
-The first release proves a meaningful live kubeadm-owned change while keeping
-the safety surface small enough to validate exhaustively. Operators cannot use
-this path as an arbitrary component-flag editor, but unsupported desired input
-is reported precisely instead of being silently applied.
+Operators can change kubeadm-owned control-plane manifest settings and
+cluster-wide kubelet settings from the same ClusterConfig without reinstalling
+or rebooting nodes. Unsupported desired input is reported precisely instead of
+being silently or partially applied.
 
 The coordinator and node-local executor are separate responsibilities. A
 client interruption cannot make `katlc` forget a local mutation, and a node

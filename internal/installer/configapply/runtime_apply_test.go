@@ -192,7 +192,7 @@ func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); err != nil {
 		t.Fatalf("candidate advertisement marker: %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }
@@ -300,7 +300,7 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 	if !strings.Contains(string(data), "net.ipv4.ip_forward = 1") {
 		t.Fatalf("sysctl content = %q", data)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
@@ -335,7 +335,7 @@ func TestApplyTrustedBundleDefaultsAutoToLiveForSysctl(t *testing.T) {
 	if result.Plan.Decision.RequestedMode != generation.ApplyModeAuto || result.Plan.Decision.AcceptedMode != generation.ApplyModeLive {
 		t.Fatalf("decision = %#v", result.Plan.Decision)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
@@ -477,7 +477,7 @@ func TestApplyTrustedBundleStagesKubeadmInputWithoutSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTrustedBundle() error = %v, result = %#v", err, result)
 	}
-	if result.Audit.Decision != DecisionAccepted || result.Audit.AcceptedApplyMode != generation.ApplyModeNextBoot || len(result.Audit.Diagnostics) != 1 || result.Audit.Diagnostics[0].Decision != DecisionActionRequired {
+	if result.Audit.Decision != DecisionAccepted || result.Audit.AcceptedApplyMode != generation.ApplyModeNextBoot || len(result.Audit.Diagnostics) != 0 {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	configPath := filepath.Join(result.Tree.ConfextDir, "etc/katl/kubeadm/control-plane-v2/config.yaml")

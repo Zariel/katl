@@ -108,14 +108,12 @@ Start with "katlctl install discover" for a waiting installer or
 	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
 	clusterCmd.AddCommand(newClusterStatusCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
+	clusterCmd.AddCommand(newClusterApplyCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe"))
 	cmd.AddCommand(clusterCmd)
 
 	kubernetesCmd := &cobra.Command{Use: "kubernetes", Short: "Kubernetes lifecycle operations"}
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
-	kubeadmConfigCmd := newKubeadmControlPlaneConfigCommand(ctx, stdout, stderr)
-	kubeadmConfigCmd.Hidden = true
-	kubernetesCmd.AddCommand(kubeadmConfigCmd)
 	cmd.AddCommand(kubernetesCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Create and compile ClusterConfig"}
@@ -148,7 +146,9 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostShutdownCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
-	nodeCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
+	nodeApplyCmd := newConfigApplyCommand(ctx, stdout, stderr)
+	nodeApplyCmd.Hidden = true
+	nodeCmd.AddCommand(nodeApplyCmd)
 	nodeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl node wipe"))
 	cmd.AddCommand(nodeCmd)
 
@@ -193,6 +193,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl version":             "katlctl version",
 		"katlctl cluster":             "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster status":      "katlctl cluster status --config cluster.yaml",
+		"katlctl cluster apply":       "katlctl cluster apply --config cluster.yaml",
 		"katlctl context save":        "katlctl context save --config cluster.yaml",
 		"katlctl cluster bootstrap":   "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster wipe":        "katlctl cluster wipe --config cluster.yaml --all",

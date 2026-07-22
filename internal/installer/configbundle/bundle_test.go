@@ -219,8 +219,8 @@ spec:
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
 	}
-	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") {
-		t.Fatalf("defaulted kubeadm does not keep plugins on writable state:\n%s", config)
+	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") {
+		t.Fatalf("defaulted kubeadm does not keep plugins on writable state and allow control-plane scheduling:\n%s", config)
 	}
 }
 

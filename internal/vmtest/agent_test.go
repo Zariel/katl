@@ -248,6 +248,7 @@ func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 		"/var/lib/katl/identity/machine-id",
 		"/var/lib/katl/install/status.json",
 		"/var/lib/katl/operations/bootstrap-init-1/record.json",
+		"/var/lib/kubelet/config.yaml",
 	} {
 		if !pathAllowed(path, defaultAgentFilePaths()) {
 			t.Fatalf("%s is not allowlisted", path)

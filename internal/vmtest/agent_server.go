@@ -513,6 +513,7 @@ func defaultAgentFilePaths() []string {
 		"/var/lib/katl/identity/",
 		"/var/lib/katl/install/status.json",
 		"/var/lib/katl/operations/",
+		"/var/lib/kubelet/config.yaml",
 		"/usr/lib/os-release",
 		"/var/lib/katl/generations/",
 		"/var/lib/katl/test-artifacts/",

@@ -140,8 +140,8 @@ func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
 func TestRoutineRemoteExamplesDeclareClusterConfig(t *testing.T) {
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
 	for _, path := range []string{
-		"cluster bootstrap", "cluster status", "cluster wipe", "kubernetes upgrade",
-		"node apply", "node reboot", "node shutdown", "node status", "node upgrade", "node wipe",
+		"cluster apply", "cluster bootstrap", "cluster status", "cluster wipe", "kubernetes upgrade",
+		"node reboot", "node shutdown", "node status", "node upgrade", "node wipe",
 		"operations list", "operations status",
 	} {
 		command, _, err := root.Find(strings.Fields(path))
@@ -215,6 +215,7 @@ func TestPublicHelpHidesInternalOperationAndTestInputs(t *testing.T) {
 
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
+		"katlctl cluster apply":       true,
 		"katlctl cluster status":      true,
 		"katlctl context save":        true,
 		"katlctl cluster bootstrap":   true,
@@ -263,8 +264,8 @@ func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
 		required  []string
 		forbidden []string
 	}{
-		{group: "node", required: []string{"apply", "reboot", "shutdown", "status", "upgrade", "wipe"}},
-		{group: "cluster", required: []string{"bootstrap", "status", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
+		{group: "node", required: []string{"reboot", "shutdown", "status", "upgrade", "wipe"}, forbidden: []string{"apply"}},
+		{group: "cluster", required: []string{"apply", "bootstrap", "status", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
 		{group: "kubernetes", required: []string{"upgrade"}, forbidden: []string{"apply-config"}},
 		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
 		{group: "context", required: []string{"current", "list", "path", "save", "show", "use"}},
@@ -2296,9 +2297,8 @@ func TestOperatorCommandsHideIntegrityDigestFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"install", "apply", "--help"},
 		{"config", "render-node", "--help"},
-		{"node", "apply", "--help"},
+		{"cluster", "apply", "--help"},
 		{"cluster", "bootstrap", "--help"},
-		{"kubernetes", "apply-config", "--help"},
 		{"node", "upgrade", "--help"},
 		{"operations", "status", "--help"},
 	} {

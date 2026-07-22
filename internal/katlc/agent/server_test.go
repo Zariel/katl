@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -826,7 +827,6 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	}
 	wantDiagnostics := []string{
 		"node-identity: staged-required: domain is staged-only for normal runtime configuration apply",
-		"bootstrap-node-metadata: staged-required: domain is staged-only for normal runtime configuration apply",
 		"networkd: staged-required: domain is staged-only for normal runtime configuration apply",
 	}
 	if first.Accepted || second.Accepted {
@@ -838,7 +838,7 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	if !reflect.DeepEqual(first.Diagnostics, wantDiagnostics) || !reflect.DeepEqual(second.Diagnostics, wantDiagnostics) {
 		t.Fatalf("diagnostics = %#v/%#v, want %#v", first.Diagnostics, second.Diagnostics, wantDiagnostics)
 	}
-	if first.FailureReason != second.FailureReason || !strings.Contains(first.FailureReason, "config apply live request rejected for 3 domain(s)") {
+	if first.FailureReason != second.FailureReason || !strings.Contains(first.FailureReason, "config apply live request rejected for 2 domain(s)") {
 		t.Fatalf("failure reasons = %q/%q, want stable plan rejection", first.FailureReason, second.FailureReason)
 	}
 	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
@@ -1255,6 +1255,35 @@ func TestConfigApplyBaseLoadsRetainedEndpointAdvertiser(t *testing.T) {
 	}
 	if base.EndpointAdvertiserSysext == nil || base.EndpointAdvertiserSysext.Name != "endpoint-advertiser" || base.EndpointAdvertiserSysext.Path != installer.EndpointAdvertiserArtifactPath {
 		t.Fatalf("retained endpoint advertiser = %#v", base.EndpointAdvertiserSysext)
+	}
+}
+
+func TestActiveGenerationKubeadmConfigsPreferActiveConfext(t *testing.T) {
+	root := t.TempDir()
+	const ref = "control-plane-profiled"
+	currentManifest := manifest.Manifest{Node: manifest.NodeConfig{
+		Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: ref}},
+	}}
+	writeStoredKubeadmConfig(t, root, ref)
+	generationDir, err := generation.GenerationDir(root, "generation-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(generationDir, "confext", "etc", "katl", "kubeadm", ref)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const active = "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(active), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, err := activeGenerationKubeadmConfigs(root, "generation-live", currentManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(configs[ref].Config.Content); got != active {
+		t.Fatalf("active config = %q, want %q", got, active)
 	}
 }
 

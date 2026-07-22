@@ -346,7 +346,7 @@ func validateKubeadmYAML(data []byte, patchesRenderDir string) ([]Document, erro
 		if !allowedDocument(apiVersion, kind) {
 			return nil, fmt.Errorf("unsupported kubeadm YAML document %d: apiVersion=%q kind=%q", index+1, apiVersion, kind)
 		}
-		if err := validateYAMLPaths(&node, patchesRenderDir); err != nil {
+		if err := validateYAMLPaths(&node, patchesRenderDir, kind); err != nil {
 			return nil, fmt.Errorf("kubeadm YAML document %d: %w", index+1, err)
 		}
 		documents = append(documents, Document{
@@ -422,7 +422,7 @@ func allowedDocument(apiVersion, kind string) bool {
 	return false
 }
 
-func validateYAMLPaths(node *yaml.Node, patchesRenderDir string) error {
+func validateYAMLPaths(node *yaml.Node, patchesRenderDir, kind string) error {
 	return walkYAML(node, nil, func(path []string, value string) error {
 		if value == "" {
 			return nil
@@ -436,7 +436,7 @@ func validateYAMLPaths(node *yaml.Node, patchesRenderDir string) error {
 		if len(path) == 1 && path[0] == "certificatesDir" && value == "/etc/kubernetes/pki" {
 			return nil
 		}
-		if len(path) == 1 && path[0] == "volumePluginDir" && value == KubeletVolumePluginDir {
+		if kind == "KubeletConfiguration" && allowedKubeletHostPath(path, value) {
 			return nil
 		}
 		if strings.HasPrefix(value, "/") && deniedHostPath(value) {
@@ -444,6 +444,16 @@ func validateYAMLPaths(node *yaml.Node, patchesRenderDir string) error {
 		}
 		return nil
 	})
+}
+
+func allowedKubeletHostPath(path []string, value string) bool {
+	allowed := map[string]string{
+		"authentication.x509.clientCAFile": "/etc/kubernetes/pki/ca.crt",
+		"resolvConf":                       "/run/systemd/resolve/resolv.conf",
+		"staticPodPath":                    "/etc/kubernetes/manifests",
+		"volumePluginDir":                  KubeletVolumePluginDir,
+	}
+	return allowed[strings.Join(path, ".")] == value
 }
 
 func walkYAML(node *yaml.Node, path []string, visit func(path []string, value string) error) error {

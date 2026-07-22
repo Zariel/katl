@@ -91,6 +91,9 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 	if err := e.Activator.Activate(ctx, plan.GenerationRecord); err != nil {
 		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), false)
 	}
+	if err := e.refreshConfext(ctx); err != nil {
+		return e.failAndRollback(ctx, status, plan, err, false)
+	}
 
 	if err := e.runActions(ctx, &status); err != nil {
 		return e.failAndRollback(ctx, status, plan, err, true)
@@ -150,8 +153,20 @@ func (e Executor) endpointAdvertisementEnabled(record generation.Record) (bool, 
 }
 
 func (e Executor) runActions(ctx context.Context, status *generation.ConfigApplyStatus) error {
+	kubeletRebound := false
 	for i := range status.DomainActions {
 		action := &status.DomainActions[i]
+		if action.Status == generation.ConfigApplyActionSkipped {
+			continue
+		}
+		if kubeadmInputDomain(action.Domain) && kubeletRebound {
+			action.Status = generation.ConfigApplyActionPassed
+			action.Diagnostic = ""
+			if err := e.writeStatus(*status); err != nil {
+				return err
+			}
+			continue
+		}
 		commands, err := e.commandsForDomain(action.Domain)
 		if err != nil {
 			action.Status = generation.ConfigApplyActionFailed
@@ -175,6 +190,9 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 				return err
 			}
 		}
+		if kubeadmInputDomain(action.Domain) {
+			kubeletRebound = true
+		}
 		action.Status = generation.ConfigApplyActionPassed
 		action.Diagnostic = ""
 		if err := e.writeStatus(*status); err != nil {
@@ -185,7 +203,13 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 }
 
 func (e Executor) preflight(actions []generation.ConfigApplyDomainAction) error {
+	if err := validateBoundedCommand(e.confextRefreshCommand()); err != nil {
+		return err
+	}
 	for _, action := range actions {
+		if action.Status == generation.ConfigApplyActionSkipped {
+			continue
+		}
 		commands, err := e.commandsForDomain(action.Domain)
 		if err != nil {
 			return err
@@ -199,6 +223,26 @@ func (e Executor) preflight(actions []generation.ConfigApplyDomainAction) error 
 	return nil
 }
 
+func (e Executor) confextRefreshCommand() Command {
+	return Command{
+		Name:    "systemd-confext-refresh",
+		Argv:    []string{"systemd-confext", "refresh"},
+		Timeout: e.timeout(),
+	}
+}
+
+func (e Executor) refreshConfext(ctx context.Context) error {
+	command := e.confextRefreshCommand()
+	result, err := e.Runner.Run(ctx, command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", command.Name, err)
+	}
+	if result.ExitStatus != 0 {
+		return commandFailure(command, result)
+	}
+	return nil
+}
+
 func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	if commands, ok := e.ActionCommands[domain]; ok {
 		return withDefaults(commands, e.timeout()), nil
@@ -208,6 +252,8 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		Argv: []string{"systemctl", "daemon-reload"},
 	}}
 	switch domain {
+	case DomainKubeadmConfig, DomainSelectedKubeadmConfig:
+		commands = []Command{{Name: "kubelet-config-watcher-rebind", Argv: []string{"systemctl", "try-restart", "kubelet.service"}}}
 	case DomainResolved:
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
 	case DomainSysctl:
@@ -248,6 +294,9 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 	if rollbackErr := e.Activator.Rollback(ctx, target); rollbackErr != nil {
 		return e.markRollbackFailed(status, target, cause, rollbackErr)
 	}
+	if refreshErr := e.refreshConfext(ctx); refreshErr != nil {
+		return e.markRollbackFailed(status, target, cause, refreshErr)
+	}
 	if replayActions {
 		if replayErr := e.replayRollbackActions(ctx, status.DomainActions); replayErr != nil {
 			return e.markRollbackFailed(status, target, cause, replayErr)
@@ -264,7 +313,14 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 }
 
 func (e Executor) replayRollbackActions(ctx context.Context, actions []generation.ConfigApplyDomainAction) error {
+	kubeletRebound := false
 	for _, action := range actions {
+		if action.Status == generation.ConfigApplyActionSkipped {
+			continue
+		}
+		if kubeadmInputDomain(action.Domain) && kubeletRebound {
+			continue
+		}
 		commands, err := e.commandsForDomain(action.Domain)
 		if err != nil {
 			return err
@@ -278,8 +334,15 @@ func (e Executor) replayRollbackActions(ctx context.Context, actions []generatio
 				return fmt.Errorf("rollback %w", commandFailure(command, result))
 			}
 		}
+		if kubeadmInputDomain(action.Domain) {
+			kubeletRebound = true
+		}
 	}
 	return nil
+}
+
+func kubeadmInputDomain(domain string) bool {
+	return domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig
 }
 
 func (e Executor) markRollbackFailed(status generation.ConfigApplyStatus, target string, cause error, rollbackErr error) (generation.ConfigApplyStatus, error) {
