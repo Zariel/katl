@@ -81,8 +81,6 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 		"_build/go-cache",
 		"_build/go-mod",
 		"_build/mkosi/builddir",
-		"_build/mkosi/cache",
-		"_build/mkosi/package-cache",
 		"_build/mkosi/workspace",
 		"_build/mkosi/workspace/installer",
 		"_build/mkosi/workspace/runtime",
