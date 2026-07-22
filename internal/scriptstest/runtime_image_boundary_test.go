@@ -25,6 +25,23 @@ func TestRuntimeInitrdIncludesLibseccomp(t *testing.T) {
 	}
 }
 
+func TestRuntimeKubernetesSysctlsSupportCNIs(t *testing.T) {
+	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "sysctl.d", "50-katl-kubernetes.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(config)
+	for _, want := range []string{
+		"net.ipv4.ip_forward=1",
+		"net.ipv4.conf.all.rp_filter=0",
+		"net.ipv4.conf.default.rp_filter=0",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime Kubernetes sysctls missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 	repo := repoRoot(t)
 	bin := filepath.Join(t.TempDir(), "bin")
