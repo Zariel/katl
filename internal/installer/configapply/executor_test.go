@@ -38,10 +38,10 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 			t.Fatalf("action = %#v, want passed", action)
 		}
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
-	if got, want := runner.commands[1].Argv, []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}; strings.Join(got, " ") != strings.Join(want, " ") {
+	if got, want := runner.commands[2].Argv, []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}; strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("systemd-sysctl argv = %#v, want %#v", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(statusPath)
@@ -50,6 +50,34 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 	}
 	if persisted.Phase != generation.ConfigApplyPhaseActive || persisted.DomainActions[0].Status != generation.ConfigApplyActionPassed {
 		t.Fatalf("persisted status = %#v", persisted)
+	}
+}
+
+func TestExecutorRebindsKubeletWatcherOnceForKubeadmInput(t *testing.T) {
+	plan := liveExecutorPlan(t, []Change{
+		{Domain: DomainKubeadmConfig},
+		{Domain: DomainSelectedKubeadmConfig},
+	})
+	runner := &fakeCommandRunner{}
+
+	status, err := Executor{
+		Runner:    runner,
+		Activator: &fakeActivator{},
+		Now:       fixedNow,
+	}.ExecuteLive(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("ExecuteLive() error = %v", err)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,kubelet-config-watcher-rebind"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+	if got, want := runner.commands[1].Argv, []string{"systemctl", "try-restart", "kubelet.service"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("kubelet rebind argv = %#v, want %#v", got, want)
+	}
+	for _, action := range status.DomainActions {
+		if action.Status != generation.ConfigApplyActionPassed {
+			t.Fatalf("action = %#v, want passed", action)
+		}
 	}
 }
 
@@ -85,7 +113,7 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	if !strings.Contains(status.FailureReason, "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("failure reason = %q, want redacted token marker", status.FailureReason)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl,systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl,systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
 	}
 	data, err := os.ReadFile(statusPath)
@@ -156,7 +184,7 @@ func TestExecutorRecordsRollbackReplayFailure(t *testing.T) {
 	if strings.Contains(status.Rollback.Reason, "secret-token") || !strings.Contains(status.Rollback.Reason, "Bearer [REDACTED]") {
 		t.Fatalf("rollback reason was not redacted: %q", status.Rollback.Reason)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-daemon-reload"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-confext-refresh,systemd-daemon-reload"; got != want {
 		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
 	}
 }
@@ -273,7 +301,7 @@ func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }

@@ -1,7 +1,8 @@
-# Apply KatlOS Node Configuration
+# Apply Cluster Configuration
 
-Use `katlctl node apply` for supported node configuration after installation. It is not
-a general Kubernetes, disk, kubeadm, or operating-system upgrade mechanism.
+Use `katlctl cluster apply` for supported configuration changes after
+installation. The same `ClusterConfig` remains the source of truth for every
+node and for kubeadm-owned Kubernetes configuration.
 
 ## Supported Input
 
@@ -12,52 +13,40 @@ renderer carries:
 - systemd-networkd files; and
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
-Runtime-safe fields can apply normally. Operation-only differences are planned
-and reported as requiring an explicit lifecycle action; node apply does not
-run kubeadm. Disk/install selection and Kubernetes version changes use the
-dedicated install and Kubernetes upgrade workflows.
+Runtime-safe fields apply normally. Katl coordinates affected node generations
+and kubeadm phases internally. Disk/install selection and Kubernetes version
+changes use the dedicated install and Kubernetes upgrade workflows.
 
-If `spec.kubernetes.kubeadm` changes, planning reports a kubeadm-aware action.
-Normal node apply does not rewrite live kubeadm or Kubernetes state; use the
-dedicated operation for a supported change, or follow the reported manual
-boundary when Katl does not support that transition.
+If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
+mutation and then reconciles every affected Kubernetes component online. A
+Kubernetes configuration change never falls back to next-boot application or
+requires a host reboot.
 
-## Plan an Apply
+## Apply The Cluster
 
-An optional plan compiles the selected node configuration and asks the node to
-validate it without accepting an operation:
+Apply the source configuration directly:
 
 ```sh
-katlctl node apply cp-1 --config ./cluster.yaml \
-	--plan
+katlctl cluster apply --config ./cluster.yaml
 ```
 
-Validation reports the changed domains and accepted apply mode without
-accepting an operation. The default `auto` lets the domain policy select live or
-next-boot application. Request `--mode live` or `--mode next-boot` only when you
-intend to constrain that policy; unsafe requests are refused.
+Katl compiles every selected node configuration, validates the whole cluster,
+and starts no mutation if any node rejects the plan. It then applies node
+configuration and all affected Kubernetes component phases in a safe serial
+order, returning only after the cluster is healthy.
 
 If the source has already been compiled, pass the bundle through the same flag:
 
 ```sh
-katlctl node apply cp-1 --config ./katl-lab.katlcfg --plan
+katlctl cluster apply --config ./katl-lab.katlcfg
 ```
 
 Katl derives and verifies the bundle's integrity metadata from the file.
 
-## Apply the Reviewed Request
-
-Run the same arguments without `--plan`:
-
-```sh
-katlctl node apply cp-1 --config ./cluster.yaml
-```
-
-`katlctl` resolves the selected workstation context, reads the node credential,
-derives the monotonically increasing desired version and candidate generation,
-validates the change, follows the durable apply, and exits only after a terminal
-result. Require `terminal: true` and `result: succeeded`. If `recoveryRequired`
-is true, stop and follow `failureReason` and `nextAction`.
+`katlctl` derives per-node generations, component phases, rollout ordering, and
+operation identities internally. A successful return means the complete
+supported configuration is active; partial or unsupported plans fail with the
+node, field, and recovery action.
 
 ## Check Status
 
@@ -73,5 +62,5 @@ On-node evidence remains available under:
 /var/lib/katl/boot/selection.json
 ```
 
-If status reports rollback failure, `failed-needs-repair`, or a kubeadm action
-requirement, stop and classify it before submitting another configuration.
+If status reports rollback failure or `failed-needs-repair`, stop and follow the
+reported recovery action before submitting another cluster apply.

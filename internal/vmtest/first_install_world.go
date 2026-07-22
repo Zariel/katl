@@ -1346,6 +1346,7 @@ kind: InitConfiguration
 nodeRegistration:
   name: ` + nodeName + `
   criSocket: unix:///run/containerd/containerd.sock
+  taints: []
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration

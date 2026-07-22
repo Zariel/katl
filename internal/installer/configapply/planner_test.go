@@ -94,7 +94,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 	if err == nil {
 		t.Fatalf("PlanChange() error = nil, result = %#v", result)
 	}
-	if result.Decision.AcceptedMode != "" || len(result.Decision.Diagnostics) != 3 {
+	if result.Decision.AcceptedMode != "" || len(result.Decision.Diagnostics) != 2 {
 		t.Fatalf("decision = %#v", result.Decision)
 	}
 	if result.GenerationRecord.Kind != "" || result.Status.Kind != "" {
@@ -105,7 +105,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 	}
 }
 
-func TestPlanChangeStagesKubeadmInputWithoutLiveAction(t *testing.T) {
+func TestPlanChangeActivatesKubeadmInputAndRebindsKubeletWatcher(t *testing.T) {
 	live, err := PlanChange(currentRecord(), NodeConfigurationChange{
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
@@ -115,11 +115,11 @@ func TestPlanChangeStagesKubeadmInputWithoutLiveAction(t *testing.T) {
 		Changes:          []Change{{Domain: DomainKubeadmConfig}},
 		GeneratedConfext: candidateConfext("2026.06.05-002"),
 	})
-	if err == nil {
-		t.Fatalf("PlanChange(live kubeadm) error = nil, result = %#v", live)
+	if err != nil {
+		t.Fatalf("PlanChange(live kubeadm) error = %v, result = %#v", err, live)
 	}
-	if len(live.Decision.Diagnostics) != 1 || live.Decision.Diagnostics[0].Decision != DecisionRejected || live.Decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
-		t.Fatalf("live kubeadm diagnostics = %#v", live.Decision.Diagnostics)
+	if live.Decision.AcceptedMode != generation.ApplyModeLive || len(live.Status.DomainActions) != 1 || live.Status.DomainActions[0].Action != "kubelet-config-watcher-rebind" || live.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
+		t.Fatalf("live kubeadm result = %#v", live)
 	}
 
 	next, err := PlanChange(currentRecord(), NodeConfigurationChange{
@@ -140,7 +140,7 @@ func TestPlanChangeStagesKubeadmInputWithoutLiveAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanChange(next kubeadm) error = %v, result = %#v", err, next)
 	}
-	if next.Decision.AcceptedMode != generation.ApplyModeNextBoot || len(next.Decision.Diagnostics) != 1 || next.Decision.Diagnostics[0].Decision != DecisionActionRequired {
+	if next.Decision.AcceptedMode != generation.ApplyModeNextBoot || len(next.Decision.Diagnostics) != 0 {
 		t.Fatalf("next kubeadm decision = %#v", next.Decision)
 	}
 	if !next.Status.Kubeadm.Required || next.Status.Kubeadm.SelectedConfigName != "control-plane" || next.Status.PreviousGeneration == "" {

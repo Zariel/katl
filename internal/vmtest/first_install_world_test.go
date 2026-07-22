@@ -493,7 +493,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm-configs", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "configFile: kubeadm/control-plane.yaml") {
 		t.Fatalf("generated KubeadmConfig = %q, err = %v", data, err)
 	}
-	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kind: InitConfiguration") || !strings.Contains(string(data), "kubernetesVersion: v1.36.0") {
+	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kind: InitConfiguration") || !strings.Contains(string(data), "kubernetesVersion: v1.36.0") || !strings.Contains(string(data), "taints: []") {
 		t.Fatalf("generated kubeadm config = %q, err = %v", data, err)
 	}
 	scenarioManifest := readScenarioManifest(t, run.Scenario.ManifestPath)

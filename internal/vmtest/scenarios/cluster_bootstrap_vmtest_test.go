@@ -2859,6 +2859,10 @@ func assertGeneration0Selection(t *testing.T, data []byte) {
 }
 
 func collectOperationEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir, expectedKind string) (string, operation.OperationRecord, error) {
+	return collectOperationEvidenceForRollout(ctx, node, evidenceDir, expectedKind, "")
+}
+
+func collectOperationEvidenceForRollout(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir, expectedKind, expectedRolloutID string) (string, operation.OperationRecord, error) {
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		return "", operation.OperationRecord{}, err
 	}
@@ -2885,7 +2889,7 @@ func collectOperationEvidence(ctx context.Context, node vmtest.RunningInstalledR
 		if err := os.WriteFile(filepath.Join(evidenceDir, "operation-record-"+firstString(record.OperationID, filepath.Base(filepath.Dir(path)))+".json"), data, 0o600); err != nil {
 			return "", operation.OperationRecord{}, err
 		}
-		if record.OperationKind != expectedKind {
+		if record.OperationKind != expectedKind || expectedRolloutID != "" && (record.KubeadmControlPlaneConfig == nil || record.KubeadmControlPlaneConfig.RolloutID != expectedRolloutID) {
 			continue
 		}
 		if selectedPath != "" {
@@ -2895,7 +2899,11 @@ func collectOperationEvidence(ctx context.Context, node vmtest.RunningInstalledR
 		selected = record
 	}
 	if selectedPath == "" {
-		return "", operation.OperationRecord{}, fmt.Errorf("%s operation record not found; found records: %s", expectedKind, strings.Join(found, ", "))
+		qualifier := ""
+		if expectedRolloutID != "" {
+			qualifier = " for rollout " + expectedRolloutID
+		}
+		return "", operation.OperationRecord{}, fmt.Errorf("%s operation record%s not found; found records: %s", expectedKind, qualifier, strings.Join(found, ", "))
 	}
 	hostRecord := filepath.Join(evidenceDir, expectedKind+"-record.json")
 	data, err := readNodeFileWithRetry(ctx, node, selectedPath, 2<<20, 30*time.Second)

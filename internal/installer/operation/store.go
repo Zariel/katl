@@ -162,6 +162,7 @@ type ConfigApplyRequest struct {
 }
 
 type KubeadmControlPlaneConfig struct {
+	Component                 string            `json:"component"`
 	RolloutID                 string            `json:"rolloutID"`
 	NodePosition              uint32            `json:"nodePosition"`
 	NodeCount                 uint32            `json:"nodeCount"`
@@ -187,6 +188,8 @@ type KubeadmControlPlaneConfig struct {
 	ConfigUploadRan           bool              `json:"configUploadRan"`
 	BeforeManifestSHA256      map[string]string `json:"beforeManifestSHA256,omitempty"`
 	AfterManifestSHA256       map[string]string `json:"afterManifestSHA256,omitempty"`
+	BeforeKubeletConfigSHA256 string            `json:"beforeKubeletConfigSHA256,omitempty"`
+	AfterKubeletConfigSHA256  string            `json:"afterKubeletConfigSHA256,omitempty"`
 	OriginalNodeUnschedulable bool              `json:"originalNodeUnschedulable"`
 }
 
@@ -1058,6 +1061,10 @@ func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneCon
 	nextComparable.BeforeManifestSHA256 = nil
 	previousComparable.AfterManifestSHA256 = nil
 	nextComparable.AfterManifestSHA256 = nil
+	previousComparable.BeforeKubeletConfigSHA256 = ""
+	nextComparable.BeforeKubeletConfigSHA256 = ""
+	previousComparable.AfterKubeletConfigSHA256 = ""
+	nextComparable.AfterKubeletConfigSHA256 = ""
 	previousComparable.OriginalNodeUnschedulable = false
 	nextComparable.OriginalNodeUnschedulable = false
 	previousComparable.ExpectedLiveConfigSHA256 = ""
@@ -1747,6 +1754,9 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 }
 
 func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error {
+	if request.Component != "control-plane" && request.Component != "kubelet" && request.Component != "kube-proxy" {
+		return fmt.Errorf("kubeadmControlPlaneConfig component must be control-plane, kubelet, or kube-proxy")
+	}
 	required := map[string]string{
 		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,
 		"nodeName": request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
@@ -1758,8 +1768,8 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 			return fmt.Errorf("kubeadmControlPlaneConfig %s is required", name)
 		}
 	}
-	if request.NodeCount != 3 || request.NodePosition < 1 || request.NodePosition > request.NodeCount {
-		return fmt.Errorf("kubeadmControlPlaneConfig node position must identify one of exactly three nodes")
+	if request.NodeCount < 1 || request.NodePosition < 1 || request.NodePosition > request.NodeCount {
+		return fmt.Errorf("kubeadmControlPlaneConfig node position must identify one node in the rollout")
 	}
 	if filepath.Base(request.ConfigName) != request.ConfigName || request.ConfigPath != "/etc/katl/kubeadm/"+request.ConfigName+"/config.yaml" {
 		return fmt.Errorf("kubeadmControlPlaneConfig config path is invalid")
@@ -1796,6 +1806,16 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 	for name, digest := range request.AfterManifestSHA256 {
 		if err := validateSHA256Hex("kubeadmControlPlaneConfig after manifest "+name, digest); err != nil {
 			return err
+		}
+	}
+	for name, digest := range map[string]string{
+		"before kubelet config": request.BeforeKubeletConfigSHA256,
+		"after kubelet config":  request.AfterKubeletConfigSHA256,
+	} {
+		if strings.TrimSpace(digest) != "" {
+			if err := validateSHA256Hex("kubeadmControlPlaneConfig "+name, digest); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

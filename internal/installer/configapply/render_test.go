@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
@@ -139,6 +140,37 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 	}
 	if !request.NodeOverrides["cp-1"].KubeadmChanged {
 		t.Fatal("rendered kubeadm input was not planned as an operation-only change")
+	}
+}
+
+func TestRenderNodeConfigurationChangeCanSelectOnlyKubeadmInput(t *testing.T) {
+	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
+		NodeName: "cp-1",
+		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
+			Identity:   manifest.NodeIdentity{Hostname: "cp-1"},
+			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
+		}},
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": {Name: "control-plane", Config: kubeadmconfig.File{Content: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")}},
+		},
+		SourceID: "lab", DesiredVersion: "2", ApplyMode: generation.ApplyModeAuto, KubeadmOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, absent := range []string{"identity:", "networkd:", "controlPlaneEndpoint:"} {
+		if strings.Contains(text, absent) {
+			t.Fatalf("kubeadm-only change contains %q:\n%s", absent, text)
+		}
+	}
+	request, err := DecodeNodeConfigurationChange(strings.NewReader(text), TrustedBundleRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := request.NodeOverrides["cp-1"]
+	if overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" || len(request.KubeadmConfigs) != 1 {
+		t.Fatalf("decoded request = %#v", request)
 	}
 }
 

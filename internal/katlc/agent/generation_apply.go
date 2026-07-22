@@ -661,7 +661,7 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 	if strings.TrimSpace(nodeName) == "" {
 		nodeName = currentManifest.Node.Identity.Hostname
 	}
-	kubeadmConfigs, err := installedKubeadmConfigs(root, currentManifest)
+	kubeadmConfigs, err := activeGenerationKubeadmConfigs(root, currentID, currentManifest)
 	if err != nil {
 		return configapply.TrustedBundleRequest{}, err
 	}
@@ -742,15 +742,32 @@ func currentKubernetesActivationPath(record generation.Record) string {
 	return ""
 }
 
-func installedKubeadmConfigs(root string, currentManifest manifest.Manifest) (map[string]kubeadmconfig.Plan, error) {
+func activeGenerationKubeadmConfigs(root string, currentGenerationID string, currentManifest manifest.Manifest) (map[string]kubeadmconfig.Plan, error) {
 	ref := strings.TrimSpace(currentManifest.Node.Kubernetes.Kubeadm.ConfigRef)
 	if ref == "" {
 		return nil, nil
 	}
-	dir, err := installer.StoredKubeadmInputDir(root, ref)
+	generationDir, err := generation.GenerationDir(root, currentGenerationID)
 	if err != nil {
 		return nil, err
 	}
+	dir := filepath.Join(generationDir, "confext", "etc", "katl", "kubeadm", ref)
+	if info, statErr := os.Stat(dir); statErr == nil {
+		if !info.IsDir() {
+			return nil, fmt.Errorf("active generation kubeadm config %q is not a directory", ref)
+		}
+		return kubeadmConfigsFromDir(ref, dir, "active generation")
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect active generation kubeadm config %q: %w", ref, statErr)
+	}
+	dir, err = installer.StoredKubeadmInputDir(root, ref)
+	if err != nil {
+		return nil, err
+	}
+	return kubeadmConfigsFromDir(ref, dir, "installed")
+}
+
+func kubeadmConfigsFromDir(ref string, dir string, source string) (map[string]kubeadmconfig.Plan, error) {
 	var files []kubeadmconfig.File
 	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -764,14 +781,14 @@ func installedKubeadmConfigs(root string, currentManifest manifest.Manifest) (ma
 			return err
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("stored kubeadm input %s is not a regular file", path)
+			return fmt.Errorf("%s kubeadm input %s is not a regular file", source, path)
 		}
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
 		}
 		if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return fmt.Errorf("stored kubeadm input %s escapes input directory", path)
+			return fmt.Errorf("%s kubeadm input %s escapes input directory", source, path)
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -784,7 +801,7 @@ func installedKubeadmConfigs(root string, currentManifest manifest.Manifest) (ma
 		})
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read installed kubeadm config %q: %w", ref, err)
+		return nil, fmt.Errorf("read %s kubeadm config %q: %w", source, ref, err)
 	}
 	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, files)
 	if err != nil {

@@ -982,6 +982,7 @@ func TestStoreRejectsControlPlaneConfigBodyMismatch(t *testing.T) {
 
 func validControlPlaneConfigBody() *KubeadmControlPlaneConfig {
 	return &KubeadmControlPlaneConfig{
+		Component: "control-plane",
 		RolloutID: "rollout-1", NodePosition: 1, NodeCount: 3, CoordinatorNode: "cp-3", NodeName: "cp-1",
 		DesiredGenerationID: "generation-1", ConfigName: "control-plane", ConfigPath: "/etc/katl/kubeadm/control-plane/config.yaml",
 		DesiredConfigSHA256: strings.Repeat("a", 64), ExpectedLiveConfigSHA256: strings.Repeat("b", 64),

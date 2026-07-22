@@ -18,6 +18,7 @@ type RenderNodeRequest struct {
 	SourceID       string
 	DesiredVersion string
 	ApplyMode      string
+	KubeadmOnly    bool
 }
 
 type renderedNodeConfigurationChange struct {
@@ -39,11 +40,11 @@ type renderedNodeConfigurationChangeSpec struct {
 }
 
 type renderedNodeConfigurationOverlay struct {
-	Identity             renderedNodeIdentity        `yaml:"identity"`
-	SystemRole           string                      `yaml:"systemRole,omitempty"`
-	Networkd             manifest.NetworkdConfig     `yaml:"networkd"`
-	Kubernetes           *manifest.KubernetesConfig  `yaml:"kubernetes,omitempty"`
-	ControlPlaneEndpoint controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint"`
+	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
+	SystemRole           string                       `yaml:"systemRole,omitempty"`
+	Networkd             *manifest.NetworkdConfig     `yaml:"networkd,omitempty"`
+	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
+	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 }
 
 type renderedNodeIdentity struct {
@@ -74,6 +75,19 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	overlay := renderedNodeConfigurationOverlay{
+		Identity: &renderedNodeIdentity{
+			Hostname:       node.Identity.Hostname,
+			AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
+		},
+		SystemRole:           node.SystemRole,
+		Networkd:             &node.Networkd,
+		Kubernetes:           &node.Kubernetes,
+		ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
+	}
+	if request.KubeadmOnly {
+		overlay = renderedNodeConfigurationOverlay{Kubernetes: &node.Kubernetes}
+	}
 	document := renderedNodeConfigurationChange{
 		APIVersion: NodeConfigurationChangeAPIVersion,
 		Kind:       NodeConfigurationChangeKind,
@@ -85,16 +99,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		Spec: renderedNodeConfigurationChangeSpec{
 			KubeadmConfigs: kubeadmConfigs,
 			NodeOverrides: map[string]renderedNodeConfigurationOverlay{
-				nodeName: {
-					Identity: renderedNodeIdentity{
-						Hostname:       node.Identity.Hostname,
-						AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
-					},
-					SystemRole:           node.SystemRole,
-					Networkd:             node.Networkd,
-					Kubernetes:           &node.Kubernetes,
-					ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
-				},
+				nodeName: overlay,
 			},
 		},
 	}
@@ -105,8 +110,8 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	return data, nil
 }
 
-func renderedControlPlaneEndpoint(config *controlplaneendpoint.Config) controlPlaneEndpointOverlay {
-	return controlPlaneEndpointOverlay{Managed: config != nil, Config: config}
+func renderedControlPlaneEndpoint(config *controlplaneendpoint.Config) *controlPlaneEndpointOverlay {
+	return &controlPlaneEndpointOverlay{Managed: config != nil, Config: config}
 }
 
 func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (map[string]inlineKubeadmConfig, error) {

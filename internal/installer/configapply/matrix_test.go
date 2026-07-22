@@ -16,15 +16,15 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainSysctl, ClassificationOnlineApplicable},
 		{DomainTmpfiles, ClassificationStagedOnly},
 		{DomainNetworkd, ClassificationStagedOnly},
-		{DomainBootstrapNodeMetadata, ClassificationStagedOnly},
+		{DomainBootstrapNodeMetadata, ClassificationOnlineApplicable},
 		{DomainNodeIdentity, ClassificationStagedOnly},
 		{DomainModulesLoad, ClassificationStagedOnly},
 		{DomainMountUnits, ClassificationStagedOnly},
 		{DomainExtraDisks, ClassificationStagedOnly},
 		{DomainSSHOperatorAccess, ClassificationStagedOnly},
-		{DomainKubeadmConfig, ClassificationOperationOnly},
+		{DomainKubeadmConfig, ClassificationOnlineApplicable},
 		{DomainSystemRole, ClassificationOperationOnly},
-		{DomainSelectedKubeadmConfig, ClassificationOperationOnly},
+		{DomainSelectedKubeadmConfig, ClassificationOnlineApplicable},
 		{DomainSelectedKubernetesSysext, ClassificationOperationOnly},
 		{DomainKubeletNodeIdentity, ClassificationOperationOnly},
 		{DomainHostAccountPolicy, ClassificationRejected},
@@ -130,7 +130,6 @@ func TestPlanTreatsStagedOnlyDomainsAsNextBoot(t *testing.T) {
 		DomainResolved,
 		DomainTmpfiles,
 		DomainNetworkd,
-		DomainBootstrapNodeMetadata,
 		DomainControlPlaneEndpointBootstrap,
 	} {
 		t.Run(domain, func(t *testing.T) {
@@ -203,28 +202,38 @@ func TestPlanRejectsOperationOnlyAndUnsupportedMutations(t *testing.T) {
 	}
 }
 
-func TestPlanStagesKubeadmInputAsActionRequired(t *testing.T) {
+func TestPlanActivatesKubeadmInputLiveWithoutApplyingIt(t *testing.T) {
 	for _, domain := range []string{DomainKubeadmConfig, DomainSelectedKubeadmConfig} {
 		t.Run(domain, func(t *testing.T) {
-			for _, mode := range []string{generation.ApplyModeAuto, generation.ApplyModeNextBoot} {
+			for _, mode := range []string{generation.ApplyModeAuto, generation.ApplyModeLive} {
 				decision, err := Plan(mode, []Change{{Domain: domain}})
 				if err != nil {
 					t.Fatalf("Plan(%s) error = %v, decision = %#v", mode, err, decision)
 				}
-				if decision.AcceptedMode != generation.ApplyModeNextBoot || len(decision.Diagnostics) != 1 {
+				if decision.AcceptedMode != generation.ApplyModeLive || len(decision.Diagnostics) != 0 {
 					t.Fatalf("Plan(%s) decision = %#v", mode, decision)
-				}
-				diagnostic := decision.Diagnostics[0]
-				if diagnostic.Decision != DecisionActionRequired || diagnostic.Classification != ClassificationOperationOnly || diagnostic.RequiredOperation != "kubeadm-aware operation" {
-					t.Fatalf("Plan(%s) diagnostic = %#v", mode, diagnostic)
 				}
 			}
 
-			decision, err := Plan(generation.ApplyModeLive, []Change{{Domain: domain}})
-			if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].Decision != DecisionRejected {
-				t.Fatalf("Plan(live) error = %v, decision = %#v", err, decision)
+			decision, err := Plan(generation.ApplyModeNextBoot, []Change{{Domain: domain}})
+			if err != nil || decision.AcceptedMode != generation.ApplyModeNextBoot {
+				t.Fatalf("Plan(next-boot) error = %v, decision = %#v", err, decision)
 			}
 		})
+	}
+}
+
+func TestPlanActivatesSelectedKubeadmConfigAndNodeMetadataLive(t *testing.T) {
+	decision, err := Plan(generation.ApplyModeLive, []Change{
+		{Domain: DomainSelectedKubeadmConfig},
+		{Domain: DomainBootstrapNodeMetadata},
+		{Domain: DomainKubeadmConfig},
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v, decision = %#v", err, decision)
+	}
+	if decision.AcceptedMode != generation.ApplyModeLive || len(decision.Diagnostics) != 0 {
+		t.Fatalf("decision = %#v", decision)
 	}
 }
 
@@ -286,17 +295,14 @@ func TestPlanMixedLiveRequestFailsAtomically(t *testing.T) {
 	if decision.AcceptedMode != "" {
 		t.Fatalf("accepted mode = %q, want empty rejected decision", decision.AcceptedMode)
 	}
-	if len(decision.Diagnostics) != 3 {
-		t.Fatalf("diagnostics = %#v, want staged networkd, operation-only kubeadm, and rejected /etc/kubernetes", decision.Diagnostics)
+	if len(decision.Diagnostics) != 2 {
+		t.Fatalf("diagnostics = %#v, want staged networkd and rejected /etc/kubernetes", decision.Diagnostics)
 	}
 	if decision.Diagnostics[0].Domain != DomainNetworkd || decision.Diagnostics[0].Decision != DecisionStagedRequired {
 		t.Fatalf("first diagnostic = %#v", decision.Diagnostics[0])
 	}
-	if decision.Diagnostics[1].Domain != DomainKubeadmConfig || decision.Diagnostics[1].Decision != DecisionRejected || decision.Diagnostics[1].RequiredOperation != "kubeadm-aware operation" {
+	if decision.Diagnostics[1].Domain != DomainEtcKubernetes || decision.Diagnostics[1].Decision != DecisionRejected {
 		t.Fatalf("second diagnostic = %#v", decision.Diagnostics[1])
-	}
-	if decision.Diagnostics[2].Domain != DomainEtcKubernetes || decision.Diagnostics[2].Decision != DecisionRejected {
-		t.Fatalf("third diagnostic = %#v", decision.Diagnostics[2])
 	}
 	if got, want := strings.Join(decision.ChangedDomains, ","), "sysctl,networkd,kubeadm-config,etc-kubernetes"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)

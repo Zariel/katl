@@ -293,7 +293,7 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainBootstrapNodeMetadata: {
-		Classification:  ClassificationStagedOnly,
+		Classification:  ClassificationOnlineApplicable,
 		NextBootAllowed: true,
 	},
 	DomainNodeIdentity: {
@@ -317,10 +317,9 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainKubeadmConfig: {
-		Classification:      ClassificationOperationOnly,
-		NextBootAllowed:     true,
-		LiveRejectionReason: "kubeadm desired state changes require an explicit kubeadm-aware operation",
-		RequiredOperation:   "kubeadm-aware operation",
+		Classification:    ClassificationOnlineApplicable,
+		NextBootAllowed:   true,
+		RequiredOperation: "kubeadm-aware operation",
 	},
 	DomainSystemRole: {
 		Classification:      ClassificationOperationOnly,
@@ -328,10 +327,9 @@ var domainPolicies = map[string]domainPolicy{
 		RequiredOperation:   "wipe-reinstall",
 	},
 	DomainSelectedKubeadmConfig: {
-		Classification:      ClassificationOperationOnly,
-		NextBootAllowed:     true,
-		LiveRejectionReason: "selected kubeadm config changes require an explicit kubeadm-aware action",
-		RequiredOperation:   "kubeadm-aware operation",
+		Classification:    ClassificationOnlineApplicable,
+		NextBootAllowed:   true,
+		RequiredOperation: "kubeadm-aware operation",
 	},
 	DomainSelectedKubernetesSysext: {
 		Classification:      ClassificationOperationOnly,

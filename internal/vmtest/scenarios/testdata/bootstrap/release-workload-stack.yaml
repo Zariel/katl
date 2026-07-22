@@ -59,13 +59,6 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: cp-1
-      tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
       containers:
       - name: operator-fixture
         image: localhost/katl-vmtest/net-server:latest
@@ -93,13 +86,6 @@ spec:
       labels:
         app.kubernetes.io/name: echo
     spec:
-      tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
       containers:
       - name: echo
         image: localhost/katl-vmtest/net-server:latest
@@ -145,13 +131,6 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: cp-1
-      tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
       containers:
       - name: gateway
         image: localhost/katl-vmtest/gateway-proxy:latest
