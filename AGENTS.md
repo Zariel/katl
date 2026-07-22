@@ -34,6 +34,7 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 - Verify generated systemd units with `systemd-analyze verify` where practical. Risky boot, disk, update, security, or kubeadm changes also require focused review.
 - Use delete-on-success retention for routine VM gates. Keep large run output only while debugging and remove it afterwards.
 - A release should exercise the same artifacts and supported journeys users receive. Do not infer release readiness solely from unit tests or a successful artifact build.
+- Use `katldev` for hands-on UX verification of operator journeys through the public `katlctl` interface. Exercise representative happy paths, repeat applies, online configuration changes, and safe failure or recovery paths without relying on internal shortcuts. Judge the journey as a user would: verify useful progress, actionable errors, expected end state, and the absence of surprising disruption; record product gaps discovered along the way.
 
 ## Task and Delivery Workflow
 
