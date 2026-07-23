@@ -331,35 +331,43 @@ future node-side trust-root, revocation, and downgrade policy.
 ## Kubernetes Bundle Artifacts
 
 `.github/workflows/kubernetes-bundles.yml` is the independent Kubernetes
-payload producer. The normal release path is a reviewed Renovate pull request.
-Renovate tracks the selected Kubernetes `v1.36` patch and the exact kubeadm,
-kubelet, kubectl, and cri-tools RPM NEVRAs in
-`mkosi.profiles/kubernetes-sysext/kubernetes.env`. Merging that lock update to
-`main` builds, verifies, publishes, and attests the corresponding immutable
-`vMAJOR.MINOR.PATCH-katl.1` GHCR artifact. Earlier patch releases and digests
+payload producer. `internal/kubernetesrelease/supported-versions.json` declares
+every maintained payload, its exact kubeadm, kubelet, kubectl, and cri-tools RPM
+NEVRAs, and its next immutable Katl artifact revision. Merging a reviewed policy
+update to `main` builds, verifies, publishes, and attests each new or
+revision-advanced entry in parallel, then opens one compatibility-catalog pull
+request with the published digests. Earlier artifact identities and digests
 remain addressable.
 
-Prepare or complete that reviewed update with one command on a capable build
-host:
+Add a released Kubernetes patch to the supported matrix with:
 
 ```sh
-scripts/prepare-kubernetes-release v1.36.2
+go run ./cmd/katl-kubernetes-release prepare-supported \
+  --payload-version v1.36.3
 ```
 
 The command resolves the exact x86_64 RPMs from the selected official
 Kubernetes repository, requires kubeadm, kubelet, and kubectl to match the
-payload patch, selects the newest compatible cri-tools patch, resets the Katl
-artifact revision to `1`, builds the runtime and sysext, refreshes the resource
-lock, and runs the producer checks. Review the resulting release manifest and
-resource-lock diff, then submit them as a normal ready pull request. The merge
-is the release event; no tag or manual workflow dispatch is required.
+payload patch, selects the newest compatible cri-tools patch, and starts a new
+payload at artifact revision `1`. Review the policy diff and submit it as a
+normal ready pull request.
 
-Manual dispatch remains the explicit rebuild and dry-run path. Dispatch it with
-empty version inputs to rebuild the committed release manifest, or provide an
-exact Kubernetes payload and immutable Katl build identity to inspect another
-candidate. Keep `publish: false` for a build-only verification run. A
-successful build uploads the complete staged bundle as a GitHub Actions
-artifact.
+Changes to bundle-producing code, profiles, or workflows must rebuild every
+supported payload. Refresh the recipe fingerprint and advance all immutable
+artifact revisions in the same pull request:
+
+```sh
+go run ./cmd/katl-kubernetes-release refresh-rebuilds
+```
+
+The Go baseline rejects a changed bundle recipe until this command has updated
+the supported-version policy. Changes that only add a supported payload do not
+advance existing artifact revisions.
+
+Manual dispatch remains the explicit dry-run path. Dispatch it with empty
+version inputs to build the whole supported matrix, or select one supported
+payload. Keep `publish: false` for build-only verification; an explicit
+artifact identity can be supplied only with one selected payload.
 
 Set `publish: true` only for a reviewed bundle identity. The workflow refuses
 to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
@@ -386,11 +394,10 @@ development bundles remain unsigned until the signing policy lands; the GitHub
 attestation records build provenance but is not yet a trust decision enforced
 by `katlc`.
 
-The scheduled public-bundle workflow derives the selected readable tag from
-the same committed release manifest, resolves its immutable digest
-anonymously, verifies every OCI blob, and verifies the GitHub attestation. A
-patch release therefore does not require a second commit just to update a
-hard-coded verifier digest.
+The scheduled public-bundle workflow derives every supported readable tag from
+the committed policy, resolves each immutable digest anonymously, verifies
+every OCI blob, and verifies each GitHub attestation. A patch release therefore
+does not require a second commit just to update hard-coded verifier digests.
 
 ## VM Tests on a Capable Host
 

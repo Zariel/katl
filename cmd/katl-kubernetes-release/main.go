@@ -15,11 +15,13 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
+	"github.com/katl-dev/katl/internal/kubernetesrelease"
 )
 
 const (
 	defaultManifest             = "mkosi.profiles/kubernetes-sysext/kubernetes.env"
 	defaultCompatibilityCatalog = "internal/installer/kubernetescompat/catalog.json"
+	defaultSupportedVersions    = "internal/kubernetesrelease/supported-versions.json"
 )
 
 var payloadPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
@@ -41,18 +43,188 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, query packageQuery) error {
 	if len(args) == 0 {
-		return errors.New("command is required: identity, prepare, or record-compatibility")
+		return errors.New("command is required: identity, matrix, prepare, prepare-supported, recipe-digest, record-compatibility, refresh-rebuilds, or verify-recipe")
 	}
 	switch args[0] {
 	case "identity":
 		return runIdentity(args[1:], stdout, stderr)
+	case "matrix":
+		return runMatrix(args[1:], stdout, stderr)
 	case "prepare":
 		return runPrepare(args[1:], stdout, stderr, query)
+	case "prepare-supported":
+		return runPrepareSupported(args[1:], stdout, stderr, query)
+	case "recipe-digest":
+		return runRecipeDigest(args[1:], stdout, stderr)
 	case "record-compatibility":
 		return runRecordCompatibility(args[1:], stdout, stderr)
+	case "refresh-rebuilds":
+		return runRefreshRebuilds(args[1:], stdout, stderr)
+	case "verify-recipe":
+		return runVerifyRecipe(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported command %q", args[0])
 	}
+}
+
+type releaseMatrix struct {
+	Include []releaseMatrixEntry `json:"include"`
+}
+
+type releaseMatrixEntry struct {
+	PayloadVersion   string `json:"payloadVersion"`
+	ArtifactRevision int    `json:"artifactRevision"`
+	ArtifactVersion  string `json:"artifactVersion"`
+	Minor            string `json:"minor"`
+	KubeadmVersion   string `json:"kubeadmVersion"`
+	KubeletVersion   string `json:"kubeletVersion"`
+	KubectlVersion   string `json:"kubectlVersion"`
+	CRIToolsVersion  string `json:"criToolsVersion"`
+}
+
+func runMatrix(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release matrix", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("supported-versions", defaultSupportedVersions, "supported Kubernetes versions manifest")
+	payload := flags.String("payload-version", "", "optional exact supported payload to select")
+	previousPath := flags.String("previous-supported-versions", "", "optional previous manifest used to select changed releases")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	supported, err := readSupportedVersions(*path)
+	if err != nil {
+		return err
+	}
+	versions, err := supported.Select(strings.TrimSpace(*payload))
+	if err != nil {
+		return err
+	}
+	if *previousPath != "" {
+		if strings.TrimSpace(*payload) != "" {
+			return fmt.Errorf("--previous-supported-versions cannot be combined with --payload-version")
+		}
+		previous, err := readSupportedVersions(*previousPath)
+		if err != nil {
+			return err
+		}
+		versions, err = supported.ChangedSince(previous)
+		if err != nil {
+			return err
+		}
+	}
+	matrix := releaseMatrix{Include: make([]releaseMatrixEntry, 0, len(versions))}
+	for _, version := range versions {
+		match := payloadPattern.FindStringSubmatch(version.PayloadVersion)
+		matrix.Include = append(matrix.Include, releaseMatrixEntry{
+			PayloadVersion:   version.PayloadVersion,
+			ArtifactRevision: version.ArtifactRevision,
+			ArtifactVersion:  version.ArtifactVersion(),
+			Minor:            "v" + match[1] + "." + match[2],
+			KubeadmVersion:   version.Packages.Kubeadm,
+			KubeletVersion:   version.Packages.Kubelet,
+			KubectlVersion:   version.Packages.Kubectl,
+			CRIToolsVersion:  version.Packages.CRITools,
+		})
+	}
+	data, err := json.Marshal(matrix)
+	if err != nil {
+		return fmt.Errorf("marshal Kubernetes release matrix: %w", err)
+	}
+	fmt.Fprintln(stdout, string(data))
+	return nil
+}
+
+func runRecipeDigest(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release recipe-digest", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("repo-root", ".", "repository root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	digest, err := kubernetesrelease.RecipeDigest(*root)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
+func runRefreshRebuilds(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release refresh-rebuilds", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("supported-versions", defaultSupportedVersions, "supported Kubernetes versions manifest")
+	root := flags.String("repo-root", ".", "repository root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	supported, err := readSupportedVersions(*path)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := kubernetesrelease.RefreshRecipe(*root, supported)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		fmt.Fprintln(stdout, "Kubernetes bundle recipe is current")
+		return nil
+	}
+	data, err := kubernetesrelease.MarshalSupportedVersions(updated)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(*path, data); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "updated Kubernetes bundle recipe to %s and advanced %d artifact revisions\n", updated.RecipeDigest, len(updated.Versions))
+	return nil
+}
+
+func runVerifyRecipe(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release verify-recipe", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("supported-versions", defaultSupportedVersions, "supported Kubernetes versions manifest")
+	root := flags.String("repo-root", ".", "repository root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	supported, err := readSupportedVersions(*path)
+	if err != nil {
+		return err
+	}
+	digest, err := kubernetesrelease.RecipeDigest(*root)
+	if err != nil {
+		return err
+	}
+	if supported.RecipeDigest != digest {
+		return fmt.Errorf("Kubernetes bundle recipe changed: manifest has %s, current inputs are %s; run `go run ./cmd/katl-kubernetes-release refresh-rebuilds`", supported.RecipeDigest, digest)
+	}
+	fmt.Fprintln(stdout, "Kubernetes bundle recipe is current")
+	return nil
+}
+
+func readSupportedVersions(path string) (kubernetesrelease.SupportedVersions, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return kubernetesrelease.SupportedVersions{}, fmt.Errorf("read supported Kubernetes versions: %w", err)
+	}
+	supported, err := kubernetesrelease.DecodeSupportedVersions(data)
+	if err != nil {
+		return kubernetesrelease.SupportedVersions{}, err
+	}
+	return supported, nil
 }
 
 func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
@@ -152,6 +324,31 @@ func splitNonEmpty(value string) []string {
 	return out
 }
 
+func writeAtomic(path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".katl-kubernetes-release-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
 func runIdentity(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katl-kubernetes-release identity", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -203,69 +400,123 @@ func runPrepare(args []string, stdout, stderr io.Writer, query packageQuery) err
 	if minor != state.minor {
 		return fmt.Errorf("payload minor %s does not match selected release line %s", minor, state.minor)
 	}
-	baseURL := "https://pkgs.k8s.io/core:/stable:/" + minor + "/rpm/"
-	upstream := strings.TrimPrefix(*payload, "v")
-	versions := make(map[string]string, 4)
-	for _, name := range []string{"kubeadm", "kubelet", "kubectl"} {
-		version, err := query(name, name+"-"+upstream, baseURL, *repoquery)
-		if err != nil {
-			return err
-		}
-		if packageUpstream(version) != upstream {
-			return fmt.Errorf("%s resolved to %s, want Kubernetes %s", name, version, upstream)
-		}
-		versions[name] = version
-	}
-	cri, err := query("cri-tools", "cri-tools-"+match[1]+"."+match[2]+".*", baseURL, *repoquery)
+	versions, err := resolvePackageVersions(*payload, *repoquery, query)
 	if err != nil {
 		return err
 	}
-	if err := validateCRITools(cri, match); err != nil {
-		return err
-	}
-	versions["cri-tools"] = cri
-
 	replacements := map[string]string{
 		"KATL_KUBERNETES_PAYLOAD_DEFAULT":           *payload,
 		"KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT": "1",
-		"KATL_KUBERNETES_KUBEADM_VERSION":           versions["kubeadm"],
-		"KATL_KUBERNETES_KUBELET_VERSION":           versions["kubelet"],
-		"KATL_KUBERNETES_KUBECTL_VERSION":           versions["kubectl"],
-		"KATL_KUBERNETES_CRITOOLS_VERSION":          versions["cri-tools"],
+		"KATL_KUBERNETES_KUBEADM_VERSION":           versions.Kubeadm,
+		"KATL_KUBERNETES_KUBELET_VERSION":           versions.Kubelet,
+		"KATL_KUBERNETES_KUBECTL_VERSION":           versions.Kubectl,
+		"KATL_KUBERNETES_CRITOOLS_VERSION":          versions.CRITools,
 	}
 	updated, err := replaceManifestValues(data, replacements)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(*manifest)
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(*manifest), ".kubernetes-release-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(updated); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, *manifest); err != nil {
+	if err := writeAtomic(*manifest, updated); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "prepared %s-katl.1\n", *payload)
-	for _, name := range []string{"kubeadm", "kubelet", "kubectl", "cri-tools"} {
-		fmt.Fprintf(stdout, "%s=%s\n", name, versions[name])
+	for _, item := range []struct {
+		name    string
+		version string
+	}{
+		{name: "kubeadm", version: versions.Kubeadm},
+		{name: "kubelet", version: versions.Kubelet},
+		{name: "kubectl", version: versions.Kubectl},
+		{name: "cri-tools", version: versions.CRITools},
+	} {
+		fmt.Fprintf(stdout, "%s=%s\n", item.name, item.version)
 	}
 	return nil
+}
+
+func runPrepareSupported(args []string, stdout, stderr io.Writer, query packageQuery) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release prepare-supported", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("supported-versions", defaultSupportedVersions, "supported Kubernetes versions manifest")
+	payload := flags.String("payload-version", "", "exact Kubernetes payload version, for example v1.36.3")
+	repoquery := flags.String("repoquery", "dnf", "dnf-compatible repository query command")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	payloadVersion := strings.TrimSpace(*payload)
+	versions, err := resolvePackageVersions(payloadVersion, *repoquery, query)
+	if err != nil {
+		return err
+	}
+	supported, err := readSupportedVersions(*path)
+	if err != nil {
+		return err
+	}
+	revision := 1
+	if existing, selectErr := supported.Select(payloadVersion); selectErr == nil {
+		revision = existing[0].ArtifactRevision
+		if existing[0].Packages != versions {
+			revision++
+		}
+	}
+	updated, changed, err := supported.Upsert(kubernetesrelease.SupportedVersion{
+		PayloadVersion:   payloadVersion,
+		ArtifactRevision: revision,
+		Packages:         versions,
+	})
+	if err != nil {
+		return err
+	}
+	if !changed {
+		fmt.Fprintf(stdout, "supported Kubernetes %s is current at %s-katl.%d\n", payloadVersion, payloadVersion, revision)
+		return nil
+	}
+	data, err := kubernetesrelease.MarshalSupportedVersions(updated)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(*path, data); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "prepared supported Kubernetes %s-katl.%d\n", payloadVersion, revision)
+	return nil
+}
+
+func resolvePackageVersions(payloadVersion, repoquery string, query packageQuery) (kubernetesrelease.PackageVersions, error) {
+	match := payloadPattern.FindStringSubmatch(payloadVersion)
+	if match == nil {
+		return kubernetesrelease.PackageVersions{}, fmt.Errorf("--payload-version must look like v1.36.1")
+	}
+	minor := "v" + match[1] + "." + match[2]
+	baseURL := "https://pkgs.k8s.io/core:/stable:/" + minor + "/rpm/"
+	upstream := strings.TrimPrefix(payloadVersion, "v")
+	versions := make(map[string]string, 4)
+	for _, name := range []string{"kubeadm", "kubelet", "kubectl"} {
+		version, err := query(name, name+"-"+upstream, baseURL, repoquery)
+		if err != nil {
+			return kubernetesrelease.PackageVersions{}, err
+		}
+		if packageUpstream(version) != upstream {
+			return kubernetesrelease.PackageVersions{}, fmt.Errorf("%s resolved to %s, want Kubernetes %s", name, version, upstream)
+		}
+		versions[name] = version
+	}
+	cri, err := query("cri-tools", "cri-tools-"+match[1]+"."+match[2]+".*", baseURL, repoquery)
+	if err != nil {
+		return kubernetesrelease.PackageVersions{}, err
+	}
+	if err := validateCRITools(cri, match); err != nil {
+		return kubernetesrelease.PackageVersions{}, err
+	}
+	return kubernetesrelease.PackageVersions{
+		Kubeadm:  versions["kubeadm"],
+		Kubelet:  versions["kubelet"],
+		Kubectl:  versions["kubectl"],
+		CRITools: cri,
+	}, nil
 }
 
 type releaseState struct {

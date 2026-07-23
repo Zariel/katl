@@ -1,4 +1,4 @@
-name: Public Kubernetes Bundle
+name: Public Kubernetes Bundles
 
 on:
   schedule:
@@ -10,22 +10,48 @@ permissions:
   packages: read
 
 jobs:
-  verify:
-    name: Anonymous Pull And Verify
+  plan:
+    name: Plan Supported Bundles
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Resolve and verify selected bundle anonymously
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve supported release matrix
+        id: plan
+        run: |
+          go run ./cmd/katl-kubernetes-release verify-recipe
+          echo "matrix=$(go run ./cmd/katl-kubernetes-release matrix)" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify ${{ matrix.release.payloadVersion }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.plan.outputs.matrix).include }}
+    env:
+      ARTIFACT_VERSION: ${{ matrix.release.artifactVersion }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Resolve and verify bundle anonymously
         id: bundle
         shell: bash
         run: |
-          # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
-          source mkosi.profiles/kubernetes-sysext/kubernetes.env
-          artifact_version="${KATL_KUBERNETES_PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
-          image="ghcr.io/katl-dev/kubernetes:${artifact_version}"
+          image="ghcr.io/katl-dev/kubernetes:${ARTIFACT_VERSION}"
           verification="$(scripts/check-public-kubernetes-bundle "$image")"
           printf '%s\n' "$verification"
           digest="${verification##*@}"

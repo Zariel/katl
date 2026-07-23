@@ -1,10 +1,47 @@
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "KubernetesSupportedVersions",
+  "recipeDigest": "sha256:05fefc5c231545cd2d3bc47b8a748ce256024c7f7619a2c1672805d76a2ab6c0",
   "versions": [
-    "v1.36.0",
-    "v1.36.1",
-    "v1.36.2",
-    "v1.36.3"
+    {
+      "payloadVersion": "v1.36.0",
+      "artifactRevision": 4,
+      "packages": {
+        "kubeadm": "0:1.36.0-150500.1.1",
+        "kubelet": "0:1.36.0-150500.1.1",
+        "kubectl": "0:1.36.0-150500.1.1",
+        "criTools": "0:1.36.0-150500.1.1"
+      }
+    },
+    {
+      "payloadVersion": "v1.36.1",
+      "artifactRevision": 2,
+      "packages": {
+        "kubeadm": "0:1.36.1-150500.1.1",
+        "kubelet": "0:1.36.1-150500.1.1",
+        "kubectl": "0:1.36.1-150500.1.1",
+        "criTools": "0:1.36.0-150500.1.1"
+      }
+    },
+    {
+      "payloadVersion": "v1.36.2",
+      "artifactRevision": 1,
+      "packages": {
+        "kubeadm": "0:1.36.2-150500.2.1",
+        "kubelet": "0:1.36.2-150500.2.1",
+        "kubectl": "0:1.36.2-150500.2.1",
+        "criTools": "0:1.36.0-150500.1.1"
+      }
+    },
+    {
+      "payloadVersion": "v1.36.3",
+      "artifactRevision": 1,
+      "packages": {
+        "kubeadm": "0:1.36.3-150500.1.1",
+        "kubelet": "0:1.36.3-150500.1.1",
+        "kubectl": "0:1.36.3-150500.1.1",
+        "criTools": "0:1.36.0-150500.1.1"
+      }
+    }
   ]
 }

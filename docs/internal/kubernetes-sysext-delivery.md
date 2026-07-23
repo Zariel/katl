@@ -493,12 +493,13 @@ complete Kubernetes provisioning story.
 The in-repository workflow is narrow:
 
 ```text
-Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
+reviewed policy updates internal/kubernetesrelease/supported-versions.json
   -> GitHub Actions builds the runtime base needed for compatibility metadata
-  -> GitHub Actions builds the Kubernetes sysext for the exact target version
+  -> GitHub Actions builds each new or revision-advanced Kubernetes sysext in parallel
   -> checks verify sysext contents, coherent package versions, and checksums
   -> katl-publish-kubernetes-sysext stages the OCI bundle manifest, layers, and catalog data
-  -> the custom OCI artifact is published immutably to ghcr.io/katl-dev/kubernetes
+  -> custom OCI artifacts are published immutably to ghcr.io/katl-dev/kubernetes
+  -> one follow-up PR records all published compatibility digests
 ```
 
 The producer consumes Katl runtime compatibility as data, even while it lives in
@@ -868,12 +869,11 @@ explicit reference. `katlc` requires the Katl bundle manifest to be the resolved
 config. GitHub Releases or a static HTTPS layout may mirror the same bytes
 later, but they are not the primary store.
 
-The readable tag deliberately retains the exact Kubernetes patch version.
-Renovate's Docker datasource preserves tag precision and treats the hyphenated
-suffix as compatibility, so `v1.36.0-katl.1` can advance to
-`v1.36.1-katl.1`. The release catalog pairs that readable identity with its
-digest pin. Katl separately verifies and records the custom bundle manifest
-digest.
+The readable tag deliberately retains the exact Kubernetes patch version and
+an immutable Katl artifact revision, such as `v1.36.1-katl.2`. The supported
+version policy advances that revision when package or bundle-recipe inputs
+change. The release catalog pairs that readable identity with its digest pin.
+Katl separately verifies and records the custom bundle manifest digest.
 
 The OCI manifest digest is the distribution digest. The sysext payload digest is
 still recorded as the activation digest in bundle metadata, catalog data, and
@@ -893,24 +893,20 @@ verify the catalog or artifact signatures before staging or activation.
 ## Version Bumps
 
 Kubernetes patch updates should be ordinary reviewed dependency updates.
-Renovate should update the declared target payload and package expectations in
-`mkosi.profiles/kubernetes-sysext/kubernetes.env` or its successor. That change
-triggers the producer workflow, which builds a new immutable sysext artifact and
-catalog entry. A successful `v1.36.1` publication does not replace `v1.36.0`;
-both remain addressable by exact payload version and digest until retention
-policy removes or deprecates them.
-
 `internal/kubernetesrelease/supported-versions.json` declares the exact
-upstream Kubernetes releases that Katl intends to build and maintain. Support
-intent is separate from artifact availability: a version becomes installable
-only after its immutable bundle is published and recorded in the compatibility
-catalog. The initial policy lists the GA releases `v1.36.0` through `v1.36.3`.
+upstream Kubernetes releases that Katl intends to build and maintain, their
+exact RPM NEVRAs, and their immutable artifact revisions. Support intent is
+separate from artifact availability: a version becomes installable only after
+its immutable bundle is published and recorded in the compatibility catalog.
+The initial policy lists the GA releases `v1.36.0` through `v1.36.3`.
 
-The checked-in release lock carries an artifact revision in addition to the
-payload and exact RPM NEVRAs. A Renovate patch update resets that revision to
-`1`. A reviewed rebuild of unchanged Kubernetes package inputs increments the
-revision manually. The main-branch producer trigger consumes only this lock;
-unrelated Katl source changes do not mint a new Kubernetes bundle.
+Adding a payload starts its artifact revision at `1`. The policy also records a
+fingerprint of every bundle-producing input. A change to those inputs must
+refresh the fingerprint and increment every supported payload's revision, so
+the main-branch producer rebuilds the entire supported matrix without replacing
+an immutable tag. Package changes for an existing payload increment only that
+payload's revision. A successful rebuild updates the catalog mapping but does
+not remove older exact artifact identities or digests.
 
 Minor updates, such as `v1.36` to `v1.37`, require the same artifact production
 mechanics plus Kubernetes version-skew policy review. Katl should continue to
