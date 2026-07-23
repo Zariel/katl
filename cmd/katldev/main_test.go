@@ -5,14 +5,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 )
 
 func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
@@ -21,7 +25,7 @@ func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
 		want []string
 	}{
 		{want: []string{"build", "installer"}},
-		{args: []string{"build"}, want: []string{"iso"}},
+		{args: []string{"build"}, want: []string{"iso", "upgrade"}},
 		{args: []string{"installer"}, want: []string{"start", "reset", "status", "console", "stop"}},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -45,10 +49,11 @@ func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 		dir  string
 		name string
 		args []string
+		env  []string
 	}
 	var calls []call
-	runner := func(_ context.Context, dir, name string, args []string, _, _ io.Writer) error {
-		calls = append(calls, call{dir: dir, name: name, args: append([]string(nil), args...)})
+	runner := func(_ context.Context, dir, name string, args, environment []string, _, _ io.Writer) error {
+		calls = append(calls, call{dir: dir, name: name, args: append([]string(nil), args...), env: append([]string(nil), environment...)})
 		if filepath.Base(name) == "mkosi" {
 			if err := os.MkdirAll(filepath.Dir(iso), 0o755); err != nil {
 				return err
@@ -95,7 +100,7 @@ func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 func TestBuildInstallerISOStopsAfterBuildFailure(t *testing.T) {
 	wantErr := errors.New("builder failed")
 	calls := 0
-	runner := func(context.Context, string, string, []string, io.Writer, io.Writer) error {
+	runner := func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
 		calls++
 		return wantErr
 	}
@@ -105,6 +110,105 @@ func TestBuildInstallerISOStopsAfterBuildFailure(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", calls)
+	}
+}
+
+func TestBuildKatlOSUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T) {
+	repo := t.TempDir()
+	version := "2026.7.0-dev.12"
+	architecture, err := developmentArtifactArchitecture(runtime.GOARCH)
+	if err != nil {
+		t.Skip(err)
+	}
+	image := filepath.Join(repo, "_build", "mkosi", "katlos-upgrade-"+version+"-"+architecture+".squashfs")
+	contents := []byte("current checkout KatlOS upgrade image")
+	digest := sha256.Sum256(contents)
+	metadata := katlosimage.ArtifactMetadata{
+		APIVersion:        katlosimage.APIVersion,
+		Kind:              katlosimage.ArtifactMetadataKind,
+		ImageRole:         katlosimage.RoleUpgrade,
+		Format:            katlosimage.FormatSquashFS,
+		Version:           version,
+		BuildID:           version,
+		Architecture:      architecture,
+		RuntimeInterface:  "katl-runtime-1",
+		Path:              filepath.Base(image),
+		SizeBytes:         int64(len(contents)),
+		SHA256:            hex.EncodeToString(digest[:]),
+		ChecksumPath:      filepath.Base(image) + ".sha256",
+		EmbeddedIndexPath: "katlos/image.json",
+		CreatedAt:         "2026-07-23T12:00:00Z",
+	}
+	type call struct {
+		dir  string
+		name string
+		args []string
+		env  []string
+	}
+	var calls []call
+	runner := func(_ context.Context, dir, name string, args, environment []string, _, _ io.Writer) error {
+		calls = append(calls, call{dir: dir, name: name, args: append([]string(nil), args...), env: append([]string(nil), environment...)})
+		if err := os.MkdirAll(filepath.Dir(image), 0o755); err != nil {
+			return err
+		}
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return err
+		}
+		for path, data := range map[string][]byte{
+			image:             contents,
+			image + ".json":   append(metadataJSON, '\n'),
+			image + ".sha256": []byte(metadata.SHA256 + "  " + filepath.Base(image) + "\n"),
+		} {
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	artifact, err := buildKatlOSUpgrade(context.Background(), repo, version, &stderr, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []call{{
+		dir:  repo,
+		name: filepath.Join(repo, "scripts", "mkosi"),
+		args: []string{"build-katlos-upgrade-image"},
+		env:  []string{"KATL_VERSION=" + version, "KATL_UPGRADE_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + version},
+	}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
+	}
+	if artifact.Path != image || artifact.Version != version || artifact.Architecture != architecture || artifact.SHA256 != metadata.SHA256 || artifact.SizeBytes != int64(len(contents)) {
+		t.Fatalf("artifact = %#v", artifact)
+	}
+	if err := writeKatlOSUpgradeArtifact(&stdout, artifact); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"KatlOS upgrade image ready.", "Image: " + image, "katlctl node upgrade NODE --config cluster.yaml --artifact " + image} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, internal := range []string{"SHA256:", "Checksum:", "Metadata:"} {
+		if strings.Contains(stdout.String(), internal) {
+			t.Fatalf("output exposed internal integrity field %q:\n%s", internal, stdout.String())
+		}
+	}
+	for _, want := range []string{"building KatlOS " + version, "verifying the completed KatlOS upgrade image"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("progress missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestBuildKatlOSUpgradeRequiresVersion(t *testing.T) {
+	_, err := buildKatlOSUpgrade(context.Background(), t.TempDir(), "", io.Discard, func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "--version is required") {
+		t.Fatalf("buildKatlOSUpgrade() error = %v", err)
 	}
 }
 

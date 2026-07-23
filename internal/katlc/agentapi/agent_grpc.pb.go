@@ -25,6 +25,7 @@ const (
 	KatlcAgent_ValidateConfig_FullMethodName           = "/katl.agent.v1.KatlcAgent/ValidateConfig"
 	KatlcAgent_ApplyGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/ApplyGeneration"
 	KatlcAgent_StageGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/StageGeneration"
+	KatlcAgent_StageHostUpgradeArtifact_FullMethodName = "/katl.agent.v1.KatlcAgent/StageHostUpgradeArtifact"
 	KatlcAgent_SubmitOperation_FullMethodName          = "/katl.agent.v1.KatlcAgent/SubmitOperation"
 	KatlcAgent_CreateWorkerJoinMaterial_FullMethodName = "/katl.agent.v1.KatlcAgent/CreateWorkerJoinMaterial"
 	KatlcAgent_GetOperation_FullMethodName             = "/katl.agent.v1.KatlcAgent/GetOperation"
@@ -44,6 +45,7 @@ type KatlcAgentClient interface {
 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error)
 	ApplyGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	StageGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
+	StageHostUpgradeArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged], error)
 	SubmitOperation(ctx context.Context, in *SubmitOperationRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(ctx context.Context, in *CreateWorkerJoinMaterialRequest, opts ...grpc.CallOption) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationStatus, error)
@@ -121,6 +123,19 @@ func (c *katlcAgentClient) StageGeneration(ctx context.Context, in *GenerationAp
 	return out, nil
 }
 
+func (c *katlcAgentClient) StageHostUpgradeArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[0], KatlcAgent_StageHostUpgradeArtifact_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KatlcAgent_StageHostUpgradeArtifactClient = grpc.ClientStreamingClient[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]
+
 func (c *katlcAgentClient) SubmitOperation(ctx context.Context, in *SubmitOperationRequest, opts ...grpc.CallOption) (*OperationAccepted, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(OperationAccepted)
@@ -163,7 +178,7 @@ func (c *katlcAgentClient) ListOperations(ctx context.Context, in *ListOperation
 
 func (c *katlcAgentClient) WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[0], KatlcAgent_WatchOperation_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[1], KatlcAgent_WatchOperation_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +225,7 @@ type KatlcAgentServer interface {
 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error)
 	ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
 	StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
+	StageHostUpgradeArtifact(grpc.ClientStreamingServer[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]) error
 	SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error)
@@ -244,6 +260,9 @@ func (UnimplementedKatlcAgentServer) ApplyGeneration(context.Context, *Generatio
 }
 func (UnimplementedKatlcAgentServer) StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method StageGeneration not implemented")
+}
+func (UnimplementedKatlcAgentServer) StageHostUpgradeArtifact(grpc.ClientStreamingServer[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]) error {
+	return status.Error(codes.Unimplemented, "method StageHostUpgradeArtifact not implemented")
 }
 func (UnimplementedKatlcAgentServer) SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOperation not implemented")
@@ -394,6 +413,13 @@ func _KatlcAgent_StageGeneration_Handler(srv interface{}, ctx context.Context, d
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _KatlcAgent_StageHostUpgradeArtifact_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(KatlcAgentServer).StageHostUpgradeArtifact(&grpc.GenericServerStream[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KatlcAgent_StageHostUpgradeArtifactServer = grpc.ClientStreamingServer[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]
 
 func _KatlcAgent_SubmitOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitOperationRequest)
@@ -571,6 +597,11 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StageHostUpgradeArtifact",
+			Handler:       _KatlcAgent_StageHostUpgradeArtifact_Handler,
+			ClientStreams: true,
+		},
 		{
 			StreamName:    "WatchOperation",
 			Handler:       _KatlcAgent_WatchOperation_Handler,

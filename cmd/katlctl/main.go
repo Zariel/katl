@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -33,7 +34,9 @@ import (
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -240,6 +243,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 
 type hostUpgradeOptions struct {
 	version         string
+	artifact        string
 	target          managementTargetOptions
 	clientRequestID string
 	actor           string
@@ -257,31 +261,52 @@ type hostUpgradeReport struct {
 	BootHealth string `json:"bootHealth"`
 }
 
+type hostUpgradeArtifact struct {
+	Path         string
+	Version      string
+	Architecture string
+	SHA256       string
+	SizeBytes    uint64
+}
+
 var katlOSReleasePattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostUpgradeOptions{actor: "katlctl node upgrade", waitTimeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
-		Use:   "upgrade VERSION [NODE]",
+		Use:   "upgrade [VERSION] [NODE]",
 		Short: "Upgrade one KatlOS node and verify its next boot",
-		Long: `Upgrade one KatlOS node to a published KatlOS release, reboot it, and verify that it returns healthy.
+		Long: `Upgrade one KatlOS node to a published KatlOS release or a locally built image, reboot it, and verify that it returns healthy.
 
-Use the same ClusterConfig used to install the node. --endpoint can override its recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
+Use the same ClusterConfig used to install the node. --artifact accepts an upgrade image and its generated .json metadata without requiring a published release. --endpoint can override the node's recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return command.Help()
-			}
-			opts.version = args[0]
-			if len(args) == 2 {
-				if err := selectHostNode(&opts.target.nodeName, args[1:]); err != nil {
+			if strings.TrimSpace(opts.artifact) != "" {
+				if len(args) > 1 {
+					return fmt.Errorf("--artifact accepts at most one positional NODE")
+				}
+				if len(args) == 1 && katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
+					return fmt.Errorf("VERSION cannot be combined with --artifact; pass NODE as the positional argument or with --node")
+				}
+				if err := selectHostNode(&opts.target.nodeName, args); err != nil {
 					return err
+				}
+			} else {
+				if len(args) == 0 {
+					return command.Help()
+				}
+				opts.version = args[0]
+				if len(args) == 2 {
+					if err := selectHostNode(&opts.target.nodeName, args[1:]); err != nil {
+						return err
+					}
 				}
 			}
 			return runHostUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
+	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built KatlOS upgrade image (uses PATH.json metadata)")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
@@ -299,17 +324,27 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	version, err := katlOSVersion(opts.version)
-	if err != nil {
-		return err
+	var localArtifact *hostUpgradeArtifact
+	if strings.TrimSpace(opts.artifact) != "" {
+		artifact, err := readHostUpgradeArtifact(opts.artifact)
+		if err != nil {
+			return fmt.Errorf("--artifact: %w", err)
+		}
+		localArtifact = &artifact
+		opts.version = artifact.Version
+	} else {
+		version, err := katlOSVersion(opts.version)
+		if err != nil {
+			return err
+		}
+		opts.version = version
 	}
-	opts.version = version
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
 		return err
 	}
 	request := operation.HostUpgrade{
-		CandidateGenerationID: "katlos-" + version,
+		CandidateGenerationID: "katlos-" + opts.version,
 	}
 	target, err := resolveManagementTarget(opts.target)
 	if err != nil {
@@ -332,7 +367,19 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	request.ImageURL = katlOSReleaseURL(opts.version, architecture)
+	image := ""
+	if localArtifact != nil {
+		if architecture != localArtifact.Architecture {
+			return fmt.Errorf("local KatlOS image architecture %q does not match node architecture %q", localArtifact.Architecture, architecture)
+		}
+		request.ImageLocalRef = hostUpgradeArtifactLocalRef(localArtifact.SHA256)
+		request.ImageSHA256 = localArtifact.SHA256
+		request.ImageSizeBytes = localArtifact.SizeBytes
+		image = localArtifact.Path
+	} else {
+		request.ImageURL = katlOSReleaseURL(opts.version, architecture)
+		image = request.ImageURL
+	}
 	if err := operation.ValidateHostUpgrade(request); err != nil {
 		return err
 	}
@@ -341,7 +388,17 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		if node == "" {
 			node = target.endpoint
 		}
-		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: request.ImageURL, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
+		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
+	}
+	if localArtifact != nil && !opts.plan {
+		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status.GetMachineId(), *localArtifact, target.nodeName, stderr)
+		if err != nil {
+			return err
+		}
+		request.ImageLocalRef = localRef
+		if err := operation.ValidateHostUpgrade(request); err != nil {
+			return fmt.Errorf("validate staged KatlOS image: %w", err)
+		}
 	}
 	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
@@ -355,13 +412,15 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              request.ImageURL,
 			ImageLocalRef:         request.ImageLocalRef,
+			ImageSha256:           request.ImageSHA256,
+			ImageSizeBytes:        request.ImageSizeBytes,
 			CandidateGenerationId: request.CandidateGenerationID,
 		},
 	})
 	if err != nil {
 		return err
 	}
-	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: request.ImageURL, Result: "planned", BootHealth: "not-run"}
+	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: image, Result: "planned", BootHealth: "not-run"}
 	if report.Node == "" {
 		report.Node = target.endpoint
 	}
@@ -458,6 +517,108 @@ func katlOSReleaseURL(version, architecture string) string {
 	tag := "v" + version
 	name := "katlos-upgrade-" + version + "-" + architecture + ".squashfs"
 	return "https://github.com/katl-dev/katl/releases/download/" + tag + "/" + name
+}
+
+func readHostUpgradeArtifact(path string) (hostUpgradeArtifact, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return hostUpgradeArtifact{}, fmt.Errorf("path is required")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return hostUpgradeArtifact{}, fmt.Errorf("resolve path: %w", err)
+	}
+	metadata, err := katlosimage.ReadArtifactMetadata(absolute+".json", katlosimage.RoleUpgrade)
+	if err != nil {
+		return hostUpgradeArtifact{}, err
+	}
+	if err := metadata.VerifyFile(absolute); err != nil {
+		return hostUpgradeArtifact{}, err
+	}
+	version, err := katlOSVersion(metadata.Version)
+	if err != nil {
+		return hostUpgradeArtifact{}, fmt.Errorf("metadata version: %w", err)
+	}
+	architecture, ok := supportedArtifactArchitecture(metadata.Architecture)
+	if !ok {
+		return hostUpgradeArtifact{}, fmt.Errorf("metadata architecture %q is unsupported", metadata.Architecture)
+	}
+	return hostUpgradeArtifact{
+		Path:         absolute,
+		Version:      version,
+		Architecture: architecture,
+		SHA256:       metadata.SHA256,
+		SizeBytes:    uint64(metadata.SizeBytes),
+	}, nil
+}
+
+func hostUpgradeArtifactLocalRef(sha256 string) string {
+	return "host-upgrade/uploads/" + sha256 + ".squashfs"
+}
+
+func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID string, artifact hostUpgradeArtifact, node string, stderr io.Writer) (string, error) {
+	stream, err := client.StageHostUpgradeArtifact(ctx)
+	if err != nil {
+		return "", localArtifactStageError(err)
+	}
+	file, err := os.Open(artifact.Path)
+	if err != nil {
+		return "", fmt.Errorf("open local KatlOS image: %w", err)
+	}
+	defer file.Close()
+	if strings.TrimSpace(node) == "" {
+		node = "node"
+	}
+	fmt.Fprintf(stderr, "%s: uploading local KatlOS %s image (%d bytes)\n", node, artifact.Version, artifact.SizeBytes)
+	buffer := make([]byte, 1<<20)
+	first := true
+	var sent uint64
+	var lastProgress uint64
+	for {
+		n, readErr := file.Read(buffer)
+		if n > 0 {
+			request := &agentapi.StageHostUpgradeArtifactRequest{Chunk: append([]byte(nil), buffer[:n]...)}
+			if first {
+				request.ApiVersion = operation.APIVersion
+				request.Kind = "StageHostUpgradeArtifactRequest"
+				request.Actor = actor
+				request.ExpectedMachineId = machineID
+				request.Sha256 = artifact.SHA256
+				request.SizeBytes = artifact.SizeBytes
+				first = false
+			}
+			if err := stream.Send(request); err != nil {
+				return "", localArtifactStageError(err)
+			}
+			sent += uint64(n)
+			if sent < artifact.SizeBytes && sent-lastProgress >= 256<<20 {
+				fmt.Fprintf(stderr, "%s: uploaded %d%%\n", node, sent*100/artifact.SizeBytes)
+				lastProgress = sent
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("read local KatlOS image: %w", readErr)
+		}
+	}
+	staged, err := stream.CloseAndRecv()
+	if err != nil {
+		return "", localArtifactStageError(err)
+	}
+	if staged.GetLocalRef() != hostUpgradeArtifactLocalRef(artifact.SHA256) || staged.GetSha256() != artifact.SHA256 || staged.GetSizeBytes() != artifact.SizeBytes {
+		return "", fmt.Errorf("node returned an inconsistent staged KatlOS image identity")
+	}
+	fmt.Fprintf(stderr, "%s: local KatlOS image uploaded; staging the upgrade\n", node)
+	return staged.GetLocalRef(), nil
+}
+
+func localArtifactStageError(err error) error {
+	if grpcstatus.Code(err) == codes.Unimplemented {
+		return fmt.Errorf("node does not support local KatlOS artifact delivery; upgrade it once from a published release, then retry --artifact")
+	}
+	return fmt.Errorf("upload local KatlOS image: %w", err)
 }
 
 func writeJSON(stdout io.Writer, value any) error {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -28,8 +29,10 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	}
 	payload, err := resolve(ctx, *record.HostUpgradeRequest)
 	if err != nil {
+		e.cleanupManagedHostUpgradeArtifact(*record.HostUpgradeRequest)
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
+	defer e.cleanupManagedHostUpgradeArtifact(*record.HostUpgradeRequest)
 	defer e.cleanupHostUpgradeMount(payload)
 	if strings.TrimSpace(payload.ImageSHA256) == "" || payload.ImageSizeBytes == 0 {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("resolved KatlOS image identity is incomplete"))
@@ -168,6 +171,20 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return current, nil
 	})
 	return err
+}
+
+func (e *Executor) cleanupManagedHostUpgradeArtifact(request operation.HostUpgrade) {
+	localRef := filepath.ToSlash(filepath.Clean(strings.TrimSpace(request.ImageLocalRef)))
+	if path.Dir(localRef) != hostUpgradeUploadDirectory {
+		return
+	}
+	name := path.Base(localRef)
+	digest := strings.TrimSuffix(name, ".squashfs")
+	if name != digest+".squashfs" || validateArtifactSHA256(digest) != nil {
+		return
+	}
+	artifactPath := filepath.Join(runtimeRoot(e.Root), "var/lib/katl/artifacts", filepath.FromSlash(localRef))
+	_ = os.Remove(artifactPath)
 }
 
 func (e *Executor) cleanupHostUpgradeMount(payload katlosimage.Payload) {

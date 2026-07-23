@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +25,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -32,6 +35,95 @@ type dispatchFunc func(context.Context, operation.OperationRecord) error
 
 func (f dispatchFunc) Dispatch(ctx context.Context, record operation.OperationRecord) error {
 	return f(ctx, record)
+}
+
+func TestStageHostUpgradeArtifactCommitsVerifiedContent(t *testing.T) {
+	server := newTestServer(t)
+	content := append(bytes.Repeat([]byte{'a'}, 1<<20), bytes.Repeat([]byte{'b'}, 31)...)
+	digestBytes := sha256.Sum256(content)
+	digest := hex.EncodeToString(digestBytes[:])
+	stream := newHostUpgradeArtifactServerStream(
+		&agentapi.StageHostUpgradeArtifactRequest{
+			ApiVersion:        APIVersion,
+			Kind:              StageHostUpgradeArtifactRequestKind,
+			Actor:             "katlctl node upgrade",
+			ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+			Sha256:            digest,
+			SizeBytes:         uint64(len(content)),
+			Chunk:             content[:1<<20],
+		},
+		&agentapi.StageHostUpgradeArtifactRequest{Chunk: content[1<<20:]},
+	)
+	if err := server.StageHostUpgradeArtifact(stream); err != nil {
+		t.Fatal(err)
+	}
+	wantRef := hostUpgradeUploadDirectory + "/" + digest + ".squashfs"
+	if stream.response.GetLocalRef() != wantRef || stream.response.GetSha256() != digest || stream.response.GetSizeBytes() != uint64(len(content)) {
+		t.Fatalf("staged response = %#v", stream.response)
+	}
+	path := filepath.Join(server.Root, "var/lib/katl/artifacts", filepath.FromSlash(wantRef))
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, content) {
+		t.Fatal("staged content differs")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("staged mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestStageHostUpgradeArtifactRejectsMismatchAndCleansPartialFile(t *testing.T) {
+	server := newTestServer(t)
+	content := []byte("not the declared artifact")
+	stream := newHostUpgradeArtifactServerStream(&agentapi.StageHostUpgradeArtifactRequest{
+		ApiVersion:        APIVersion,
+		Kind:              StageHostUpgradeArtifactRequestKind,
+		Actor:             "katlctl node upgrade",
+		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		Sha256:            strings.Repeat("a", 64),
+		SizeBytes:         uint64(len(content)),
+		Chunk:             content,
+	})
+	err := server.StageHostUpgradeArtifact(stream)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "does not match declared identity") {
+		t.Fatalf("StageHostUpgradeArtifact() error = %v", err)
+	}
+	directory := filepath.Join(server.Root, "var/lib/katl/artifacts", filepath.FromSlash(hostUpgradeUploadDirectory))
+	entries, readErr := os.ReadDir(directory)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging directory contains partial files: %v", entries)
+	}
+}
+
+func TestStageHostUpgradeArtifactRejectsMetadataAfterFirstChunk(t *testing.T) {
+	server := newTestServer(t)
+	content := []byte("artifact")
+	digestBytes := sha256.Sum256(content)
+	stream := newHostUpgradeArtifactServerStream(
+		&agentapi.StageHostUpgradeArtifactRequest{
+			ApiVersion:        APIVersion,
+			Kind:              StageHostUpgradeArtifactRequestKind,
+			Actor:             "katlctl node upgrade",
+			ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+			Sha256:            hex.EncodeToString(digestBytes[:]),
+			SizeBytes:         uint64(len(content)),
+			Chunk:             content[:4],
+		},
+		&agentapi.StageHostUpgradeArtifactRequest{Actor: "repeated", Chunk: content[4:]},
+	)
+	err := server.StageHostUpgradeArtifact(stream)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "only allowed in the first chunk") {
+		t.Fatalf("StageHostUpgradeArtifact() error = %v", err)
+	}
 }
 
 func TestSubmitOperationCreatesRecord(t *testing.T) {
@@ -2915,6 +3007,35 @@ type watchStream struct {
 	agentapi.KatlcAgent_WatchOperationServer
 	ctx    context.Context
 	events []*agentapi.OperationEvent
+}
+
+type hostUpgradeArtifactServerStream struct {
+	grpc.ServerStream
+	ctx      context.Context
+	requests []*agentapi.StageHostUpgradeArtifactRequest
+	response *agentapi.HostUpgradeArtifactStaged
+}
+
+func newHostUpgradeArtifactServerStream(requests ...*agentapi.StageHostUpgradeArtifactRequest) *hostUpgradeArtifactServerStream {
+	return &hostUpgradeArtifactServerStream{ctx: context.Background(), requests: requests}
+}
+
+func (s *hostUpgradeArtifactServerStream) Recv() (*agentapi.StageHostUpgradeArtifactRequest, error) {
+	if len(s.requests) == 0 {
+		return nil, io.EOF
+	}
+	request := s.requests[0]
+	s.requests = s.requests[1:]
+	return request, nil
+}
+
+func (s *hostUpgradeArtifactServerStream) SendAndClose(response *agentapi.HostUpgradeArtifactStaged) error {
+	s.response = response
+	return nil
+}
+
+func (s *hostUpgradeArtifactServerStream) Context() context.Context {
+	return s.ctx
 }
 
 func newWatchStream(ctx context.Context) *watchStream {
