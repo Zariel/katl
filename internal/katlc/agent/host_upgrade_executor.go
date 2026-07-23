@@ -251,7 +251,7 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := os.WriteFile(filepath.Join(definitions, "70-katl-uki.transfer"), []byte(ukiTransferDefinition(source)), 0o600); err != nil {
 		return err
 	}
-	argv := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--sync=no", "--definitions=" + definitions}
+	argv := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
 	if root != "/" {
 		argv = append(argv, "--root="+root)
 	}
@@ -259,6 +259,9 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	result := e.toolRunner()(ctx, argv, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
+	}
+	if err := flushUpgradeDevice(ctx, e.toolRunner(), inactiveDevice); err != nil {
+		return fmt.Errorf("flush staged runtime root: %w", err)
 	}
 	if err := verifyUpgradePrefix(inactiveDevice, payload.Runtime.SHA256, payload.Runtime.SizeBytes); err != nil {
 		return fmt.Errorf("verify staged runtime root: %w", err)
@@ -408,6 +411,14 @@ func copyUpgradeComponent(source, target string) error {
 		return err
 	}
 	return out.Close()
+}
+
+func flushUpgradeDevice(ctx context.Context, run ToolRunner, device string) error {
+	result := run(ctx, []string{"blockdev", "--flushbufs", device}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("blockdev: %s", toolFailure(result))
+	}
+	return nil
 }
 
 func verifyUpgradePrefix(path, want string, size int64) error {

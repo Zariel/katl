@@ -85,6 +85,13 @@ finalizes transfers alphabetically, and the boot entry is the runtime entry
 point; writing it last avoids exposing a bootable entry before the matching root
 slot has been staged.
 
+Katl leaves sysupdate synchronization enabled and flushes the inactive block
+device buffers before hashing the staged root. Some block-device transfer paths
+can otherwise leave an immediately reopened partition view backed by stale
+cached pages even though the durable partition contains the new bytes. Katl
+must not arm the trial boot until verification observes the synchronized
+partition contents.
+
 Optional verity support adds one earlier transfer:
 
 ```text

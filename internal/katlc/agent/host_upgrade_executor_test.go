@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error { oneshoot = entry; return nil }
 	var toolCalls []string
+	var stagedRoot []byte
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		toolCalls = append(toolCalls, strings.Join(argv, " "))
 		switch filepath.Base(argv[0]) {
@@ -175,10 +177,16 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		case "sfdisk", "partx":
 			return ToolResult{}
 		case "systemd-sysupdate":
-			if err := os.WriteFile(inactiveDevice, append(append([]byte(nil), runtimeBytes...), make([]byte, 32)...), 0o600); err != nil {
+			stagedRoot = append(append([]byte(nil), runtimeBytes...), make([]byte, 32)...)
+			if err := os.WriteFile(filepath.Join(root, "efi/EFI/Linux/katl_2026.7.0-dev.1.efi"), ukiBytes, 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: -1}
 			}
-			if err := os.WriteFile(filepath.Join(root, "efi/EFI/Linux/katl_2026.7.0-dev.1.efi"), ukiBytes, 0o600); err != nil {
+			return ToolResult{}
+		case "blockdev":
+			if strings.Join(argv, " ") != "blockdev --flushbufs "+inactiveDevice {
+				return ToolResult{Err: errors.New("unexpected blockdev arguments"), ExitStatus: 1}
+			}
+			if err := os.WriteFile(inactiveDevice, stagedRoot, 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: -1}
 			}
 			return ToolResult{}
@@ -191,6 +199,21 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "PARTLABEL=") {
 		t.Fatalf("host upgrade discovered mutable partition labels:\n%s", calls)
+	}
+	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "--sync=no") {
+		t.Fatalf("host upgrade disabled sysupdate durability:\n%s", calls)
+	}
+	sysupdateCall, flushCall := -1, -1
+	for index, call := range toolCalls {
+		switch {
+		case strings.Contains(call, "systemd-sysupdate"):
+			sysupdateCall = index
+		case strings.HasPrefix(call, "blockdev --flushbufs "):
+			flushCall = index
+		}
+	}
+	if sysupdateCall < 0 || flushCall != sysupdateCall+1 {
+		t.Fatalf("host upgrade calls = %#v, want block cache flush immediately after sysupdate", toolCalls)
 	}
 	if oneshoot != "loader/entries/katl-gen1.conf" {
 		t.Fatalf("oneshot entry = %q", oneshoot)
