@@ -36,6 +36,7 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 - A release should exercise the same artifacts and supported journeys users receive. Do not infer release readiness solely from unit tests or a successful artifact build.
 - Use `katldev` for hands-on user-journey and UX verification when operator-facing behavior changes or automated gates expose usability concerns. Exercise representative happy paths, repeat applies, online configuration changes, and safe failure or recovery paths through the public `katlctl` interface without relying on internal shortcuts. Judge the journey as a user would: verify useful progress, actionable errors, expected end state, and the absence of surprising disruption; record product gaps discovered along the way.
 - Treat Katldev journey testing as exploratory product evidence, not a ritual duplicate gate. Reuse a recent, relevant completed journey when later work has not changed the exercised behavior or artifact; rerun only the portions invalidated by subsequent changes or needed to verify a discovered fix.
+- Validate environmental and product-state assumptions with read-only evidence before lifecycle mutations. When a journey fails, preserve and diagnose the failed state before wiping or reinstalling so recreation does not hide a root defect. Use wipe only when recovery is unsupported or cannot be made safe, and verify corrected inputs and the reinstall path before destroying the evidence.
 
 ## Task and Delivery Workflow
 
