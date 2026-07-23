@@ -5,19 +5,44 @@ on:
     branches:
       - main
     paths:
-      - mkosi.profiles/kubernetes-sysext/kubernetes.env
+      - .github/workflows/kubernetes-bundles.yml
+      - Containerfile.mkosi
+      - cmd/katl-kubernetes-release/**
+      - "!cmd/katl-kubernetes-release/**/*_test.go"
+      - cmd/katl-mkosi-artifacts/**
+      - "!cmd/katl-mkosi-artifacts/**/*_test.go"
+      - cmd/katl-publish-kubernetes-sysext/**
+      - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
+      - containers-policy.json
+      - go.mod
+      - go.sum
+      - internal/installer/artifact/**
+      - "!internal/installer/artifact/**/*_test.go"
+      - internal/installer/kubernetesbundle/**
+      - "!internal/installer/kubernetesbundle/**/*_test.go"
+      - internal/installer/manifest/**
+      - "!internal/installer/manifest/**/*_test.go"
+      - internal/installer/sysextcatalog/**
+      - "!internal/installer/sysextcatalog/**/*_test.go"
+      - internal/kubernetesrelease/supported-versions.json
+      - mkosi.conf
+      - mkosi.profiles/kubernetes-sysext/**
+      - mkosi.profiles/runtime/**
+      - scripts/build-kubernetes-sysext
+      - scripts/check-kubernetes-sysext
+      - scripts/mkosi
   workflow_dispatch:
     inputs:
       payload_version:
-        description: Exact Kubernetes payload version; empty uses the committed release manifest
+        description: Exact supported Kubernetes payload; empty builds every supported version
         required: false
         type: string
       artifact_version:
-        description: Immutable Katl bundle build version; empty derives it from the committed release manifest
+        description: Optional immutable Katl build identity for a single selected payload
         required: false
         type: string
       publish:
-        description: Publish the verified OCI artifact to ghcr.io/katl-dev/kubernetes
+        description: Publish verified OCI artifacts to ghcr.io/katl-dev/kubernetes
         required: true
         default: false
         type: boolean
@@ -30,31 +55,116 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build And Publish Kubernetes Bundle
+  plan:
+    name: Plan Supported Bundles
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    permissions:
-      actions: write
-      artifact-metadata: write
-      attestations: write
-      contents: write
-      id-token: write
-      packages: write
-      pull-requests: write
-
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
     env:
       DISPATCH_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
       DISPATCH_PAYLOAD_VERSION: ${{ inputs.payload_version }}
       DISPATCH_PUBLISH: ${{ inputs.publish }}
       GOTOOLCHAIN: auto
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify bundle recipe revisions
+        run: go run ./cmd/katl-kubernetes-release verify-recipe
+
+      - name: Resolve supported release matrix
+        id: plan
+        shell: bash
+        run: |
+          args=(matrix)
+          if [[ -n "$DISPATCH_PAYLOAD_VERSION" ]]; then
+            args+=(--payload-version "$DISPATCH_PAYLOAD_VERSION")
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            previous="$RUNNER_TEMP/previous-supported-versions.json"
+            if git show "${{ github.event.before }}:internal/kubernetesrelease/supported-versions.json" > "$previous" &&
+              jq -e '.recipeDigest and (.versions | type == "array")' "$previous" >/dev/null; then
+              args+=(--previous-supported-versions "$previous")
+            fi
+          fi
+          matrix="$(go run ./cmd/katl-kubernetes-release "${args[@]}")"
+
+          if [[ -n "$DISPATCH_ARTIFACT_VERSION" ]]; then
+            if [[ -z "$DISPATCH_PAYLOAD_VERSION" ]]; then
+              echo "error: artifact_version requires payload_version" >&2
+              exit 1
+            fi
+            if [[ ! "$DISPATCH_ARTIFACT_VERSION" =~ ^${DISPATCH_PAYLOAD_VERSION}-katl\.[0-9]+$ ]]; then
+              echo "error: artifact_version must look like ${DISPATCH_PAYLOAD_VERSION}-katl.1" >&2
+              exit 1
+            fi
+            matrix="$(jq -c --arg artifact "$DISPATCH_ARTIFACT_VERSION" '.include[0].artifactVersion = $artifact' <<<"$matrix")"
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            publish=true
+          else
+            publish="$DISPATCH_PUBLISH"
+          fi
+          if [[ "$publish" != "true" && "$publish" != "false" ]]; then
+            echo "error: publish must be true or false" >&2
+            exit 1
+          fi
+
+          {
+            echo "matrix=$(jq -c . <<<"$matrix")"
+            echo "build=$(jq -r '.include | length > 0' <<<"$matrix")"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.release.payloadVersion }}
+    if: ${{ needs.plan.outputs.build == 'true' }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.plan.outputs.matrix).include }}
+    permissions:
+      actions: write
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      ARTIFACT_VERSION: ${{ matrix.release.artifactVersion }}
+      GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
+      KATL_BUILD_COMMIT: ${{ matrix.release.artifactVersion }}
       KATL_CONTAINER_RUNTIME: docker
+      KATL_KUBERNETES_ARTIFACT_REVISION: ${{ matrix.release.artifactRevision }}
+      KATL_KUBERNETES_CRITOOLS_VERSION: ${{ matrix.release.criToolsVersion }}
+      KATL_KUBERNETES_KUBEADM_VERSION: ${{ matrix.release.kubeadmVersion }}
+      KATL_KUBERNETES_KUBECTL_VERSION: ${{ matrix.release.kubectlVersion }}
+      KATL_KUBERNETES_KUBELET_VERSION: ${{ matrix.release.kubeletVersion }}
+      KATL_KUBERNETES_MINOR: ${{ matrix.release.minor }}
+      KATL_KUBERNETES_PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
       OCI_REPOSITORY: ghcr.io/katl-dev/kubernetes
       OCI_DESCRIPTION: Kubernetes system extension bundle for KatlOS nodes
       OCI_LICENSES: MIT
       OCI_TITLE: KatlOS Kubernetes system extension
+      PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
+      PUBLISH: ${{ needs.plan.outputs.publish }}
 
     steps:
       - name: Check out repository
@@ -80,48 +190,6 @@ jobs:
           echo "$install_dir" >> "$GITHUB_PATH"
           "$install_dir/oras" version
 
-      - name: Resolve and validate release identity
-        shell: bash
-        run: |
-          # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
-          source mkosi.profiles/kubernetes-sysext/kubernetes.env
-          if [[ "$GITHUB_EVENT_NAME" == "push" || -z "$DISPATCH_PAYLOAD_VERSION" ]]; then
-            PAYLOAD_VERSION="$KATL_KUBERNETES_PAYLOAD_VERSION"
-          else
-            PAYLOAD_VERSION="$DISPATCH_PAYLOAD_VERSION"
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == "push" || -z "$DISPATCH_ARTIFACT_VERSION" ]]; then
-            ARTIFACT_VERSION="${PAYLOAD_VERSION}-katl.${KATL_KUBERNETES_ARTIFACT_REVISION}"
-          else
-            ARTIFACT_VERSION="$DISPATCH_ARTIFACT_VERSION"
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            PUBLISH=true
-          else
-            PUBLISH="$DISPATCH_PUBLISH"
-          fi
-
-          if [[ ! "$PAYLOAD_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "error: payload_version must look like v1.36.1" >&2
-            exit 1
-          fi
-          if [[ ! "$ARTIFACT_VERSION" =~ ^${PAYLOAD_VERSION}-katl\.[0-9]+$ ]]; then
-            echo "error: artifact_version must look like ${PAYLOAD_VERSION}-katl.1" >&2
-            exit 1
-          fi
-          if [[ "$PUBLISH" != "true" && "$PUBLISH" != "false" ]]; then
-            echo "error: publish must be true or false" >&2
-            exit 1
-          fi
-
-          {
-            echo "ARTIFACT_VERSION=$ARTIFACT_VERSION"
-            echo "KATL_BUILD_COMMIT=$ARTIFACT_VERSION"
-            echo "KATL_KUBERNETES_PAYLOAD_VERSION=$PAYLOAD_VERSION"
-            echo "PAYLOAD_VERSION=$PAYLOAD_VERSION"
-            echo "PUBLISH=$PUBLISH"
-          } >> "$GITHUB_ENV"
-
       - name: Restore Katl Go build caches
         uses: actions/cache@v6
         with:
@@ -132,25 +200,11 @@ jobs:
           restore-keys: |
             katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
 
-      - name: Resolve mkosi cache identity
-        id: mkosi-cache
-        shell: bash
-        run: |
-          digest="$({
-            sha256sum \
-              Containerfile.mkosi \
-              mkosi.conf \
-              mkosi.profiles/kubernetes-sysext/kubernetes.env \
-              mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf
-          } | sha256sum | cut -d ' ' -f 1)"
-          echo "key=$digest" >> "$GITHUB_OUTPUT"
-
       - name: Restore mkosi package cache
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-kubernetes-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
+          key: katl-kubernetes-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ hashFiles('Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/kubernetes-sysext/**', 'mkosi.profiles/runtime/**') }}
           restore-keys: |
             katl-kubernetes-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
             katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
@@ -160,6 +214,7 @@ jobs:
           go test ./cmd/katl-publish-kubernetes-sysext \
             ./internal/installer/kubernetesbundle \
             ./internal/installer/sysextcatalog \
+            ./internal/kubernetesrelease \
             -count=1
 
       - name: Build compatible runtime and Kubernetes sysext
@@ -176,6 +231,12 @@ jobs:
             --workdir /work \
             --env KATL_REPO_ROOT=/work \
             --env KATL_ARCHITECTURE \
+            --env KATL_KUBERNETES_ARTIFACT_REVISION \
+            --env KATL_KUBERNETES_CRITOOLS_VERSION \
+            --env KATL_KUBERNETES_KUBEADM_VERSION \
+            --env KATL_KUBERNETES_KUBECTL_VERSION \
+            --env KATL_KUBERNETES_KUBELET_VERSION \
+            --env KATL_KUBERNETES_MINOR \
             --env KATL_KUBERNETES_PAYLOAD_VERSION \
             "$KATL_MKOSI_IMAGE" \
             bash -euo pipefail -c '
@@ -288,7 +349,6 @@ jobs:
         id: publish
         shell: bash
         env:
-          BUNDLE_DIGEST: ${{ steps.bundle.outputs.bundle-digest }}
           BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
           DIGEST_TAG: ${{ steps.bundle.outputs.digest-tag }}
           RAW: ${{ steps.bundle.outputs.raw }}
@@ -350,8 +410,6 @@ jobs:
             echo "- Kubernetes bundle: \`${OCI_REPOSITORY}:${VERSION_TAG}@${manifest_digest}\`"
             echo "- Version tag: \`${OCI_REPOSITORY}:${VERSION_TAG}\`"
             echo "- Digest tag: \`${OCI_REPOSITORY}:${DIGEST_TAG}\`"
-            echo
-            echo "This development bundle is digest-verified but remains unsigned until katl-dty.9.35.6 lands."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attest published OCI manifest
@@ -362,21 +420,89 @@ jobs:
           subject-digest: ${{ steps.publish.outputs.manifest-digest }}
           push-to-registry: true
 
-      - name: Record published compatibility
+      - name: Write compatibility record
         if: ${{ env.PUBLISH == 'true' }}
-        id: compatibility
-        shell: bash
         env:
           BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
           MANIFEST_DIGEST: ${{ steps.publish.outputs.manifest-digest }}
+        shell: bash
         run: |
-          runtime_interfaces="$(jq -r '.supportedRuntimeInterfaces | join(",")' "${BUNDLE_DIR}/catalog-entry.json")"
-          go run ./cmd/katl-kubernetes-release record-compatibility \
-            --payload-version "$PAYLOAD_VERSION" \
-            --artifact-version "$ARTIFACT_VERSION" \
-            --manifest-digest "$MANIFEST_DIGEST" \
-            --architecture "$KATL_ARCHITECTURE" \
-            --runtime-interfaces "$runtime_interfaces"
+          mkdir -p _build/compatibility
+          runtime_interfaces="$(jq -c '.supportedRuntimeInterfaces' "${BUNDLE_DIR}/catalog-entry.json")"
+          jq -n \
+            --arg architecture "$KATL_ARCHITECTURE" \
+            --arg artifactVersion "$ARTIFACT_VERSION" \
+            --arg manifestDigest "$MANIFEST_DIGEST" \
+            --arg payloadVersion "$PAYLOAD_VERSION" \
+            --argjson runtimeInterfaces "$runtime_interfaces" \
+            '{
+              architecture: $architecture,
+              artifactVersion: $artifactVersion,
+              manifestDigest: $manifestDigest,
+              payloadVersion: $payloadVersion,
+              runtimeInterfaces: $runtimeInterfaces
+            }' > "_build/compatibility/${PAYLOAD_VERSION}.json"
+
+      - name: Upload compatibility record
+        if: ${{ env.PUBLISH == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: kubernetes-compatibility-${{ env.PAYLOAD_VERSION }}
+          path: _build/compatibility/*.json
+          if-no-files-found: error
+
+  compatibility:
+    name: Record Published Compatibility
+    if: ${{ always() && needs.plan.outputs.build == 'true' && needs.plan.outputs.publish == 'true' && needs.build.result == 'success' }}
+    needs:
+      - plan
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download compatibility records
+        uses: actions/download-artifact@v8
+        with:
+          pattern: kubernetes-compatibility-*
+          path: _build/compatibility
+          merge-multiple: true
+
+      - name: Record published compatibility
+        id: compatibility
+        shell: bash
+        run: |
+          shopt -s nullglob
+          records=(_build/compatibility/*.json)
+          if [[ "${#records[@]}" -eq 0 ]]; then
+            echo "error: no Kubernetes compatibility records were downloaded" >&2
+            exit 1
+          fi
+          for record in "${records[@]}"; do
+            payload_version="$(jq -r '.payloadVersion' "$record")"
+            artifact_version="$(jq -r '.artifactVersion' "$record")"
+            manifest_digest="$(jq -r '.manifestDigest' "$record")"
+            architecture="$(jq -r '.architecture' "$record")"
+            runtime_interfaces="$(jq -r '.runtimeInterfaces | join(",")' "$record")"
+            go run ./cmd/katl-kubernetes-release record-compatibility \
+              --payload-version "$payload_version" \
+              --artifact-version "$artifact_version" \
+              --manifest-digest "$manifest_digest" \
+              --architecture "$architecture" \
+              --runtime-interfaces "$runtime_interfaces"
+          done
           if git diff --quiet -- internal/installer/kubernetescompat/catalog.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -393,7 +519,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git add internal/installer/kubernetescompat/catalog.json
-          git commit -m "release: record Kubernetes ${PAYLOAD_VERSION} compatibility"
+          git commit -m "release: record supported Kubernetes compatibility"
           git push --set-upstream origin "$branch"
           echo "name=$branch" >> "$GITHUB_OUTPUT"
 
@@ -409,8 +535,8 @@ jobs:
               repo: context.repo.repo,
               base: "main",
               head: process.env.HEAD_BRANCH,
-              title: `release: select Kubernetes ${process.env.PAYLOAD_VERSION}`,
-              body: "Selects the newly published immutable Kubernetes bundle and records its KatlOS runtime compatibility for version-only install and upgrade resolution.",
+              title: "release: record supported Kubernetes compatibility",
+              body: "Records the newly published immutable bundles for every supported Kubernetes payload built by the producer.",
               draft: false,
             });
             await github.rest.actions.createWorkflowDispatch({

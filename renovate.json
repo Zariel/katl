@@ -2,57 +2,5 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Track the selected Kubernetes patch release",
-      "managerFilePatterns": [
-        "/^mkosi\\.profiles/kubernetes-sysext/kubernetes\\.env$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+) versioning=(?<versioning>semver)\\nKATL_KUBERNETES_PAYLOAD_DEFAULT=(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\nKATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=\\d+"
-      ],
-      "autoReplaceStringTemplate": "# renovate: datasource=github-releases depName=kubernetes/kubernetes versioning=semver\\nKATL_KUBERNETES_PAYLOAD_DEFAULT={{{newValue}}}\\nKATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=1"
-    },
-    {
-      "customType": "regex",
-      "description": "Lock Kubernetes RPM package versions",
-      "managerFilePatterns": [
-        "/^mkosi\\.profiles/kubernetes-sysext/kubernetes\\.env$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>rpm) depName=(?<depName>\\S+) versioning=(?<versioning>rpm) registryUrl=(?<registryUrl>\\S+)\\n: \\\"\\$\\{KATL_KUBERNETES_[A-Z]+_VERSION:=0:(?<currentValue>[^}]+)\\}\\\""
-      ]
-    }
-  ],
-  "packageRules": [
-    {
-      "description": "Keep the producer on the reviewed Kubernetes v1.36 release line",
-      "matchDatasources": [
-        "github-releases"
-      ],
-      "matchPackageNames": [
-        "kubernetes/kubernetes"
-      ],
-      "allowedVersions": "/^v1\\.36\\.\\d+$/",
-      "groupName": "Kubernetes v1.36 bundle",
-      "automerge": false
-    },
-    {
-      "description": "Update the exact v1.36 RPM locks with the payload declaration",
-      "matchDatasources": [
-        "rpm"
-      ],
-      "matchPackageNames": [
-        "kubeadm",
-        "kubelet",
-        "kubectl",
-        "cri-tools"
-      ],
-      "allowedVersions": "/^1\\.36\\.\\d+-/",
-      "groupName": "Kubernetes v1.36 bundle",
-      "automerge": false
-    }
   ]
 }
