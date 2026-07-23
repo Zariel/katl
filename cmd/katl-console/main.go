@@ -64,6 +64,11 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("open dashboard tty %s: %w", *ttyPath, err)
 	}
 	defer tty.Close()
+	restoreTTY, err := configureDisplayTTY(tty)
+	if err != nil {
+		return fmt.Errorf("configure dashboard tty %s: %w", *ttyPath, err)
+	}
+	defer restoreTTY()
 	_, _ = io.WriteString(tty, "\x1b[?25l\x1b[2J")
 	defer io.WriteString(tty, "\x1b[?25h\n")
 
@@ -92,6 +97,26 @@ func run(ctx context.Context, args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func configureDisplayTTY(tty *os.File) (func(), error) {
+	fd := int(tty.Fd())
+	original, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil, err
+	}
+	configured := displayTermios(*original)
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &configured); err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = unix.IoctlSetTermios(fd, unix.TCSETS, original)
+	}, nil
+}
+
+func displayTermios(termios unix.Termios) unix.Termios {
+	termios.Lflag &^= unix.ISIG
+	return termios
 }
 
 func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard, plainDashboard *operatorconsole.Renderer) error {

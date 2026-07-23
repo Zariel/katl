@@ -12,7 +12,31 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/operatorconsole"
+	"golang.org/x/sys/unix"
 )
+
+func TestDisplayTermiosDisablesTerminalSignals(t *testing.T) {
+	original := unix.Termios{
+		Iflag:  0x1234,
+		Oflag:  0x5678,
+		Cflag:  0x9abc,
+		Lflag:  unix.ISIG | unix.ICANON | unix.ECHO,
+		Line:   7,
+		Ispeed: 115200,
+		Ospeed: 115200,
+	}
+	original.Cc[unix.VINTR] = 3
+	original.Cc[unix.VQUIT] = 28
+	original.Cc[unix.VSUSP] = 26
+	got := displayTermios(original)
+	if got.Lflag&unix.ISIG != 0 {
+		t.Fatalf("display termios Lflag = %#x, ISIG remains enabled", got.Lflag)
+	}
+	got.Lflag |= unix.ISIG
+	if got != original {
+		t.Fatalf("display termios changed settings other than ISIG:\ngot  %#v\nwant %#v", got, original)
+	}
+}
 
 func TestJournalRingIsBounded(t *testing.T) {
 	ring := newJournalRing(2)
