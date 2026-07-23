@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -29,6 +32,8 @@ import (
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -362,7 +367,7 @@ func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
 	if err := run(context.Background(), []string{"node", "upgrade"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml"} {
+	for _, want := range []string{"Usage:", "katlctl node upgrade [VERSION]", "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
 		}
@@ -392,6 +397,7 @@ func TestHostUpgradeHelpLeadsWithClusterConfig(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Use the same ClusterConfig used to install the node",
+		"--artifact string",
 		"--config string",
 		"--node string",
 		"--endpoint string",
@@ -1971,6 +1977,157 @@ func TestHostUpgradeUsesRuntimeArchitectureWithoutKubernetesExtension(t *testing
 	}
 }
 
+func TestHostUpgradeLocalArtifactUploadsStagesRebootsAndVerifiesHealth(t *testing.T) {
+	artifact, contents, digest := writeHostUpgradeArtifact(t, "2026.7.0-dev.12", "x86_64", 1<<20+17)
+	fake := readyHostUpgradeClient()
+	installKatlcDial(t, func(endpoint string) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint = %q", endpoint)
+		}
+	}, fake)
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t), "--timeout", "1m", "--output", "json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if len(fake.stageArtifact) != 2 {
+		t.Fatalf("artifact chunks = %d, want 2", len(fake.stageArtifact))
+	}
+	first := fake.stageArtifact[0]
+	if first.ApiVersion != operation.APIVersion || first.Kind != "StageHostUpgradeArtifactRequest" || first.ExpectedMachineId != "machine-a" || first.Sha256 != digest || first.SizeBytes != uint64(len(contents)) {
+		t.Fatalf("first artifact chunk = %#v", first)
+	}
+	if next := fake.stageArtifact[1]; next.ApiVersion != "" || next.Kind != "" || next.Sha256 != "" || next.SizeBytes != 0 {
+		t.Fatalf("later artifact chunk repeated metadata = %#v", next)
+	}
+	var uploaded []byte
+	for _, chunk := range fake.stageArtifact {
+		uploaded = append(uploaded, chunk.Chunk...)
+	}
+	if !bytes.Equal(uploaded, contents) {
+		t.Fatal("uploaded artifact differs from local file")
+	}
+	request := fake.submitRequest.GetHostUpgrade()
+	if request.GetImageUrl() != "" || request.GetImageLocalRef() != hostUpgradeArtifactLocalRef(digest) || request.GetImageSha256() != digest || request.GetImageSizeBytes() != uint64(len(contents)) || request.GetCandidateGenerationId() != "katlos-2026.7.0-dev.12" {
+		t.Fatalf("host upgrade request = %#v", request)
+	}
+	if !strings.Contains(stderr.String(), "uploading local KatlOS 2026.7.0-dev.12 image") || !strings.Contains(stderr.String(), "local KatlOS image uploaded; staging the upgrade") {
+		t.Fatalf("progress = %q", stderr.String())
+	}
+	var report hostUpgradeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	absolute, _ := filepath.Abs(artifact)
+	if report.Image != absolute || report.Version != "2026.7.0-dev.12" || report.Result != operation.ResultSucceeded || !report.Rebooted {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestHostUpgradeLocalArtifactPlanValidatesWithoutUploading(t *testing.T) {
+	artifact, contents, digest := writeHostUpgradeArtifact(t, "2026.7.0-dev.13", "x86_64", 1024)
+	fake := readyHostUpgradeClient()
+	installKatlcDial(t, func(endpoint string) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint = %q", endpoint)
+		}
+	}, fake)
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t), "--plan", "--output", "json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if len(fake.stageArtifact) != 0 {
+		t.Fatalf("plan uploaded %d chunks", len(fake.stageArtifact))
+	}
+	if !fake.submitRequest.GetDryRun() {
+		t.Fatalf("plan request = %#v", fake.submitRequest)
+	}
+	request := fake.submitRequest.GetHostUpgrade()
+	if request.GetImageLocalRef() != hostUpgradeArtifactLocalRef(digest) || request.GetImageSha256() != digest || request.GetImageSizeBytes() != uint64(len(contents)) {
+		t.Fatalf("plan host upgrade request = %#v", request)
+	}
+	if len(fake.rebootRequests) != 0 {
+		t.Fatalf("plan reboot requests = %d", len(fake.rebootRequests))
+	}
+}
+
+func TestHostUpgradeLocalArtifactExplainsAgentUpgradeRequirement(t *testing.T) {
+	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.7.0-dev.14", "x86_64", 1024)
+	fake := readyHostUpgradeClient()
+	fake.stageArtifactErr = grpcstatus.Error(codes.Unimplemented, "unknown method")
+	installKatlcDial(t, func(endpoint string) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint = %q", endpoint)
+		}
+	}, fake)
+
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t)}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "upgrade it once from a published release, then retry --artifact") {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestHostUpgradeLocalArtifactRejectsRedundantVersion(t *testing.T) {
+	err := run(context.Background(), []string{"node", "upgrade", "2026.7.0-dev.14", "--artifact", "upgrade.squashfs", "--config", writeClusterConfig(t)}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "VERSION cannot be combined with --artifact") {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func readyHostUpgradeClient() *fakeKatlcAgentClient {
+	fake := &fakeKatlcAgentClient{
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current"},
+		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64"},
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
+		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
+	}
+	fake.onReboot = func(request *agentapi.RebootRequest) {
+		fake.nodeStatus.AgentStartId = "after"
+		fake.nodeStatus.CurrentGenerationId = request.TargetGenerationId
+		fake.generation = &agentapi.Generation{GenerationId: request.TargetGenerationId, CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
+	}
+	return fake
+}
+
+func writeHostUpgradeArtifact(t *testing.T, version, architecture string, size int) (string, []byte, string) {
+	t.Helper()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "katlos-upgrade-"+version+"-"+architecture+".squashfs")
+	contents := bytes.Repeat([]byte("k"), size)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digestBytes := sha256.Sum256(contents)
+	digest := hex.EncodeToString(digestBytes[:])
+	metadata := katlosimage.ArtifactMetadata{
+		APIVersion:        katlosimage.APIVersion,
+		Kind:              katlosimage.ArtifactMetadataKind,
+		ImageRole:         katlosimage.RoleUpgrade,
+		Format:            katlosimage.FormatSquashFS,
+		Version:           version,
+		BuildID:           "test-build",
+		Architecture:      architecture,
+		RuntimeInterface:  "katl-runtime-1",
+		Path:              filepath.Base(path),
+		SizeBytes:         int64(size),
+		SHA256:            digest,
+		ChecksumPath:      filepath.Base(path) + ".sha256",
+		EmbeddedIndexPath: "katlos/image.json",
+		CreatedAt:         "2026-07-23T12:00:00Z",
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".json", append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, contents, digest
+}
+
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
@@ -2349,6 +2506,13 @@ type fakeKatlcAgentClient struct {
 	onReboot          func(*agentapi.RebootRequest)
 	shutdownRequests  []*agentapi.ShutdownRequest
 	onShutdown        func(*agentapi.ShutdownRequest)
+	stageArtifact     []*agentapi.StageHostUpgradeArtifactRequest
+	stageArtifactErr  error
+}
+
+type fakeHostUpgradeArtifactClient struct {
+	grpc.ClientStream
+	client *fakeKatlcAgentClient
 }
 
 type fakeWipeClusterConnector struct {
@@ -2441,6 +2605,29 @@ func (c *fakeKatlcAgentClient) ApplyGeneration(_ context.Context, req *agentapi.
 func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.GenerationApplyRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
 	c.stageRequest = req
 	return c.stageAccepted, nil
+}
+
+func (c *fakeKatlcAgentClient) StageHostUpgradeArtifact(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[agentapi.StageHostUpgradeArtifactRequest, agentapi.HostUpgradeArtifactStaged], error) {
+	return &fakeHostUpgradeArtifactClient{client: c}, nil
+}
+
+func (s *fakeHostUpgradeArtifactClient) Send(request *agentapi.StageHostUpgradeArtifactRequest) error {
+	copyRequest := *request
+	copyRequest.Chunk = append([]byte(nil), request.Chunk...)
+	s.client.stageArtifact = append(s.client.stageArtifact, &copyRequest)
+	return s.client.stageArtifactErr
+}
+
+func (s *fakeHostUpgradeArtifactClient) CloseAndRecv() (*agentapi.HostUpgradeArtifactStaged, error) {
+	if s.client.stageArtifactErr != nil {
+		return nil, s.client.stageArtifactErr
+	}
+	first := s.client.stageArtifact[0]
+	return &agentapi.HostUpgradeArtifactStaged{
+		LocalRef:  hostUpgradeArtifactLocalRef(first.Sha256),
+		Sha256:    first.Sha256,
+		SizeBytes: first.SizeBytes,
+	}, nil
 }
 
 func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {

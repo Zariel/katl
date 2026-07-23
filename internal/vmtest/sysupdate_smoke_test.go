@@ -106,8 +106,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
 
 	upgrade := discoverBuiltUpgradeImage(t, previousSpec.RuntimeVersion)
-	localRef := filepath.ToSlash(filepath.Join("updates", filepath.Base(upgrade.Path)))
-	uploadGuestFile(t, ctx, guest, upgrade.Path, "/var/lib/katl/artifacts/"+localRef, 4<<20)
 	endpoint := katlcEndpoint(t, node, "")
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
@@ -117,10 +115,12 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("read node status before host upgrade: %v", err)
 	}
 	conn.Close()
-	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef)
+	localRef := stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, nodeStatus.GetMachineId(), upgrade)
+	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
+	assertGuestMissing(t, ctx, guest, "/var/lib/katl/artifacts/"+localRef)
 	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+operationID+"/record.json")
 	envelope, err := persistedrecord.DecodeEnvelope([]byte(recordData))
 	if err != nil {
@@ -176,7 +176,8 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("upgrade did not produce distinct version, root slot, and UKI identities: previous=%#v candidate=%#v", previousSpec, candidateSpec)
 	}
 	repeatedGeneration := candidateGeneration + "-repeat"
-	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef)
+	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, nodeStatus.GetMachineId(), upgrade)
+	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade)
 	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
 		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
 	}
@@ -205,7 +206,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 }
 
-func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string) (string, *agentapi.OperationStatus) {
+func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {
 	t.Helper()
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
 	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
@@ -218,6 +219,8 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machi
 		ExpectedCurrentGenerationId: currentGeneration,
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageLocalRef:         localRef,
+			ImageSha256:           upgrade.SHA256,
+			ImageSizeBytes:        upgrade.SizeBytes,
 			CandidateGenerationId: candidateGeneration,
 		},
 	})
@@ -226,6 +229,56 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machi
 		t.Fatalf("submit host upgrade operation: %v", err)
 	}
 	return accepted.GetOperationId(), waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId())
+}
+
+func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoint, machineID string, upgrade builtUpgradeImage) string {
+	t.Helper()
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	defer conn.Close()
+	stream, err := katlc.StageHostUpgradeArtifact(ctx)
+	if err != nil {
+		t.Fatalf("start host upgrade artifact staging: %v", err)
+	}
+	file, err := os.Open(upgrade.Path)
+	if err != nil {
+		t.Fatalf("open host upgrade artifact: %v", err)
+	}
+	defer file.Close()
+	buffer := make([]byte, 1<<20)
+	first := true
+	for {
+		n, readErr := file.Read(buffer)
+		if n > 0 {
+			request := &agentapi.StageHostUpgradeArtifactRequest{Chunk: append([]byte(nil), buffer[:n]...)}
+			if first {
+				request.ApiVersion = operation.APIVersion
+				request.Kind = agent.StageHostUpgradeArtifactRequestKind
+				request.Actor = "installed runtime host upgrade vmtest"
+				request.ExpectedMachineId = machineID
+				request.Sha256 = upgrade.SHA256
+				request.SizeBytes = upgrade.SizeBytes
+				first = false
+			}
+			if err := stream.Send(request); err != nil {
+				t.Fatalf("send host upgrade artifact: %v", err)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			t.Fatalf("read host upgrade artifact: %v", readErr)
+		}
+	}
+	staged, err := stream.CloseAndRecv()
+	if err != nil {
+		t.Fatalf("finish host upgrade artifact staging: %v", err)
+	}
+	wantRef := "host-upgrade/uploads/" + upgrade.SHA256 + ".squashfs"
+	if staged.GetLocalRef() != wantRef || staged.GetSha256() != upgrade.SHA256 || staged.GetSizeBytes() != upgrade.SizeBytes {
+		t.Fatalf("staged host upgrade artifact = %#v", staged)
+	}
+	return staged.GetLocalRef()
 }
 
 type builtUpgradeImage struct {
@@ -298,40 +351,6 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 		t.Fatalf("KatlOS upgrade image SHA-256 = %s, metadata = %s", digest, metadata.SHA256)
 	}
 	return builtUpgradeImage{Path: path, Version: metadata.Version, SHA256: metadata.SHA256, SizeBytes: metadata.SizeBytes}
-}
-
-func uploadGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, source, target string, chunkSize int) {
-	t.Helper()
-	file, err := os.Open(source)
-	if err != nil {
-		t.Fatalf("open guest upload source: %v", err)
-	}
-	defer file.Close()
-	buffer := make([]byte, chunkSize)
-	var offset uint64
-	for {
-		n, readErr := io.ReadFull(file, buffer)
-		if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
-			t.Fatalf("read guest upload source at %d: %v", offset, readErr)
-		}
-		if n > 0 {
-			if _, err := guest.WriteFile(ctx, GuestFileRequest{
-				Name:     fmt.Sprintf("host-upgrade-image-%08d", offset),
-				Path:     target,
-				Content:  buffer[:n],
-				Mode:     0o600,
-				Timeout:  30 * time.Second,
-				Offset:   offset,
-				Truncate: offset == 0,
-			}); err != nil {
-				t.Fatalf("upload guest file %s at %d: %v", target, offset, err)
-			}
-			offset += uint64(n)
-		}
-		if readErr == io.ErrUnexpectedEOF || readErr == io.EOF {
-			break
-		}
-	}
 }
 
 func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *GuestControl, spec generation.GenerationSpec) {

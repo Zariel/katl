@@ -16,6 +16,31 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
+func TestCleanupManagedHostUpgradeArtifactRemovesOnlyUploadedImage(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	managedRef := hostUpgradeUploadDirectory + "/" + digest + ".squashfs"
+	managedPath := filepath.Join(root, "var/lib/katl/artifacts", filepath.FromSlash(managedRef))
+	unmanagedPath := filepath.Join(root, "var/lib/katl/artifacts/operator-image.squashfs")
+	for _, path := range []string{managedPath, unmanagedPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("image"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := &Executor{Root: root}
+	executor.cleanupManagedHostUpgradeArtifact(operation.HostUpgrade{ImageLocalRef: managedRef})
+	executor.cleanupManagedHostUpgradeArtifact(operation.HostUpgrade{ImageLocalRef: "operator-image.squashfs"})
+	if _, err := os.Stat(managedPath); !os.IsNotExist(err) {
+		t.Fatalf("managed artifact stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(unmanagedPath); err != nil {
+		t.Fatalf("unmanaged artifact was removed: %v", err)
+	}
+}
+
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"etc", "efi/EFI/Linux", "dev/disk/by-partlabel"} {

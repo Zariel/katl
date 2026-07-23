@@ -11,6 +11,7 @@ service KatlcAgent {
   rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
   rpc ApplyGeneration(GenerationApplyRequest) returns (OperationAccepted);
   rpc StageGeneration(GenerationApplyRequest) returns (OperationAccepted);
+  rpc StageHostUpgradeArtifact(stream StageHostUpgradeArtifactRequest) returns (HostUpgradeArtifactStaged);
   rpc SubmitOperation(SubmitOperationRequest) returns (OperationAccepted);
   rpc CreateWorkerJoinMaterial(CreateWorkerJoinMaterialRequest) returns (CreateWorkerJoinMaterialResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
@@ -217,6 +218,22 @@ message HostUpgradeOperationRequest {
   string image_sha256 = 3;
   uint64 image_size_bytes = 4;
   string candidate_generation_id = 5;
+}
+
+message StageHostUpgradeArtifactRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_machine_id = 4;
+  string sha256 = 5;
+  uint64 size_bytes = 6;
+  bytes chunk = 7;
+}
+
+message HostUpgradeArtifactStaged {
+  string local_ref = 1;
+  string sha256 = 2;
+  uint64 size_bytes = 3;
 }
 
 message CreateWorkerJoinMaterialRequest {
