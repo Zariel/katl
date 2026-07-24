@@ -1,9 +1,12 @@
 package artifact
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +66,26 @@ func TestReadLocalBad(t *testing.T) {
 	_, err := ReadLocal(path)
 	if !errors.Is(err, ErrInvalidArtifactSpec) {
 		t.Fatalf("ReadLocal() error = %v, want ErrInvalidArtifactSpec", err)
+	}
+}
+
+func TestLocalMetaVerifyFile(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "artifact.raw")
+	content := []byte("verified local artifact")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	meta := LocalMeta{Path: filepath.Base(path), SizeBytes: int64(len(content)), SHA256: hex.EncodeToString(digest[:])}
+	if err := meta.VerifyFile(path); err != nil {
+		t.Fatalf("VerifyFile() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := meta.VerifyFile(path); err == nil || (!strings.Contains(err.Error(), "size") && !strings.Contains(err.Error(), "SHA-256")) {
+		t.Fatalf("VerifyFile() error = %v", err)
 	}
 }
 

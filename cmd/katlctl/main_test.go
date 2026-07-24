@@ -2697,8 +2697,12 @@ func (s *fakeHostUpgradeArtifactClient) CloseAndRecv() (*agentapi.HostUpgradeArt
 		return nil, s.client.stageArtifactErr
 	}
 	first := s.client.stageArtifact[0]
+	localRef := hostUpgradeArtifactLocalRef(first.Sha256)
+	if first.Kind == "StageKubernetesUpgradeArtifactRequest" {
+		localRef = kubernetesUpgradeArtifactLocalRef(first.Sha256)
+	}
 	return &agentapi.HostUpgradeArtifactStaged{
-		LocalRef:  hostUpgradeArtifactLocalRef(first.Sha256),
+		LocalRef:  localRef,
 		Sha256:    first.Sha256,
 		SizeBytes: first.SizeBytes,
 	}, nil

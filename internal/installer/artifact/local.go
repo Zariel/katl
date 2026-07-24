@@ -1,9 +1,13 @@
 package artifact
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -71,6 +75,35 @@ func (m LocalMeta) Spec(baseURL string) ArtifactSpec {
 		SizeBytes:  m.SizeBytes,
 		Generation: m.Generation,
 	}
+}
+
+func (m LocalMeta) VerifyFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat local artifact: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("local artifact is not a regular file")
+	}
+	if filepath.Base(path) != filepath.FromSlash(m.Path) {
+		return fmt.Errorf("local artifact filename %q does not match metadata %q", filepath.Base(path), m.Path)
+	}
+	if info.Size() != m.SizeBytes {
+		return fmt.Errorf("local artifact size %d does not match metadata %d", info.Size(), m.SizeBytes)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open local artifact: %w", err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return fmt.Errorf("hash local artifact: %w", err)
+	}
+	if got := hex.EncodeToString(hash.Sum(nil)); got != m.SHA256 {
+		return fmt.Errorf("local artifact SHA-256 %s does not match metadata %s", got, m.SHA256)
+	}
+	return nil
 }
 
 func (m LocalMeta) validate() error {

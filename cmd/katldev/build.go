@@ -9,9 +9,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
+	"github.com/katl-dev/katl/internal/kubernetesrelease"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +29,14 @@ type installerISOArtifact struct {
 	SizeBytes int64
 }
 
+type kubernetesBuildArtifact struct {
+	Path           string
+	PayloadVersion string
+	Architecture   string
+	SHA256         string
+	SizeBytes      int64
+}
+
 var katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 func newBuildCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -36,7 +48,30 @@ func newBuildCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comma
 		},
 	}
 	cmd.AddCommand(newBuildISOCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newBuildKubernetesCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newBuildUpgradeCommand(ctx, stdout, stderr))
+	return cmd
+}
+
+func newBuildKubernetesCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	var version string
+	cmd := &cobra.Command{
+		Use:   "kubernetes",
+		Short: "Build and verify a Kubernetes upgrade image from the current checkout",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			repoRoot, err := repositoryRoot()
+			if err != nil {
+				return err
+			}
+			built, err := buildKubernetesUpgrade(ctx, repoRoot, version, stderr, runBuildCommand)
+			if err != nil {
+				return err
+			}
+			return writeKubernetesBuildArtifact(stdout, built)
+		},
+	}
+	cmd.Flags().StringVar(&version, "version", "", "Kubernetes payload version, for example v1.36.2")
 	return cmd
 }
 
@@ -191,6 +226,94 @@ func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, stderr io
 	}, nil
 }
 
+func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stderr io.Writer, run buildCommandRunner) (kubernetesBuildArtifact, error) {
+	if run == nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("build command runner is required")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return kubernetesBuildArtifact{}, fmt.Errorf("--version is required")
+	}
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	supported, err := kubernetesrelease.DefaultSupportedVersions()
+	if err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("load supported Kubernetes versions: %w", err)
+	}
+	selected, err := supported.Select(version)
+	if err != nil {
+		return kubernetesBuildArtifact{}, err
+	}
+	release := selected[0]
+	architecture, err := developmentArtifactArchitecture(runtime.GOARCH)
+	if err != nil {
+		return kubernetesBuildArtifact{}, err
+	}
+	buildID := release.ArtifactVersion()
+	if revision, dirty := checkoutRevision(repoRoot); revision != "" {
+		buildID = revision
+		if dirty {
+			buildID += "-dirty"
+		}
+	}
+	minor := sysextcatalog.KubernetesMinor(version)
+	outputName := "katl-kubernetes-" + version
+	image := filepath.Join(repoRoot, "_build", "mkosi", outputName+".raw")
+	environment := []string{
+		"KATL_ARCHITECTURE=" + architecture,
+		"KATL_BUILD_COMMIT=" + buildID,
+		"KATL_KUBERNETES_MINOR=" + minor,
+		"KATL_KUBERNETES_PAYLOAD_VERSION=" + version,
+		"KATL_KUBERNETES_ARTIFACT_REVISION=" + strconv.Itoa(release.ArtifactRevision),
+		"KATL_KUBERNETES_KUBEADM_VERSION=" + release.Packages.Kubeadm,
+		"KATL_KUBERNETES_KUBELET_VERSION=" + release.Packages.Kubelet,
+		"KATL_KUBERNETES_KUBECTL_VERSION=" + release.Packages.Kubectl,
+		"KATL_KUBERNETES_CRITOOLS_VERSION=" + release.Packages.CRITools,
+	}
+	fmt.Fprintf(stderr, "katldev build: building Kubernetes %s upgrade image from the current checkout\n", version)
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-runtime"}, environment, stderr, stderr); err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("build KatlOS runtime prerequisite: %w", err)
+	}
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "build-kubernetes-sysext"), []string{"--output", outputName}, environment, stderr, stderr); err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("build Kubernetes upgrade image: %w", err)
+	}
+	fmt.Fprintln(stderr, "katldev build: verifying the completed Kubernetes upgrade image")
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "check-kubernetes-sysext"), []string{image}, environment, stderr, stderr); err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("verify Kubernetes upgrade image: %w", err)
+	}
+	meta, err := artifact.ReadLocal(image + ".json")
+	if err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("read Kubernetes upgrade metadata: %w", err)
+	}
+	if err := meta.VerifyFile(image); err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("verify Kubernetes upgrade image: %w", err)
+	}
+	entry, err := sysextcatalog.EntryFromLocalMeta(meta)
+	if err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("verify Kubernetes upgrade metadata: %w", err)
+	}
+	if err := sysextcatalog.ValidateForRuntime(entry, sysextcatalog.Runtime{Interface: "katl-runtime-1", Architecture: architecture}); err != nil {
+		return kubernetesBuildArtifact{}, fmt.Errorf("verify Kubernetes upgrade compatibility: %w", err)
+	}
+	if meta.Name != sysextcatalog.KubernetesName || meta.PayloadVersion != version || meta.Version != release.ArtifactVersion() {
+		return kubernetesBuildArtifact{}, fmt.Errorf("Kubernetes upgrade metadata identifies %s %s (%s), want Kubernetes %s (%s)", meta.Name, meta.PayloadVersion, meta.Version, version, release.ArtifactVersion())
+	}
+	wantPackages := map[string]string{
+		"kubeadm": release.Packages.Kubeadm, "kubelet": release.Packages.Kubelet,
+		"kubectl": release.Packages.Kubectl, "cri-tools": release.Packages.CRITools,
+	}
+	for name, want := range wantPackages {
+		if got := meta.PackageVersions[name]; got != want {
+			return kubernetesBuildArtifact{}, fmt.Errorf("Kubernetes upgrade metadata package %s is %q, want %q", name, got, want)
+		}
+	}
+	return kubernetesBuildArtifact{
+		Path: image, PayloadVersion: version, Architecture: architecture,
+		SHA256: meta.SHA256, SizeBytes: meta.SizeBytes,
+	}, nil
+}
+
 type hostUpgradeBuildArtifact struct {
 	Path         string
 	Metadata     string
@@ -214,6 +337,11 @@ func developmentArtifactArchitecture(goarch string) (string, error) {
 
 func writeKatlOSUpgradeArtifact(stdout io.Writer, artifact hostUpgradeBuildArtifact) error {
 	_, err := fmt.Fprintf(stdout, "KatlOS upgrade image ready.\nImage: %s\nUse with:\n  katlctl node upgrade NODE --config cluster.yaml --artifact %s\n", artifact.Path, artifact.Path)
+	return err
+}
+
+func writeKubernetesBuildArtifact(stdout io.Writer, artifact kubernetesBuildArtifact) error {
+	_, err := fmt.Fprintf(stdout, "Kubernetes upgrade image ready.\nImage: %s\nUse with:\n  katlctl kubernetes upgrade %s --config cluster.yaml --artifact %s\n", artifact.Path, artifact.PayloadVersion, artifact.Path)
 	return err
 }
 

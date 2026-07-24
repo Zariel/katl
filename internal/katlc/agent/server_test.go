@@ -78,6 +78,37 @@ func TestStageHostUpgradeArtifactCommitsVerifiedContent(t *testing.T) {
 	}
 }
 
+func TestStageHostUpgradeArtifactAcceptsKubernetesPayload(t *testing.T) {
+	server := newTestServer(t)
+	content := []byte("local Kubernetes sysext")
+	digestBytes := sha256.Sum256(content)
+	digest := hex.EncodeToString(digestBytes[:])
+	stream := newHostUpgradeArtifactServerStream(&agentapi.StageHostUpgradeArtifactRequest{
+		ApiVersion:        APIVersion,
+		Kind:              StageKubernetesUpgradeArtifactRequestKind,
+		Actor:             "katlctl kubernetes upgrade",
+		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		Sha256:            digest,
+		SizeBytes:         uint64(len(content)),
+		Chunk:             content,
+	})
+	if err := server.StageHostUpgradeArtifact(stream); err != nil {
+		t.Fatal(err)
+	}
+	wantRef := kubernetesUpgradeUploadDirectory + "/" + digest + ".raw"
+	if stream.response.GetLocalRef() != wantRef || stream.response.GetSha256() != digest || stream.response.GetSizeBytes() != uint64(len(content)) {
+		t.Fatalf("staged response = %#v", stream.response)
+	}
+	path := filepath.Join(server.Root, "var/lib/katl/artifacts", filepath.FromSlash(wantRef))
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, content) {
+		t.Fatal("staged Kubernetes content differs")
+	}
+}
+
 func TestStageHostUpgradeArtifactRejectsMismatchAndCleansPartialFile(t *testing.T) {
 	server := newTestServer(t)
 	content := []byte("not the declared artifact")

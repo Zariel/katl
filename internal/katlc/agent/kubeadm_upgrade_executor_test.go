@@ -289,6 +289,37 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 	}
 }
 
+func TestCleanupManagedKubernetesUpgradeArtifact(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	logicalPath := filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts", kubernetesUpgradeUploadDirectory, digest+".raw"))
+	managed := rootedRuntimePath(root, logicalPath)
+	if err := os.MkdirAll(filepath.Dir(managed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managed, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := operation.KubernetesSysextUpdate{TargetSysextPath: logicalPath, TargetSysextSHA256: digest}
+	if err := cleanupManagedKubernetesUpgradeArtifact(root, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(managed); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed artifact stat error = %v, want not exist", err)
+	}
+	unmanaged := rootedRuntimePath(root, "/var/lib/katl/artifacts/operator.raw")
+	if err := os.WriteFile(unmanaged, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.TargetSysextPath = "/var/lib/katl/artifacts/operator.raw"
+	if err := cleanupManagedKubernetesUpgradeArtifact(root, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unmanaged); err != nil {
+		t.Fatalf("unmanaged artifact was removed: %v", err)
+	}
+}
+
 func TestExecutorRestoresSourceSysextAndKubeletWhenLiveActivationFails(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "worker")
 	executor := NewExecutor(root, store, "agent-test")

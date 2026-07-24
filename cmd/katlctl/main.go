@@ -574,20 +574,42 @@ func hostUpgradeArtifactLocalRef(sha256 string) string {
 	return "host-upgrade/uploads/" + sha256 + ".squashfs"
 }
 
+type localArtifactUpload struct {
+	Path      string
+	Label     string
+	Version   string
+	Kind      string
+	Actor     string
+	MachineID string
+	SHA256    string
+	SizeBytes uint64
+	LocalRef  string
+	Node      string
+}
+
 func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID string, artifact hostUpgradeArtifact, node string, stderr io.Writer) (string, error) {
+	return stageLocalUpgradeArtifact(ctx, client, localArtifactUpload{
+		Path: artifact.Path, Label: "KatlOS", Version: artifact.Version,
+		Kind: "StageHostUpgradeArtifactRequest", Actor: actor, MachineID: machineID,
+		SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes,
+		LocalRef: hostUpgradeArtifactLocalRef(artifact.SHA256), Node: node,
+	}, stderr)
+}
+
+func stageLocalUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, upload localArtifactUpload, stderr io.Writer) (string, error) {
 	stream, err := client.StageHostUpgradeArtifact(ctx)
 	if err != nil {
-		return "", localArtifactStageError(err)
+		return "", localArtifactStageError(upload.Label, err)
 	}
-	file, err := os.Open(artifact.Path)
+	file, err := os.Open(upload.Path)
 	if err != nil {
-		return "", fmt.Errorf("open local KatlOS image: %w", err)
+		return "", fmt.Errorf("open local %s image: %w", upload.Label, err)
 	}
 	defer file.Close()
-	if strings.TrimSpace(node) == "" {
-		node = "node"
+	if strings.TrimSpace(upload.Node) == "" {
+		upload.Node = "node"
 	}
-	fmt.Fprintf(stderr, "%s: uploading local KatlOS %s image (%d bytes)\n", node, artifact.Version, artifact.SizeBytes)
+	fmt.Fprintf(stderr, "%s: uploading local %s %s image (%d bytes)\n", upload.Node, upload.Label, upload.Version, upload.SizeBytes)
 	buffer := make([]byte, 1<<20)
 	first := true
 	var sent uint64
@@ -598,24 +620,24 @@ func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCli
 			request := &agentapi.StageHostUpgradeArtifactRequest{Chunk: append([]byte(nil), buffer[:n]...)}
 			if first {
 				request.ApiVersion = operation.APIVersion
-				request.Kind = "StageHostUpgradeArtifactRequest"
-				request.Actor = actor
-				request.ExpectedMachineId = machineID
-				request.Sha256 = artifact.SHA256
-				request.SizeBytes = artifact.SizeBytes
+				request.Kind = upload.Kind
+				request.Actor = upload.Actor
+				request.ExpectedMachineId = upload.MachineID
+				request.Sha256 = upload.SHA256
+				request.SizeBytes = upload.SizeBytes
 				first = false
 			}
 			if err := stream.Send(request); err != nil {
 				if errors.Is(err, io.EOF) {
 					if _, closeErr := stream.CloseAndRecv(); closeErr != nil {
-						return "", localArtifactStageError(closeErr)
+						return "", localArtifactStageError(upload.Label, closeErr)
 					}
 				}
-				return "", localArtifactStageError(err)
+				return "", localArtifactStageError(upload.Label, err)
 			}
 			sent += uint64(n)
-			if sent < artifact.SizeBytes && sent-lastProgress >= 256<<20 {
-				fmt.Fprintf(stderr, "%s: uploaded %d%%\n", node, sent*100/artifact.SizeBytes)
+			if sent < upload.SizeBytes && sent-lastProgress >= 256<<20 {
+				fmt.Fprintf(stderr, "%s: uploaded %d%%\n", upload.Node, sent*100/upload.SizeBytes)
 				lastProgress = sent
 			}
 		}
@@ -623,25 +645,28 @@ func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCli
 			break
 		}
 		if readErr != nil {
-			return "", fmt.Errorf("read local KatlOS image: %w", readErr)
+			return "", fmt.Errorf("read local %s image: %w", upload.Label, readErr)
 		}
 	}
 	staged, err := stream.CloseAndRecv()
 	if err != nil {
-		return "", localArtifactStageError(err)
+		return "", localArtifactStageError(upload.Label, err)
 	}
-	if staged.GetLocalRef() != hostUpgradeArtifactLocalRef(artifact.SHA256) || staged.GetSha256() != artifact.SHA256 || staged.GetSizeBytes() != artifact.SizeBytes {
-		return "", fmt.Errorf("node returned an inconsistent staged KatlOS image identity")
+	if staged.GetLocalRef() != upload.LocalRef || staged.GetSha256() != upload.SHA256 || staged.GetSizeBytes() != upload.SizeBytes {
+		return "", fmt.Errorf("node returned an inconsistent staged %s image identity", upload.Label)
 	}
-	fmt.Fprintf(stderr, "%s: local KatlOS image uploaded; staging the upgrade\n", node)
+	fmt.Fprintf(stderr, "%s: local %s image uploaded; staging the upgrade\n", upload.Node, upload.Label)
 	return staged.GetLocalRef(), nil
 }
 
-func localArtifactStageError(err error) error {
+func localArtifactStageError(label string, err error) error {
 	if grpcstatus.Code(err) == codes.Unimplemented {
+		if label == "Kubernetes" {
+			return fmt.Errorf("node does not support local Kubernetes artifact delivery; upgrade KatlOS to a build with local Kubernetes artifact support, then retry --artifact")
+		}
 		return fmt.Errorf("node does not support local KatlOS artifact delivery; upgrade it once from a published release, then retry --artifact")
 	}
-	return fmt.Errorf("upload local KatlOS image: %w", err)
+	return fmt.Errorf("upload local %s image: %w", label, err)
 }
 
 func writeJSON(stdout io.Writer, value any) error {
