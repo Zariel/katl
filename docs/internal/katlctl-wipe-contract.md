@@ -120,7 +120,7 @@ Failure behavior:
 Command:
 
 ```text
-katlctl node wipe NAME [--config PATH] --kubeconfig PATH
+katlctl node wipe NAME [--config PATH] [--kubeconfig PATH]
 ```
 
 Target selection:
@@ -133,17 +133,21 @@ Target selection:
 
 Graceful Kubernetes cleanup:
 
-- `--kubeconfig` is required for execution. `--plan` may run without contacting
-  the Kubernetes API only if it reports Kubernetes cleanup as `unknown`.
+- `--kubeconfig` is required for an enrolled node. A node that reports
+  Kubernetes state `not-configured` does not require Kubernetes API cleanup and
+  reports that cleanup as `not-needed`.
+- `--plan` may run for an enrolled node without contacting the Kubernetes API
+  only if it reports Kubernetes cleanup as `unknown`.
 - `katlctl` first attempts to cordon the Kubernetes Node.
 - It then attempts a bounded drain that evicts ordinary workload pods and ignores
   DaemonSet-managed pods. Mirror/static pods are not deleted through the API.
 - It deletes the Kubernetes Node object after drain attempts complete or time
   out.
-- For a control-plane node, it removes the matching stacked-etcd member when the
-  remaining control plane has quorum. If quorum cannot be proven, the command is
-  refused before node-local wipe unless the target set is the whole cluster,
-  which belongs to `katlctl cluster wipe`.
+- A pre-bootstrap control-plane node can be reset without choosing an inventory
+  init node, even when the topology contains multiple control planes.
+- A single enrolled control-plane wipe is refused before mutation because
+  stacked-etcd membership coordination is not yet implemented. Discarding the
+  whole cluster belongs to `katlctl cluster wipe`.
 
 Node-local wipe trigger:
 
@@ -163,8 +167,8 @@ Node-local wipe trigger:
 Result:
 
 - Success leaves the wiped node powered off and ready for first
-  install/bootstrap again, and leaves the remaining cluster without that
-  Kubernetes Node and, for a control-plane target, without that etcd member.
+  install/bootstrap again. Enrolled worker replacement also leaves the
+  remaining cluster without that Kubernetes Node.
 - The command does not automatically bootstrap the wiped node back into the
   cluster. Rejoin is a later explicit install/bootstrap action.
 
@@ -215,17 +219,21 @@ Result:
 
 ## VM Gates
 
-Implementation of `katlctl node wipe` must add and pass:
+Implementation of `katlctl node wipe` must add and pass both enrolled-worker
+and pre-bootstrap control-plane journeys:
 
 ```text
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestInstalledRuntimeTwoNodeWipeNodeBootstrapSmoke -count=1
+scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestInstalledRuntimeTwoNodeWipePreBootstrapControlPlaneSmoke -count=1
 ```
 
-The gate must start from a bootstrapped Kubernetes cluster with real Kubernetes
-and etcd state, run `katlctl node wipe` against one node, prove Kubernetes Node
-cleanup and etcd member cleanup when applicable, prove the node reaches
-installer-media handoff, then reinstall/bootstrap the node and prove remote
-kubectl/workload health.
+The worker gate starts from a bootstrapped Kubernetes cluster, proves Kubernetes
+Node cleanup and installer-media handoff, reinstalls the worker, rejoins it, and
+proves remote kubectl health. The control-plane gate starts from a
+multi-control-plane topology before bootstrap, runs without a kubeconfig or
+init-node choice, proves the report and destructive operation identify only the
+selected control plane, observes automatic poweroff, reinstalls it, and proves a
+clean generation 0 with a new node identity.
 
 Implementation of `katlctl cluster wipe` must add and pass:
 

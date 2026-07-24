@@ -47,9 +47,10 @@ Do not proceed to reinstall until every intended reset reports `terminal: true`
 and `result: succeeded`, then confirm the nodes are off. Treat
 `recoveryRequired: true` as a stop condition.
 
-## Plan One Worker Replacement
+## Plan One Node Replacement
 
-Single-node wipe coordinates Kubernetes Node cleanup before the node-local reset:
+For an enrolled worker, single-node wipe coordinates Kubernetes Node cleanup
+before the node-local reset:
 
 ```sh
 katlctl node wipe worker-1 --config ./cluster.yaml --plan
@@ -62,10 +63,22 @@ the source can be omitted:
 katlctl node wipe worker-1 --config ./cluster.yaml --kubeconfig ./kubeconfig
 ```
 
-Execution requires `--kubeconfig` so Katl can remove the Kubernetes Node first.
-If Kubernetes cleanup fails, Katl reports recovery required and refuses the
-node-local wipe. Single control-plane wipe is refused because etcd membership
-coordination is not implemented as a supported operation.
+Execution requires `--kubeconfig` for an enrolled node so Katl can remove the
+Kubernetes Node first. If Kubernetes cleanup fails, Katl reports recovery
+required and refuses the node-local wipe.
+
+A control-plane node that has not joined Kubernetes can be reset without a
+kubeconfig or an init-node choice, including from a configuration containing
+multiple control planes:
+
+```sh
+katlctl node wipe cp-1 --config ./cluster.yaml --plan
+katlctl node wipe cp-1 --config ./cluster.yaml
+```
+
+The report identifies the single control-plane target and says
+`kubernetesCleanup: not-needed`. A single enrolled control-plane wipe remains
+refused because supported etcd membership coordination is not implemented.
 
 ## Reinstall
 
