@@ -260,19 +260,22 @@ func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stder
 	minor := sysextcatalog.KubernetesMinor(version)
 	outputName := "katl-kubernetes-" + version
 	image := filepath.Join(repoRoot, "_build", "mkosi", outputName+".raw")
-	environment := []string{
+	runtimeEnvironment := []string{
 		"KATL_ARCHITECTURE=" + architecture,
 		"KATL_BUILD_COMMIT=" + buildID,
-		"KATL_KUBERNETES_MINOR=" + minor,
-		"KATL_KUBERNETES_PAYLOAD_VERSION=" + version,
-		"KATL_KUBERNETES_ARTIFACT_REVISION=" + strconv.Itoa(release.ArtifactRevision),
-		"KATL_KUBERNETES_KUBEADM_VERSION=" + release.Packages.Kubeadm,
-		"KATL_KUBERNETES_KUBELET_VERSION=" + release.Packages.Kubelet,
-		"KATL_KUBERNETES_KUBECTL_VERSION=" + release.Packages.Kubectl,
-		"KATL_KUBERNETES_CRITOOLS_VERSION=" + release.Packages.CRITools,
 	}
+	environment := append(append([]string(nil), runtimeEnvironment...),
+		"KATL_VERSION="+release.ArtifactVersion(),
+		"KATL_KUBERNETES_MINOR="+minor,
+		"KATL_KUBERNETES_PAYLOAD_VERSION="+version,
+		"KATL_KUBERNETES_ARTIFACT_REVISION="+strconv.Itoa(release.ArtifactRevision),
+		"KATL_KUBERNETES_KUBEADM_VERSION="+release.Packages.Kubeadm,
+		"KATL_KUBERNETES_KUBELET_VERSION="+release.Packages.Kubelet,
+		"KATL_KUBERNETES_KUBECTL_VERSION="+release.Packages.Kubectl,
+		"KATL_KUBERNETES_CRITOOLS_VERSION="+release.Packages.CRITools,
+	)
 	fmt.Fprintf(stderr, "katldev build: building Kubernetes %s upgrade image from the current checkout\n", version)
-	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-runtime"}, environment, stderr, stderr); err != nil {
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-runtime"}, runtimeEnvironment, stderr, stderr); err != nil {
 		return kubernetesBuildArtifact{}, fmt.Errorf("build KatlOS runtime prerequisite: %w", err)
 	}
 	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "build-kubernetes-sysext"), []string{"--output", outputName}, environment, stderr, stderr); err != nil {

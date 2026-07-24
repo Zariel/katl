@@ -266,9 +266,12 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	environment := []string{
+	runtimeEnvironment := []string{
 		"KATL_ARCHITECTURE=" + architecture,
 		"KATL_BUILD_COMMIT=v1.36.2-katl.8",
+	}
+	environment := append(append([]string(nil), runtimeEnvironment...),
+		"KATL_VERSION=v1.36.2-katl.8",
 		"KATL_KUBERNETES_MINOR=v1.36",
 		"KATL_KUBERNETES_PAYLOAD_VERSION=v1.36.2",
 		"KATL_KUBERNETES_ARTIFACT_REVISION=8",
@@ -276,9 +279,9 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 		"KATL_KUBERNETES_KUBELET_VERSION=0:1.36.2-150500.2.1",
 		"KATL_KUBERNETES_KUBECTL_VERSION=0:1.36.2-150500.2.1",
 		"KATL_KUBERNETES_CRITOOLS_VERSION=0:1.36.0-150500.1.1",
-	}
+	)
 	want := []call{
-		{name: filepath.Join(repo, "scripts", "mkosi"), args: []string{"build-runtime"}, env: environment},
+		{name: filepath.Join(repo, "scripts", "mkosi"), args: []string{"build-runtime"}, env: runtimeEnvironment},
 		{name: filepath.Join(repo, "scripts", "build-kubernetes-sysext"), args: []string{"--output", "katl-kubernetes-v1.36.2"}, env: environment},
 		{name: filepath.Join(repo, "scripts", "check-kubernetes-sysext"), args: []string{image}, env: environment},
 	}
