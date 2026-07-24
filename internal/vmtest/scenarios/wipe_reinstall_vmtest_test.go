@@ -43,6 +43,19 @@ func TestInstalledRuntimeTwoNodeWipeNodeBootstrapSmoke(t *testing.T) {
 	_ = vmtest.RequireWorld(t)
 }
 
+func TestInstalledRuntimeTwoNodeWipePreBootstrapControlPlaneSmoke(t *testing.T) {
+	if run, ok := wipePreBootstrapControlPlaneWorldSmokeRun(t); ok {
+		runWipePreBootstrapControlPlaneSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run pre-bootstrap control-plane wipe smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
 func TestInstalledRuntimeTwoNodeWipeReinstallBootstrapSmoke(t *testing.T) {
 	if run, ok := wipeReinstallWorldSmokeRun(t); ok {
 		runWipeReinstallBootstrapSmoke(t, run)
@@ -64,6 +77,11 @@ func wipeClusterWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
 func wipeNodeWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
 	t.Helper()
 	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-node-bootstrap")
+}
+
+func wipePreBootstrapControlPlaneWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+	t.Helper()
+	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-pre-bootstrap-control-plane")
 }
 
 func wipeReinstallWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
@@ -328,6 +346,161 @@ func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatal(err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmokeRun) {
+	t.Helper()
+	runner, scenario, result, inputs := run.Runner, run.Scenario, run.Result, run.Inputs
+	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{Libvirt: true, OVMF: true, KVM: run.Options.KVM})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	liveNodes := []vmtest.RunningInstalledRuntimeNode{}
+	defer func() {
+		for _, node := range liveNodes {
+			stopNode(t, node)
+		}
+	}()
+	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	liveNodes = nodes
+	cpNode, otherNode := nodeByName(nodes, "cp-1"), nodeByName(nodes, "worker-1")
+	cpAddress, err := liveNodeIPv4Address(ctx, cpNode, inputs.ControlPlaneAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAddress, err := liveNodeIPv4Address(ctx, otherNode, inputs.WorkerAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryPath := filepath.Join(result.RunDir, "pre-bootstrap-control-plane-wipe", "inventory.yaml")
+	if err := writePreBootstrapControlPlaneWipeInventory(inventoryPath, inputs.KubernetesVersion, cpAddress, otherAddress); err != nil {
+		t.Fatal(err)
+	}
+	oldMachineID, err := readNodeFileWithRetry(ctx, cpNode, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpOverlay, err := bootOverlayPath(cpNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runPreBootstrapControlPlaneWipeHandoff(t, ctx, result, inventoryPath, cpNode); err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	stopNode(t, cpNode)
+	liveNodes = []vmtest.RunningInstalledRuntimeNode{otherNode}
+
+	reinstallRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "pre-bootstrap-control-plane-reinstall-vm-runs"), Keep: vmtest.KeepAlways, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
+	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "cp-1", cpOverlay, inputs.ControlPlaneInstall, inputs.ControlPlaneMAC)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	cpDisk, err := firstInstallResultDisk(reinstallResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "post-control-plane-reinstall-vm-runs"), Keep: vmtest.KeepFailed, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
+	postResult, err := postRunner.Plan(vmtest.Scenario{Name: "post-control-plane-reinstall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postResult.Started = time.Now().UTC()
+	reinstalledCP, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "cp-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: cpDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.ControlPlaneMetadata, VM: operationBackedVMConfigForRun(run, inputs.ControlPlaneMAC, 0)}}, vmtest.VMRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveNodes = append(liveNodes, reinstalledCP)
+	if _, err := collectWipeReinstallGeneration0Evidence(ctx, postResult, []vmtest.RunningInstalledRuntimeNode{reinstalledCP}); err != nil {
+		t.Fatal(err)
+	}
+	newMachineID, err := readNodeFileWithRetry(ctx, reinstalledCP, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(newMachineID)) == strings.TrimSpace(string(oldMachineID)) {
+		t.Fatal("control-plane reinstall preserved the old node identity")
+	}
+	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func writePreBootstrapControlPlaneWipeInventory(path, kubernetesVersion, cpAddress, otherAddress string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data := `controlPlaneEndpoint: ` + cpAddress + `:6443
+kubernetesVersion: ` + kubernetesVersion + `
+nodes:
+- name: cp-1
+  address: ` + cpAddress + `
+  systemRole: control-plane
+  access:
+    method: agent
+  kubeadmConfig:
+    ref: control-plane
+    path: /etc/katl/kubeadm/control-plane/config.yaml
+    intent: control-plane
+  kubernetesVersion: ` + kubernetesVersion + `
+- name: cp-2
+  address: ` + otherAddress + `
+  systemRole: control-plane
+  access:
+    method: agent
+  kubeadmConfig:
+    ref: control-plane
+    path: /etc/katl/kubeadm/control-plane/config.yaml
+    intent: control-plane
+  kubernetesVersion: ` + kubernetesVersion + `
+`
+	return os.WriteFile(path, []byte(data), 0o644)
+}
+
+func runPreBootstrapControlPlaneWipeHandoff(t *testing.T, ctx context.Context, result vmtest.Result, inventoryPath string, cpNode vmtest.RunningInstalledRuntimeNode) error {
+	t.Helper()
+	dir := filepath.Join(result.RunDir, "pre-bootstrap-control-plane-wipe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var stdout, stderr bytes.Buffer
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "cp-1", "--inventory", inventoryPath, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
+	if err != nil {
+		return fmt.Errorf("katlctl pre-bootstrap control-plane wipe failed: %w: %s", err, stderr.String())
+	}
+	var report struct {
+		Kind              string `json:"kind"`
+		KubernetesCleanup string `json:"kubernetesCleanup"`
+		NextAction        string `json:"nextAction"`
+		Targets           []struct {
+			Name       string `json:"name"`
+			SystemRole string `json:"systemRole"`
+		} `json:"targets"`
+		Nodes []struct {
+			Node     string `json:"node"`
+			Terminal bool   `json:"terminal"`
+			Result   string `json:"result"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		return err
+	}
+	if report.Kind != "WipeNodeReport" || report.KubernetesCleanup != "not-needed" ||
+		len(report.Targets) != 1 || report.Targets[0].Name != "cp-1" || report.Targets[0].SystemRole != "control-plane" ||
+		len(report.Nodes) != 1 || report.Nodes[0].Node != "cp-1" ||
+		!report.Nodes[0].Terminal || report.Nodes[0].Result != operation.ResultSucceeded ||
+		!strings.Contains(report.NextAction, "installer media or PXE") {
+		return fmt.Errorf("pre-bootstrap control-plane wipe report = %#v", report)
+	}
+	if err := cpNode.WaitForPoweroff(ctx); err != nil {
+		return err
+	}
+	_, err = writeWipePoweroffEvidence(filepath.Join(dir, "evidence", "cp-1", "poweroff.json"), cpNode)
+	return err
 }
 
 func runReinstalledWorkerJoin(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode) error {
