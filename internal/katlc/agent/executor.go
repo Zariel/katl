@@ -915,9 +915,23 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 	if len(argv) > 1 {
 		configPath = strings.TrimSpace(argv[1])
 	}
-	commands := [][]string{
-		{"/usr/bin/systemctl", "daemon-reload"},
+	commands := bootstrapReadinessCommands(candidate, configPath)
+	var stdout, stderr bytes.Buffer
+	for _, argv := range commands {
+		result := runChildProcess(ctx, argv, started)
+		stdout.Write(result.Stdout)
+		stderr.Write(result.Stderr)
+		if result.Err != nil || result.ExitStatus != 0 {
+			result.Stdout = stdout.Bytes()
+			result.Stderr = stderr.Bytes()
+			return result
+		}
 	}
+	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+}
+
+func bootstrapReadinessCommands(candidate, configPath string) [][]string {
+	var commands [][]string
 	if candidate != "" {
 		commands = append(commands,
 			[]string{"/usr/lib/katl/runtime/katl-generation-activate", "--root=/", "--generation", candidate},
@@ -931,6 +945,7 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 		)
 	}
 	commands = append(commands,
+		[]string{"/usr/bin/systemctl", "daemon-reload"},
 		[]string{"/usr/bin/test", "-x", "/usr/bin/kubelet"},
 		[]string{"/usr/bin/systemctl", "start", "etc-kubernetes.mount"},
 		[]string{"/usr/bin/systemctl", "start", "containerd.service"},
@@ -944,18 +959,7 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 	if configPath != "" {
 		commands = append(commands, []string{"/usr/bin/test", "-s", configPath})
 	}
-	var stdout, stderr bytes.Buffer
-	for _, argv := range commands {
-		result := runChildProcess(ctx, argv, started)
-		stdout.Write(result.Stdout)
-		stderr.Write(result.Stderr)
-		if result.Err != nil || result.ExitStatus != 0 {
-			result.Stdout = stdout.Bytes()
-			result.Stderr = stderr.Bytes()
-			return result
-		}
-	}
-	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+	return commands
 }
 
 func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started func(int)) ToolResult {

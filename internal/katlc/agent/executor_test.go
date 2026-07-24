@@ -511,6 +511,19 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	}
 }
 
+func TestBootstrapReadinessReloadsSystemdAfterExtensionRefresh(t *testing.T) {
+	commands := bootstrapReadinessCommands("candidate-1", "/etc/katl/kubeadm/default/config.yaml")
+	assertCommandOrder(t, commands,
+		"katl-generation-activate --root=/ --generation candidate-1",
+		"systemd-sysext refresh",
+		"systemd-confext refresh",
+		"systemctl daemon-reload",
+		"test -x /usr/bin/kubelet",
+		"systemctl start katl-kubeadm-ready.target",
+		"test -s /etc/katl/kubeadm/default/config.yaml",
+	)
+}
+
 func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
