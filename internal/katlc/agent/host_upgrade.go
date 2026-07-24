@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -33,9 +35,32 @@ func validateHostUpgradeRequest(kind string, req *agentapi.HostUpgradeOperationR
 	return operation.ValidateHostUpgrade(hostUpgradeFromProto(req))
 }
 
+func (s *Server) validateHostUpgradePlan(req *agentapi.HostUpgradeOperationRequest) error {
+	request := hostUpgradeFromProto(req)
+	if err := s.validateCandidateGenerationAvailable(request.CandidateGenerationID); err != nil {
+		return err
+	}
+	currentID, err := currentGenerationID(s.Root)
+	if err != nil {
+		return fmt.Errorf("read current generation: %w", err)
+	}
+	previousSpec, previousStatus, err := generation.ReadGeneration(s.Root, currentID)
+	if err != nil {
+		return fmt.Errorf("read current generation %q: %w", currentID, err)
+	}
+	kubernetesState, err := s.kubernetesNodeState()
+	if err != nil {
+		return fmt.Errorf("inspect Kubernetes node state: %w", err)
+	}
+	if err := katlosimage.ValidateHostUpgradeSource(previousSpec, previousStatus, kubernetesState.bootstrapped); err != nil {
+		return fmt.Errorf("%w; inspect the current generation, then recover it or wipe and reinstall this node before retrying the upgrade", err)
+	}
+	return nil
+}
+
 func (s *Server) acceptHostUpgradeOperation(req *agentapi.SubmitOperationRequest, digest, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	request := hostUpgradeFromProto(req.GetHostUpgrade())
-	if err := s.validateCandidateGenerationAvailable(request.CandidateGenerationID); err != nil {
+	if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
 		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	record := operation.OperationRecord{

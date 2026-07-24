@@ -503,6 +503,7 @@ func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 
 func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -541,6 +542,91 @@ func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeDryRunRejectsUnknownSourceWithoutRecord(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	spec, generationStatus, err := generation.ReadGeneration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generationStatus.HealthState = generation.HealthStateUnhealthy
+	if err := generation.WriteGenerationStatus(server.Root, spec, generationStatus); err != nil {
+		t.Fatal(err)
+	}
+	req := hostUpgradeSubmitRequest("req-host-upgrade-dry-run")
+	req.DryRun = true
+
+	_, err = server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition ||
+		!strings.Contains(err.Error(), "not known-good") ||
+		!strings.Contains(err.Error(), "wipe and reinstall") {
+		t.Fatalf("SubmitOperation() error = %v, want actionable source-generation refusal", err)
+	}
+	ids, err := server.Store.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("operation ids = %v, want no record for dry-run refusal", ids)
+	}
+}
+
+func TestHostUpgradeAcceptanceRejectsBootstrappedSourceWithoutKubernetesSysext(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	adminConfig := filepath.Join(server.Root, "etc/kubernetes/admin.conf")
+	if err := os.MkdirAll(filepath.Dir(adminConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adminConfig, []byte("bootstrapped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	_, err := server.SubmitOperation(context.Background(), hostUpgradeSubmitRequest("req-host-upgrade-missing-sysext"))
+	if status.Code(err) != codes.FailedPrecondition ||
+		!strings.Contains(err.Error(), "no Kubernetes sysext") ||
+		!strings.Contains(err.Error(), "wipe and reinstall") {
+		t.Fatalf("SubmitOperation() error = %v, want actionable payload refusal", err)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want no operation dispatch", dispatched.Load())
+	}
+	ids, err := server.Store.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("operation ids = %v, want no record for acceptance refusal", ids)
+	}
+}
+
+func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	req := hostUpgradeSubmitRequest("req-host-upgrade-pre-bootstrap")
+	req.DryRun = true
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.GetOperationId() != "" || accepted.GetInitialStatus().GetPhase() != "dry-run" {
+		t.Fatalf("accepted = %+v, want non-persistent dry-run", accepted)
+	}
+	ids, err := server.Store.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("operation ids = %v, want none", ids)
+	}
+}
+
 func TestSubmitOperationRejectsUnsafeHostUpgradeReference(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
@@ -559,6 +645,42 @@ func TestSubmitOperationRejectsUnsafeHostUpgradeReference(t *testing.T) {
 	_, err := server.SubmitOperation(context.Background(), req)
 	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "without credentials, query, or fragment") {
 		t.Fatalf("SubmitOperation() error = %v, want unsafe URL rejection", err)
+	}
+}
+
+func hostUpgradeSubmitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
+	return &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: clientRequestID,
+		OperationKind:   OperationKindHostUpgrade,
+		Actor:           "test-actor",
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageUrl:              "https://updates.example.test/katlos-upgrade.squashfs",
+			CandidateGenerationId: "gen-upgrade-1",
+		},
+	}
+}
+
+func writeKnownGoodHostUpgradeSource(t *testing.T, root string) {
+	t.Helper()
+	writeCleanGenerationZeroState(t, root)
+	spec, _, err := generation.ReadGeneration(root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generationStatus, err := generation.NewGenerationStatus(
+		spec,
+		generation.CommitStateCommitted,
+		generation.BootStateGood,
+		generation.HealthStateHealthy,
+		time.Date(2026, 6, 15, 11, 5, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGenerationStatus(root, spec, generationStatus); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -42,6 +42,66 @@ func TestCleanupManagedHostUpgradeArtifactRemovesOnlyUploadedImage(t *testing.T)
 	}
 }
 
+func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mutated    bool
+		wantResult string
+		wantRepair bool
+	}{
+		{name: "pre-mutation", wantResult: "failed"},
+		{name: "post-mutation", mutated: true, wantResult: operation.ResultFailedNeedsRepair, wantRepair: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 7, 24, 6, 0, 0, 0, time.UTC)
+			record, err := store.Create(operation.OperationRecord{
+				OperationID:             "host-upgrade-failure",
+				OperationKind:           OperationKindHostUpgrade,
+				Scope:                   "host-generation",
+				RequestDigest:           strings.Repeat("d", 64),
+				Phase:                   "accepted",
+				CandidateGenerationID:   "gen1",
+				ActivationMode:          operation.ActivationModeNextBoot,
+				ActivationState:         operation.ActivationStatePending,
+				GenerationCommitState:   operation.GenerationCommitCandidate,
+				ExternalMutationStarted: test.mutated,
+				HostUpgradeRequest: &operation.HostUpgrade{
+					ImageURL:              "https://updates.example.test/katlos-upgrade.squashfs",
+					CandidateGenerationID: "gen1",
+				},
+			}, "accepted", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor := NewExecutor(root, store, "agent-test")
+			executor.Now = func() time.Time { return now.Add(time.Minute) }
+			cause := errors.New("source generation prerequisite failed")
+			if err := executor.failHostUpgrade(record, "verify-katlos-image", cause); !errors.Is(err, cause) {
+				t.Fatalf("failHostUpgrade() error = %v, want cause", err)
+			}
+			failed, err := store.Read(record.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !failed.Terminal || failed.Result != test.wantResult || failed.RecoveryRequired != test.wantRepair {
+				t.Fatalf("failed record = %+v, want result %q repair=%t", failed, test.wantResult, test.wantRepair)
+			}
+			if test.mutated {
+				if failed.GenerationCommitState != operation.GenerationCommitCandidate || failed.ActivationState != operation.ActivationStateFailed {
+					t.Fatalf("post-mutation lifecycle = %+v", failed)
+				}
+			} else if failed.GenerationCommitState != operation.GenerationCommitAbandoned || !strings.Contains(failed.NextAction, "pre-mutation") {
+				t.Fatalf("pre-mutation lifecycle = %+v", failed)
+			}
+		})
+	}
+}
+
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"etc", "efi/EFI/Linux", "dev/disk/by-partlabel"} {
