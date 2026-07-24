@@ -45,6 +45,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 			return ToolResult{Stdout: []byte("v1.36.2\n")}
 		case strings.Contains(joined, "get endpoints kubernetes"):
 			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+		case joined == "systemctl show --property=Environment --value kubelet.service":
+			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
 		case strings.Contains(joined, "kubelet --version"):
 			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
 		default:
@@ -79,6 +81,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		endpointAdvertiserCommand+" withdraw",
 		"--server https://10.0.0.2:6443 --request-timeout=10s get --raw=/readyz",
 		"--kubeconfig /var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf --request-timeout=10s get --raw=/readyz",
+		"systemctl restart kubelet.service",
+		"systemctl show --property=Environment --value kubelet.service",
 		"/usr/bin/killall -s SIGTERM kube-apiserver",
 		"kubeadm upgrade apply --yes v1.36.2 --kubeconfig /var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
 		"systemctl stop kubelet.service",
@@ -88,6 +92,12 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	)
 	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary peer kubeconfig still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary kubelet peer config still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary kubelet API handoff still exists: %v", err)
 	}
 	spec, status, err := generation.ReadGeneration(root, "gen1")
 	if err != nil {
@@ -207,6 +217,9 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 				if strings.Contains(joined, "get endpoints kubernetes") {
 					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
 				}
+				if joined == "systemctl show --property=Environment --value kubelet.service" {
+					return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
+				}
 				if strings.Contains(joined, "/usr/bin/killall") {
 					return ToolResult{ExitStatus: 1, Stderr: []byte("no process found")}
 				}
@@ -222,6 +235,9 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 				}
 				if strings.Contains(strings.Join(argv, " "), "get endpoints kubernetes") {
 					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+				}
+				if strings.Join(argv, " ") == "systemctl show --property=Environment --value kubelet.service" {
+					return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
 				}
 				return ToolResult{}
 			},
@@ -333,6 +349,57 @@ func TestExecutorKeepsLocalAPIServerWhenNoPeerIsReady(t *testing.T) {
 	}
 }
 
+func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
+	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Async = false
+	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error { return nil }
+	var commands [][]string
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		commands = append(commands, append([]string(nil), argv...))
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+		case joined == "systemctl show --property=Environment --value kubelet.service":
+			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
+		case strings.Contains(joined, "kubeadm upgrade apply"):
+			return ToolResult{Err: errors.New("health check failed"), ExitStatus: 1}
+		default:
+			return ToolResult{}
+		}
+	}
+	if err := executor.Execute(context.Background(), record); err == nil || !strings.Contains(err.Error(), "health check failed") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	failed, err := store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair {
+		t.Fatalf("failed operation = %+v", failed)
+	}
+	assertCommandOrder(t, commands,
+		"systemctl restart kubelet.service",
+		"/usr/bin/killall -s SIGTERM kube-apiserver",
+		"kubeadm upgrade apply --yes v1.36.2",
+		"systemctl daemon-reload",
+		"systemctl restart kubelet.service",
+	)
+	for _, path := range []string{
+		"var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
+		"var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf",
+		"run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf",
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("temporary handoff path %s still exists: %v", path, err)
+		}
+	}
+}
+
 func TestWriteKubeadmPeerConfigPreservesCredentials(t *testing.T) {
 	root := t.TempDir()
 	source := "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://172.31.250.1:6443\ncontexts:\n  - name: admin\n    context:\n      cluster: kubernetes\n      user: admin\ncurrent-context: admin\nusers:\n  - name: admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n"
@@ -370,6 +437,28 @@ func TestWriteKubeadmPeerConfigPreservesCredentials(t *testing.T) {
 	data, err = os.ReadFile(hostPath)
 	if err != nil || !strings.Contains(string(data), "server: https://10.1.1.112:6443") {
 		t.Fatalf("replaced peer kubeconfig = %q, %v", data, err)
+	}
+}
+
+func TestWriteKubeletPeerConfigPreservesCredentials(t *testing.T) {
+	root := t.TempDir()
+	source := "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.1.1.110:6443\ncontexts:\n  - name: system:node:cp-1@kubernetes\n    context:\n      cluster: kubernetes\n      user: system:node:cp-1\ncurrent-context: system:node:cp-1@kubernetes\nusers:\n  - name: system:node:cp-1\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n"
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/kubelet.conf"), source)
+	if err := os.MkdirAll(filepath.Join(root, "var/lib/katl/operations/upgrade-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logicalPath, err := writeKubeletPeerConfig(root, "upgrade-1", "https://10.1.1.111:6443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(rootedRuntimePath(root, logicalPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"server: https://10.1.1.111:6443", "certificate-authority-data: Y2E=", "client-certificate-data: Y2VydA==", "client-key-data: a2V5"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("peer kubelet config missing %q:\n%s", want, data)
+		}
 	}
 }
 
@@ -633,6 +722,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/admin.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.100:6443\ncontexts:\n  - name: kubernetes-admin@kubernetes\n    context:\n      cluster: kubernetes\n      user: kubernetes-admin\ncurrent-context: kubernetes-admin@kubernetes\nusers:\n  - name: kubernetes-admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/kubelet.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.1:6443\ncontexts:\n  - name: system:node:cp-1@kubernetes\n    context:\n      cluster: kubernetes\n      user: system:node:cp-1\ncurrent-context: system:node:cp-1@kubernetes\nusers:\n  - name: system:node:cp-1\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=10.0.0.1\n")
 	target := []byte("target Kubernetes sysext")
 	targetDigest := sha256.Sum256(target)
