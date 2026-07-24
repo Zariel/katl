@@ -16,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	installmanifest "github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -1031,21 +1032,9 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	} else if err != nil {
 		return "", "", err
 	}
-	kubernetesVersion := strings.TrimSpace(requestedKubernetesVersion)
-	if kubernetesVersion == "" {
-		kubernetesVersion = metadata.KubernetesPayloadVersion()
-	}
-	if kubernetesVersion == "" {
-		if artifact, ok := index.artifact("kubernetes-sysext"); ok {
-			var err error
-			kubernetesVersion, err = readKubernetesSysextPayloadVersion(artifact)
-			if err != nil {
-				return "", "", err
-			}
-		}
-	}
-	if kubernetesVersion == "" {
-		kubernetesVersion = "v1.36.1"
+	kubernetesVersion, err := resolveFirstInstallWorldKubernetesVersion(requestedKubernetesVersion, metadata, index)
+	if err != nil {
+		return "", "", err
 	}
 
 	nodes := []map[string]any{}
@@ -1275,6 +1264,40 @@ func (metadata katlosImageMetadata) KubernetesPayloadVersion() string {
 		}
 	}
 	return ""
+}
+
+func resolveFirstInstallWorldKubernetesVersion(requested string, metadata katlosImageMetadata, index mkosiArtifactIndex) (string, error) {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested, nil
+	}
+	inferred := metadata.KubernetesPayloadVersion()
+	if inferred == "" {
+		if artifact, ok := index.artifact("kubernetes-sysext"); ok {
+			var err error
+			inferred, err = readKubernetesSysextPayloadVersion(artifact)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	if inferred != "" {
+		if _, err := kubernetescompat.Resolve(kubernetescompat.Request{
+			KubernetesVersion: inferred,
+			Architecture:      metadata.Architecture,
+			RuntimeInterface:  metadata.RuntimeInterface,
+		}); err == nil {
+			return inferred, nil
+		}
+	}
+	fallback := configbundle.DefaultKubernetesVersion
+	if _, err := kubernetescompat.Resolve(kubernetescompat.Request{
+		KubernetesVersion: fallback,
+		Architecture:      metadata.Architecture,
+		RuntimeInterface:  metadata.RuntimeInterface,
+	}); err != nil {
+		return "", fmt.Errorf("resolve default VM fixture Kubernetes version: %w", err)
+	}
+	return fallback, nil
 }
 
 func readKubernetesSysextPayloadVersion(artifact mkosiArtifact) (string, error) {
