@@ -424,6 +424,11 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 			}
 			return operation.OperationRecord{}, accepted, nil
 		}
+		if req.GetHostUpgrade() != nil {
+			if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
+				return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "host upgrade preflight: %v", err)
+			}
+		}
 		candidateID := requestCandidateGenerationID(req)
 		return operation.OperationRecord{}, &agentapi.OperationAccepted{
 			OperationKind: req.OperationKind,

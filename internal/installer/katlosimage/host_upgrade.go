@@ -47,14 +47,8 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if p.Index.ImageRole != RoleUpgrade {
 		return HostUpgradePlan{}, fmt.Errorf("KatlOS image role must be %s", RoleUpgrade)
 	}
-	if err := generation.ValidateGenerationSpec(request.PreviousSpec); err != nil {
-		return HostUpgradePlan{}, fmt.Errorf("previous generation spec is invalid: %w", err)
-	}
-	if err := generation.ValidateGenerationStatus(request.PreviousSpec, request.PreviousStatus); err != nil {
-		return HostUpgradePlan{}, fmt.Errorf("previous generation status is invalid: %w", err)
-	}
-	if !generation.IsKnownGood(request.PreviousStatus) {
-		return HostUpgradePlan{}, fmt.Errorf("previous generation %q is not known-good", request.PreviousSpec.GenerationID)
+	if err := ValidateHostUpgradeSource(request.PreviousSpec, request.PreviousStatus, request.Bootstrapped); err != nil {
+		return HostUpgradePlan{}, err
 	}
 	generationID := strings.TrimSpace(request.GenerationID)
 	if generationID == "" {
@@ -155,6 +149,24 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		BootSelection:   selection,
 		PreservedAssets: append(sysextAssets, confextAssets...),
 	}, nil
+}
+
+func ValidateHostUpgradeSource(previousSpec generation.GenerationSpec, previousStatus generation.GenerationStatus, bootstrapped bool) error {
+	if err := generation.ValidateGenerationSpec(previousSpec); err != nil {
+		return fmt.Errorf("previous generation spec is invalid: %w", err)
+	}
+	if err := generation.ValidateGenerationStatus(previousSpec, previousStatus); err != nil {
+		return fmt.Errorf("previous generation status is invalid: %w", err)
+	}
+	if !generation.IsKnownGood(previousStatus) {
+		return fmt.Errorf("previous generation %q is not known-good", previousSpec.GenerationID)
+	}
+	if bootstrapped {
+		if _, ok := selectedKubernetes(previousSpec.Sysexts); !ok {
+			return fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
+		}
+	}
+	return nil
 }
 
 func mergeKernelCommandLine(previous, required []string) []string {

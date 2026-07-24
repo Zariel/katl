@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -385,8 +386,31 @@ func (e *Executor) toolOutput(ctx context.Context, name string, args ...string) 
 }
 
 func (e *Executor) failHostUpgrade(record operation.OperationRecord, phase string, cause error) error {
-	_, err := e.failRecord(record.OperationID, "host-upgrade-"+phase+"-failed", phase, "host upgrade failed before candidate activation", cause)
-	return errors.Join(cause, err)
+	now := e.clock()
+	latest, readErr := e.Store.Read(record.OperationID)
+	mutated := record.ExternalMutationStarted
+	if readErr == nil {
+		mutated = latest.ExternalMutationStarted
+	}
+	_, updateErr := e.Store.Update(record.OperationID, "host-upgrade-"+phase+"-failed", phase, func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = phase
+		current.Terminal = true
+		current.CompletedAt = &now
+		current.UpdatedAt = now
+		current.FailureReason = inventory.Redact(cause.Error())
+		current.Result = "failed"
+		current.GenerationCommitState = operation.GenerationCommitAbandoned
+		current.NextAction = "fix the pre-mutation failure and submit a new explicit host upgrade"
+		if mutated {
+			current.RecoveryRequired = true
+			current.Result = operation.ResultFailedNeedsRepair
+			current.GenerationCommitState = operation.GenerationCommitCandidate
+			current.ActivationState = operation.ActivationStateFailed
+			current.NextAction = "inspect host-upgrade diagnostics and repair the staged generation before retrying"
+		}
+		return current, nil
+	})
+	return errors.Join(cause, readErr, updateErr)
 }
 
 func inactiveRoot(current string) (string, error) {
