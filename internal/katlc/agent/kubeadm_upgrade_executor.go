@@ -143,7 +143,8 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 
 	endpointPaused := false
-	kubeadmPeerConfig := ""
+	apiDrain := kubeAPIServerDrain{}
+	kubeletAPIHandoffActive := false
 	if request.UpgradeRole != "worker" {
 		endpointPaused, err = pauseManagedEndpoint(ctx, e.Root, e.toolRunner())
 		if err != nil {
@@ -156,28 +157,34 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 				}
 			}()
 		}
-		kubeadmPeerConfig, err = e.drainKubeAPIServerConnections(ctx, record)
+		apiDrain, err = e.drainKubeAPIServerConnections(ctx, record)
 		if err != nil {
 			return err
 		}
-		if kubeadmPeerConfig != "" {
-			defer os.Remove(rootedRuntimePath(e.Root, kubeadmPeerConfig))
+		defer cleanupKubeAPIServerDrain(e.Root, apiDrain)
+		if apiDrain.KubeletDropIn != "" {
+			kubeletAPIHandoffActive = true
+			defer func() {
+				if kubeletAPIHandoffActive {
+					_ = e.restoreKubeletAPIHandoff(context.Background(), apiDrain)
+				}
+			}()
 		}
 	}
 
 	retainToolView = true
 	if request.UpgradeRole == "apply" {
 		argv := []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}
-		if kubeadmPeerConfig != "" {
-			argv = append(argv, "--kubeconfig", kubeadmPeerConfig)
+		if apiDrain.KubeadmConfig != "" {
+			argv = append(argv, "--kubeconfig", apiDrain.KubeadmConfig)
 		}
 		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", argv, true); err != nil {
 			return err
 		}
 	} else {
 		argv := []string{targetKubeadm, "upgrade", "node"}
-		if kubeadmPeerConfig != "" {
-			argv = append(argv, "--kubeconfig", kubeadmPeerConfig)
+		if apiDrain.KubeadmConfig != "" {
+			argv = append(argv, "--kubeconfig", apiDrain.KubeadmConfig)
 		}
 		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-node-running", argv, true); err != nil {
 			return err
@@ -199,9 +206,15 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if err := os.WriteFile(rootedRuntimePath(e.Root, gatePath), []byte(record.OperationID+"\n"), 0o600); err != nil {
 		return e.failKubeadmUpgrade(record, "kubelet-stop-running", err, true)
 	}
+	if kubeletAPIHandoffActive {
+		if err := e.deactivateKubeletAPIHandoff(ctx, apiDrain); err != nil {
+			return e.failKubeadmUpgrade(record, "kubelet-stop-running", err, true)
+		}
+	}
 	if result := e.toolRunner()(ctx, []string{"systemctl", "stop", "kubelet.service"}, nil); result.Err != nil || result.ExitStatus != 0 {
 		return e.failKubeadmUpgrade(record, "kubelet-stop-running", fmt.Errorf("stop source kubelet: %s", toolFailure(result)), true)
 	}
+	kubeletAPIHandoffActive = false
 	if _, err := e.Store.Update(record.OperationID, "refresh-kubernetes-sysext", "sysext-refresh-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "sysext-refresh-running"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running")
@@ -263,6 +276,12 @@ type kubeAPIServerEndpoint struct {
 	Port    uint16
 }
 
+type kubeAPIServerDrain struct {
+	KubeadmConfig string
+	KubeletConfig string
+	KubeletDropIn string
+}
+
 func (e kubeAPIServerEndpoint) String() string {
 	return net.JoinHostPort(e.Address.String(), fmt.Sprintf("%d", e.Port))
 }
@@ -271,29 +290,29 @@ func (e kubeAPIServerEndpoint) URL() string {
 	return "https://" + e.String()
 }
 
-func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record operation.OperationRecord) (string, error) {
+func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record operation.OperationRecord) (kubeAPIServerDrain, error) {
 	if _, err := e.Store.Update(record.OperationID, "apiserver-drain-start", "apiserver-drain-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "apiserver-drain-running"
 		current.UpdatedAt = e.clock()
 		current.NextAction = "inspect API endpoints before restarting stacked etcd"
 		return current, nil
 	}); err != nil {
-		return "", err
+		return kubeAPIServerDrain{}, err
 	}
 	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "default", "get", "endpoints", "kubernetes", "-o", "json"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(result)), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(result)), false)
 	}
 	endpoints, err := parseKubeAPIServerEndpoints(result.Stdout)
 	if err != nil {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %w", err), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %w", err), false)
 	}
 	if len(endpoints) < 2 {
-		return "", e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint", "")
+		return kubeAPIServerDrain{}, e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint", "")
 	}
 	localAddress, err := localKubeAPIServerAddress(e.Root)
 	if err != nil {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("identify local Kubernetes API endpoint: %w", err), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("identify local Kubernetes API endpoint: %w", err), false)
 	}
 	var peer *kubeAPIServerEndpoint
 	for i := range endpoints {
@@ -307,38 +326,51 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 		}
 	}
 	if peer == nil {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("no alternate Kubernetes API endpoint passed authenticated readiness; keep the local API server available and retry after restoring another control plane"), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("no alternate Kubernetes API endpoint passed authenticated readiness; keep the local API server available and retry after restoring another control plane"), false)
 	}
 	kubeconfigPath, err := writeKubeadmPeerConfig(e.Root, record.OperationID, peer.URL())
 	if err != nil {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("prepare alternate Kubernetes API access: %w", err), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("prepare alternate Kubernetes API access: %w", err), false)
 	}
-	keepKubeconfig := false
+	drain := kubeAPIServerDrain{KubeadmConfig: kubeconfigPath}
+	keepConfigs := false
 	defer func() {
-		if !keepKubeconfig {
-			_ = os.Remove(rootedRuntimePath(e.Root, kubeconfigPath))
+		if !keepConfigs {
+			_ = cleanupKubeAPIServerDrain(e.Root, drain)
 		}
 	}()
 	probe := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", kubeconfigPath, "--request-timeout=10s", "get", "--raw=/readyz"}, nil)
 	if probe.Err != nil || probe.ExitStatus != 0 {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("verify alternate Kubernetes API access: %s", toolFailure(probe)), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("verify alternate Kubernetes API access: %s", toolFailure(probe)), false)
+	}
+	drain.KubeletConfig, err = writeKubeletPeerConfig(e.Root, record.OperationID, peer.URL())
+	if err != nil {
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("prepare alternate kubelet API access: %w", err), false)
+	}
+	drain.KubeletDropIn = "/run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf"
+	if err := e.activateKubeletAPIHandoff(ctx, drain); err != nil {
+		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(err, restoreErr), false)
 	}
 	result = e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), false)
+		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), restoreErr), false)
 	}
 	wait := e.WaitBeforeKubeadm
 	if wait == nil {
 		wait = waitForContext
 	}
 	if err := wait(ctx, kubeAPIServerDrainDelay); err != nil {
-		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
+		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), restoreErr), false)
 	}
 	if err := e.completeKubeAPIServerDrain(record, "run kubeadm through alternate API endpoint "+peer.String()+" after local connections have closed", peer.String()); err != nil {
-		return "", err
+		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
+		return kubeAPIServerDrain{}, errors.Join(err, restoreErr)
 	}
-	keepKubeconfig = true
-	return kubeconfigPath, nil
+	keepConfigs = true
+	return drain, nil
 }
 
 func parseKubeAPIServerEndpoints(data []byte) ([]kubeAPIServerEndpoint, error) {
@@ -420,7 +452,15 @@ func localKubeAPIServerAddress(root string) (netip.Addr, error) {
 }
 
 func writeKubeadmPeerConfig(root, operationID, server string) (string, error) {
-	data, err := os.ReadFile(rootedRuntimePath(root, "/etc/kubernetes/admin.conf"))
+	return writePeerKubeconfig(root, "/etc/kubernetes/admin.conf", operationID, "kubeadm-peer.conf", server)
+}
+
+func writeKubeletPeerConfig(root, operationID, server string) (string, error) {
+	return writePeerKubeconfig(root, "/etc/kubernetes/kubelet.conf", operationID, "kubelet-peer.conf", server)
+}
+
+func writePeerKubeconfig(root, sourcePath, operationID, name, server string) (string, error) {
+	data, err := os.ReadFile(rootedRuntimePath(root, sourcePath))
 	if err != nil {
 		return "", err
 	}
@@ -446,7 +486,7 @@ func writeKubeadmPeerConfig(root, operationID, server string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode alternate kubeconfig: %w", err)
 	}
-	logicalPath := filepath.ToSlash(filepath.Join("/var/lib/katl/operations", operationID, "kubeadm-peer.conf"))
+	logicalPath := filepath.ToSlash(filepath.Join("/var/lib/katl/operations", operationID, name))
 	hostPath := rootedRuntimePath(root, logicalPath)
 	if err := os.Remove(hostPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -465,6 +505,71 @@ func writeKubeadmPeerConfig(root, operationID, server string) (string, error) {
 		return "", err
 	}
 	return logicalPath, nil
+}
+
+func (e *Executor) activateKubeletAPIHandoff(ctx context.Context, drain kubeAPIServerDrain) error {
+	dropIn := rootedRuntimePath(e.Root, drain.KubeletDropIn)
+	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {
+		return fmt.Errorf("prepare alternate kubelet API handoff: %w", err)
+	}
+	content := "[Service]\nEnvironment=\"KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=" + drain.KubeletConfig + "\"\n"
+	if err := os.WriteFile(dropIn, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("prepare alternate kubelet API handoff: %w", err)
+	}
+	for _, argv := range [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "restart", "kubelet.service"},
+		{"systemctl", "is-active", "--quiet", "kubelet.service"},
+	} {
+		result := e.toolRunner()(ctx, argv, nil)
+		if result.Err != nil || result.ExitStatus != 0 {
+			return fmt.Errorf("activate alternate kubelet API access with %s: %s", strings.Join(argv, " "), toolFailure(result))
+		}
+	}
+	result := e.toolRunner()(ctx, []string{"systemctl", "show", "--property=Environment", "--value", "kubelet.service"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("inspect alternate kubelet API access: %s", toolFailure(result))
+	}
+	if !strings.Contains(string(result.Stdout), "--kubeconfig="+drain.KubeletConfig) {
+		return fmt.Errorf("alternate kubelet API access was not loaded by systemd")
+	}
+	return nil
+}
+
+func (e *Executor) deactivateKubeletAPIHandoff(ctx context.Context, drain kubeAPIServerDrain) error {
+	if err := os.Remove(rootedRuntimePath(e.Root, drain.KubeletDropIn)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove alternate kubelet API handoff: %w", err)
+	}
+	result := e.toolRunner()(ctx, []string{"systemctl", "daemon-reload"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("remove alternate kubelet API handoff: %s", toolFailure(result))
+	}
+	return nil
+}
+
+func (e *Executor) restoreKubeletAPIHandoff(ctx context.Context, drain kubeAPIServerDrain) error {
+	var restoreErr error
+	if err := e.deactivateKubeletAPIHandoff(ctx, drain); err != nil {
+		restoreErr = errors.Join(restoreErr, err)
+	}
+	result := e.toolRunner()(ctx, []string{"systemctl", "restart", "kubelet.service"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		restoreErr = errors.Join(restoreErr, fmt.Errorf("restore kubelet API access: %s", toolFailure(result)))
+	}
+	return restoreErr
+}
+
+func cleanupKubeAPIServerDrain(root string, drain kubeAPIServerDrain) error {
+	var cleanupErr error
+	for _, path := range []string{drain.KubeadmConfig, drain.KubeletConfig} {
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(rootedRuntimePath(root, path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	return cleanupErr
 }
 
 func kubeconfigMappingValue(node *yaml.Node, key string) *yaml.Node {
