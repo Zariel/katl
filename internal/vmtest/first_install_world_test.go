@@ -527,6 +527,55 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(filepath.Dir(handoff.Config.ManifestPath), "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kubernetesVersion: v1.36.1") {
 		t.Fatalf("handoff kubeadm version override = %q, err = %v", data, err)
 	}
+
+	_, err = planFirstInstallWorldRun(world, "local mkosi unavailable kubernetes", repo, NodeSpec{Name: "cp-3", Role: ControlPlane}, firstInstallWorldInput{
+		KubernetesVersion: "v1.36.2",
+		TargetDiskSize:    "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), `Kubernetes "v1.36.2" is not available`) {
+		t.Fatalf("explicit unavailable Kubernetes version error = %v", err)
+	}
+}
+
+func TestResolveFirstInstallWorldKubernetesVersion(t *testing.T) {
+	metadata := katlosImageMetadata{
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+	}
+	localMetadata := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-kubernetes.raw.json"), `{"payloadVersion":"v1.36.2"}`)
+	index := mkosiArtifactIndex{Artifacts: []mkosiArtifact{{
+		Kind:         "kubernetes-sysext",
+		MetadataPath: localMetadata,
+	}}}
+
+	got, err := resolveFirstInstallWorldKubernetesVersion("", metadata, index)
+	if err != nil {
+		t.Fatalf("resolveFirstInstallWorldKubernetesVersion() error = %v", err)
+	}
+	if got != configbundle.DefaultKubernetesVersion {
+		t.Fatalf("implicit local Kubernetes version = %q, want supported default %q", got, configbundle.DefaultKubernetesVersion)
+	}
+
+	got, err = resolveFirstInstallWorldKubernetesVersion("v1.36.2", metadata, index)
+	if err != nil {
+		t.Fatalf("resolveFirstInstallWorldKubernetesVersion(explicit) error = %v", err)
+	}
+	if got != "v1.36.2" {
+		t.Fatalf("explicit Kubernetes version = %q, want v1.36.2", got)
+	}
+
+	metadata.Components = []struct {
+		Name           string `json:"name"`
+		Role           string `json:"role"`
+		PayloadVersion string `json:"payloadVersion"`
+	}{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}
+	got, err = resolveFirstInstallWorldKubernetesVersion("", metadata, mkosiArtifactIndex{})
+	if err != nil {
+		t.Fatalf("resolveFirstInstallWorldKubernetesVersion(compatible) error = %v", err)
+	}
+	if got != "v1.36.0" {
+		t.Fatalf("compatible local Kubernetes version = %q, want v1.36.0", got)
+	}
 }
 
 func TestPlanFirstInstallWorldRunSelectsNodesFromSharedConfigBundle(t *testing.T) {
