@@ -339,6 +339,12 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 			_ = cleanupKubeAPIServerDrain(e.Root, drain)
 		}
 	}()
+	kubeletHandoffActive := false
+	defer func() {
+		if kubeletHandoffActive {
+			_ = e.restoreKubeletAPIHandoff(context.Background(), drain)
+		}
+	}()
 	probe := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", kubeconfigPath, "--request-timeout=10s", "get", "--raw=/readyz"}, nil)
 	if probe.Err != nil || probe.ExitStatus != 0 {
 		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("verify alternate Kubernetes API access: %s", toolFailure(probe)), false)
@@ -347,28 +353,26 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 	if err != nil {
 		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("prepare alternate kubelet API access: %w", err), false)
 	}
-	drain.KubeletDropIn = "/run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf"
+	drain.KubeletDropIn = "/run/systemd/system/kubelet.service.d/25-katl-upgrade-api-handoff.conf"
+	kubeletHandoffActive = true
 	if err := e.activateKubeletAPIHandoff(ctx, drain); err != nil {
-		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
-		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(err, restoreErr), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", err, false)
 	}
 	result = e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
-		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), restoreErr), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), false)
 	}
 	wait := e.WaitBeforeKubeadm
 	if wait == nil {
 		wait = waitForContext
 	}
 	if err := wait(ctx, kubeAPIServerDrainDelay); err != nil {
-		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
-		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", errors.Join(fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), restoreErr), false)
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
 	}
 	if err := e.completeKubeAPIServerDrain(record, "run kubeadm through alternate API endpoint "+peer.String()+" after local connections have closed", peer.String()); err != nil {
-		restoreErr := e.restoreKubeletAPIHandoff(context.Background(), drain)
-		return kubeAPIServerDrain{}, errors.Join(err, restoreErr)
+		return kubeAPIServerDrain{}, err
 	}
+	kubeletHandoffActive = false
 	keepConfigs = true
 	return drain, nil
 }
@@ -512,7 +516,7 @@ func (e *Executor) activateKubeletAPIHandoff(ctx context.Context, drain kubeAPIS
 	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {
 		return fmt.Errorf("prepare alternate kubelet API handoff: %w", err)
 	}
-	content := "[Service]\nEnvironment=\"KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=" + drain.KubeletConfig + "\"\n"
+	content := "[Unit]\nConditionPathExists=\n\n[Service]\nEnvironment=\"KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=" + drain.KubeletConfig + "\"\n"
 	if err := os.WriteFile(dropIn, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("prepare alternate kubelet API handoff: %w", err)
 	}

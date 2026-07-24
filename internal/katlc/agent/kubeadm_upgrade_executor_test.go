@@ -96,7 +96,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary kubelet peer config still exists: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "run/systemd/system/kubelet.service.d/25-katl-upgrade-api-handoff.conf")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary kubelet API handoff still exists: %v", err)
 	}
 	spec, status, err := generation.ReadGeneration(root, "gen1")
@@ -144,6 +144,41 @@ func TestInstallKubeletGate(t *testing.T) {
 	if err != nil || string(data) != "[Unit]\nConditionPathExists="+gate+"\n" {
 		t.Fatalf("kubelet gate drop-in = %q, %v", data, err)
 	}
+}
+
+func TestActivateKubeletAPIHandoffClearsUpgradeGate(t *testing.T) {
+	root := t.TempDir()
+	executor := NewExecutor(root, operation.Store{}, "agent-test")
+	drain := kubeAPIServerDrain{
+		KubeletConfig: "/var/lib/katl/operations/upgrade-1/kubelet-peer.conf",
+		KubeletDropIn: "/run/systemd/system/kubelet.service.d/25-katl-upgrade-api-handoff.conf",
+	}
+	var commands [][]string
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		commands = append(commands, append([]string(nil), argv...))
+		if strings.Join(argv, " ") == "systemctl show --property=Environment --value kubelet.service" {
+			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--kubeconfig=" + drain.KubeletConfig + "\n")}
+		}
+		return ToolResult{}
+	}
+	if err := executor.activateKubeletAPIHandoff(context.Background(), drain); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(rootedRuntimePath(root, drain.KubeletDropIn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[Unit]\nConditionPathExists=\n", "[Service]\n", "--kubeconfig=" + drain.KubeletConfig} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("kubelet API handoff missing %q:\n%s", want, data)
+		}
+	}
+	assertCommandOrder(t, commands,
+		"systemctl daemon-reload",
+		"systemctl restart kubelet.service",
+		"systemctl is-active --quiet kubelet.service",
+		"systemctl show --property=Environment --value kubelet.service",
+	)
 }
 
 func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) {
@@ -349,6 +384,57 @@ func TestExecutorKeepsLocalAPIServerWhenNoPeerIsReady(t *testing.T) {
 	}
 }
 
+func TestExecutorRestoresKubeletAfterHandoffActivationFailure(t *testing.T) {
+	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Async = false
+	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	var commands [][]string
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		commands = append(commands, append([]string(nil), argv...))
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+		case joined == "systemctl is-active --quiet kubelet.service":
+			return ToolResult{Err: errors.New("condition failed"), ExitStatus: 3}
+		default:
+			return ToolResult{}
+		}
+	}
+	err := executor.Execute(context.Background(), record)
+	if err == nil || !strings.Contains(err.Error(), "activate alternate kubelet API access") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	failed, err := store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.Terminal || failed.RecoveryRequired || failed.Result != "failed" {
+		t.Fatalf("failed operation = %+v", failed)
+	}
+	restarts := 0
+	for _, command := range commands {
+		if strings.Join(command, " ") == "systemctl restart kubelet.service" {
+			restarts++
+		}
+	}
+	if restarts != 2 {
+		t.Fatalf("kubelet restarts = %d, want attempted handoff and source restoration", restarts)
+	}
+	for _, path := range []string{
+		"var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
+		"var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf",
+		"run/systemd/system/kubelet.service.d/25-katl-upgrade-api-handoff.conf",
+	} {
+		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("temporary handoff path %s still exists: %v", path, err)
+		}
+	}
+}
+
 func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
 	executor := NewExecutor(root, store, "agent-test")
@@ -392,7 +478,7 @@ func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
 	for _, path := range []string{
 		"var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
 		"var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf",
-		"run/systemd/system/kubelet.service.d/15-katl-upgrade-api-handoff.conf",
+		"run/systemd/system/kubelet.service.d/25-katl-upgrade-api-handoff.conf",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("temporary handoff path %s still exists: %v", path, err)
