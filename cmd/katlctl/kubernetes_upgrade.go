@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
@@ -30,6 +32,7 @@ type kubernetesUpgradeOptions struct {
 	contextName   string
 	inventoryPath string
 	bundle        string
+	artifact      string
 	cordon        bool
 	kubeconfig    string
 	plan          bool
@@ -52,20 +55,30 @@ type kubernetesUpgradeReport struct {
 	Cluster       string                        `json:"cluster"`
 	SourceVersion string                        `json:"sourceVersion"`
 	TargetVersion string                        `json:"targetVersion"`
-	Bundle        string                        `json:"bundle"`
+	Bundle        string                        `json:"bundle,omitempty"`
+	Artifact      string                        `json:"artifact,omitempty"`
 	Plan          bool                          `json:"plan"`
 	Nodes         []kubernetesUpgradeNodeReport `json:"nodes"`
 	NextAction    string                        `json:"nextAction,omitempty"`
 }
 
+type kubernetesUpgradeArtifact struct {
+	Path           string
+	PayloadVersion string
+	Architecture   string
+	SHA256         string
+	SizeBytes      uint64
+}
+
 type kubernetesUpgradeTarget struct {
-	node        workstation.TopologyNode
-	upgradeRole string
-	conn        katlcAgentConnection
-	machineID   string
-	generation  string
-	source      string
-	candidate   string
+	node         workstation.TopologyNode
+	upgradeRole  string
+	conn         katlcAgentConnection
+	machineID    string
+	generation   string
+	source       string
+	candidate    string
+	architecture string
 }
 
 var kubernetesUpgradeNow = func() time.Time { return time.Now().UTC() }
@@ -101,6 +114,7 @@ func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) 
 	cmd.Flags().Lookup("inventory").Hidden = true
 	cmd.Flags().StringVar(&opts.bundle, "bundle", "", "Kubernetes bundle image, for example ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
 	cmd.Flags().Lookup("bundle").Hidden = true
+	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built Kubernetes upgrade image (uses PATH.json metadata)")
 	cmd.Flags().BoolVar(&opts.cordon, "cordon", false, "temporarily cordon each node during its online upgrade")
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "operator kubeconfig used with --cordon")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate the complete rollout without accepting operations")
@@ -126,13 +140,34 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	if !opts.cordon && strings.TrimSpace(opts.kubeconfig) != "" {
 		return fmt.Errorf("--kubeconfig is only used with --cordon")
 	}
-	bundle, err := kubernetesUpgradeBundle(opts.version, opts.bundle)
-	if err != nil {
-		return err
-	}
-	image, err := kubernetesbundle.ParseImageReference(bundle)
-	if err != nil {
-		return fmt.Errorf("--bundle: %w", err)
+	var image kubernetesbundle.ImageReference
+	var localArtifact *kubernetesUpgradeArtifact
+	if strings.TrimSpace(opts.artifact) != "" {
+		if strings.TrimSpace(opts.bundle) != "" {
+			return fmt.Errorf("--artifact cannot be combined with --bundle")
+		}
+		artifact, err := readKubernetesUpgradeArtifact(opts.artifact)
+		if err != nil {
+			return fmt.Errorf("--artifact: %w", err)
+		}
+		version := strings.TrimSpace(opts.version)
+		if !strings.HasPrefix(version, "v") {
+			version = "v" + version
+		}
+		if version != artifact.PayloadVersion {
+			return fmt.Errorf("VERSION %s does not match local Kubernetes artifact payload %s", version, artifact.PayloadVersion)
+		}
+		localArtifact = &artifact
+		image = kubernetesbundle.ImageReference{Value: artifact.Path, PayloadVersion: artifact.PayloadVersion}
+	} else {
+		bundle, err := kubernetesUpgradeBundle(opts.version, opts.bundle)
+		if err != nil {
+			return err
+		}
+		image, err = kubernetesbundle.ParseImageReference(bundle)
+		if err != nil {
+			return fmt.Errorf("--bundle: %w", err)
+		}
 	}
 	topology, err := resolveKubernetesUpgradeTopology(opts)
 	if err != nil {
@@ -149,8 +184,23 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 			}
 		}
 	}()
+	if localArtifact != nil {
+		for _, target := range targets {
+			if target.architecture == "" {
+				return fmt.Errorf("node %s current generation does not report a supported artifact architecture", target.node.Name)
+			}
+			if target.architecture != localArtifact.Architecture {
+				return fmt.Errorf("local Kubernetes image architecture %q does not match node %s architecture %q", localArtifact.Architecture, target.node.Name, target.architecture)
+			}
+		}
+	}
 
-	report := kubernetesUpgradeReport{Cluster: topology.ClusterName, TargetVersion: image.PayloadVersion, Bundle: image.Value, Plan: opts.plan}
+	report := kubernetesUpgradeReport{Cluster: topology.ClusterName, TargetVersion: image.PayloadVersion, Plan: opts.plan}
+	if localArtifact != nil {
+		report.Artifact = localArtifact.Path
+	} else {
+		report.Bundle = image.Value
+	}
 	if len(targets) > 0 {
 		report.SourceVersion = targets[0].source
 	} else {
@@ -159,7 +209,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		return writeKubernetesUpgradeReport(stdout, opts.output, report)
 	}
 	for _, target := range targets {
-		body := kubernetesUpgradeBody(target, image)
+		body := kubernetesUpgradeBody(target, image, localArtifact)
 		accepted, err := target.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 			ClientRequestId: "katlctl-plan-" + target.candidate, OperationKind: "kubeadm-upgrade",
@@ -181,7 +231,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	report.Nodes = nil
 	for i := range targets {
 		target := &targets[i]
-		nodeReport, err := runKubernetesUpgradeTarget(ctx, topology, opts, *target, image, stderr)
+		nodeReport, err := runKubernetesUpgradeTarget(ctx, topology, opts, *target, image, localArtifact, stderr)
 		report.Nodes = append(report.Nodes, nodeReport)
 		if err != nil {
 			_ = writeKubernetesUpgradeReport(stdout, opts.output, report)
@@ -192,7 +242,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	return writeKubernetesUpgradeReport(stdout, opts.output, report)
 }
 
-func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.ResolvedTopology, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference, stderr io.Writer) (nodeReport kubernetesUpgradeNodeReport, resultErr error) {
+func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.ResolvedTopology, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference, localArtifact *kubernetesUpgradeArtifact, stderr io.Writer) (nodeReport kubernetesUpgradeNodeReport, resultErr error) {
 	nodeReport = kubernetesUpgradeNodeReport{Name: target.node.Name, Role: string(target.node.SystemRole), SourceVersion: target.source, TargetVersion: image.PayloadVersion}
 	cordoned := false
 	if opts.cordon {
@@ -214,12 +264,21 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 			}
 		}()
 	}
+	body := kubernetesUpgradeBody(target, image, localArtifact)
+	if localArtifact != nil {
+		localRef, err := stageKubernetesUpgradeArtifact(ctx, target.conn.Client, target.machineID, *localArtifact, target.node.Name, stderr)
+		if err != nil {
+			nodeReport.Result = "upload-failed"
+			return nodeReport, err
+		}
+		body.TargetSysextPath = kubernetesUpgradeArtifactLogicalPath(localRef)
+	}
 	accepted, err := target.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 		ClientRequestId: "katlctl-" + target.candidate, OperationKind: "kubeadm-upgrade",
 		Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID,
 		ExpectedCurrentGenerationId: target.generation, OperationTimeout: opts.timeout.String(),
-		KubernetesSysextUpdate: kubernetesUpgradeBody(target, image),
+		KubernetesSysextUpdate: body,
 	})
 	if err != nil {
 		nodeReport.Result = "submit-failed"
@@ -426,8 +485,9 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			closeTargets()
 			return nil, fmt.Errorf("node %s current generation has no Kubernetes payload", node.Name)
 		}
+		architecture, _ := nodeArtifactArchitecture(gen)
 		candidate := kubernetesUpgradeCandidate(targetVersion, node.Name, runID)
-		inspected = append(inspected, kubernetesUpgradeTarget{node: node, conn: conn, machineID: status.MachineId, generation: generationID, source: sourceVersion, candidate: candidate})
+		inspected = append(inspected, kubernetesUpgradeTarget{node: node, conn: conn, machineID: status.MachineId, generation: generationID, source: sourceVersion, candidate: candidate, architecture: architecture})
 	}
 	baseVersion := ""
 	controlPlaneAtTarget := false
@@ -476,15 +536,68 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 	return targets, nil
 }
 
-func kubernetesUpgradeBody(target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference) *agentapi.KubernetesSysextUpdateOperationRequest {
-	return &agentapi.KubernetesSysextUpdateOperationRequest{
+func kubernetesUpgradeBody(target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference, localArtifact *kubernetesUpgradeArtifact) *agentapi.KubernetesSysextUpdateOperationRequest {
+	body := &agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion(image), CandidateGenerationId: target.candidate,
 		UpgradeRole: target.upgradeRole, SourcePayloadVersion: target.source,
 		KubernetesBundleSource: image.Source, KubernetesBundleRef: image.Value,
 	}
+	if localArtifact != nil {
+		body.KubernetesBundleSource = ""
+		body.KubernetesBundleRef = ""
+		body.TargetSysextPath = kubernetesUpgradeArtifactLogicalPath(kubernetesUpgradeArtifactLocalRef(localArtifact.SHA256))
+		body.TargetSysextSha256 = localArtifact.SHA256
+		body.TargetSysextSizeBytes = localArtifact.SizeBytes
+	}
+	return body
 }
 
 func targetVersion(image kubernetesbundle.ImageReference) string { return image.PayloadVersion }
+
+func readKubernetesUpgradeArtifact(path string) (kubernetesUpgradeArtifact, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return kubernetesUpgradeArtifact{}, fmt.Errorf("resolve path: %w", err)
+	}
+	meta, err := artifact.ReadLocal(absolute + ".json")
+	if err != nil {
+		return kubernetesUpgradeArtifact{}, err
+	}
+	if meta.Name != sysextcatalog.KubernetesName || meta.Kind != artifact.ArtifactSysext || meta.Format != "sysext" {
+		return kubernetesUpgradeArtifact{}, fmt.Errorf("metadata does not describe a Kubernetes sysext")
+	}
+	if err := meta.VerifyFile(absolute); err != nil {
+		return kubernetesUpgradeArtifact{}, err
+	}
+	entry, err := sysextcatalog.EntryFromLocalMeta(meta)
+	if err != nil {
+		return kubernetesUpgradeArtifact{}, err
+	}
+	if err := sysextcatalog.ValidateForRuntime(entry, sysextcatalog.Runtime{Interface: "katl-runtime-1", Architecture: meta.Architecture}); err != nil {
+		return kubernetesUpgradeArtifact{}, err
+	}
+	return kubernetesUpgradeArtifact{
+		Path: absolute, PayloadVersion: meta.PayloadVersion, Architecture: meta.Architecture,
+		SHA256: meta.SHA256, SizeBytes: uint64(meta.SizeBytes),
+	}, nil
+}
+
+func kubernetesUpgradeArtifactLocalRef(digest string) string {
+	return "kubernetes-upgrade/uploads/" + digest + ".raw"
+}
+
+func kubernetesUpgradeArtifactLogicalPath(localRef string) string {
+	return filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts", localRef))
+}
+
+func stageKubernetesUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, machineID string, local kubernetesUpgradeArtifact, node string, stderr io.Writer) (string, error) {
+	return stageLocalUpgradeArtifact(ctx, client, localArtifactUpload{
+		Path: local.Path, Label: "Kubernetes", Version: local.PayloadVersion,
+		Kind: "StageKubernetesUpgradeArtifactRequest", Actor: "katlctl kubernetes upgrade",
+		MachineID: machineID, SHA256: local.SHA256, SizeBytes: local.SizeBytes,
+		LocalRef: kubernetesUpgradeArtifactLocalRef(local.SHA256), Node: node,
+	}, stderr)
+}
 
 func kubernetesUpgradeCandidate(version, node, runID string) string {
 	version = strings.NewReplacer("v", "", ".", "-").Replace(strings.TrimSpace(version))

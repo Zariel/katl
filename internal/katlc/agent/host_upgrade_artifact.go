@@ -17,11 +17,19 @@ import (
 )
 
 const (
-	StageHostUpgradeArtifactRequestKind = "StageHostUpgradeArtifactRequest"
-	maxHostUpgradeArtifactSize          = uint64(8 << 30)
-	maxHostUpgradeArtifactChunkSize     = 2 << 20
-	hostUpgradeUploadDirectory          = "host-upgrade/uploads"
+	StageHostUpgradeArtifactRequestKind       = "StageHostUpgradeArtifactRequest"
+	StageKubernetesUpgradeArtifactRequestKind = "StageKubernetesUpgradeArtifactRequest"
+	maxHostUpgradeArtifactSize                = uint64(8 << 30)
+	maxHostUpgradeArtifactChunkSize           = 2 << 20
+	hostUpgradeUploadDirectory                = "host-upgrade/uploads"
+	kubernetesUpgradeUploadDirectory          = "kubernetes-upgrade/uploads"
 )
+
+type stagedArtifactTarget struct {
+	label     string
+	directory string
+	suffix    string
+}
 
 func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agentapi.StageHostUpgradeArtifactRequest, agentapi.HostUpgradeArtifactStaged]) error {
 	first, err := stream.Recv()
@@ -31,7 +39,8 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 	if err != nil {
 		return err
 	}
-	if err := s.validateHostUpgradeArtifactMetadata(first); err != nil {
+	target, err := s.validateStagedArtifactMetadata(first)
+	if err != nil {
 		return err
 	}
 
@@ -42,16 +51,16 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 		return status.Errorf(codes.Internal, "read operation locks: %v", err)
 	}
 	if len(active) > 0 {
-		return status.Errorf(codes.FailedPrecondition, "cannot stage a KatlOS upgrade while operation %s is active", strings.Join(active, ","))
+		return status.Errorf(codes.FailedPrecondition, "cannot stage a %s upgrade while operation %s is active", target.label, strings.Join(active, ","))
 	}
 
-	directory := filepath.Join(runtimeRoot(s.Root), "var/lib/katl/artifacts", filepath.FromSlash(hostUpgradeUploadDirectory))
+	directory := filepath.Join(runtimeRoot(s.Root), "var/lib/katl/artifacts", filepath.FromSlash(target.directory))
 	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return status.Errorf(codes.Internal, "prepare KatlOS artifact staging directory: %v", err)
+		return status.Errorf(codes.Internal, "prepare %s artifact staging directory: %v", target.label, err)
 	}
 	temporary, err := os.CreateTemp(directory, "."+first.Sha256+"-*.partial")
 	if err != nil {
-		return status.Errorf(codes.Internal, "create KatlOS artifact staging file: %v", err)
+		return status.Errorf(codes.Internal, "create %s artifact staging file: %v", target.label, err)
 	}
 	temporaryPath := temporary.Name()
 	committed := false
@@ -79,10 +88,10 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 		}
 		written, err := temporary.Write(chunk)
 		if err != nil {
-			return status.Errorf(codes.Internal, "write KatlOS artifact: %v", err)
+			return status.Errorf(codes.Internal, "write %s artifact: %v", target.label, err)
 		}
 		if written != len(chunk) {
-			return status.Error(codes.Internal, "write KatlOS artifact: short write")
+			return status.Errorf(codes.Internal, "write %s artifact: short write", target.label)
 		}
 		_, _ = hash.Write(chunk)
 		received += uint64(written)
@@ -113,22 +122,22 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 		return status.Errorf(codes.InvalidArgument, "artifact SHA-256 %s does not match declared identity", got)
 	}
 	if err := temporary.Sync(); err != nil {
-		return status.Errorf(codes.Internal, "sync KatlOS artifact: %v", err)
+		return status.Errorf(codes.Internal, "sync %s artifact: %v", target.label, err)
 	}
 	if err := temporary.Close(); err != nil {
-		return status.Errorf(codes.Internal, "close KatlOS artifact: %v", err)
+		return status.Errorf(codes.Internal, "close %s artifact: %v", target.label, err)
 	}
-	filename := first.Sha256 + ".squashfs"
+	filename := first.Sha256 + target.suffix
 	finalPath := filepath.Join(directory, filename)
 	if err := os.Rename(temporaryPath, finalPath); err != nil {
-		return status.Errorf(codes.Internal, "commit KatlOS artifact: %v", err)
+		return status.Errorf(codes.Internal, "commit %s artifact: %v", target.label, err)
 	}
 	committed = true
 	if directoryHandle, err := os.Open(directory); err == nil {
 		_ = directoryHandle.Sync()
 		_ = directoryHandle.Close()
 	}
-	localRef := filepath.ToSlash(filepath.Join(hostUpgradeUploadDirectory, filename))
+	localRef := filepath.ToSlash(filepath.Join(target.directory, filename))
 	return stream.SendAndClose(&agentapi.HostUpgradeArtifactStaged{
 		LocalRef:  localRef,
 		Sha256:    first.Sha256,
@@ -136,36 +145,42 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 	})
 }
 
-func (s *Server) validateHostUpgradeArtifactMetadata(request *agentapi.StageHostUpgradeArtifactRequest) error {
+func (s *Server) validateStagedArtifactMetadata(request *agentapi.StageHostUpgradeArtifactRequest) (stagedArtifactTarget, error) {
 	if request == nil {
-		return status.Error(codes.InvalidArgument, "request is required")
+		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, "request is required")
 	}
 	if request.ApiVersion != APIVersion {
-		return status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
+		return stagedArtifactTarget{}, status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
 	}
-	if request.Kind != StageHostUpgradeArtifactRequestKind {
-		return status.Errorf(codes.InvalidArgument, "kind must be %q", StageHostUpgradeArtifactRequestKind)
+	var target stagedArtifactTarget
+	switch request.Kind {
+	case StageHostUpgradeArtifactRequestKind:
+		target = stagedArtifactTarget{label: "KatlOS", directory: hostUpgradeUploadDirectory, suffix: ".squashfs"}
+	case StageKubernetesUpgradeArtifactRequestKind:
+		target = stagedArtifactTarget{label: "Kubernetes", directory: kubernetesUpgradeUploadDirectory, suffix: ".raw"}
+	default:
+		return stagedArtifactTarget{}, status.Errorf(codes.InvalidArgument, "kind must be %q or %q", StageHostUpgradeArtifactRequestKind, StageKubernetesUpgradeArtifactRequestKind)
 	}
 	if strings.TrimSpace(request.Actor) == "" {
-		return status.Error(codes.InvalidArgument, "actor is required")
+		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, "actor is required")
 	}
 	machineID, err := s.machineID()
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
+		return stagedArtifactTarget{}, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
 	}
 	if strings.TrimSpace(request.ExpectedMachineId) == "" || request.ExpectedMachineId != machineID {
-		return status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+		return stagedArtifactTarget{}, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
 	}
 	if err := validateArtifactSHA256(request.Sha256); err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
+		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if request.SizeBytes == 0 {
-		return status.Error(codes.InvalidArgument, "artifact sizeBytes must be positive")
+		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, "artifact sizeBytes must be positive")
 	}
 	if request.SizeBytes > maxHostUpgradeArtifactSize {
-		return status.Errorf(codes.ResourceExhausted, "artifact sizeBytes exceeds %d", maxHostUpgradeArtifactSize)
+		return stagedArtifactTarget{}, status.Errorf(codes.ResourceExhausted, "artifact sizeBytes exceeds %d", maxHostUpgradeArtifactSize)
 	}
-	return nil
+	return target, nil
 }
 
 func validateArtifactSHA256(value string) error {

@@ -32,6 +32,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if err != nil {
 		return e.failKubeadmUpgrade(record, "resolve-target", err, false)
 	}
+	if record.KubernetesSysextUpdate != nil {
+		defer func(request operation.KubernetesSysextUpdate) {
+			_ = cleanupManagedKubernetesUpgradeArtifact(e.Root, request)
+		}(*record.KubernetesSysextUpdate)
+	}
 	record, err = e.prepareKubeadmUpgradeSnapshot(ctx, record)
 	if err != nil {
 		return e.failKubeadmUpgrade(record, "snapshot", err, false)
@@ -214,6 +219,22 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		return err
 	}
 	retainToolView = false
+	return nil
+}
+
+func cleanupManagedKubernetesUpgradeArtifact(root string, request operation.KubernetesSysextUpdate) error {
+	digest := strings.TrimSpace(request.TargetSysextSHA256)
+	if validateArtifactSHA256(digest) != nil {
+		return nil
+	}
+	logicalPath := filepath.ToSlash(filepath.Clean(request.TargetSysextPath))
+	expected := filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts", kubernetesUpgradeUploadDirectory, digest+".raw"))
+	if logicalPath != expected {
+		return nil
+	}
+	if err := os.Remove(rootedRuntimePath(root, logicalPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove uploaded Kubernetes artifact: %w", err)
+	}
 	return nil
 }
 
